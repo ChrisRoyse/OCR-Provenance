@@ -1,0 +1,14 @@
+# Ignore everything
+*
+
+# But not these directories
+!docs/
+!docs/**
+!docs2/
+!docs2/**
+
+# Keep the gitignore itself
+!.gitignore
+
+# Keep gitkeep files for empty directories
+!.gitkeep
