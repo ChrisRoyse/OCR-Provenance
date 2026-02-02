@@ -67,7 +67,7 @@ For this project, follow these standards:
 - datalab-python-sdk>=1.0.0
 - sentence-transformers>=2.7.0
 - torch>=2.5.0 (CUDA-enabled)
-- flash-attn>=2.6.0
+- >=2.6.0
 - numpy>=1.26.0
 
 ### Directory Structure

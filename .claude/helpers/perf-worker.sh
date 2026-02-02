@@ -99,7 +99,7 @@ run_benchmarks() {
        '.search.improvement = $search |
         .memory.reduction = $memory |
         .startupTime.current = $startup |
-        .flashAttention.speedup = $speedup |
+        ..speedup = $speedup |
         ."last-updated" = $updated' \
        "$PERF_FILE" > "$PERF_FILE.tmp" && mv "$PERF_FILE.tmp" "$PERF_FILE"
 

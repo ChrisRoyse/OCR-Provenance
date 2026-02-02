@@ -33,7 +33,7 @@ if [ -f ".claude-flow/security/audit-status.json" ]; then
 fi
 
 if [ -f ".claude-flow/metrics/performance.json" ]; then
-  SPEEDUP=$(jq -r '.flashAttention.speedup // "1.0x"' ".claude-flow/metrics/performance.json" 2>/dev/null || echo "1.0x")
+  SPEEDUP=$(jq -r '..speedup // "1.0x"' ".claude-flow/metrics/performance.json" 2>/dev/null || echo "1.0x")
   MEMORY=$(jq -r '.memory.reduction // "0%"' ".claude-flow/metrics/performance.json" 2>/dev/null || echo "0%")
 fi
 

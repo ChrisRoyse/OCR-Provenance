@@ -1,13 +1,13 @@
 ---
 name: "V3 Performance Optimization"
-description: "Achieve aggressive v3 performance targets: 2.49x-7.47x Flash Attention speedup, 150x-12,500x search improvements, 50-75% memory reduction. Comprehensive benchmarking and optimization suite."
+description: "Achieve aggressive v3 performance targets: 2.49x-7.47x  speedup, 150x-12,500x search improvements, 50-75% memory reduction. Comprehensive benchmarking and optimization suite."
 ---
 
 # V3 Performance Optimization
 
 ## What This Skill Does
 
-Validates and optimizes claude-flow v3 to achieve industry-leading performance through Flash Attention, AgentDB HNSW indexing, and comprehensive system optimization with continuous benchmarking.
+Validates and optimizes claude-flow v3 to achieve industry-leading performance through , AgentDB HNSW indexing, and comprehensive system optimization with continuous benchmarking.
 
 ## Quick Start
 
@@ -16,17 +16,17 @@ Validates and optimizes claude-flow v3 to achieve industry-leading performance t
 Task("Performance baseline", "Establish v2 performance benchmarks", "v3-performance-engineer")
 
 # Target validation (parallel)
-Task("Flash Attention", "Validate 2.49x-7.47x speedup target", "v3-performance-engineer")
+Task("", "Validate 2.49x-7.47x speedup target", "v3-performance-engineer")
 Task("Search optimization", "Validate 150x-12,500x search improvement", "v3-performance-engineer")
 Task("Memory optimization", "Achieve 50-75% memory reduction", "v3-performance-engineer")
 ```
 
 ## Performance Target Matrix
 
-### Flash Attention Revolution
+###  Revolution
 ```
 ┌─────────────────────────────────────────┐
-│           FLASH ATTENTION               │
+│           GPU OPTIMIZATION               │
 ├─────────────────────────────────────────┤
 │  Baseline: Standard attention           │
 │  Target:   2.49x - 7.47x speedup       │
@@ -152,10 +152,10 @@ class SwarmBenchmarks {
 }
 ```
 
-### Flash Attention Benchmarks
+###  Benchmarks
 ```typescript
 class AttentionBenchmarks {
-  async benchmarkFlashAttention(): Promise<AttentionBenchmark> {
+  async benchmarkGPUOptimization(): Promise<AttentionBenchmark> {
     const sequences = this.generateSequences([512, 1024, 2048, 4096]);
     const results = [];
 
@@ -163,15 +163,15 @@ class AttentionBenchmarks {
       // Baseline attention
       const baselineResult = await this.benchmarkStandardAttention(sequence);
 
-      // Flash attention
-      const flashResult = await this.benchmarkFlashAttention(sequence);
+      // 
+      const gpuResult = await this.benchmarkGPUOptimization(sequence);
 
       results.push({
         sequenceLength: sequence.length,
-        speedup: baselineResult.time / flashResult.time,
-        memoryReduction: (baselineResult.memory - flashResult.memory) / baselineResult.memory,
+        speedup: baselineResult.time / gpuResult.time,
+        memoryReduction: (baselineResult.memory - gpuResult.memory) / baselineResult.memory,
         targetSpeedup: [2.49, 7.47],
-        achieved: this.checkTarget(flashResult, [2.49, 7.47])
+        achieved: this.checkTarget(gpuResult, [2.49, 7.47])
       });
     }
 
@@ -229,7 +229,7 @@ class PerformanceMonitor {
   async collectMetrics(): Promise<PerformanceSnapshot> {
     return {
       timestamp: Date.now(),
-      flashAttention: await this.measureFlashAttention(),
+      : await this.measureGPUOptimization(),
       searchPerformance: await this.measureSearchSpeed(),
       memoryUsage: await this.measureMemoryEfficiency(),
       startupTime: await this.measureStartupLatency(),
@@ -333,7 +333,7 @@ class CPUOptimization {
 class PerformanceGates {
   async validateAllTargets(): Promise<ValidationReport> {
     const results = await Promise.all([
-      this.validateFlashAttention(),     // 2.49x-7.47x
+      this.validateGPUOptimization(),     // 2.49x-7.47x
       this.validateSearchPerformance(),  // 150x-12,500x
       this.validateMemoryReduction(),    // 50-75%
       this.validateStartupTime(),        // <500ms
@@ -353,7 +353,7 @@ class PerformanceGates {
 ## Success Metrics
 
 ### Primary Targets
-- [ ] **Flash Attention**: 2.49x-7.47x speedup validated
+- [ ] ****: 2.49x-7.47x speedup validated
 - [ ] **Search Performance**: 150x-12,500x improvement confirmed
 - [ ] **Memory Reduction**: 50-75% usage optimization achieved
 - [ ] **Startup Time**: <500ms cold start consistently
@@ -381,7 +381,7 @@ class PerformanceGates {
 npm run benchmark:v3
 
 # Specific target validation
-npm run benchmark:flash-attention
+npm run benchmark:
 npm run benchmark:agentdb-search
 npm run benchmark:memory-optimization
 

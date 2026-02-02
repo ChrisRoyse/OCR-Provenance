@@ -70,11 +70,11 @@ case "$1" in
     fi
 
     # Update performance metrics
-    jq --arg speedup "$2" '.flashAttention.speedup = $speedup' \
+    jq --arg speedup "$2" '..speedup = $speedup' \
       "$METRICS_DIR/performance.json" > tmp.json && \
       mv tmp.json "$METRICS_DIR/performance.json"
 
-    echo "✅ Updated Flash Attention speedup to $2"
+    echo "✅ Updated  speedup to $2"
     ;;
 
   "memory")
@@ -127,7 +127,7 @@ case "$1" in
     fi
 
     if [ -f "$METRICS_DIR/performance.json" ]; then
-      speedup=$(jq -r '.flashAttention.speedup // "1.0x"' "$METRICS_DIR/performance.json")
+      speedup=$(jq -r '..speedup // "1.0x"' "$METRICS_DIR/performance.json")
       memory=$(jq -r '.memory.reduction // "0%"' "$METRICS_DIR/performance.json")
       echo "⚡ Performance: $speedup speedup, $memory memory saved"
     fi
@@ -143,7 +143,7 @@ case "$1" in
     echo "  domain <0-5>       Update completed domain count"
     echo "  agent <0-15>       Update active agent count"
     echo "  security <0-3>     Update fixed CVE count"
-    echo "  performance <x.x>  Update Flash Attention speedup"
+    echo "  performance <x.x>  Update  speedup"
     echo "  memory <xx%>       Update memory reduction percentage"
     echo "  ddd <0-100>        Update DDD progress percentage"
     echo "  status             Show current status"

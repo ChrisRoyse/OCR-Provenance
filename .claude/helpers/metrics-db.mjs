@@ -72,7 +72,7 @@ async function initDatabase() {
 
     CREATE TABLE IF NOT EXISTS performance_metrics (
       id INTEGER PRIMARY KEY,
-      flash_attention_speedup TEXT DEFAULT '1.0x',
+      _speedup TEXT DEFAULT '1.0x',
       memory_reduction TEXT DEFAULT '0%',
       search_improvement TEXT DEFAULT '1x',
       last_updated TEXT

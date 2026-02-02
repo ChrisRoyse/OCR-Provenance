@@ -91,7 +91,7 @@ Lead the hierarchical mesh coordination of 15 specialized agents to implement al
 ## Success Metrics
 
 - **Parallel Efficiency**: >85% agent utilization
-- **Performance**: 2.49x-7.47x Flash Attention speedup
+- **Performance**: 2.49x-7.47x  speedup
 - **Search**: 150x-12,500x AgentDB improvement
 - **Memory**: 50-75% reduction
 - **Code**: <5,000 lines (vs 15,000+)
