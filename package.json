@@ -10,8 +10,16 @@
     "test:unit": "vitest run --dir tests/unit",
     "test:integration": "vitest run --dir tests/integration",
     "test:gpu": "vitest run --dir tests/gpu",
-    "lint": "eslint src/",
-    "typecheck": "tsc --noEmit"
+    "lint": "eslint src/ tests/",
+    "lint:fix": "eslint src/ tests/ --fix",
+    "format": "prettier --write \"src/**/*.ts\" \"tests/**/*.ts\"",
+    "format:check": "prettier --check \"src/**/*.ts\" \"tests/**/*.ts\"",
+    "typecheck": "tsc --noEmit",
+    "lint:py": "cd python && ruff check . && ruff format --check .",
+    "lint:py:fix": "cd python && ruff check --fix . && ruff format .",
+    "lint:all": "npm run lint && npm run format:check && npm run lint:py",
+    "lint:all:fix": "npm run lint:fix && npm run format && npm run lint:py:fix",
+    "check": "npm run typecheck && npm run lint:all && npm run test"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.0.0",
@@ -28,8 +36,12 @@
     "@types/uuid": "^10.0.0",
     "vitest": "^2.0.0",
     "eslint": "^9.0.0",
+    "@eslint/js": "^9.0.0",
+    "typescript-eslint": "^8.0.0",
     "@typescript-eslint/eslint-plugin": "^8.0.0",
-    "@typescript-eslint/parser": "^8.0.0"
+    "@typescript-eslint/parser": "^8.0.0",
+    "globals": "^15.0.0",
+    "prettier": "^3.3.0"
   },
   "engines": {
     "node": ">=20.0.0"
