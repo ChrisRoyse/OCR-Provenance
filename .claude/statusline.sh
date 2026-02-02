@@ -91,7 +91,7 @@ fi
 
 # Check performance metrics
 if [ -f "$PERFORMANCE_METRICS" ]; then
-  PERF_CURRENT=$(jq -r '.flashAttention.speedup // "1.0x"' "$PERFORMANCE_METRICS" 2>/dev/null || echo "1.0x")
+  PERF_CURRENT=$(jq -r '..speedup // "1.0x"' "$PERFORMANCE_METRICS" 2>/dev/null || echo "1.0x")
 fi
 
 # Calculate REAL memory usage (system memory used by node/agentic processes)

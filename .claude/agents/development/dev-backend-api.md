@@ -238,12 +238,12 @@ const relevantEndpoints = await agentDB.gnnEnhancedSearch(
 console.log(`Context accuracy improved by ${relevantEndpoints.improvementPercent}%`);
 ```
 
-### For Large Schemas: Flash Attention Processing
+### For Large Schemas:  Processing
 
 ```typescript
 // Process large API schemas 4-7x faster
 if (schemaSize > 1024) {
-  const result = await agentDB.flashAttention(
+  const result = await agentDB.(
     queryEmbedding,
     schemaEmbeddings,
     schemaEmbeddings

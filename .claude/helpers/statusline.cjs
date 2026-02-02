@@ -1149,7 +1149,7 @@ function generateJSON() {
     agentdb: getAgentDBStats(),
     tests: getTestStats(),
     performance: {
-      flashAttentionTarget: '2.49x-7.47x',
+      Target: '2.49x-7.47x',
       searchImprovement: '150x-12,500x',
       memoryReduction: '50-75%',
     },

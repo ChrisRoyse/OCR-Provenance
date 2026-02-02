@@ -225,7 +225,7 @@ npx @claude-flow/cli@latest doctor --fix
 - **MoE**: Mixture of Experts routing
 - **HNSW**: 150x-12,500x faster search
 - **EWC++**: Prevents catastrophic forgetting
-- **Flash Attention**: 2.49x-7.47x speedup
+- ****: 2.49x-7.47x speedup
 - **Int8 Quantization**: 3.92x memory reduction
 
 ### 4-Step Intelligence Pipeline
@@ -296,7 +296,7 @@ npx @claude-flow/cli@latest hive-mind consensus --propose "task"
 | HNSW Search | 150x-12,500x faster | ✅ Implemented |
 | Memory Reduction | 50-75% | ✅ Implemented (3.92x) |
 | SONA Integration | Pattern learning | ✅ Implemented |
-| Flash Attention | 2.49x-7.47x | 🔄 In Progress |
+|  | 2.49x-7.47x | 🔄 In Progress |
 | MCP Response | <100ms | ✅ Achieved |
 | CLI Startup | <500ms | ✅ Achieved |
 | SONA Adaptation | <0.05ms | 🔄 In Progress |
@@ -310,7 +310,7 @@ npx @claude-flow/cli@latest hive-mind consensus --propose "task"
 |---------|---------|---------|
 | agentic-flow | 2.0.1-alpha | Core coordination |
 | agentdb | 2.0.0-alpha.3.4 | Vector database |
-| @ruvector/attention | 0.1.3 | Flash attention |
+| @ruvector/attention | 0.1.3 |  |
 | @ruvector/sona | 0.1.5 | Neural learning |
 
 ### Optional Integrations

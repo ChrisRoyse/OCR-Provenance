@@ -2,7 +2,7 @@
 name: v3-performance-engineer
 version: "3.0.0-alpha"
 updated: "2026-01-04"
-description: V3 Performance Engineer for achieving aggressive performance targets. Responsible for 2.49x-7.47x Flash Attention speedup, 150x-12,500x search improvements, and comprehensive benchmarking suite.
+description: V3 Performance Engineer for achieving aggressive performance targets. Responsible for 2.49x-7.47x  speedup, 150x-12,500x search improvements, and comprehensive benchmarking suite.
 color: yellow
 metadata:
   v3_role: "specialist"
@@ -15,7 +15,7 @@ hooks:
     echo "⚡ V3 Performance Engineer starting optimization mission..."
 
     echo "🎯 Performance targets:"
-    echo "  • Flash Attention: 2.49x-7.47x speedup"
+    echo "  • : 2.49x-7.47x speedup"
     echo "  • AgentDB Search: 150x-12,500x improvement"
     echo "  • Memory Usage: 50-75% reduction"
     echo "  • Startup Time: <500ms"
@@ -44,14 +44,14 @@ hooks:
 
 ## Mission: Aggressive Performance Targets
 
-Validate and optimize claude-flow v3 to achieve industry-leading performance improvements through Flash Attention, AgentDB HNSW indexing, and comprehensive system optimization.
+Validate and optimize claude-flow v3 to achieve industry-leading performance improvements through , AgentDB HNSW indexing, and comprehensive system optimization.
 
 ## Performance Target Matrix
 
-### **Flash Attention Optimization**
+### ** Optimization**
 ```
 ┌─────────────────────────────────────────┐
-│           FLASH ATTENTION               │
+│           GPU OPTIMIZATION               │
 ├─────────────────────────────────────────┤
 │  Baseline: Standard attention mechanism │
 │  Target:   2.49x - 7.47x speedup       │
@@ -209,7 +209,7 @@ class SwarmBenchmarks {
 ### **Attention Mechanism Benchmarks**
 ```typescript
 class AttentionBenchmarks {
-  async benchmarkFlashAttention(): Promise<AttentionBenchmark> {
+  async benchmarkGPUOptimization(): Promise<AttentionBenchmark> {
     const testSequences = this.generateTestSequences([512, 1024, 2048, 4096]);
     const results = [];
 
@@ -221,17 +221,17 @@ class AttentionBenchmarks {
       const baselineTime = performance.now() - baselineStart;
       const baselineMemoryPeak = process.memoryUsage().heapUsed - baselineMemory.heapUsed;
 
-      // Flash attention
-      const flashStart = performance.now();
-      const flashMemory = process.memoryUsage();
-      await this.flashAttention(sequence);
-      const flashTime = performance.now() - flashStart;
-      const flashMemoryPeak = process.memoryUsage().heapUsed - flashMemory.heapUsed;
+      // 
+      const gpuStart = performance.now();
+      const gpuMemory = process.memoryUsage();
+      await this.(sequence);
+      const gpuTime = performance.now() - gpuStart;
+      const gpuMemoryPeak = process.memoryUsage().heapUsed - gpuMemory.heapUsed;
 
       results.push({
         sequenceLength: sequence.length,
-        speedup: baselineTime / flashTime,
-        memoryReduction: (baselineMemoryPeak - flashMemoryPeak) / baselineMemoryPeak,
+        speedup: baselineTime / gpuTime,
+        memoryReduction: (baselineMemoryPeak - gpuMemoryPeak) / baselineMemoryPeak,
         targetSpeedup: [2.49, 7.47],
         targetMemoryReduction: [0.5, 0.75]
       });
@@ -290,7 +290,7 @@ class SONABenchmarks {
 ```typescript
 class PerformanceMonitor {
   private metrics = {
-    flashAttentionSpeedup: new MetricCollector('flash_attention_speedup'),
+    Speedup: new MetricCollector('_speedup'),
     searchImprovement: new MetricCollector('search_improvement'),
     memoryReduction: new MetricCollector('memory_reduction'),
     startupTime: new MetricCollector('startup_time'),
@@ -300,7 +300,7 @@ class PerformanceMonitor {
   async collectMetrics(): Promise<PerformanceSnapshot> {
     return {
       timestamp: Date.now(),
-      flashAttention: await this.metrics.flashAttentionSpeedup.current(),
+      : await this.metrics.Speedup.current(),
       searchPerformance: await this.metrics.searchImprovement.current(),
       memoryUsage: await this.metrics.memoryReduction.current(),
       startup: await this.metrics.startupTime.current(),
@@ -361,7 +361,7 @@ class PerformanceRegression {
 ## Success Validation Framework
 
 ### **Target Achievement Checklist**
-- [ ] **Flash Attention**: 2.49x-7.47x speedup validated across all scenarios
+- [ ] ****: 2.49x-7.47x speedup validated across all scenarios
 - [ ] **Search Performance**: 150x-12,500x improvement confirmed with HNSW
 - [ ] **Memory Reduction**: 50-75% memory usage reduction achieved
 - [ ] **Startup Performance**: <500ms cold start consistently achieved
@@ -384,7 +384,7 @@ class PerformanceRegression {
 
 ### **Integration Architect (Agent #10)**
 - Validate agentic-flow@alpha performance integration
-- Test Flash Attention speedup implementation
+- Test  speedup implementation
 - Benchmark SONA learning performance
 
 ### **Queen Coordinator (Agent #1)**
