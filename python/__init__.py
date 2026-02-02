@@ -26,39 +26,35 @@ __version__ = "1.0.0"
 __author__ = "OCR Provenance MCP System"
 
 from .gpu_utils import (
-    # Core functions
-    verify_gpu,
-    get_vram_usage,
-    verify_model_loading,
-    clear_gpu_memory,
-    test_embedding_generation,
+    EmbeddingModelError,
     # Error classes
     GPUError,
-    GPUNotAvailableError,
-    GPUOutOfMemoryError,
-    EmbeddingModelError,
     # Type definitions
     GPUInfo,
-    VRAMUsage,
+    GPUNotAvailableError,
+    GPUOutOfMemoryError,
     ModelInfo,
+    VRAMUsage,
+    clear_gpu_memory,
+    get_vram_usage,
+    test_embedding_generation,
+    # Core functions
+    verify_gpu,
+    verify_model_loading,
 )
 
 __all__ = [
-    # Version
-    "__version__",
-    # Core functions
-    "verify_gpu",
-    "get_vram_usage",
-    "verify_model_loading",
-    "clear_gpu_memory",
-    "test_embedding_generation",
-    # Error classes
+    "EmbeddingModelError",
     "GPUError",
+    "GPUInfo",
     "GPUNotAvailableError",
     "GPUOutOfMemoryError",
-    "EmbeddingModelError",
-    # Type definitions
-    "GPUInfo",
-    "VRAMUsage",
     "ModelInfo",
+    "VRAMUsage",
+    "__version__",
+    "clear_gpu_memory",
+    "get_vram_usage",
+    "test_embedding_generation",
+    "verify_gpu",
+    "verify_model_loading",
 ]

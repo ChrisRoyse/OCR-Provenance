@@ -9,17 +9,16 @@ CRITICAL: This module follows fail-fast principles. If GPU is not available,
 operations will raise exceptions - NO fallbacks to CPU or cloud.
 """
 
-import sys
-import json
 import argparse
+import json
 import logging
-from typing import TypedDict, Optional
+import sys
 from pathlib import Path
+from typing import TypedDict
 
 # Configure logging with detailed format for debugging
 logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 )
 logger = logging.getLogger(__name__)
 
@@ -28,13 +27,16 @@ logger = logging.getLogger(__name__)
 # Error Classes (CS-ERR-001 compliant)
 # =============================================================================
 
+
 class GPUError(Exception):
     """Base class for GPU-related errors."""
+
     pass
 
 
 class GPUNotAvailableError(GPUError):
     """Raised when no CUDA GPU is available."""
+
     def __init__(self, message: str = "CUDA GPU not available"):
         self.message = message
         super().__init__(self.message)
@@ -42,7 +44,10 @@ class GPUNotAvailableError(GPUError):
 
 class GPUOutOfMemoryError(GPUError):
     """Raised when GPU runs out of memory."""
-    def __init__(self, message: str, vram_required: Optional[float] = None, vram_available: Optional[float] = None):
+
+    def __init__(
+        self, message: str, vram_required: float | None = None, vram_available: float | None = None
+    ):
         self.message = message
         self.vram_required = vram_required
         self.vram_available = vram_available
@@ -51,7 +56,8 @@ class GPUOutOfMemoryError(GPUError):
 
 class EmbeddingModelError(Exception):
     """Raised when embedding model fails to load or run."""
-    def __init__(self, message: str, model_path: Optional[str] = None, cause: Optional[Exception] = None):
+
+    def __init__(self, message: str, model_path: str | None = None, cause: Exception | None = None):
         self.message = message
         self.model_path = model_path
         self.cause = cause
@@ -62,8 +68,10 @@ class EmbeddingModelError(Exception):
 # Type Definitions
 # =============================================================================
 
+
 class GPUInfo(TypedDict):
     """GPU information structure."""
+
     available: bool
     name: str
     vram_gb: float
@@ -76,6 +84,7 @@ class GPUInfo(TypedDict):
 
 class VRAMUsage(TypedDict):
     """VRAM usage statistics."""
+
     allocated_gb: float
     reserved_gb: float
     free_gb: float
@@ -84,15 +93,17 @@ class VRAMUsage(TypedDict):
 
 class ModelInfo(TypedDict):
     """Embedding model information."""
+
     success: bool
     model_path: str
-    error: Optional[str]
+    error: str | None
     model_info: dict
 
 
 # =============================================================================
 # GPU Verification Functions
 # =============================================================================
+
 
 def verify_gpu() -> GPUInfo:
     """
@@ -134,8 +145,8 @@ def verify_gpu() -> GPUInfo:
     # Check minimum VRAM requirement (8GB per constitution)
     if total_memory < 8.0:
         logger.warning(
-            "GPU VRAM (%.2f GB) below recommended minimum (8 GB). "
-            "Performance may be degraded.", total_memory
+            "GPU VRAM (%.2f GB) below recommended minimum (8 GB). Performance may be degraded.",
+            total_memory,
         )
 
     gpu_info = GPUInfo(
@@ -151,8 +162,10 @@ def verify_gpu() -> GPUInfo:
 
     logger.info(
         "GPU verified: %s, VRAM: %.2f GB, CUDA: %s, Compute: %s",
-        gpu_info["name"], gpu_info["vram_gb"], gpu_info["cuda_version"],
-        gpu_info["compute_capability"]
+        gpu_info["name"],
+        gpu_info["vram_gb"],
+        gpu_info["cuda_version"],
+        gpu_info["compute_capability"],
     )
 
     return gpu_info
@@ -191,12 +204,15 @@ def get_vram_usage() -> VRAMUsage:
         allocated_gb=round(allocated, 3),
         reserved_gb=round(reserved, 3),
         free_gb=round(total - reserved, 3),
-        total_gb=round(total, 2)
+        total_gb=round(total, 2),
     )
 
     logger.debug(
         "VRAM: allocated=%.3f GB, reserved=%.3f GB, free=%.3f GB, total=%.2f GB",
-        usage["allocated_gb"], usage["reserved_gb"], usage["free_gb"], usage["total_gb"]
+        usage["allocated_gb"],
+        usage["reserved_gb"],
+        usage["free_gb"],
+        usage["total_gb"],
     )
 
     return usage
@@ -259,12 +275,14 @@ def verify_model_loading(model_path: str = "./models/nomic-embed-text-v1.5") -> 
                 "device": device,
                 "embedding_dimension": embedding_dim,
                 "max_seq_length": max_seq_len,
-            }
+            },
         )
 
         logger.info(
             "Model loaded successfully: dim=%d, max_seq=%d, device=%s",
-            embedding_dim, max_seq_len, device
+            embedding_dim,
+            max_seq_len,
+            device,
         )
 
         # Cleanup
@@ -279,9 +297,7 @@ def verify_model_loading(model_path: str = "./models/nomic-embed-text-v1.5") -> 
     except Exception as e:
         logger.error("Model loading failed: %s", e)
         raise EmbeddingModelError(
-            f"Failed to load embedding model: {e}",
-            model_path=model_path,
-            cause=e
+            f"Failed to load embedding model: {e}", model_path=model_path, cause=e
         ) from e
 
 
@@ -296,6 +312,7 @@ def clear_gpu_memory() -> None:
 
     try:
         import torch
+
         if not torch.cuda.is_available():
             raise GPUNotAvailableError("Cannot clear GPU memory: CUDA not available")
 
@@ -326,8 +343,9 @@ def test_embedding_generation(model_path: str = "./models/nomic-embed-text-v1.5"
     logger.info("Testing embedding generation...")
 
     try:
-        import torch
         import time
+
+        import torch
         from sentence_transformers import SentenceTransformer
 
         if not torch.cuda.is_available():
@@ -340,7 +358,7 @@ def test_embedding_generation(model_path: str = "./models/nomic-embed-text-v1.5"
         test_texts = [
             "This is a test document for OCR provenance verification.",
             "The system must maintain complete data lineage.",
-            "Every embedding must trace back to its source file."
+            "Every embedding must trace back to its source file.",
         ]
 
         # Time the embedding generation
@@ -357,12 +375,14 @@ def test_embedding_generation(model_path: str = "./models/nomic-embed-text-v1.5"
             "num_texts": len(test_texts),
             "elapsed_ms": round(elapsed_ms, 2),
             "ms_per_text": round(elapsed_ms / len(test_texts), 2),
-            "device": device
+            "device": device,
         }
 
         logger.info(
             "Embedding test passed: shape=%s, time=%.2fms, device=%s",
-            embeddings.shape, elapsed_ms, device
+            embeddings.shape,
+            elapsed_ms,
+            device,
         )
 
         # Cleanup
@@ -377,15 +397,14 @@ def test_embedding_generation(model_path: str = "./models/nomic-embed-text-v1.5"
     except Exception as e:
         logger.error("Embedding generation test failed: %s", e)
         raise EmbeddingModelError(
-            f"Embedding generation test failed: {e}",
-            model_path=model_path,
-            cause=e
+            f"Embedding generation test failed: {e}", model_path=model_path, cause=e
         ) from e
 
 
 # =============================================================================
 # CLI Entry Point
 # =============================================================================
+
 
 def main() -> None:
     """CLI entry point for GPU verification."""
@@ -399,44 +418,26 @@ Examples:
   python gpu_utils.py --vram                   # Show VRAM usage
   python gpu_utils.py --verify-model           # Verify model loading
   python gpu_utils.py --test-embedding         # Test embedding generation
-        """
+        """,
     )
     parser.add_argument(
-        "--verify",
-        action="store_true",
-        help="Verify GPU availability and capabilities"
+        "--verify", action="store_true", help="Verify GPU availability and capabilities"
     )
-    parser.add_argument(
-        "--vram",
-        action="store_true",
-        help="Show current VRAM usage"
-    )
+    parser.add_argument("--vram", action="store_true", help="Show current VRAM usage")
     parser.add_argument(
         "--model",
         type=str,
         default="./models/nomic-embed-text-v1.5",
-        help="Path to embedding model (default: ./models/nomic-embed-text-v1.5)"
+        help="Path to embedding model (default: ./models/nomic-embed-text-v1.5)",
     )
     parser.add_argument(
-        "--verify-model",
-        action="store_true",
-        help="Verify model can be loaded on GPU"
+        "--verify-model", action="store_true", help="Verify model can be loaded on GPU"
     )
     parser.add_argument(
-        "--test-embedding",
-        action="store_true",
-        help="Test embedding generation end-to-end"
+        "--test-embedding", action="store_true", help="Test embedding generation end-to-end"
     )
-    parser.add_argument(
-        "--json",
-        action="store_true",
-        help="Output results as JSON"
-    )
-    parser.add_argument(
-        "--verbose", "-v",
-        action="store_true",
-        help="Enable verbose logging"
-    )
+    parser.add_argument("--json", action="store_true", help="Output results as JSON")
+    parser.add_argument("--verbose", "-v", action="store_true", help="Enable verbose logging")
 
     args = parser.parse_args()
 
@@ -459,7 +460,7 @@ Examples:
                 print("=" * 60)
                 print("GPU Verification Results")
                 print("=" * 60)
-                print(f"  GPU Available:       Yes")
+                print("  GPU Available:       Yes")
                 print(f"  GPU Name:            {gpu_info['name']}")
                 print(f"  VRAM Total:          {gpu_info['vram_gb']} GB")
                 print(f"  VRAM Free:           {gpu_info['vram_free_gb']} GB")
@@ -484,10 +485,12 @@ Examples:
 
             if not args.json:
                 print("\nModel Verification:")
-                print(f"  Status:    SUCCESS")
+                print("  Status:    SUCCESS")
                 print(f"  Path:      {model_result['model_path']}")
                 print(f"  Device:    {model_result['model_info'].get('device', 'N/A')}")
-                print(f"  Dimension: {model_result['model_info'].get('embedding_dimension', 'N/A')}")
+                print(
+                    f"  Dimension: {model_result['model_info'].get('embedding_dimension', 'N/A')}"
+                )
                 print(f"  Max Seq:   {model_result['model_info'].get('max_seq_length', 'N/A')}")
 
         if args.test_embedding:
@@ -496,7 +499,7 @@ Examples:
 
             if not args.json:
                 print("\nEmbedding Generation Test:")
-                print(f"  Status:     SUCCESS")
+                print("  Status:     SUCCESS")
                 print(f"  Shape:      {embed_result['embedding_shape']}")
                 print(f"  Dimension:  {embed_result['embedding_dimension']}")
                 print(f"  Time:       {embed_result['elapsed_ms']} ms")
@@ -505,10 +508,7 @@ Examples:
 
     except GPUNotAvailableError as e:
         logger.error("GPU Error: %s", e)
-        results["error"] = {
-            "type": "GPU_NOT_AVAILABLE",
-            "message": str(e)
-        }
+        results["error"] = {"type": "GPU_NOT_AVAILABLE", "message": str(e)}
         if not args.json:
             print(f"\nERROR: {e}")
             print("This system requires a CUDA-capable GPU. No fallback is allowed.")
@@ -519,7 +519,7 @@ Examples:
         results["error"] = {
             "type": "EMBEDDING_MODEL_ERROR",
             "message": str(e),
-            "model_path": e.model_path
+            "model_path": e.model_path,
         }
         if not args.json:
             print(f"\nERROR: {e}")
@@ -527,20 +527,14 @@ Examples:
 
     except ImportError as e:
         logger.error("Import Error: %s", e)
-        results["error"] = {
-            "type": "IMPORT_ERROR",
-            "message": str(e)
-        }
+        results["error"] = {"type": "IMPORT_ERROR", "message": str(e)}
         if not args.json:
             print(f"\nERROR: {e}")
         exit_code = 1
 
     except Exception as e:
         logger.exception("Unexpected error: %s", e)
-        results["error"] = {
-            "type": "UNEXPECTED_ERROR",
-            "message": str(e)
-        }
+        results["error"] = {"type": "UNEXPECTED_ERROR", "message": str(e)}
         if not args.json:
             print(f"\nUNEXPECTED ERROR: {e}")
         exit_code = 1
