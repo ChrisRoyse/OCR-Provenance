@@ -25,7 +25,6 @@
     "typescript": "^5.5.0",
     "@types/node": "^20.0.0",
     "@types/better-sqlite3": "^7.0.0",
-    "@types/python-shell": "^5.0.0",
     "@types/uuid": "^10.0.0",
     "vitest": "^2.0.0",
     "eslint": "^9.0.0",
