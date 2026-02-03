@@ -115,18 +115,18 @@ export async function handleDatabaseList(
       const item: Record<string, unknown> = {
         name: dbInfo.name,
         path: dbInfo.path,
-        size_bytes: dbInfo.size,
-        created_at: dbInfo.createdAt,
-        modified_at: dbInfo.modifiedAt,
+        size_bytes: dbInfo.size_bytes,
+        created_at: dbInfo.created_at,
+        modified_at: dbInfo.last_modified_at,
       };
 
       if (input.include_stats) {
         try {
           const db = DatabaseService.open(dbInfo.name, storagePath);
           const stats = db.getStats();
-          item.document_count = stats.documentCount;
-          item.chunk_count = stats.chunkCount;
-          item.embedding_count = stats.embeddingCount;
+          item.document_count = stats.total_documents;
+          item.chunk_count = stats.total_chunks;
+          item.embedding_count = stats.total_embeddings;
           db.close();
         } catch {
           // If we can't get stats, just skip them
@@ -164,15 +164,40 @@ export async function handleDatabaseSelect(
       path: db.getPath(),
       selected: true,
       stats: {
-        document_count: stats.documentCount,
-        chunk_count: stats.chunkCount,
-        embedding_count: stats.embeddingCount,
+        document_count: stats.total_documents,
+        chunk_count: stats.total_chunks,
+        embedding_count: stats.total_embeddings,
         vector_count: vector.getVectorCount(),
       },
     }));
   } catch (error) {
     return handleError(error);
   }
+}
+
+/**
+ * Build stats response from database and vector services
+ */
+function buildStatsResponse(
+  db: DatabaseService,
+  vector: VectorService
+): Record<string, unknown> {
+  const stats = db.getStats();
+  return {
+    name: db.getName(),
+    path: db.getPath(),
+    size_bytes: stats.storage_size_bytes,
+    document_count: stats.total_documents,
+    chunk_count: stats.total_chunks,
+    embedding_count: stats.total_embeddings,
+    provenance_count: stats.total_ocr_results,
+    ocr_result_count: stats.total_ocr_results,
+    pending_documents: stats.documents_by_status.pending,
+    processing_documents: stats.documents_by_status.processing,
+    complete_documents: stats.documents_by_status.complete,
+    failed_documents: stats.documents_by_status.failed,
+    vector_count: vector.getVectorCount(),
+  };
 }
 
 /**
@@ -189,47 +214,14 @@ export async function handleDatabaseStats(
       const storagePath = getDefaultStoragePath();
       const db = DatabaseService.open(input.database_name, storagePath);
       const vector = new VectorService(db.getConnection());
-      const stats = db.getStats();
-
-      const result = {
-        name: input.database_name,
-        path: db.getPath(),
-        size_bytes: stats.sizeBytes,
-        document_count: stats.documentCount,
-        chunk_count: stats.chunkCount,
-        embedding_count: stats.embeddingCount,
-        provenance_count: stats.provenanceCount,
-        ocr_result_count: stats.ocrResultCount,
-        pending_documents: stats.pendingDocuments,
-        processing_documents: stats.processingDocuments,
-        complete_documents: stats.completeDocuments,
-        failed_documents: stats.failedDocuments,
-        vector_count: vector.getVectorCount(),
-      };
-
+      const result = buildStatsResponse(db, vector);
       db.close();
       return formatResponse(successResult(result));
     }
 
     // Use current database
     const { db, vector } = requireDatabase();
-    const stats = db.getStats();
-
-    return formatResponse(successResult({
-      name: db.getName(),
-      path: db.getPath(),
-      size_bytes: stats.sizeBytes,
-      document_count: stats.documentCount,
-      chunk_count: stats.chunkCount,
-      embedding_count: stats.embeddingCount,
-      provenance_count: stats.provenanceCount,
-      ocr_result_count: stats.ocrResultCount,
-      pending_documents: stats.pendingDocuments,
-      processing_documents: stats.processingDocuments,
-      complete_documents: stats.completeDocuments,
-      failed_documents: stats.failedDocuments,
-      vector_count: vector.getVectorCount(),
-    }));
+    return formatResponse(successResult(buildStatsResponse(db, vector)));
   } catch (error) {
     return handleError(error);
   }
