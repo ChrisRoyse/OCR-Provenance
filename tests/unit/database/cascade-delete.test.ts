@@ -49,11 +49,13 @@ describe('DatabaseService - Cascade Delete', () => {
       const doc = createTestDocument(docProv.id);
       dbService!.insertDocument(doc);
 
-      // Update root_document_id for child provenance records
+      // Child provenance records use document's provenance_id as root_document_id
+      // This matches production behavior (see tracker.ts, processor.ts, chunker.ts, embedder.ts)
       const ocrProv = createTestProvenance({
         type: ProvenanceType.OCR_RESULT,
         parent_id: docProv.id,
-        root_document_id: doc.id,
+        source_id: docProv.id,
+        root_document_id: docProv.id,  // Use document's provenance ID, not document ID
         chain_depth: 1,
       });
       dbService!.insertProvenance(ocrProv);
@@ -64,7 +66,8 @@ describe('DatabaseService - Cascade Delete', () => {
       const chunkProv = createTestProvenance({
         type: ProvenanceType.CHUNK,
         parent_id: ocrProv.id,
-        root_document_id: doc.id,
+        source_id: ocrProv.id,
+        root_document_id: docProv.id,  // Use document's provenance ID, not document ID
         chain_depth: 2,
       });
       dbService!.insertProvenance(chunkProv);
@@ -75,7 +78,8 @@ describe('DatabaseService - Cascade Delete', () => {
       const embProv = createTestProvenance({
         type: ProvenanceType.EMBEDDING,
         parent_id: chunkProv.id,
-        root_document_id: doc.id,
+        source_id: chunkProv.id,
+        root_document_id: docProv.id,  // Use document's provenance ID, not document ID
         chain_depth: 3,
       });
       dbService!.insertProvenance(embProv);
@@ -114,8 +118,9 @@ describe('DatabaseService - Cascade Delete', () => {
       expect(
         (rawDb.prepare('SELECT COUNT(*) as c FROM embeddings WHERE document_id = ?').get(doc.id) as { c: number }).c
       ).toBe(0);
+      // Provenance uses document's provenance_id as root_document_id
       expect(
-        (rawDb.prepare('SELECT COUNT(*) as c FROM provenance WHERE root_document_id = ?').get(doc.id) as { c: number }).c
+        (rawDb.prepare('SELECT COUNT(*) as c FROM provenance WHERE root_document_id = ?').get(docProv.id) as { c: number }).c
       ).toBe(0);
     });
   });
