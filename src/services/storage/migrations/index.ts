@@ -7,18 +7,19 @@
  * Security: All SQL uses parameterized queries via db.prepare()
  * Performance: WAL mode, proper indexes, foreign key constraints
  *
- * NOTE: This file is a facade for backwards compatibility.
- * The implementation has been modularized into the migrations/ directory.
- *
  * @module migrations
  */
 
-// Re-export all public APIs from the modularized implementation
+// Re-export types
+export { MigrationError } from './types.js';
+
+// Re-export main operations
 export {
-  MigrationError,
   initializeDatabase,
   migrateToLatest,
   checkSchemaVersion,
   getCurrentSchemaVersion,
-  verifySchema,
-} from './migrations/index.js';
+} from './operations.js';
+
+// Re-export verification
+export { verifySchema } from './verification.js';
