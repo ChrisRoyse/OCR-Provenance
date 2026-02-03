@@ -1,7 +1,7 @@
 /**
  * Provenance Service Module
  *
- * Exports the ProvenanceTracker for high-level provenance operations.
+ * Exports the ProvenanceTracker and ProvenanceVerifier for high-level provenance operations.
  *
  * Constitution Compliance:
  * - CP-001: Complete provenance chain for every data item
@@ -18,6 +18,17 @@ export {
   type ProvenanceChainResult,
   type ProvenanceErrorCodeType,
 } from './tracker.js';
+
+// Export verifier and related types
+export {
+  ProvenanceVerifier,
+  VerifierError,
+  VerifierErrorCode,
+  type VerifierErrorCodeType,
+  type ItemVerificationResult,
+  type ChainVerificationResult,
+  type DatabaseVerificationResult,
+} from './verifier.js';
 
 // Re-export models for convenience
 export {
