@@ -487,12 +487,17 @@ Examples:
         default="accurate",
         help="OCR mode (default: accurate)"
     )
+    parser.add_argument("--doc-id", type=str, help="Document ID (UUID) - auto-generated if not provided")
+    parser.add_argument("--prov-id", type=str, help="Provenance ID (UUID) - auto-generated if not provided")
     parser.add_argument("--json", action="store_true", help="Output as JSON")
     parser.add_argument("--verbose", "-v", action="store_true", help="Verbose logging")
 
     args = parser.parse_args()
 
-    if args.verbose:
+    if args.json:
+        # Suppress logging in JSON mode for clean output
+        logging.getLogger().setLevel(logging.CRITICAL)
+    elif args.verbose:
         logging.getLogger().setLevel(logging.DEBUG)
 
     if not args.file and not args.dir:
@@ -500,17 +505,20 @@ Examples:
 
     try:
         if args.file:
-            # Single file
+            # Single file - use provided IDs or generate new ones
+            doc_id = args.doc_id or str(uuid.uuid4())
+            prov_id = args.prov_id or str(uuid.uuid4())
             result = process_document(
                 args.file,
-                document_id=str(uuid.uuid4()),
-                provenance_id=str(uuid.uuid4()),
+                document_id=doc_id,
+                provenance_id=prov_id,
                 mode=args.mode
             )
 
             if args.json:
                 # asdict() recursively converts nested dataclasses
-                print(json.dumps(asdict(result), indent=2))
+                # Use compact format (no indent) for python-shell compatibility
+                print(json.dumps(asdict(result)))
             else:
                 print("=== OCR Result ===")
                 print(f"Pages: {result.page_count}")
