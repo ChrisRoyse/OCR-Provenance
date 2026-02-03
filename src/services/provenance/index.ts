@@ -30,6 +30,21 @@ export {
   type DatabaseVerificationResult,
 } from './verifier.js';
 
+// Export exporter and related types
+export {
+  ProvenanceExporter,
+  ExporterError,
+  ExporterErrorCode,
+  type ExporterErrorCodeType,
+  type ExportScope,
+  type ExportFormat,
+  type PROVDocument,
+  type JSONExportResult,
+  type W3CPROVExportResult,
+  type CSVExportResult,
+  type FileExportResult,
+} from './exporter.js';
+
 // Re-export models for convenience
 export {
   ProvenanceRecord,
