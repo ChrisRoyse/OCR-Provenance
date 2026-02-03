@@ -2,7 +2,7 @@
  * EmbeddingService Tests
  *
  * Tests for the embedding orchestration service.
- * Uses REAL database and REAL GPU when available - NO MOCKS.
+ * Uses REAL database and REAL GPU - NO MOCKS. FAIL FAST if unavailable.
  *
  * Tests verify:
  * - Embeddings stored in database with original_text (CP-002)
@@ -11,7 +11,7 @@
  * - Chunk status updated to 'complete'
  */
 
-import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { mkdtempSync, rmSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
@@ -19,7 +19,6 @@ import { v4 as uuidv4 } from 'uuid';
 
 import {
   EmbeddingService,
-  EmbeddingError,
   EMBEDDING_DIM,
   MODEL_NAME,
   MODEL_VERSION,
@@ -29,43 +28,16 @@ import { VectorService } from '../../../src/services/storage/vector.js';
 import { ProvenanceType } from '../../../src/models/provenance.js';
 import { computeHash } from '../../../src/utils/hash.js';
 
-// ═══════════════════════════════════════════════════════════════════════════════
-// AVAILABILITY CHECKS
-// ═══════════════════════════════════════════════════════════════════════════════
-
-function isSqliteVecAvailable(): boolean {
-  try {
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    require('sqlite-vec');
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-const sqliteVecAvailable = isSqliteVecAvailable();
-
-if (!sqliteVecAvailable) {
-  console.warn('[SKIP] sqlite-vec not available');
-}
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// TEST SETUP
-// ═══════════════════════════════════════════════════════════════════════════════
+// Require sqlite-vec at module level - fail fast if unavailable
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+require('sqlite-vec');
 
 let testDir: string;
 let db: DatabaseService;
 let vectorService: VectorService;
 let service: EmbeddingService;
-let canRunTests = false;
-let gpuAvailable = false;
 
 beforeAll(async () => {
-  if (!sqliteVecAvailable) {
-    console.warn('[SKIP] Tests require sqlite-vec');
-    return;
-  }
-
   // Create temp directory for test database
   testDir = mkdtempSync(join(tmpdir(), 'emb-test-'));
   const dbName = `embedder-test-${Date.now()}`;
@@ -73,24 +45,12 @@ beforeAll(async () => {
   vectorService = new VectorService(db.getConnection());
   service = new EmbeddingService();
 
-  canRunTests = true;
-
-  // Check GPU availability
-  try {
-    const testVector = await service.embedSearchQuery('GPU availability test');
-    if (testVector.length === EMBEDDING_DIM) {
-      gpuAvailable = true;
-      console.log('[GPU] Available for integration tests');
-    }
-  } catch (e) {
-    if (e instanceof EmbeddingError && e.code === 'GPU_NOT_AVAILABLE') {
-      console.warn('[GPU] Not available - GPU tests will be skipped');
-    } else if (e instanceof EmbeddingError && e.code === 'MODEL_NOT_FOUND') {
-      console.warn('[GPU] Model not found - run: git lfs pull');
-    } else {
-      console.error('[GPU] Check failed:', e);
-    }
+  // Verify GPU is available - fail fast if not
+  const testVector = await service.embedSearchQuery('GPU availability test');
+  if (testVector.length !== EMBEDDING_DIM) {
+    throw new Error('GPU check failed: unexpected embedding dimensions');
   }
+  console.log('[GPU] Available for integration tests');
 }, 60000);
 
 afterAll(() => {
@@ -297,7 +257,7 @@ function createTestDocumentChain(
 
 describe('EmbeddingService', () => {
   describe('embedDocumentChunks', () => {
-    it.skipIf(!canRunTests)('returns empty result for empty chunks', async () => {
+    it('returns empty result for empty chunks', async () => {
       const result = await service.embedDocumentChunks(db, vectorService, [], {
         documentId: 'test',
         filePath: '/test',
@@ -312,7 +272,7 @@ describe('EmbeddingService', () => {
       expect(result.totalChunks).toBe(0);
     });
 
-    it.skipIf(!canRunTests || !gpuAvailable)(
+    it(
       'stores embeddings with original_text (CP-002)',
       async () => {
         const testTexts = [
@@ -361,7 +321,7 @@ describe('EmbeddingService', () => {
       60000
     );
 
-    it.skipIf(!canRunTests || !gpuAvailable)(
+    it(
       'stores vectors in vec_embeddings',
       async () => {
         const testTexts = ['Vector storage verification test chunk.'];
@@ -394,7 +354,7 @@ describe('EmbeddingService', () => {
       60000
     );
 
-    it.skipIf(!canRunTests || !gpuAvailable)(
+    it(
       'creates provenance with chain_depth=3',
       async () => {
         const testTexts = ['Provenance chain verification chunk.'];
@@ -425,7 +385,7 @@ describe('EmbeddingService', () => {
       60000
     );
 
-    it.skipIf(!canRunTests || !gpuAvailable)(
+    it(
       'updates chunk status to complete',
       async () => {
         const testTexts = ['Status update verification chunk.'];
@@ -451,7 +411,7 @@ describe('EmbeddingService', () => {
       60000
     );
 
-    it.skipIf(!canRunTests || !gpuAvailable)(
+    it(
       'hash integrity is maintained',
       async () => {
         const testTexts = ['Hash integrity verification test.'];
@@ -478,7 +438,7 @@ describe('EmbeddingService', () => {
   });
 
   describe('embedSearchQuery', () => {
-    it.skipIf(!canRunTests || !gpuAvailable)(
+    it(
       'returns Float32Array with 768 dimensions',
       async () => {
         const result = await service.embedSearchQuery('What are the terms?');
@@ -489,7 +449,7 @@ describe('EmbeddingService', () => {
       30000
     );
 
-    it.skipIf(!canRunTests || !gpuAvailable)(
+    it(
       'query embedding is NOT stored (ephemeral)',
       async () => {
         const countBefore = vectorService.getVectorCount();
@@ -504,7 +464,7 @@ describe('EmbeddingService', () => {
   });
 
   describe('processPendingChunks', () => {
-    it.skipIf(!canRunTests || !gpuAvailable)(
+    it(
       'processes only pending chunks',
       async () => {
         const testTexts = [

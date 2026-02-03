@@ -259,11 +259,12 @@ export function deleteDocument(
 
   // Delete from provenance - must delete in reverse chain_depth order
   // due to self-referential FKs on source_id and parent_id
+  // NOTE: root_document_id stores the document's provenance_id, NOT document id
   const provenanceIds = db
     .prepare(
       'SELECT id FROM provenance WHERE root_document_id = ? ORDER BY chain_depth DESC'
     )
-    .all(id) as { id: string }[];
+    .all(doc.provenance_id) as { id: string }[];
 
   const deleteProvStmt = db.prepare('DELETE FROM provenance WHERE id = ?');
   for (const { id: provId } of provenanceIds) {

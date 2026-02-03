@@ -648,7 +648,7 @@ server.tool(
           file_path: d.file_path,
           status: d.status,
         })),
-        message: 'OCR processing will be implemented in Task 16 (Datalab integration)',
+        message: 'OCR processing pipeline will be wired up in Task 20 (impl-ingestion-tools)',
       }));
     } catch (error) {
       return handleError(error);

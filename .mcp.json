@@ -1,5 +1,15 @@
 {
   "mcpServers": {
+    "ocr-provenance-mcp": {
+      "command": "node",
+      "args": [
+        "dist/index.js"
+      ],
+      "cwd": "/home/cabdru/datalab",
+      "env": {
+        "NODE_ENV": "production"
+      }
+    },
     "claude-flow": {
       "command": "npx",
       "args": [
