@@ -98,7 +98,7 @@ function virtualTableExists(db: Database.Database, tableName: string): boolean {
  * Helper to get pragma value
  */
 function getPragmaValue(db: Database.Database, pragma: string): unknown {
-  const result = db.prepare(`PRAGMA ${pragma}`).get() as Record<string, unknown>;
+  const result = db.prepare(`PRAGMA ${pragma}`).get() as Record<string, unknown> | undefined;
   return result ? Object.values(result)[0] : undefined;
 }
 
@@ -117,12 +117,12 @@ if (!sqliteVecAvailable) {
 
 describe('Database Migrations', () => {
   let testDir: string;
-  let db: Database.Database;
+  let db: Database.Database | undefined;
   let dbPath: string;
 
   beforeAll(() => {
     // Create unique temporary directory for all tests
-    testDir = path.join(os.tmpdir(), `migrations-test-${Date.now()}-${process.pid}`);
+    testDir = path.join(os.tmpdir(), `migrations-test-${String(Date.now())}-${String(process.pid)}`);
     fs.mkdirSync(testDir, { recursive: true });
   });
 
@@ -137,7 +137,7 @@ describe('Database Migrations', () => {
 
   beforeEach(() => {
     // Create a fresh database for each test
-    dbPath = path.join(testDir, `test-${Date.now()}-${Math.random().toString(36).slice(2)}.db`);
+    dbPath = path.join(testDir, `test-${String(Date.now())}-${Math.random().toString(36).slice(2)}.db`);
     db = new Database(dbPath);
   });
 
@@ -1570,11 +1570,11 @@ describe('Database Migrations', () => {
 
 describe('Database Migrations - Integration Scenarios', () => {
   let testDir: string;
-  let db: Database.Database;
+  let db: Database.Database | undefined;
   let dbPath: string;
 
   beforeAll(() => {
-    testDir = path.join(os.tmpdir(), `migrations-integration-${Date.now()}-${process.pid}`);
+    testDir = path.join(os.tmpdir(), `migrations-integration-${String(Date.now())}-${String(process.pid)}`);
     fs.mkdirSync(testDir, { recursive: true });
   });
 
@@ -1587,7 +1587,7 @@ describe('Database Migrations - Integration Scenarios', () => {
   });
 
   beforeEach(() => {
-    dbPath = path.join(testDir, `int-test-${Date.now()}-${Math.random().toString(36).slice(2)}.db`);
+    dbPath = path.join(testDir, `int-test-${String(Date.now())}-${Math.random().toString(36).slice(2)}.db`);
     db = new Database(dbPath);
   });
 

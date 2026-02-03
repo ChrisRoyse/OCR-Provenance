@@ -13,3 +13,12 @@ export {
   verifySchema,
   MigrationError,
 } from './migrations.js';
+
+export {
+  DatabaseService,
+  DatabaseError,
+  DatabaseErrorCode,
+  type DatabaseInfo,
+  type DatabaseStats,
+  type ListDocumentsOptions,
+} from './database.js';
