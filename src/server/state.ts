@@ -1,0 +1,240 @@
+/**
+ * MCP Server State Management
+ *
+ * Manages global server state including current database connection and configuration.
+ * FAIL FAST: All state access throws immediately if preconditions not met.
+ *
+ * @module server/state
+ */
+
+import { DatabaseService } from '../services/storage/database/index.js';
+import { VectorService } from '../services/storage/vector.js';
+import { DEFAULT_STORAGE_PATH } from '../services/storage/database/helpers.js';
+import { databaseNotSelectedError, databaseNotFoundError, databaseAlreadyExistsError } from './errors.js';
+import type { ServerState, ServerConfig, OCRMode } from './types.js';
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// DEFAULT CONFIGURATION
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/**
+ * Default server configuration
+ */
+const defaultConfig: ServerConfig = {
+  defaultStoragePath: DEFAULT_STORAGE_PATH,
+  defaultOCRMode: 'balanced',
+  maxConcurrent: 3,
+  embeddingBatchSize: 32,
+};
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// GLOBAL STATE
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/**
+ * Global server state
+ * Mutable state for current database and configuration
+ */
+export const state: ServerState = {
+  currentDatabase: null,
+  currentDatabaseName: null,
+  config: { ...defaultConfig },
+};
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// DATABASE ACCESS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/**
+ * Services returned from requireDatabase
+ */
+export interface DatabaseServices {
+  db: DatabaseService;
+  vector: VectorService;
+}
+
+/**
+ * Require database to be selected - FAIL FAST if not
+ *
+ * @returns Database service and vector service instances
+ * @throws MCPError with DATABASE_NOT_SELECTED if no database is selected
+ */
+export function requireDatabase(): DatabaseServices {
+  if (!state.currentDatabase) {
+    throw databaseNotSelectedError();
+  }
+
+  const vector = new VectorService(state.currentDatabase.getConnection());
+  return { db: state.currentDatabase, vector };
+}
+
+/**
+ * Check if a database is currently selected
+ */
+export function hasDatabase(): boolean {
+  return state.currentDatabase !== null;
+}
+
+/**
+ * Get current database name or null
+ */
+export function getCurrentDatabaseName(): string | null {
+  return state.currentDatabaseName;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// DATABASE MANAGEMENT
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/**
+ * Select a database by name - opens connection and sets as current
+ *
+ * FAIL FAST: Throws immediately if database doesn't exist
+ *
+ * @param name - Database name to select
+ * @param storagePath - Optional storage path override
+ * @throws MCPError with DATABASE_NOT_FOUND if database doesn't exist
+ */
+export function selectDatabase(name: string, storagePath?: string): void {
+  const path = storagePath ?? state.config.defaultStoragePath;
+
+  // Close existing connection first
+  if (state.currentDatabase) {
+    state.currentDatabase.close();
+    state.currentDatabase = null;
+    state.currentDatabaseName = null;
+  }
+
+  // Verify database exists - FAIL FAST
+  if (!DatabaseService.exists(name, path)) {
+    throw databaseNotFoundError(name, path);
+  }
+
+  // Open the database
+  state.currentDatabase = DatabaseService.open(name, path);
+  state.currentDatabaseName = name;
+}
+
+/**
+ * Create a new database and optionally select it
+ *
+ * FAIL FAST: Throws immediately if database already exists
+ *
+ * @param name - Database name to create
+ * @param description - Optional description
+ * @param storagePath - Optional storage path override
+ * @param autoSelect - Whether to select the database after creation (default: true)
+ * @returns The created database service
+ * @throws MCPError with DATABASE_ALREADY_EXISTS if database exists
+ */
+export function createDatabase(
+  name: string,
+  description?: string,
+  storagePath?: string,
+  autoSelect: boolean = true
+): DatabaseService {
+  const path = storagePath ?? state.config.defaultStoragePath;
+
+  // Check if database already exists - FAIL FAST
+  if (DatabaseService.exists(name, path)) {
+    throw databaseAlreadyExistsError(name);
+  }
+
+  // Create the database
+  const db = DatabaseService.create(name, description, path);
+
+  if (autoSelect) {
+    // Close any existing connection first
+    if (state.currentDatabase) {
+      state.currentDatabase.close();
+    }
+    state.currentDatabase = db;
+    state.currentDatabaseName = name;
+  } else {
+    // If not auto-selecting, close the created connection
+    db.close();
+  }
+
+  return db;
+}
+
+/**
+ * Delete a database
+ *
+ * FAIL FAST: Throws if database doesn't exist
+ *
+ * @param name - Database name to delete
+ * @param storagePath - Optional storage path override
+ * @throws MCPError with DATABASE_NOT_FOUND if database doesn't exist
+ */
+export function deleteDatabase(name: string, storagePath?: string): void {
+  const path = storagePath ?? state.config.defaultStoragePath;
+
+  // Verify database exists - FAIL FAST
+  if (!DatabaseService.exists(name, path)) {
+    throw databaseNotFoundError(name, path);
+  }
+
+  // If this is the current database, clear state first
+  if (state.currentDatabaseName === name) {
+    clearDatabase();
+  }
+
+  // Delete the database
+  DatabaseService.delete(name, path);
+}
+
+/**
+ * Clear current database selection - closes connection
+ */
+export function clearDatabase(): void {
+  if (state.currentDatabase) {
+    state.currentDatabase.close();
+    state.currentDatabase = null;
+    state.currentDatabaseName = null;
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// CONFIGURATION
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/**
+ * Get current server configuration
+ */
+export function getConfig(): ServerConfig {
+  return { ...state.config };
+}
+
+/**
+ * Update server configuration
+ */
+export function updateConfig(updates: Partial<ServerConfig>): void {
+  state.config = { ...state.config, ...updates };
+}
+
+/**
+ * Reset configuration to defaults
+ */
+export function resetConfig(): void {
+  state.config = { ...defaultConfig };
+}
+
+/**
+ * Get default storage path
+ */
+export function getDefaultStoragePath(): string {
+  return state.config.defaultStoragePath;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// STATE RESET (FOR TESTING)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/**
+ * Reset all server state - ONLY USE IN TESTS
+ */
+export function resetState(): void {
+  clearDatabase();
+  state.config = { ...defaultConfig };
+}
