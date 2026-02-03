@@ -29,19 +29,11 @@ import {
 import {
   state,
   requireDatabase,
-  selectDatabase,
-  createDatabase,
-  deleteDatabase,
   getDefaultStoragePath,
 } from './server/state.js';
 import { successResult } from './server/types.js';
 import {
   validateInput,
-  DatabaseCreateInput,
-  DatabaseListInput,
-  DatabaseSelectInput,
-  DatabaseStatsInput,
-  DatabaseDeleteInput,
   IngestDirectoryInput,
   IngestFilesInput,
   ProcessPendingInput,
@@ -56,6 +48,7 @@ import {
   ProvenanceVerifyInput,
   ProvenanceExportInput,
 } from './utils/validation.js';
+import { databaseTools } from './tools/database.js';
 import { existsSync, statSync, readdirSync } from 'fs';
 import { resolve, extname, basename } from 'path';
 import { v4 as uuidv4 } from 'uuid';
@@ -121,212 +114,13 @@ function handleError(error: unknown): { content: Array<{ type: 'text'; text: str
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// DATABASE TOOLS (5)
+// DATABASE TOOLS (5) - Extracted to src/tools/database.ts
 // ═══════════════════════════════════════════════════════════════════════════════
 
-/**
- * ocr_db_create - Create a new database
- */
-server.tool(
-  'ocr_db_create',
-  'Create a new OCR database for document storage and search',
-  {
-    name: z.string().min(1).max(64).regex(/^[a-zA-Z0-9_-]+$/).describe('Database name (alphanumeric, underscore, hyphen only)'),
-    description: z.string().max(500).optional().describe('Optional description for the database'),
-    storage_path: z.string().optional().describe('Optional storage path override'),
-  },
-  async (params) => {
-    try {
-      const input = validateInput(DatabaseCreateInput, params);
-      const db = createDatabase(input.name, input.description, input.storage_path);
-      const path = db.getPath();
-
-      return formatResponse(successResult({
-        name: input.name,
-        path,
-        created: true,
-        description: input.description,
-      }));
-    } catch (error) {
-      return handleError(error);
-    }
-  }
-);
-
-/**
- * ocr_db_list - List all databases
- */
-server.tool(
-  'ocr_db_list',
-  'List all available OCR databases',
-  {
-    include_stats: z.boolean().default(false).describe('Include document/chunk/embedding counts'),
-  },
-  async (params) => {
-    try {
-      const input = validateInput(DatabaseListInput, params);
-      const storagePath = getDefaultStoragePath();
-      const databases = DatabaseService.list(storagePath);
-
-      const items = databases.map((dbInfo) => {
-        const item: Record<string, unknown> = {
-          name: dbInfo.name,
-          path: dbInfo.path,
-          size_bytes: dbInfo.size,
-          created_at: dbInfo.createdAt,
-          modified_at: dbInfo.modifiedAt,
-        };
-
-        if (input.include_stats) {
-          try {
-            const db = DatabaseService.open(dbInfo.name, storagePath);
-            const stats = db.getStats();
-            item.document_count = stats.documentCount;
-            item.chunk_count = stats.chunkCount;
-            item.embedding_count = stats.embeddingCount;
-            db.close();
-          } catch {
-            // If we can't get stats, just skip them
-          }
-        }
-
-        return item;
-      });
-
-      return formatResponse(successResult({
-        databases: items,
-        total: items.length,
-        storage_path: storagePath,
-      }));
-    } catch (error) {
-      return handleError(error);
-    }
-  }
-);
-
-/**
- * ocr_db_select - Select active database
- */
-server.tool(
-  'ocr_db_select',
-  'Select a database as the active database for operations',
-  {
-    database_name: z.string().min(1).describe('Name of the database to select'),
-  },
-  async (params) => {
-    try {
-      const input = validateInput(DatabaseSelectInput, params);
-      selectDatabase(input.database_name);
-
-      const { db, vector } = requireDatabase();
-      const stats = db.getStats();
-
-      return formatResponse(successResult({
-        name: input.database_name,
-        path: db.getPath(),
-        selected: true,
-        stats: {
-          document_count: stats.documentCount,
-          chunk_count: stats.chunkCount,
-          embedding_count: stats.embeddingCount,
-          vector_count: vector.getVectorCount(),
-        },
-      }));
-    } catch (error) {
-      return handleError(error);
-    }
-  }
-);
-
-/**
- * ocr_db_stats - Get database statistics
- */
-server.tool(
-  'ocr_db_stats',
-  'Get detailed statistics for a database',
-  {
-    database_name: z.string().optional().describe('Database name (uses current if not specified)'),
-  },
-  async (params) => {
-    try {
-      const input = validateInput(DatabaseStatsInput, params);
-
-      // If database_name is provided, temporarily open that database
-      if (input.database_name && input.database_name !== state.currentDatabaseName) {
-        const storagePath = getDefaultStoragePath();
-        const db = DatabaseService.open(input.database_name, storagePath);
-        const vector = new VectorService(db.getConnection());
-        const stats = db.getStats();
-
-        const result = {
-          name: input.database_name,
-          path: db.getPath(),
-          size_bytes: stats.sizeBytes,
-          document_count: stats.documentCount,
-          chunk_count: stats.chunkCount,
-          embedding_count: stats.embeddingCount,
-          provenance_count: stats.provenanceCount,
-          ocr_result_count: stats.ocrResultCount,
-          pending_documents: stats.pendingDocuments,
-          processing_documents: stats.processingDocuments,
-          complete_documents: stats.completeDocuments,
-          failed_documents: stats.failedDocuments,
-          vector_count: vector.getVectorCount(),
-        };
-
-        db.close();
-        return formatResponse(successResult(result));
-      }
-
-      // Use current database
-      const { db, vector } = requireDatabase();
-      const stats = db.getStats();
-
-      return formatResponse(successResult({
-        name: db.getName(),
-        path: db.getPath(),
-        size_bytes: stats.sizeBytes,
-        document_count: stats.documentCount,
-        chunk_count: stats.chunkCount,
-        embedding_count: stats.embeddingCount,
-        provenance_count: stats.provenanceCount,
-        ocr_result_count: stats.ocrResultCount,
-        pending_documents: stats.pendingDocuments,
-        processing_documents: stats.processingDocuments,
-        complete_documents: stats.completeDocuments,
-        failed_documents: stats.failedDocuments,
-        vector_count: vector.getVectorCount(),
-      }));
-    } catch (error) {
-      return handleError(error);
-    }
-  }
-);
-
-/**
- * ocr_db_delete - Delete a database
- */
-server.tool(
-  'ocr_db_delete',
-  'Delete a database and all its data permanently',
-  {
-    database_name: z.string().min(1).describe('Name of the database to delete'),
-    confirm: z.literal(true).describe('Must be true to confirm deletion'),
-  },
-  async (params) => {
-    try {
-      const input = validateInput(DatabaseDeleteInput, params);
-      deleteDatabase(input.database_name);
-
-      return formatResponse(successResult({
-        name: input.database_name,
-        deleted: true,
-      }));
-    } catch (error) {
-      return handleError(error);
-    }
-  }
-);
+// Register database tools from extracted module
+for (const [name, tool] of Object.entries(databaseTools)) {
+  server.tool(name, tool.description, tool.inputSchema, tool.handler);
+}
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // INGESTION TOOLS (4)
