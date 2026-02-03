@@ -92,7 +92,7 @@ export {
   ConfigSetInput,
 } from './validation.js';
 
-// Re-export types from validation
+// Re-export types from validation - using direct names (avoid redundant aliasing)
 export type {
   OCRMode as OCRModeType,
   MatchType as MatchTypeValue,
@@ -104,6 +104,10 @@ export type {
   ConfigKey as ConfigKeyType,
   SortOrder as SortOrderType,
   DocumentSortField as DocumentSortFieldType,
+} from './validation.js';
+
+// Schema input types (same name pattern as schemas)
+export type {
   DatabaseCreateInput as DatabaseCreateInputType,
   DatabaseListInput as DatabaseListInputType,
   DatabaseSelectInput as DatabaseSelectInputType,

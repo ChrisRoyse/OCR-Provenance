@@ -10,6 +10,7 @@
 
 import type Database from 'better-sqlite3';
 import { createRequire } from 'module';
+import { SqliteVecModule } from './types.js';
 
 // Create require function for CommonJS modules in ESM context
 const require = createRequire(import.meta.url);
@@ -432,13 +433,6 @@ export function checkSchemaVersion(db: Database.Database): number {
 }
 
 /**
- * Type definition for sqlite-vec module
- */
-interface SqliteVecModule {
-  load: (db: Database.Database) => void;
-}
-
-/**
  * Load the sqlite-vec extension
  * @param db - Database instance
  */
@@ -451,7 +445,7 @@ function loadSqliteVecExtension(db: Database.Database): void {
     //                   node_modules/sqlite-vec/dist/vec0.dll (Windows)
 
     // First try to use the sqlite-vec npm package's built-in loader
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
+     
     const sqliteVec = require('sqlite-vec') as SqliteVecModule;
     sqliteVec.load(db);
   } catch (error) {
