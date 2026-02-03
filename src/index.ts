@@ -23,21 +23,13 @@ import {
   validationError,
   documentNotFoundError,
   provenanceNotFoundError,
-  pathNotFoundError,
-  pathNotDirectoryError,
 } from './server/errors.js';
 import {
-  state,
   requireDatabase,
-  getDefaultStoragePath,
 } from './server/state.js';
 import { successResult } from './server/types.js';
 import {
   validateInput,
-  IngestDirectoryInput,
-  IngestFilesInput,
-  ProcessPendingInput,
-  OCRStatusInput,
   SearchSemanticInput,
   SearchTextInput,
   SearchHybridInput,
@@ -49,9 +41,7 @@ import {
   ProvenanceExportInput,
 } from './utils/validation.js';
 import { databaseTools } from './tools/database.js';
-import { existsSync, statSync, readdirSync } from 'fs';
-import { resolve, extname, basename } from 'path';
-import { v4 as uuidv4 } from 'uuid';
+import { ingestionTools } from './tools/ingestion.js';
 import type { Document } from './models/document.js';
 import type { Chunk } from './models/chunk.js';
 
@@ -123,410 +113,13 @@ for (const [name, tool] of Object.entries(databaseTools)) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// INGESTION TOOLS (4)
+// INGESTION TOOLS (4) - Extracted to src/tools/ingestion.ts
 // ═══════════════════════════════════════════════════════════════════════════════
 
-/**
- * ocr_ingest_directory - Ingest all documents from a directory
- */
-server.tool(
-  'ocr_ingest_directory',
-  'Scan and ingest documents from a directory into the current database',
-  {
-    directory_path: z.string().min(1).describe('Path to directory to scan'),
-    recursive: z.boolean().default(true).describe('Scan subdirectories'),
-    file_types: z.array(z.string()).optional().describe('File types to include (default: pdf, png, jpg, docx, etc.)'),
-    ocr_mode: z.enum(['fast', 'balanced', 'accurate']).default('balanced').describe('OCR processing mode'),
-    auto_process: z.boolean().default(false).describe('Automatically process documents after ingestion'),
-  },
-  async (params) => {
-    try {
-      const input = validateInput(IngestDirectoryInput, params);
-      const { db } = requireDatabase();
-
-      // Validate directory exists - FAIL FAST
-      if (!existsSync(input.directory_path)) {
-        throw pathNotFoundError(input.directory_path);
-      }
-
-      const dirStats = statSync(input.directory_path);
-      if (!dirStats.isDirectory()) {
-        throw pathNotDirectoryError(input.directory_path);
-      }
-
-      const fileTypes = input.file_types ?? ['pdf', 'png', 'jpg', 'jpeg', 'tiff', 'docx', 'doc'];
-      const items: Array<{ file_path: string; file_name: string; document_id: string; status: string; error_message?: string }> = [];
-
-      // Collect files
-      const collectFiles = (dirPath: string): string[] => {
-        const files: string[] = [];
-        const entries = readdirSync(dirPath, { withFileTypes: true });
-
-        for (const entry of entries) {
-          const fullPath = resolve(dirPath, entry.name);
-          if (entry.isDirectory() && input.recursive) {
-            files.push(...collectFiles(fullPath));
-          } else if (entry.isFile()) {
-            const ext = extname(entry.name).slice(1).toLowerCase();
-            if (fileTypes.includes(ext)) {
-              files.push(fullPath);
-            }
-          }
-        }
-
-        return files;
-      };
-
-      const files = collectFiles(input.directory_path);
-
-      // Ingest each file
-      for (const filePath of files) {
-        try {
-          // Check if already ingested by hash
-          const stats = statSync(filePath);
-          const existingByPath = db.getDocumentByPath(filePath);
-
-          if (existingByPath) {
-            items.push({
-              file_path: filePath,
-              file_name: basename(filePath),
-              document_id: existingByPath.id,
-              status: 'skipped',
-              error_message: 'Already ingested',
-            });
-            continue;
-          }
-
-          // Create document record
-          const documentId = uuidv4();
-          const provenanceId = uuidv4();
-          const now = new Date().toISOString();
-          const ext = extname(filePath).slice(1).toLowerCase();
-
-          // Create document provenance
-          db.insertProvenance({
-            id: provenanceId,
-            type: 'DOCUMENT',
-            created_at: now,
-            processed_at: now,
-            source_file_created_at: null,
-            source_file_modified_at: null,
-            source_type: 'FILE',
-            source_path: filePath,
-            source_id: null,
-            root_document_id: provenanceId,
-            location: null,
-            content_hash: `sha256:pending-${documentId}`,
-            input_hash: null,
-            file_hash: `sha256:pending-${documentId}`,
-            processor: 'file-scanner',
-            processor_version: '1.0.0',
-            processing_params: { directory_path: input.directory_path, recursive: input.recursive },
-            processing_duration_ms: null,
-            processing_quality_score: null,
-            parent_id: null,
-            parent_ids: '[]',
-            chain_depth: 0,
-            chain_path: '["DOCUMENT"]',
-          });
-
-          // Insert document
-          db.insertDocument({
-            id: documentId,
-            file_path: filePath,
-            file_name: basename(filePath),
-            file_hash: `sha256:pending-${documentId}`,
-            file_size: stats.size,
-            file_type: ext,
-            status: 'pending',
-            page_count: null,
-            provenance_id: provenanceId,
-            error_message: null,
-            ocr_completed_at: null,
-          });
-
-          items.push({
-            file_path: filePath,
-            file_name: basename(filePath),
-            document_id: documentId,
-            status: 'pending',
-          });
-        } catch (error) {
-          items.push({
-            file_path: filePath,
-            file_name: basename(filePath),
-            document_id: '',
-            status: 'error',
-            error_message: error instanceof Error ? error.message : String(error),
-          });
-        }
-      }
-
-      const result = {
-        directory_path: input.directory_path,
-        files_found: files.length,
-        files_ingested: items.filter(i => i.status === 'pending').length,
-        files_skipped: items.filter(i => i.status === 'skipped').length,
-        files_errored: items.filter(i => i.status === 'error').length,
-        items,
-      };
-
-      return formatResponse(successResult(result));
-    } catch (error) {
-      return handleError(error);
-    }
-  }
-);
-
-/**
- * ocr_ingest_files - Ingest specific files
- */
-server.tool(
-  'ocr_ingest_files',
-  'Ingest specific files into the current database',
-  {
-    file_paths: z.array(z.string().min(1)).min(1).describe('Array of file paths to ingest'),
-    ocr_mode: z.enum(['fast', 'balanced', 'accurate']).default('balanced').describe('OCR processing mode'),
-    auto_process: z.boolean().default(false).describe('Automatically process documents after ingestion'),
-  },
-  async (params) => {
-    try {
-      const input = validateInput(IngestFilesInput, params);
-      const { db } = requireDatabase();
-
-      const items: Array<{ file_path: string; file_name: string; document_id: string; status: string; error_message?: string }> = [];
-
-      for (const filePath of input.file_paths) {
-        try {
-          // Validate file exists - FAIL FAST
-          if (!existsSync(filePath)) {
-            items.push({
-              file_path: filePath,
-              file_name: basename(filePath),
-              document_id: '',
-              status: 'error',
-              error_message: 'File not found',
-            });
-            continue;
-          }
-
-          const stats = statSync(filePath);
-          if (!stats.isFile()) {
-            items.push({
-              file_path: filePath,
-              file_name: basename(filePath),
-              document_id: '',
-              status: 'error',
-              error_message: 'Path is not a file',
-            });
-            continue;
-          }
-
-          // Check if already ingested
-          const existingByPath = db.getDocumentByPath(filePath);
-          if (existingByPath) {
-            items.push({
-              file_path: filePath,
-              file_name: basename(filePath),
-              document_id: existingByPath.id,
-              status: 'skipped',
-              error_message: 'Already ingested',
-            });
-            continue;
-          }
-
-          // Create document record
-          const documentId = uuidv4();
-          const provenanceId = uuidv4();
-          const now = new Date().toISOString();
-          const ext = extname(filePath).slice(1).toLowerCase();
-
-          // Create document provenance
-          db.insertProvenance({
-            id: provenanceId,
-            type: 'DOCUMENT',
-            created_at: now,
-            processed_at: now,
-            source_file_created_at: null,
-            source_file_modified_at: null,
-            source_type: 'FILE',
-            source_path: filePath,
-            source_id: null,
-            root_document_id: provenanceId,
-            location: null,
-            content_hash: `sha256:pending-${documentId}`,
-            input_hash: null,
-            file_hash: `sha256:pending-${documentId}`,
-            processor: 'file-scanner',
-            processor_version: '1.0.0',
-            processing_params: {},
-            processing_duration_ms: null,
-            processing_quality_score: null,
-            parent_id: null,
-            parent_ids: '[]',
-            chain_depth: 0,
-            chain_path: '["DOCUMENT"]',
-          });
-
-          // Insert document
-          db.insertDocument({
-            id: documentId,
-            file_path: filePath,
-            file_name: basename(filePath),
-            file_hash: `sha256:pending-${documentId}`,
-            file_size: stats.size,
-            file_type: ext,
-            status: 'pending',
-            page_count: null,
-            provenance_id: provenanceId,
-            error_message: null,
-            ocr_completed_at: null,
-          });
-
-          items.push({
-            file_path: filePath,
-            file_name: basename(filePath),
-            document_id: documentId,
-            status: 'pending',
-          });
-        } catch (error) {
-          items.push({
-            file_path: filePath,
-            file_name: basename(filePath),
-            document_id: '',
-            status: 'error',
-            error_message: error instanceof Error ? error.message : String(error),
-          });
-        }
-      }
-
-      return formatResponse(successResult({
-        files_ingested: items.filter(i => i.status === 'pending').length,
-        files_skipped: items.filter(i => i.status === 'skipped').length,
-        files_errored: items.filter(i => i.status === 'error').length,
-        items,
-      }));
-    } catch (error) {
-      return handleError(error);
-    }
-  }
-);
-
-/**
- * ocr_process_pending - Process pending documents
- */
-server.tool(
-  'ocr_process_pending',
-  'Process pending documents through OCR pipeline',
-  {
-    max_concurrent: z.number().int().min(1).max(10).default(3).describe('Maximum concurrent OCR operations'),
-    ocr_mode: z.enum(['fast', 'balanced', 'accurate']).optional().describe('OCR processing mode override'),
-  },
-  async (params) => {
-    try {
-      const input = validateInput(ProcessPendingInput, params);
-      const { db } = requireDatabase();
-
-      // Get pending documents
-      const pendingDocs = db.listDocuments({ statusFilter: 'pending', limit: 100 });
-
-      // Note: Actual OCR processing would be implemented in Tasks 16-22
-      // This returns the list of pending documents for now
-      return formatResponse(successResult({
-        pending_count: pendingDocs.length,
-        max_concurrent: input.max_concurrent,
-        ocr_mode: input.ocr_mode ?? state.config.defaultOCRMode,
-        documents: pendingDocs.map(d => ({
-          document_id: d.id,
-          file_name: d.file_name,
-          file_path: d.file_path,
-          status: d.status,
-        })),
-        message: 'OCR processing pipeline will be wired up in Task 20 (impl-ingestion-tools)',
-      }));
-    } catch (error) {
-      return handleError(error);
-    }
-  }
-);
-
-/**
- * ocr_status - Get OCR processing status
- */
-server.tool(
-  'ocr_status',
-  'Get OCR processing status for documents',
-  {
-    document_id: z.string().optional().describe('Specific document ID to check'),
-    status_filter: z.enum(['pending', 'processing', 'complete', 'failed', 'all']).default('all').describe('Filter by status'),
-  },
-  async (params) => {
-    try {
-      const input = validateInput(OCRStatusInput, params);
-      const { db } = requireDatabase();
-
-      if (input.document_id) {
-        const doc = db.getDocument(input.document_id);
-        if (!doc) {
-          throw documentNotFoundError(input.document_id);
-        }
-
-        return formatResponse(successResult({
-          documents: [{
-            document_id: doc.id,
-            file_name: doc.file_name,
-            status: doc.status,
-            page_count: doc.page_count,
-            error_message: doc.error_message ?? undefined,
-            created_at: doc.created_at,
-          }],
-          summary: {
-            total: 1,
-            pending: doc.status === 'pending' ? 1 : 0,
-            processing: doc.status === 'processing' ? 1 : 0,
-            complete: doc.status === 'complete' ? 1 : 0,
-            failed: doc.status === 'failed' ? 1 : 0,
-          },
-        }));
-      }
-
-      const filterMap: Record<string, 'pending' | 'processing' | 'complete' | 'failed' | undefined> = {
-        pending: 'pending',
-        processing: 'processing',
-        complete: 'complete',
-        failed: 'failed',
-        all: undefined,
-      };
-
-      const documents = db.listDocuments({
-        statusFilter: filterMap[input.status_filter],
-        limit: 1000,
-      });
-
-      const stats = db.getStats();
-
-      return formatResponse(successResult({
-        documents: documents.map(d => ({
-          document_id: d.id,
-          file_name: d.file_name,
-          status: d.status,
-          page_count: d.page_count,
-          error_message: d.error_message ?? undefined,
-          created_at: d.created_at,
-        })),
-        summary: {
-          total: stats.documentCount,
-          pending: stats.pendingDocuments,
-          processing: stats.processingDocuments,
-          complete: stats.completeDocuments,
-          failed: stats.failedDocuments,
-        },
-      }));
-    } catch (error) {
-      return handleError(error);
-    }
-  }
-);
+// Register ingestion tools from extracted module
+for (const [name, tool] of Object.entries(ingestionTools)) {
+  server.tool(name, tool.description, tool.inputSchema, tool.handler);
+}
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // SEARCH TOOLS (3)
@@ -625,7 +218,7 @@ server.tool(
 
       // Get all chunks and search by text
       // Note: A more efficient implementation would use FTS5 in Tasks 16-22
-      const allDocs = db.listDocuments({ statusFilter: 'complete', limit: 1000 });
+      const allDocs = db.listDocuments({ status: 'complete', limit: 1000 });
       const results: Array<Record<string, unknown>> = [];
 
       for (const doc of allDocs) {
@@ -715,7 +308,7 @@ server.tool(
       const semanticResults = vector.searchSimilar(queryVector, { limit: input.limit * 2 });
 
       // Get text results - use explicit types to reduce tsc inference burden
-      const allDocs = db.listDocuments({ statusFilter: 'complete', limit: 1000 });
+      const allDocs = db.listDocuments({ status: 'complete', limit: 1000 });
       const textMatches: Map<string, ChunkMatch> = new Map();
 
       for (const doc of allDocs) {
@@ -856,7 +449,7 @@ server.tool(
       const { db } = requireDatabase();
 
       const documents = db.listDocuments({
-        statusFilter: input.status_filter,
+        status: input.status_filter,
         sortBy: input.sort_by,
         sortOrder: input.sort_order,
         limit: input.limit,
