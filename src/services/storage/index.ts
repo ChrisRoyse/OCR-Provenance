@@ -22,3 +22,11 @@ export {
   type DatabaseStats,
   type ListDocumentsOptions,
 } from './database.js';
+
+export {
+  VectorService,
+  VectorError,
+  VectorErrorCode,
+  type VectorSearchResult,
+  type VectorSearchOptions,
+} from './vector.js';
