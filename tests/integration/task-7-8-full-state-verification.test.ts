@@ -53,7 +53,7 @@ describe('FULL STATE VERIFICATION: Tasks 7 & 8', () => {
   });
 
   describe('Task 7: Database Schema & Migrations', () => {
-    it.skipIf(!sqliteVecAvailable)('should create all 8 tables with correct structure', () => {
+    it.skipIf(!sqliteVecAvailable)('should create all 9 tables with correct structure', () => {
       const dbPath = join(testDir, 'schema-test.db');
       const db = new Database(dbPath);
 
@@ -89,12 +89,13 @@ describe('FULL STATE VERIFICATION: Tasks 7 & 8', () => {
       expect(coreTables).toContain('chunks');
       expect(coreTables).toContain('embeddings');
       expect(coreTables).toContain('vec_embeddings');
-      expect(coreTables.length).toBe(8);
+      expect(coreTables).toContain('images');
+      expect(coreTables.length).toBe(9);
 
       db.close();
     });
 
-    it.skipIf(!sqliteVecAvailable)('should create all 15 indexes', () => {
+    it.skipIf(!sqliteVecAvailable)('should create all 20 indexes', () => {
       const dbPath = join(testDir, 'index-test.db');
       const db = new Database(dbPath);
 
@@ -114,8 +115,13 @@ describe('FULL STATE VERIFICATION: Tasks 7 & 8', () => {
       console.log('\n[EVIDENCE] Indexes created:', indexNames.length);
       indexNames.forEach(name => console.log(`  - ${name}`));
 
-      expect(indexNames.length).toBe(15);
+      expect(indexNames.length).toBe(20);
       expect(indexNames).toContain('idx_documents_file_path');
+      expect(indexNames).toContain('idx_images_document_id');
+      expect(indexNames).toContain('idx_images_ocr_result_id');
+      expect(indexNames).toContain('idx_images_vlm_status');
+      expect(indexNames).toContain('idx_images_page_number');
+      expect(indexNames).toContain('idx_images_vlm_embedding_id');
       expect(indexNames).toContain('idx_documents_file_hash');
       expect(indexNames).toContain('idx_documents_status');
       expect(indexNames).toContain('idx_provenance_root_document_id');

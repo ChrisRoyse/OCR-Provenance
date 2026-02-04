@@ -220,3 +220,79 @@ export const DEEP_ANALYSIS_SCHEMA = {
   },
   required: ['imageType', 'fullDescription', 'confidence'],
 };
+
+/**
+ * Universal Evaluation Prompt - NO CONTEXT
+ *
+ * Per Steve's requirement: "Give it a super good prompt that's universal,
+ * that describes the image in extreme detail. 3 paragraph minimum.
+ * Then embed those paragraphs so the VLM can see pictures."
+ *
+ * This prompt analyzes images in COMPLETE ISOLATION with no document context.
+ */
+export const UNIVERSAL_EVALUATION_PROMPT = `You are an expert document analyst specializing in medical, legal, and business documents. Analyze this image extracted from a document with NO PRIOR CONTEXT. Describe what you observe in extreme detail.
+
+PARAGRAPH 1 - VISUAL OVERVIEW:
+Describe the overall composition, layout, and visual structure. What type of image is this? (chart, form, signature, photo, diagram, table, handwriting, stamp, logo, barcode, medical imaging, graph, flowchart, etc.) Describe colors, orientation, quality, and any visual artifacts or issues.
+
+PARAGRAPH 2 - CONTENT ANALYSIS:
+Extract and describe ALL visible content with extreme precision:
+- For text: transcribe all readable text, noting font styles, emphasis, and positioning
+- For charts/graphs: describe axes, labels, data points, values, trends, and scale
+- For forms: describe every field label, filled value, checkbox state, and signature area
+- For signatures: describe style (cursive, initials), legibility, date if present, witness marks
+- For medical content: note measurements, readings, annotations, anatomical references
+- For tables: describe columns, rows, headers, and cell contents
+- For photographs: describe subjects, objects, setting, lighting, visible text or labels
+
+PARAGRAPH 3 - SIGNIFICANCE & INTERPRETATION:
+Explain what this image likely represents in a document context. What purpose does it serve? What information does it convey that would be important for legal, medical, or business purposes? Note any:
+- Anomalies, redactions, or modifications
+- Official stamps, seals, or certifications
+- Handwritten annotations or corrections
+- Quality issues that affect readability
+- Potential evidentiary value
+
+CRITICAL RULES:
+1. Describe ONLY what you can directly observe - never assume or hallucinate
+2. If text is unclear, note it as "[illegible]" or "[partially visible: ...]"
+3. Be SPECIFIC with numbers, dates, and names when visible
+4. Note the approximate location of elements (top-left, center, bottom, etc.)
+5. Minimum 3 substantial paragraphs required
+
+Return as JSON:
+{
+  "imageType": "chart|form|signature|photo|diagram|table|handwriting|stamp|logo|barcode|medical|graph|flowchart|screenshot|other",
+  "primarySubject": "Brief one-line description of main content",
+  "paragraph1": "Detailed visual overview (4-6 sentences)",
+  "paragraph2": "Comprehensive content analysis (6-10 sentences)",
+  "paragraph3": "Significance and interpretation (4-6 sentences)",
+  "extractedText": ["Array of all visible text strings"],
+  "dates": ["Any dates found in any format"],
+  "names": ["People names, organization names, product names"],
+  "numbers": ["Significant numbers, amounts, measurements, IDs"],
+  "confidence": 0.0-1.0
+}`;
+
+/**
+ * JSON schema for universal evaluation output.
+ */
+export const UNIVERSAL_EVALUATION_SCHEMA = {
+  type: 'object',
+  properties: {
+    imageType: {
+      type: 'string',
+      enum: ['chart', 'form', 'signature', 'photo', 'diagram', 'table', 'handwriting', 'stamp', 'logo', 'barcode', 'medical', 'graph', 'flowchart', 'screenshot', 'other'],
+    },
+    primarySubject: { type: 'string' },
+    paragraph1: { type: 'string' },
+    paragraph2: { type: 'string' },
+    paragraph3: { type: 'string' },
+    extractedText: { type: 'array', items: { type: 'string' } },
+    dates: { type: 'array', items: { type: 'string' } },
+    names: { type: 'array', items: { type: 'string' } },
+    numbers: { type: 'array', items: { type: 'string' } },
+    confidence: { type: 'number' },
+  },
+  required: ['imageType', 'primarySubject', 'paragraph1', 'paragraph2', 'paragraph3', 'confidence'],
+};

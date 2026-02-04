@@ -25,6 +25,8 @@ export interface ProcessResult {
   textLength?: number;
   durationMs?: number;
   error?: string;
+  /** Images extracted by Datalab: {filename: base64_data} */
+  images?: Record<string, string>;
 }
 
 export interface BatchResult {
@@ -90,7 +92,7 @@ export class OCRProcessor {
     try {
       // 3. Generate provenance ID and call OCR
       const ocrProvenanceId = uuidv4();
-      const { result: ocrResult } = await this.client.processDocument(
+      const { result: ocrResult, images } = await this.client.processDocument(
         document.file_path,
         documentId,
         ocrProvenanceId,
@@ -116,6 +118,12 @@ export class OCRProcessor {
         ocrResult.processing_completed_at
       );
 
+      // Capture image count for logging
+      const imageCount = Object.keys(images).length;
+      if (imageCount > 0) {
+        console.error(`[INFO] Captured ${imageCount} images from Datalab`);
+      }
+
       return {
         success: true,
         documentId,
@@ -124,6 +132,7 @@ export class OCRProcessor {
         pageCount: ocrResult.page_count,
         textLength: ocrResult.text_length,
         durationMs: Date.now() - startTime,
+        images: imageCount > 0 ? images : undefined,
       };
 
     } catch (error) {

@@ -12,7 +12,7 @@
 
 import { z } from 'zod';
 import { v4 as uuidv4 } from 'uuid';
-import { existsSync, statSync, readdirSync } from 'fs';
+import { existsSync, statSync, readdirSync, mkdirSync, writeFileSync } from 'fs';
 import { resolve, extname, basename } from 'path';
 
 import { DatabaseService } from '../services/storage/database/index.js';
@@ -42,7 +42,10 @@ import {
 } from '../server/errors.js';
 import type { Document, OCRResult } from '../models/document.js';
 import type { Chunk } from '../models/chunk.js';
+import type { CreateImageReference, ImageReference } from '../models/image.js';
 import { ProvenanceType } from '../models/provenance.js';
+import { insertImageBatch } from '../services/storage/database/image-operations.js';
+import { createVLMPipeline } from '../services/vlm/pipeline.js';
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // TYPE DEFINITIONS
@@ -168,6 +171,82 @@ function storeChunks(
   }
 
   return chunks;
+}
+
+/**
+ * Save images from Datalab to disk and store references in database.
+ *
+ * Images come from Datalab as {filename: base64_data}.
+ * This function:
+ * 1. Creates output directory
+ * 2. Saves each image to disk
+ * 3. Creates image records in database for VLM processing
+ *
+ * @param db - Database connection
+ * @param doc - Document record
+ * @param ocrResult - OCR result for provenance chain
+ * @param images - Images from Datalab: {filename: base64}
+ * @param outputDir - Directory to save images
+ * @returns Array of stored ImageReference records
+ */
+function saveAndStoreImages(
+  db: DatabaseService,
+  doc: Document,
+  ocrResult: OCRResult,
+  images: Record<string, string>,
+  outputDir: string
+): ImageReference[] {
+  // Create output directory
+  if (!existsSync(outputDir)) {
+    mkdirSync(outputDir, { recursive: true });
+  }
+
+  const imageRefs: CreateImageReference[] = [];
+  let imageIndex = 0;
+
+  for (const [filename, base64Data] of Object.entries(images)) {
+    // Decode base64 to buffer
+    const buffer = Buffer.from(base64Data, 'base64');
+    const filePath = resolve(outputDir, filename);
+
+    // Save to disk - FAIL FAST if write fails
+    writeFileSync(filePath, buffer);
+
+    // Parse page number from filename (e.g., "page_1_image_0.png" or "p001_i000.png")
+    const pageMatch = filename.match(/page_(\d+)|p(\d+)/i);
+    const pageNumber = pageMatch
+      ? parseInt(pageMatch[1] || pageMatch[2], 10)
+      : 1;
+
+    // Get image format from extension
+    const ext = extname(filename).slice(1).toLowerCase();
+    const format = ext || 'png';
+
+    // Create image reference for database
+    // Note: dimensions will be estimated - VLM pipeline can update if needed
+    imageRefs.push({
+      document_id: doc.id,
+      ocr_result_id: ocrResult.id,
+      page_number: pageNumber,
+      bounding_box: { x: 0, y: 0, width: 0, height: 0 }, // Datalab doesn't provide bbox
+      image_index: imageIndex,
+      format,
+      dimensions: { width: 0, height: 0 }, // Will be populated by VLM or left as 0
+      extracted_path: filePath,
+      file_size: buffer.length,
+      context_text: null,
+      provenance_id: null,
+    });
+
+    imageIndex++;
+  }
+
+  // Batch insert all images
+  if (imageRefs.length > 0) {
+    return insertImageBatch(db.getConnection(), imageRefs);
+  }
+
+  return [];
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -454,8 +533,8 @@ export async function handleIngestFiles(
 /**
  * Handle ocr_process_pending - Process pending documents through full OCR pipeline
  *
- * Pipeline: OCR -> Chunk -> Embed -> Vector Storage
- * Provenance chain: DOCUMENT(0) -> OCR_RESULT(1) -> CHUNK(2) -> EMBEDDING(3)
+ * Pipeline: OCR -> Extract Images -> Chunk -> Embed -> VLM Process Images -> Complete
+ * Provenance chain: DOCUMENT(0) -> OCR_RESULT(1) -> CHUNK(2)/IMAGE(2) -> EMBEDDING(3)/VLM_DESC(3)
  */
 export async function handleProcessPending(
   params: Record<string, unknown>
@@ -483,6 +562,9 @@ export async function handleProcessPending(
       errors: [] as Array<{ document_id: string; error: string }>,
     };
 
+    // Default images output directory
+    const imagesBaseDir = resolve(state.config.defaultStoragePath, 'images');
+
     for (const doc of pendingDocs) {
       try {
         console.error(`[INFO] Processing document: ${doc.id} (${doc.file_name})`);
@@ -504,6 +586,17 @@ export async function handleProcessPending(
 
         console.error(`[INFO] OCR complete: ${ocrResult.text_length} chars, ${ocrResult.page_count} pages`);
 
+        // Step 1.5: Extract and store images from OCR result (if any)
+        let imageCount = 0;
+        if (processResult.images && Object.keys(processResult.images).length > 0) {
+          const imageOutputDir = resolve(imagesBaseDir, doc.id);
+          const imageRefs = saveAndStoreImages(
+            db, doc, ocrResult, processResult.images, imageOutputDir
+          );
+          imageCount = imageRefs.length;
+          console.error(`[INFO] Images extracted and stored: ${imageCount}`);
+        }
+
         // Step 2: Chunk the OCR text
         // NOTE: pageOffsets not available from OCRProcessor, use chunkText not chunkWithPageTracking
         const chunkResults = chunkText(ocrResult.extracted_text, DEFAULT_CHUNKING_CONFIG);
@@ -515,7 +608,7 @@ export async function handleProcessPending(
 
         console.error(`[INFO] Chunks stored: ${chunks.length}`);
 
-        // Step 4: Generate embeddings
+        // Step 4: Generate embeddings for text chunks
         const embeddingService = new EmbeddingService();
         const documentInfo = {
           documentId: doc.id,
@@ -533,7 +626,23 @@ export async function handleProcessPending(
 
         console.error(`[INFO] Embeddings complete: ${embedResult.embeddingIds.length} embeddings in ${embedResult.elapsedMs}ms`);
 
-        // Step 5: Mark document complete
+        // Step 5: VLM process images (generate 3+ paragraph descriptions)
+        // Only run if document had images extracted
+        if (imageCount > 0) {
+          const vlmPipeline = createVLMPipeline(db, vector, {
+            batchSize: 5,
+            concurrency: 3,
+            minConfidence: 0.5,
+          });
+
+          const vlmResult = await vlmPipeline.processDocument(doc.id);
+          console.error(
+            `[INFO] VLM complete: ${vlmResult.successful}/${vlmResult.total} images processed, ` +
+            `${vlmResult.totalTokens} tokens used`
+          );
+        }
+
+        // Step 6: Mark document complete
         db.updateDocumentStatus(doc.id, 'complete');
         results.processed++;
 

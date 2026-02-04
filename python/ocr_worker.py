@@ -135,6 +135,9 @@ class OCRResult:
     page_offsets: list[PageOffset]   # Character offsets per page
     error: str | None = None
 
+    # Images extracted by Datalab (filename -> base64 data)
+    images: dict[str, str] | None = None
+
 
 # =============================================================================
 # SUPPORTED FILE TYPES (match src/models/document.ts)
@@ -336,6 +339,12 @@ def process_document(
         cost_breakdown = result.cost_breakdown or {}
         cost_cents = cost_breakdown.get('total_cost_cents')
 
+        # Capture images from Datalab response (filename -> base64 data)
+        # Images are returned as a dict with filename keys and base64-encoded image data
+        images = getattr(result, 'images', None) or {}
+        if images:
+            logger.info(f"Captured {len(images)} images from Datalab response")
+
         # Parse page offsets for provenance tracking
         page_offsets = parse_page_offsets(markdown)
 
@@ -358,6 +367,7 @@ def process_document(
             processing_completed_at=end_timestamp,
             processing_duration_ms=duration_ms,
             page_offsets=page_offsets,
+            images=images if images else None,
         )
 
         logger.info(

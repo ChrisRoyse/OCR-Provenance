@@ -13,3 +13,8 @@ export * from './search.js';
 export * from './documents.js';
 export * from './provenance.js';
 export * from './config.js';
+export * from './vlm.js';
+export * from './images.js';
+export * from './extraction.js';
+export * from './evaluation.js';
+export * from './reports.js';
