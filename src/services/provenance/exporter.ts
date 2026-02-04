@@ -134,6 +134,7 @@ export class ProvenanceExporter {
 
   private static readonly PROV_PREFIX = 'http://www.w3.org/ns/prov#';
   private static readonly OCR_PREFIX = 'http://ocr-provenance.local/ns#';
+  private static readonly OCRP_PREFIX = 'http://ocr-provenance.local/prov#';
 
   constructor(
     db: DatabaseService,
@@ -376,6 +377,7 @@ export class ProvenanceExporter {
       prefix: {
         prov: ProvenanceExporter.PROV_PREFIX,
         ocr: ProvenanceExporter.OCR_PREFIX,
+        ocrp: ProvenanceExporter.OCRP_PREFIX,
       },
       entity: {},
       activity: {},
@@ -409,6 +411,22 @@ export class ProvenanceExporter {
       // Add source_path for DOCUMENT type
       if (record.type === ProvenanceType.DOCUMENT && record.source_path) {
         doc.entity[entityId]['ocr:source_path'] = record.source_path;
+      }
+
+      // Add specific attributes for IMAGE type
+      if (record.type === ProvenanceType.IMAGE) {
+        doc.entity[entityId]['prov:type'] = 'ocrp:Image';
+        if (record.location?.bounding_box) {
+          doc.entity[entityId]['ocrp:bounding_box'] = record.location.bounding_box;
+        }
+        if (record.location?.page_number) {
+          doc.entity[entityId]['ocrp:page_number'] = record.location.page_number;
+        }
+      }
+
+      // Add specific attributes for VLM_DESCRIPTION type
+      if (record.type === ProvenanceType.VLM_DESCRIPTION) {
+        doc.entity[entityId]['prov:type'] = 'ocrp:VLMDescription';
       }
 
       // Add file_hash if present

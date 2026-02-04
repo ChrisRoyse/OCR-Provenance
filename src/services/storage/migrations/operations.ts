@@ -97,10 +97,98 @@ export function initializeDatabase(db: Database.Database): void {
 }
 
 /**
+ * Migrate from schema version 1 to version 2
+ *
+ * Changes in v2:
+ * - provenance.type: Added 'IMAGE' and 'VLM_DESCRIPTION' to CHECK constraint
+ * - provenance.source_type: Added 'IMAGE_EXTRACTION' and 'VLM' to CHECK constraint
+ *
+ * Note: SQLite CHECK constraints cannot be modified directly. However, since SQLite
+ * stores CHECK constraints as metadata and only validates at INSERT/UPDATE time,
+ * existing data remains valid. For new inserts, we recreate the table with the
+ * updated constraint.
+ *
+ * @param db - Database instance from better-sqlite3
+ * @throws MigrationError if migration fails
+ */
+function migrateV1ToV2(db: Database.Database): void {
+  try {
+    // SQLite doesn't support ALTER TABLE to modify CHECK constraints.
+    // We need to recreate the provenance table with the new constraints.
+    // This is done in a transaction to ensure atomicity.
+
+    db.exec('BEGIN TRANSACTION');
+
+    // Step 1: Create a new table with updated CHECK constraints
+    db.exec(`
+      CREATE TABLE provenance_new (
+        id TEXT PRIMARY KEY,
+        type TEXT NOT NULL CHECK (type IN ('DOCUMENT', 'OCR_RESULT', 'CHUNK', 'IMAGE', 'VLM_DESCRIPTION', 'EMBEDDING')),
+        created_at TEXT NOT NULL,
+        processed_at TEXT NOT NULL,
+        source_file_created_at TEXT,
+        source_file_modified_at TEXT,
+        source_type TEXT NOT NULL CHECK (source_type IN ('FILE', 'OCR', 'CHUNKING', 'IMAGE_EXTRACTION', 'VLM', 'EMBEDDING')),
+        source_path TEXT,
+        source_id TEXT,
+        root_document_id TEXT NOT NULL,
+        location TEXT,
+        content_hash TEXT NOT NULL,
+        input_hash TEXT,
+        file_hash TEXT,
+        processor TEXT NOT NULL,
+        processor_version TEXT NOT NULL,
+        processing_params TEXT NOT NULL,
+        processing_duration_ms INTEGER,
+        processing_quality_score REAL,
+        parent_id TEXT,
+        parent_ids TEXT NOT NULL,
+        chain_depth INTEGER NOT NULL,
+        chain_path TEXT,
+        FOREIGN KEY (source_id) REFERENCES provenance_new(id),
+        FOREIGN KEY (parent_id) REFERENCES provenance_new(id)
+      )
+    `);
+
+    // Step 2: Copy existing data to the new table
+    db.exec(`
+      INSERT INTO provenance_new
+      SELECT * FROM provenance
+    `);
+
+    // Step 3: Drop the old table
+    db.exec('DROP TABLE provenance');
+
+    // Step 4: Rename the new table to the original name
+    db.exec('ALTER TABLE provenance_new RENAME TO provenance');
+
+    // Step 5: Recreate indexes for the provenance table
+    db.exec('CREATE INDEX IF NOT EXISTS idx_provenance_source_id ON provenance(source_id)');
+    db.exec('CREATE INDEX IF NOT EXISTS idx_provenance_type ON provenance(type)');
+    db.exec('CREATE INDEX IF NOT EXISTS idx_provenance_root_document_id ON provenance(root_document_id)');
+    db.exec('CREATE INDEX IF NOT EXISTS idx_provenance_parent_id ON provenance(parent_id)');
+
+    db.exec('COMMIT');
+  } catch (error) {
+    // Rollback on error
+    try {
+      db.exec('ROLLBACK');
+    } catch {
+      // Ignore rollback errors
+    }
+    throw new MigrationError(
+      'Failed to migrate provenance table from v1 to v2',
+      'migrate',
+      'provenance',
+      error
+    );
+  }
+}
+
+/**
  * Migrate database to the latest schema version
  *
  * Checks current version and applies any necessary migrations.
- * Currently only supports initial schema (version 1).
  *
  * @param db - Database instance from better-sqlite3
  * @throws MigrationError if migration fails
@@ -128,8 +216,10 @@ export function migrateToLatest(db: Database.Database): void {
     );
   }
 
-  // Future migrations would be applied here
-  // For now, we only have version 1
+  // Apply migrations incrementally
+  if (currentVersion < 2) {
+    migrateV1ToV2(db);
+  }
 
   // Update schema version after successful migration
   try {
