@@ -13,15 +13,5 @@
  */
 
 // Re-export everything from the modular database package
-export {
-  // Types
-  DatabaseInfo,
-  DatabaseStats,
-  ListDocumentsOptions,
-  DatabaseErrorCode,
-  DatabaseError,
-  // Migration error (for convenience)
-  MigrationError,
-  // Main service class
-  DatabaseService,
-} from './database/index.js';
+export type { DatabaseInfo, DatabaseStats, ListDocumentsOptions } from './database/index.js';
+export { DatabaseErrorCode, DatabaseError, MigrationError, DatabaseService } from './database/index.js';

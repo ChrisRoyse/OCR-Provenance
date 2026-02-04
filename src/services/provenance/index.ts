@@ -46,14 +46,13 @@ export {
 } from './exporter.js';
 
 // Re-export models for convenience
-export {
+export type {
   ProvenanceRecord,
-  ProvenanceType,
   CreateProvenanceParams,
   ProvenanceChain,
   VerificationResult,
   ProvenanceLocation,
   SourceType,
-  PROVENANCE_CHAIN_DEPTH,
   W3CProvDocument,
 } from '../../models/provenance.js';
+export { ProvenanceType, PROVENANCE_CHAIN_DEPTH } from '../../models/provenance.js';

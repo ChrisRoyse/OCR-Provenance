@@ -35,7 +35,7 @@ const server = new McpServer({
 
 // Register database tools from extracted module
 for (const [name, tool] of Object.entries(databaseTools)) {
-  server.tool(name, tool.description, tool.inputSchema, tool.handler);
+  server.tool(name, tool.description, tool.inputSchema as Record<string, unknown>, tool.handler);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -44,7 +44,7 @@ for (const [name, tool] of Object.entries(databaseTools)) {
 
 // Register ingestion tools from extracted module
 for (const [name, tool] of Object.entries(ingestionTools)) {
-  server.tool(name, tool.description, tool.inputSchema, tool.handler);
+  server.tool(name, tool.description, tool.inputSchema as Record<string, unknown>, tool.handler);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -53,7 +53,7 @@ for (const [name, tool] of Object.entries(ingestionTools)) {
 
 // Register search tools from extracted module
 for (const [name, tool] of Object.entries(searchTools)) {
-  server.tool(name, tool.description, tool.inputSchema, tool.handler);
+  server.tool(name, tool.description, tool.inputSchema as Record<string, unknown>, tool.handler);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -62,7 +62,7 @@ for (const [name, tool] of Object.entries(searchTools)) {
 
 // Register document tools from extracted module
 for (const [name, tool] of Object.entries(documentTools)) {
-  server.tool(name, tool.description, tool.inputSchema, tool.handler);
+  server.tool(name, tool.description, tool.inputSchema as Record<string, unknown>, tool.handler);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -71,7 +71,7 @@ for (const [name, tool] of Object.entries(documentTools)) {
 
 // Register provenance tools from extracted module
 for (const [name, tool] of Object.entries(provenanceTools)) {
-  server.tool(name, tool.description, tool.inputSchema, tool.handler);
+  server.tool(name, tool.description, tool.inputSchema as Record<string, unknown>, tool.handler);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -80,7 +80,7 @@ for (const [name, tool] of Object.entries(provenanceTools)) {
 
 // Register config tools from new module
 for (const [name, tool] of Object.entries(configTools)) {
-  server.tool(name, tool.description, tool.inputSchema, tool.handler);
+  server.tool(name, tool.description, tool.inputSchema as Record<string, unknown>, tool.handler);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════

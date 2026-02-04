@@ -510,11 +510,11 @@ export class ProvenanceVerifier {
   private getDatabaseName(): string {
     try {
       const row = this.rawDb.prepare(
-        'SELECT database_name FROM metadata LIMIT 1'
+        'SELECT database_name FROM database_metadata LIMIT 1'
       ).get() as { database_name: string } | undefined;
       return row?.database_name ?? 'unknown';
     } catch {
-      // metadata table may not exist
+      // database_metadata table may not exist
       return 'unknown';
     }
   }

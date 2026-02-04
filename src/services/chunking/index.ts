@@ -11,15 +11,9 @@ export {
   chunkText,
   chunkWithPageTracking,
   createChunkProvenance,
-  ChunkProvenanceParams,
 } from './chunker.js';
+export type { ChunkProvenanceParams } from './chunker.js';
 
 // Re-export model types for convenience
-export {
-  ChunkResult,
-  Chunk,
-  ChunkingConfig,
-  DEFAULT_CHUNKING_CONFIG,
-  getOverlapCharacters,
-  getStepSize,
-} from '../../models/chunk.js';
+export type { ChunkResult, Chunk, ChunkingConfig } from '../../models/chunk.js';
+export { DEFAULT_CHUNKING_CONFIG, getOverlapCharacters, getStepSize } from '../../models/chunk.js';
