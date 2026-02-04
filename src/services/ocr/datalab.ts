@@ -34,6 +34,8 @@ interface PythonOCRResponse {
   processing_duration_ms: number;
   page_offsets: Array<{ page: number; char_start: number; char_end: number }>;
   error: string | null;
+  /** Images extracted by Datalab: {filename: base64_data} */
+  images: Record<string, string> | null;
 }
 
 interface PythonErrorResponse {
@@ -68,7 +70,7 @@ export class DatalabClient {
     documentId: string,
     provenanceId: string,
     mode: 'fast' | 'balanced' | 'accurate' = 'accurate'
-  ): Promise<{ result: OCRResult; pageOffsets: PageOffset[] }> {
+  ): Promise<{ result: OCRResult; pageOffsets: PageOffset[]; images: Record<string, string> }> {
     const options: Options = {
       mode: 'json',
       pythonPath: this.pythonPath,
@@ -114,6 +116,7 @@ export class DatalabClient {
           resolve({
             result: this.toOCRResult(ocrResponse),
             pageOffsets: this.toPageOffsets(ocrResponse.page_offsets),
+            images: ocrResponse.images ?? {},
           });
         })
         .catch((error) => {
