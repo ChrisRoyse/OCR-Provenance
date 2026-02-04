@@ -28,10 +28,13 @@ import type { Chunk } from '../models/chunk.js';
 // TYPE DEFINITIONS
 // ═══════════════════════════════════════════════════════════════════════════════
 
-type ToolHandler = (params: Record<string, unknown>) => Promise<{
-  content: Array<{ type: 'text'; text: string }>;
-}>;
+/** MCP tool response format */
+type ToolResponse = { content: Array<{ type: 'text'; text: string }> };
 
+/** Tool handler function signature */
+type ToolHandler = (params: Record<string, unknown>) => Promise<ToolResponse>;
+
+/** Tool definition with description, schema, and handler */
 interface ToolDefinition {
   description: string;
   inputSchema: Record<string, z.ZodTypeAny>;
@@ -61,20 +64,43 @@ interface CombinedScore {
   provenance_id: string;
 }
 
+/** Provenance record summary for search results */
+interface ProvenanceSummary {
+  id: string;
+  type: string;
+  chain_depth: number;
+  processor: string;
+  content_hash: string;
+}
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // HELPER FUNCTIONS
 // ═══════════════════════════════════════════════════════════════════════════════
 
-function formatResponse(result: unknown): { content: Array<{ type: 'text'; text: string }> } {
+function formatResponse(result: unknown): ToolResponse {
   return {
     content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
   };
 }
 
-function handleError(error: unknown): { content: Array<{ type: 'text'; text: string }> } {
+function handleError(error: unknown): ToolResponse {
   const mcpError = MCPError.fromUnknown(error);
   console.error(`[ERROR] ${mcpError.category}: ${mcpError.message}`);
   return formatResponse(formatErrorResponse(mcpError));
+}
+
+/**
+ * Format provenance chain as summary array
+ */
+function formatProvenanceChain(db: ReturnType<typeof requireDatabase>['db'], provenanceId: string): ProvenanceSummary[] {
+  const chain = db.getProvenanceChain(provenanceId);
+  return chain.map(p => ({
+    id: p.id,
+    type: p.type,
+    chain_depth: p.chain_depth,
+    processor: p.processor,
+    content_hash: p.content_hash,
+  }));
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -86,7 +112,7 @@ function handleError(error: unknown): { content: Array<{ type: 'text'; text: str
  */
 export async function handleSearchSemantic(
   params: Record<string, unknown>
-): Promise<{ content: Array<{ type: 'text'; text: string }> }> {
+): Promise<ToolResponse> {
   try {
     const input = validateInput(SearchSemanticInput, params);
     const { db, vector } = requireDatabase();
@@ -120,16 +146,7 @@ export async function handleSearchSemantic(
       };
 
       if (input.include_provenance) {
-        const chain = db.getProvenanceChain(r.provenance_id);
-        result.provenance = chain.map(p => ({
-          id: p.id,
-          type: p.type,
-          chain_depth: p.chain_depth,
-          processor: p.processor,
-          processor_version: p.processor_version,
-          content_hash: p.content_hash,
-          created_at: p.created_at,
-        }));
+        result.provenance = formatProvenanceChain(db, r.provenance_id);
       }
 
       return result;
@@ -151,7 +168,7 @@ export async function handleSearchSemantic(
  */
 export async function handleSearchText(
   params: Record<string, unknown>
-): Promise<{ content: Array<{ type: 'text'; text: string }> }> {
+): Promise<ToolResponse> {
   try {
     const input = validateInput(SearchTextInput, params);
     const { db } = requireDatabase();
@@ -160,54 +177,42 @@ export async function handleSearchText(
     const allDocs = db.listDocuments({ status: 'complete', limit: 1000 });
     const results: Array<Record<string, unknown>> = [];
 
+    // Validate regex pattern early to fail fast
+    if (input.match_type === 'regex') {
+      try {
+        new RegExp(input.query, 'i');
+      } catch {
+        throw validationError(`Invalid regex pattern: ${input.query}`);
+      }
+    }
+
     for (const doc of allDocs) {
+      if (results.length >= input.limit) break;
+
       const chunks = db.getChunksByDocumentId(doc.id);
       for (const chunk of chunks) {
-        let matches = false;
+        if (results.length >= input.limit) break;
 
-        switch (input.match_type) {
-          case 'exact':
-            matches = chunk.text.includes(input.query);
-            break;
-          case 'fuzzy':
-            matches = chunk.text.toLowerCase().includes(input.query.toLowerCase());
-            break;
-          case 'regex':
-            try {
-              const regex = new RegExp(input.query, 'i');
-              matches = regex.test(chunk.text);
-            } catch {
-              throw validationError(`Invalid regex pattern: ${input.query}`);
-            }
-            break;
+        const matches = matchText(chunk.text, input.query, input.match_type);
+        if (!matches) continue;
+
+        const result: Record<string, unknown> = {
+          chunk_id: chunk.id,
+          document_id: chunk.document_id,
+          original_text: chunk.text,
+          source_file_name: doc.file_name,
+          source_file_path: doc.file_path,
+          page_number: chunk.page_number,
+          character_start: chunk.character_start,
+          character_end: chunk.character_end,
+          chunk_index: chunk.chunk_index,
+        };
+
+        if (input.include_provenance) {
+          result.provenance = formatProvenanceChain(db, chunk.provenance_id);
         }
 
-        if (matches && results.length < input.limit) {
-          const result: Record<string, unknown> = {
-            chunk_id: chunk.id,
-            document_id: chunk.document_id,
-            original_text: chunk.text,
-            source_file_name: doc.file_name,
-            source_file_path: doc.file_path,
-            page_number: chunk.page_number,
-            character_start: chunk.character_start,
-            character_end: chunk.character_end,
-            chunk_index: chunk.chunk_index,
-          };
-
-          if (input.include_provenance) {
-            const chain = db.getProvenanceChain(chunk.provenance_id);
-            result.provenance = chain.map(p => ({
-              id: p.id,
-              type: p.type,
-              chain_depth: p.chain_depth,
-              processor: p.processor,
-              content_hash: p.content_hash,
-            }));
-          }
-
-          results.push(result);
-        }
+        results.push(result);
       }
     }
 
@@ -223,11 +228,25 @@ export async function handleSearchText(
 }
 
 /**
+ * Match text against query using specified match type
+ */
+function matchText(text: string, query: string, matchType: 'exact' | 'fuzzy' | 'regex'): boolean {
+  switch (matchType) {
+    case 'exact':
+      return text.includes(query);
+    case 'fuzzy':
+      return text.toLowerCase().includes(query.toLowerCase());
+    case 'regex':
+      return new RegExp(query, 'i').test(text);
+  }
+}
+
+/**
  * Handle ocr_search_hybrid - Combined semantic + keyword search
  */
 export async function handleSearchHybrid(
   params: Record<string, unknown>
-): Promise<{ content: Array<{ type: 'text'; text: string }> }> {
+): Promise<ToolResponse> {
   try {
     const input = validateInput(SearchHybridInput, params);
     const { db, vector } = requireDatabase();
@@ -237,7 +256,7 @@ export async function handleSearchHybrid(
     const queryVector = await embedder.embedSearchQuery(input.query);
     const semanticResults = vector.searchSimilar(queryVector, { limit: input.limit * 2 });
 
-    // Get text results - use explicit types to reduce tsc inference burden
+    // Get text results
     const allDocs = db.listDocuments({ status: 'complete', limit: 1000 });
     const textMatches: Map<string, ChunkMatch> = new Map();
 
@@ -262,18 +281,18 @@ export async function handleSearchHybrid(
       }
     }
 
-    // Combine and score results - use explicit CombinedScore type
+    // Combine and score results
     const combinedScores: Map<string, CombinedScore> = new Map();
 
     for (const r of semanticResults) {
+      const hasKeywordMatch = textMatches.has(r.chunk_id);
       const semanticScore = r.similarity_score * input.semantic_weight;
-      const keywordScore = textMatches.has(r.chunk_id) ? input.keyword_weight : 0;
-      const totalScore = semanticScore + keywordScore;
+      const keywordScore = hasKeywordMatch ? input.keyword_weight : 0;
 
       combinedScores.set(r.chunk_id, {
-        score: totalScore,
+        score: semanticScore + keywordScore,
         semantic_score: r.similarity_score,
-        keyword_score: keywordScore > 0 ? 1 : 0,
+        keyword_score: hasKeywordMatch ? 1 : 0,
         chunk_id: r.chunk_id,
         document_id: r.document_id,
         original_text: r.original_text,
@@ -287,7 +306,7 @@ export async function handleSearchHybrid(
       });
     }
 
-    // Add text-only matches
+    // Add text-only matches (not found in semantic results)
     for (const [chunkId, { chunk, doc }] of textMatches) {
       if (!combinedScores.has(chunkId)) {
         combinedScores.set(chunkId, {
@@ -313,7 +332,7 @@ export async function handleSearchHybrid(
       .sort((a, b) => b.score - a.score)
       .slice(0, input.limit);
 
-    const formattedResults = sortedResults.map((r: CombinedScore) => {
+    const formattedResults = sortedResults.map(r => {
       const result: Record<string, unknown> = {
         chunk_id: r.chunk_id,
         document_id: r.document_id,
@@ -329,15 +348,8 @@ export async function handleSearchHybrid(
         keyword_score: r.keyword_score,
       };
 
-      if (input.include_provenance && r.provenance_id) {
-        const chain = db.getProvenanceChain(r.provenance_id);
-        result.provenance = chain.map(p => ({
-          id: p.id,
-          type: p.type,
-          chain_depth: p.chain_depth,
-          processor: p.processor,
-          content_hash: p.content_hash,
-        }));
+      if (input.include_provenance) {
+        result.provenance = formatProvenanceChain(db, r.provenance_id);
       }
 
       return result;
