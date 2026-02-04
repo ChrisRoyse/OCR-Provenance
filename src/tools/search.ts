@@ -173,12 +173,16 @@ export async function handleSearchText(
     const input = validateInput(SearchTextInput, params);
     const { db } = requireDatabase();
 
+    // Extract with defaults (Zod provides these, but TypeScript needs explicit handling)
+    const limit = input.limit ?? 10;
+    const matchType = input.match_type ?? 'fuzzy';
+
     // Get all chunks and search by text
     const allDocs = db.listDocuments({ status: 'complete', limit: 1000 });
     const results: Array<Record<string, unknown>> = [];
 
     // Validate regex pattern early to fail fast
-    if (input.match_type === 'regex') {
+    if (matchType === 'regex') {
       try {
         new RegExp(input.query, 'i');
       } catch {
@@ -187,13 +191,13 @@ export async function handleSearchText(
     }
 
     for (const doc of allDocs) {
-      if (results.length >= input.limit) break;
+      if (results.length >= limit) break;
 
       const chunks = db.getChunksByDocumentId(doc.id);
       for (const chunk of chunks) {
-        if (results.length >= input.limit) break;
+        if (results.length >= limit) break;
 
-        const matches = matchText(chunk.text, input.query, input.match_type);
+        const matches = matchText(chunk.text, input.query, matchType);
         if (!matches) continue;
 
         const result: Record<string, unknown> = {
@@ -218,7 +222,7 @@ export async function handleSearchText(
 
     return formatResponse(successResult({
       query: input.query,
-      match_type: input.match_type,
+      match_type: matchType,
       results,
       total: results.length,
     }));
@@ -251,10 +255,15 @@ export async function handleSearchHybrid(
     const input = validateInput(SearchHybridInput, params);
     const { db, vector } = requireDatabase();
 
+    // Extract with defaults (Zod provides these, but TypeScript needs explicit handling)
+    const limit = input.limit ?? 10;
+    const semanticWeight = input.semantic_weight ?? 0.7;
+    const keywordWeight = input.keyword_weight ?? 0.3;
+
     // Get semantic results
     const embedder = getEmbeddingService();
     const queryVector = await embedder.embedSearchQuery(input.query);
-    const semanticResults = vector.searchSimilar(queryVector, { limit: input.limit * 2 });
+    const semanticResults = vector.searchSimilar(queryVector, { limit: limit * 2 });
 
     // Get text results
     const allDocs = db.listDocuments({ status: 'complete', limit: 1000 });
@@ -286,11 +295,11 @@ export async function handleSearchHybrid(
 
     for (const r of semanticResults) {
       const hasKeywordMatch = textMatches.has(r.chunk_id);
-      const semanticScore = r.similarity_score * input.semantic_weight;
-      const keywordScore = hasKeywordMatch ? input.keyword_weight : 0;
+      const semanticScoreVal = r.similarity_score * semanticWeight;
+      const keywordScoreVal = hasKeywordMatch ? keywordWeight : 0;
 
       combinedScores.set(r.chunk_id, {
-        score: semanticScore + keywordScore,
+        score: semanticScoreVal + keywordScoreVal,
         semantic_score: r.similarity_score,
         keyword_score: hasKeywordMatch ? 1 : 0,
         chunk_id: r.chunk_id,
@@ -310,7 +319,7 @@ export async function handleSearchHybrid(
     for (const [chunkId, { chunk, doc }] of textMatches) {
       if (!combinedScores.has(chunkId)) {
         combinedScores.set(chunkId, {
-          score: input.keyword_weight,
+          score: keywordWeight,
           semantic_score: 0,
           keyword_score: 1,
           chunk_id: chunk.id,
@@ -330,7 +339,7 @@ export async function handleSearchHybrid(
     // Sort by combined score and limit
     const sortedResults = Array.from(combinedScores.values())
       .sort((a, b) => b.score - a.score)
-      .slice(0, input.limit);
+      .slice(0, limit);
 
     const formattedResults = sortedResults.map(r => {
       const result: Record<string, unknown> = {
@@ -357,8 +366,8 @@ export async function handleSearchHybrid(
 
     return formatResponse(successResult({
       query: input.query,
-      semantic_weight: input.semantic_weight,
-      keyword_weight: input.keyword_weight,
+      semantic_weight: semanticWeight,
+      keyword_weight: keywordWeight,
       results: formattedResults,
       total: formattedResults.length,
     }));

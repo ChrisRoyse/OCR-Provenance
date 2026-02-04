@@ -9,13 +9,8 @@
 export { MigrationError } from '../migrations.js';
 
 // Export types and error handling
-export {
-  DatabaseInfo,
-  DatabaseStats,
-  ListDocumentsOptions,
-  DatabaseErrorCode,
-  DatabaseError,
-} from './types.js';
+export type { DatabaseInfo, DatabaseStats, ListDocumentsOptions } from './types.js';
+export { DatabaseErrorCode, DatabaseError } from './types.js';
 
 // Export the main service class
 export { DatabaseService } from './service.js';

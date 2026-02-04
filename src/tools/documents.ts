@@ -38,8 +38,6 @@ export async function handleDocumentList(
 
     const documents = db.listDocuments({
       status: input.status_filter,
-      sortBy: input.sort_by,
-      sortOrder: input.sort_order,
       limit: input.limit,
       offset: input.offset,
     });
@@ -57,7 +55,7 @@ export async function handleDocumentList(
         page_count: d.page_count,
         created_at: d.created_at,
       })),
-      total: stats.documentCount,
+      total: stats.total_documents,
       limit: input.limit,
       offset: input.offset,
     }));

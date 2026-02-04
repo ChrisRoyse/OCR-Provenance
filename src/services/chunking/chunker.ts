@@ -269,8 +269,5 @@ export function createChunkProvenance(params: ChunkProvenanceParams): CreateProv
 }
 
 // Re-export types for convenience
-export {
-  ChunkResult,
-  ChunkingConfig,
-  DEFAULT_CHUNKING_CONFIG,
-} from '../../models/chunk.js';
+export type { ChunkResult, ChunkingConfig } from '../../models/chunk.js';
+export { DEFAULT_CHUNKING_CONFIG } from '../../models/chunk.js';

@@ -11,7 +11,7 @@ import { DatabaseService } from '../services/storage/database/index.js';
 import { VectorService } from '../services/storage/vector.js';
 import { DEFAULT_STORAGE_PATH } from '../services/storage/database/helpers.js';
 import { databaseNotSelectedError, databaseNotFoundError, databaseAlreadyExistsError } from './errors.js';
-import type { ServerState, ServerConfig, OCRMode } from './types.js';
+import type { ServerState, ServerConfig } from './types.js';
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // DEFAULT CONFIGURATION

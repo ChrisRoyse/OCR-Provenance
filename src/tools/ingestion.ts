@@ -157,8 +157,6 @@ function storeChunks(
       overlap_previous: cr.overlapWithPrevious,
       overlap_next: cr.overlapWithNext,
       provenance_id: chunkProvId,
-      embedding_status: 'pending',
-      embedded_at: null,
     });
 
     // Retrieve the stored chunk to ensure all fields are populated
@@ -249,7 +247,7 @@ export async function handleIngestDirectory(
         // Create document provenance
         db.insertProvenance({
           id: provenanceId,
-          type: 'DOCUMENT',
+          type: ProvenanceType.DOCUMENT,
           created_at: now,
           processed_at: now,
           source_file_created_at: null,
@@ -285,6 +283,7 @@ export async function handleIngestDirectory(
           page_count: null,
           provenance_id: provenanceId,
           error_message: null,
+          modified_at: null,
           ocr_completed_at: null,
         });
 
@@ -382,7 +381,7 @@ export async function handleIngestFiles(
         // Create document provenance
         db.insertProvenance({
           id: provenanceId,
-          type: 'DOCUMENT',
+          type: ProvenanceType.DOCUMENT,
           created_at: now,
           processed_at: now,
           source_file_created_at: null,
@@ -418,6 +417,7 @@ export async function handleIngestFiles(
           page_count: null,
           provenance_id: provenanceId,
           error_message: null,
+          modified_at: null,
           ocr_completed_at: null,
         });
 
@@ -599,6 +599,7 @@ export async function handleOCRStatus(
     }
 
     // Map filter values - CRITICAL: use 'status' not 'statusFilter' for listDocuments
+    const statusFilter = input.status_filter ?? 'all';
     const filterMap: Record<string, 'pending' | 'processing' | 'complete' | 'failed' | undefined> = {
       pending: 'pending',
       processing: 'processing',
@@ -608,7 +609,7 @@ export async function handleOCRStatus(
     };
 
     const documents = db.listDocuments({
-      status: filterMap[input.status_filter],
+      status: filterMap[statusFilter],
       limit: 1000,
     });
 
