@@ -209,6 +209,45 @@ CREATE VIRTUAL TABLE IF NOT EXISTS vec_embeddings USING vec0(
 `;
 
 /**
+ * Images table - extracted images from documents for VLM analysis
+ * Provenance depth: 2 (after OCR extraction)
+ */
+export const CREATE_IMAGES_TABLE = `
+CREATE TABLE IF NOT EXISTS images (
+  id TEXT PRIMARY KEY,
+  document_id TEXT NOT NULL,
+  ocr_result_id TEXT NOT NULL,
+  page_number INTEGER NOT NULL,
+  bbox_x REAL NOT NULL,
+  bbox_y REAL NOT NULL,
+  bbox_width REAL NOT NULL,
+  bbox_height REAL NOT NULL,
+  image_index INTEGER NOT NULL,
+  format TEXT NOT NULL,
+  width INTEGER NOT NULL,
+  height INTEGER NOT NULL,
+  extracted_path TEXT,
+  file_size INTEGER,
+  vlm_status TEXT NOT NULL DEFAULT 'pending' CHECK (vlm_status IN ('pending', 'processing', 'complete', 'failed')),
+  vlm_description TEXT,
+  vlm_structured_data TEXT,
+  vlm_embedding_id TEXT,
+  vlm_model TEXT,
+  vlm_confidence REAL,
+  vlm_processed_at TEXT,
+  vlm_tokens_used INTEGER,
+  context_text TEXT,
+  provenance_id TEXT,
+  created_at TEXT NOT NULL,
+  error_message TEXT,
+  FOREIGN KEY (document_id) REFERENCES documents(id) ON DELETE CASCADE,
+  FOREIGN KEY (ocr_result_id) REFERENCES ocr_results(id) ON DELETE CASCADE,
+  FOREIGN KEY (vlm_embedding_id) REFERENCES embeddings(id),
+  FOREIGN KEY (provenance_id) REFERENCES provenance(id)
+)
+`;
+
+/**
  * All required indexes for query performance
  */
 export const CREATE_INDEXES = [
@@ -231,6 +270,13 @@ export const CREATE_INDEXES = [
   'CREATE INDEX IF NOT EXISTS idx_embeddings_source_file ON embeddings(source_file_path)',
   'CREATE INDEX IF NOT EXISTS idx_embeddings_page ON embeddings(page_number)',
 
+  // Images indexes
+  'CREATE INDEX IF NOT EXISTS idx_images_document_id ON images(document_id)',
+  'CREATE INDEX IF NOT EXISTS idx_images_ocr_result_id ON images(ocr_result_id)',
+  'CREATE INDEX IF NOT EXISTS idx_images_page ON images(document_id, page_number)',
+  'CREATE INDEX IF NOT EXISTS idx_images_vlm_status ON images(vlm_status)',
+  'CREATE INDEX IF NOT EXISTS idx_images_pending ON images(vlm_status) WHERE vlm_status = \'pending\'',
+
   // Provenance indexes
   'CREATE INDEX IF NOT EXISTS idx_provenance_source_id ON provenance(source_id)',
   'CREATE INDEX IF NOT EXISTS idx_provenance_type ON provenance(type)',
@@ -248,6 +294,7 @@ export const TABLE_DEFINITIONS = [
   { name: 'ocr_results', sql: CREATE_OCR_RESULTS_TABLE },
   { name: 'chunks', sql: CREATE_CHUNKS_TABLE },
   { name: 'embeddings', sql: CREATE_EMBEDDINGS_TABLE },
+  { name: 'images', sql: CREATE_IMAGES_TABLE },
 ] as const;
 
 /**
@@ -262,6 +309,7 @@ export const REQUIRED_TABLES = [
   'chunks',
   'embeddings',
   'vec_embeddings',
+  'images',
 ] as const;
 
 /**
@@ -279,6 +327,11 @@ export const REQUIRED_INDEXES = [
   'idx_embeddings_document_id',
   'idx_embeddings_source_file',
   'idx_embeddings_page',
+  'idx_images_document_id',
+  'idx_images_ocr_result_id',
+  'idx_images_page',
+  'idx_images_vlm_status',
+  'idx_images_pending',
   'idx_provenance_source_id',
   'idx_provenance_type',
   'idx_provenance_root_document_id',

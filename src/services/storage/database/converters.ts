@@ -13,11 +13,17 @@ import {
   ProvenanceLocation,
 } from '../../../models/provenance.js';
 import {
+  ImageReference,
+  VLMStatus,
+  VLMStructuredData,
+} from '../../../models/image.js';
+import {
   DocumentRow,
   OCRResultRow,
   ChunkRow,
   EmbeddingRow,
   ProvenanceRow,
+  ImageRow,
 } from './types.js';
 
 /**
@@ -151,5 +157,45 @@ export function rowToProvenance(row: ProvenanceRow): ProvenanceRecord {
     parent_ids: row.parent_ids,
     chain_depth: row.chain_depth,
     chain_path: row.chain_path,
+  };
+}
+
+/**
+ * Convert image row to ImageReference interface
+ */
+export function rowToImage(row: ImageRow): ImageReference {
+  return {
+    id: row.id,
+    document_id: row.document_id,
+    ocr_result_id: row.ocr_result_id,
+    page_number: row.page_number,
+    bounding_box: {
+      x: row.bbox_x,
+      y: row.bbox_y,
+      width: row.bbox_width,
+      height: row.bbox_height,
+    },
+    image_index: row.image_index,
+    format: row.format,
+    dimensions: {
+      width: row.width,
+      height: row.height,
+    },
+    extracted_path: row.extracted_path,
+    file_size: row.file_size,
+    vlm_status: row.vlm_status as VLMStatus,
+    vlm_description: row.vlm_description,
+    vlm_structured_data: row.vlm_structured_data
+      ? (JSON.parse(row.vlm_structured_data) as VLMStructuredData)
+      : null,
+    vlm_embedding_id: row.vlm_embedding_id,
+    vlm_model: row.vlm_model,
+    vlm_confidence: row.vlm_confidence,
+    vlm_processed_at: row.vlm_processed_at,
+    vlm_tokens_used: row.vlm_tokens_used,
+    context_text: row.context_text,
+    provenance_id: row.provenance_id,
+    created_at: row.created_at,
+    error_message: row.error_message,
   };
 }
