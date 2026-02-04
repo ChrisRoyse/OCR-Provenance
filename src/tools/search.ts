@@ -1,0 +1,400 @@
+/**
+ * Search MCP Tools
+ *
+ * Extracted from src/index.ts Task 21.
+ * Tools: ocr_search_semantic, ocr_search_text, ocr_search_hybrid
+ *
+ * CRITICAL: NEVER use console.log() - stdout is reserved for JSON-RPC protocol.
+ * Use console.error() for all logging.
+ *
+ * @module tools/search
+ */
+
+import { z } from 'zod';
+import { getEmbeddingService } from '../services/embedding/embedder.js';
+import { requireDatabase } from '../server/state.js';
+import { successResult } from '../server/types.js';
+import {
+  validateInput,
+  SearchSemanticInput,
+  SearchTextInput,
+  SearchHybridInput,
+} from '../utils/validation.js';
+import { MCPError, formatErrorResponse, validationError } from '../server/errors.js';
+import type { Document } from '../models/document.js';
+import type { Chunk } from '../models/chunk.js';
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// TYPE DEFINITIONS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+type ToolHandler = (params: Record<string, unknown>) => Promise<{
+  content: Array<{ type: 'text'; text: string }>;
+}>;
+
+interface ToolDefinition {
+  description: string;
+  inputSchema: Record<string, z.ZodTypeAny>;
+  handler: ToolHandler;
+}
+
+/** Chunk match for hybrid search */
+interface ChunkMatch {
+  chunk: Pick<Chunk, 'id' | 'document_id' | 'text' | 'chunk_index' | 'page_number' | 'character_start' | 'character_end' | 'provenance_id'>;
+  doc: Pick<Document, 'id' | 'file_name' | 'file_path'>;
+}
+
+/** Combined search score result */
+interface CombinedScore {
+  score: number;
+  semantic_score: number;
+  keyword_score: number;
+  chunk_id: string;
+  document_id: string;
+  original_text: string;
+  source_file_name: string;
+  source_file_path: string;
+  page_number: number | null;
+  character_start: number;
+  character_end: number;
+  chunk_index: number;
+  provenance_id: string;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// HELPER FUNCTIONS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+function formatResponse(result: unknown): { content: Array<{ type: 'text'; text: string }> } {
+  return {
+    content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
+  };
+}
+
+function handleError(error: unknown): { content: Array<{ type: 'text'; text: string }> } {
+  const mcpError = MCPError.fromUnknown(error);
+  console.error(`[ERROR] ${mcpError.category}: ${mcpError.message}`);
+  return formatResponse(formatErrorResponse(mcpError));
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// SEARCH TOOL HANDLERS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/**
+ * Handle ocr_search_semantic - Semantic vector search
+ */
+export async function handleSearchSemantic(
+  params: Record<string, unknown>
+): Promise<{ content: Array<{ type: 'text'; text: string }> }> {
+  try {
+    const input = validateInput(SearchSemanticInput, params);
+    const { db, vector } = requireDatabase();
+
+    // Generate query embedding
+    const embedder = getEmbeddingService();
+    const queryVector = await embedder.embedSearchQuery(input.query);
+
+    // Search for similar vectors
+    const results = vector.searchSimilar(queryVector, {
+      limit: input.limit,
+      threshold: input.similarity_threshold,
+      documentFilter: input.document_filter,
+    });
+
+    // Format results with optional provenance
+    const formattedResults = results.map(r => {
+      const result: Record<string, unknown> = {
+        embedding_id: r.embedding_id,
+        chunk_id: r.chunk_id,
+        document_id: r.document_id,
+        similarity_score: r.similarity_score,
+        original_text: r.original_text,
+        source_file_path: r.source_file_path,
+        source_file_name: r.source_file_name,
+        page_number: r.page_number,
+        character_start: r.character_start,
+        character_end: r.character_end,
+        chunk_index: r.chunk_index,
+        total_chunks: r.total_chunks,
+      };
+
+      if (input.include_provenance) {
+        const chain = db.getProvenanceChain(r.provenance_id);
+        result.provenance = chain.map(p => ({
+          id: p.id,
+          type: p.type,
+          chain_depth: p.chain_depth,
+          processor: p.processor,
+          processor_version: p.processor_version,
+          content_hash: p.content_hash,
+          created_at: p.created_at,
+        }));
+      }
+
+      return result;
+    });
+
+    return formatResponse(successResult({
+      query: input.query,
+      results: formattedResults,
+      total: formattedResults.length,
+      threshold: input.similarity_threshold,
+    }));
+  } catch (error) {
+    return handleError(error);
+  }
+}
+
+/**
+ * Handle ocr_search_text - Keyword/text search
+ */
+export async function handleSearchText(
+  params: Record<string, unknown>
+): Promise<{ content: Array<{ type: 'text'; text: string }> }> {
+  try {
+    const input = validateInput(SearchTextInput, params);
+    const { db } = requireDatabase();
+
+    // Get all chunks and search by text
+    const allDocs = db.listDocuments({ status: 'complete', limit: 1000 });
+    const results: Array<Record<string, unknown>> = [];
+
+    for (const doc of allDocs) {
+      const chunks = db.getChunksByDocumentId(doc.id);
+      for (const chunk of chunks) {
+        let matches = false;
+
+        switch (input.match_type) {
+          case 'exact':
+            matches = chunk.text.includes(input.query);
+            break;
+          case 'fuzzy':
+            matches = chunk.text.toLowerCase().includes(input.query.toLowerCase());
+            break;
+          case 'regex':
+            try {
+              const regex = new RegExp(input.query, 'i');
+              matches = regex.test(chunk.text);
+            } catch {
+              throw validationError(`Invalid regex pattern: ${input.query}`);
+            }
+            break;
+        }
+
+        if (matches && results.length < input.limit) {
+          const result: Record<string, unknown> = {
+            chunk_id: chunk.id,
+            document_id: chunk.document_id,
+            original_text: chunk.text,
+            source_file_name: doc.file_name,
+            source_file_path: doc.file_path,
+            page_number: chunk.page_number,
+            character_start: chunk.character_start,
+            character_end: chunk.character_end,
+            chunk_index: chunk.chunk_index,
+          };
+
+          if (input.include_provenance) {
+            const chain = db.getProvenanceChain(chunk.provenance_id);
+            result.provenance = chain.map(p => ({
+              id: p.id,
+              type: p.type,
+              chain_depth: p.chain_depth,
+              processor: p.processor,
+              content_hash: p.content_hash,
+            }));
+          }
+
+          results.push(result);
+        }
+      }
+    }
+
+    return formatResponse(successResult({
+      query: input.query,
+      match_type: input.match_type,
+      results,
+      total: results.length,
+    }));
+  } catch (error) {
+    return handleError(error);
+  }
+}
+
+/**
+ * Handle ocr_search_hybrid - Combined semantic + keyword search
+ */
+export async function handleSearchHybrid(
+  params: Record<string, unknown>
+): Promise<{ content: Array<{ type: 'text'; text: string }> }> {
+  try {
+    const input = validateInput(SearchHybridInput, params);
+    const { db, vector } = requireDatabase();
+
+    // Get semantic results
+    const embedder = getEmbeddingService();
+    const queryVector = await embedder.embedSearchQuery(input.query);
+    const semanticResults = vector.searchSimilar(queryVector, { limit: input.limit * 2 });
+
+    // Get text results - use explicit types to reduce tsc inference burden
+    const allDocs = db.listDocuments({ status: 'complete', limit: 1000 });
+    const textMatches: Map<string, ChunkMatch> = new Map();
+
+    for (const doc of allDocs) {
+      const chunks = db.getChunksByDocumentId(doc.id);
+      for (const chunk of chunks) {
+        if (chunk.text.toLowerCase().includes(input.query.toLowerCase())) {
+          textMatches.set(chunk.id, {
+            chunk: {
+              id: chunk.id,
+              document_id: chunk.document_id,
+              text: chunk.text,
+              chunk_index: chunk.chunk_index,
+              page_number: chunk.page_number,
+              character_start: chunk.character_start,
+              character_end: chunk.character_end,
+              provenance_id: chunk.provenance_id,
+            },
+            doc: { id: doc.id, file_name: doc.file_name, file_path: doc.file_path },
+          });
+        }
+      }
+    }
+
+    // Combine and score results - use explicit CombinedScore type
+    const combinedScores: Map<string, CombinedScore> = new Map();
+
+    for (const r of semanticResults) {
+      const semanticScore = r.similarity_score * input.semantic_weight;
+      const keywordScore = textMatches.has(r.chunk_id) ? input.keyword_weight : 0;
+      const totalScore = semanticScore + keywordScore;
+
+      combinedScores.set(r.chunk_id, {
+        score: totalScore,
+        semantic_score: r.similarity_score,
+        keyword_score: keywordScore > 0 ? 1 : 0,
+        chunk_id: r.chunk_id,
+        document_id: r.document_id,
+        original_text: r.original_text,
+        source_file_name: r.source_file_name,
+        source_file_path: r.source_file_path,
+        page_number: r.page_number,
+        character_start: r.character_start,
+        character_end: r.character_end,
+        chunk_index: r.chunk_index,
+        provenance_id: r.provenance_id,
+      });
+    }
+
+    // Add text-only matches
+    for (const [chunkId, { chunk, doc }] of textMatches) {
+      if (!combinedScores.has(chunkId)) {
+        combinedScores.set(chunkId, {
+          score: input.keyword_weight,
+          semantic_score: 0,
+          keyword_score: 1,
+          chunk_id: chunk.id,
+          document_id: chunk.document_id,
+          original_text: chunk.text,
+          source_file_name: doc.file_name,
+          source_file_path: doc.file_path,
+          page_number: chunk.page_number,
+          character_start: chunk.character_start,
+          character_end: chunk.character_end,
+          chunk_index: chunk.chunk_index,
+          provenance_id: chunk.provenance_id,
+        });
+      }
+    }
+
+    // Sort by combined score and limit
+    const sortedResults = Array.from(combinedScores.values())
+      .sort((a, b) => b.score - a.score)
+      .slice(0, input.limit);
+
+    const formattedResults = sortedResults.map((r: CombinedScore) => {
+      const result: Record<string, unknown> = {
+        chunk_id: r.chunk_id,
+        document_id: r.document_id,
+        original_text: r.original_text,
+        source_file_name: r.source_file_name,
+        source_file_path: r.source_file_path,
+        page_number: r.page_number,
+        character_start: r.character_start,
+        character_end: r.character_end,
+        chunk_index: r.chunk_index,
+        combined_score: r.score,
+        semantic_score: r.semantic_score,
+        keyword_score: r.keyword_score,
+      };
+
+      if (input.include_provenance && r.provenance_id) {
+        const chain = db.getProvenanceChain(r.provenance_id);
+        result.provenance = chain.map(p => ({
+          id: p.id,
+          type: p.type,
+          chain_depth: p.chain_depth,
+          processor: p.processor,
+          content_hash: p.content_hash,
+        }));
+      }
+
+      return result;
+    });
+
+    return formatResponse(successResult({
+      query: input.query,
+      semantic_weight: input.semantic_weight,
+      keyword_weight: input.keyword_weight,
+      results: formattedResults,
+      total: formattedResults.length,
+    }));
+  } catch (error) {
+    return handleError(error);
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// TOOL DEFINITIONS EXPORT
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/**
+ * Search tools collection for MCP server registration
+ */
+export const searchTools: Record<string, ToolDefinition> = {
+  ocr_search_semantic: {
+    description: 'Search documents using semantic similarity (vector search)',
+    inputSchema: {
+      query: z.string().min(1).max(1000).describe('Search query'),
+      limit: z.number().int().min(1).max(100).default(10).describe('Maximum results to return'),
+      similarity_threshold: z.number().min(0).max(1).default(0.7).describe('Minimum similarity score (0-1)'),
+      include_provenance: z.boolean().default(false).describe('Include provenance chain in results'),
+      document_filter: z.array(z.string()).optional().describe('Filter by document IDs'),
+    },
+    handler: handleSearchSemantic,
+  },
+  ocr_search_text: {
+    description: 'Search documents using keyword/text matching',
+    inputSchema: {
+      query: z.string().min(1).max(1000).describe('Search query'),
+      match_type: z.enum(['exact', 'fuzzy', 'regex']).default('fuzzy').describe('Match type'),
+      limit: z.number().int().min(1).max(100).default(10).describe('Maximum results to return'),
+      include_provenance: z.boolean().default(false).describe('Include provenance chain in results'),
+    },
+    handler: handleSearchText,
+  },
+  ocr_search_hybrid: {
+    description: 'Search using combined semantic and keyword matching',
+    inputSchema: {
+      query: z.string().min(1).max(1000).describe('Search query'),
+      semantic_weight: z.number().min(0).max(1).default(0.7).describe('Weight for semantic results (0-1)'),
+      keyword_weight: z.number().min(0).max(1).default(0.3).describe('Weight for keyword results (0-1)'),
+      limit: z.number().int().min(1).max(100).default(10).describe('Maximum results to return'),
+      include_provenance: z.boolean().default(false).describe('Include provenance chain in results'),
+    },
+    handler: handleSearchHybrid,
+  },
+};
+
+export default searchTools;

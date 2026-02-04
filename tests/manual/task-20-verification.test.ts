@@ -42,8 +42,8 @@ describe('Task 20: Full Pipeline Verification', () => {
     tempDir = mkdtempSync(resolve(tmpdir(), 'task20-verify-'));
     console.error(`\n[SETUP] Created temp directory: ${tempDir}`);
 
-    // Create database
-    db = DatabaseService.create('task20-verify', tempDir);
+    // Create database with unique name (timestamp to avoid conflicts)
+    db = DatabaseService.create(`task20-verify-${Date.now()}`, tempDir);
     vector = new VectorService(db.getConnection());
     console.error(`[SETUP] Database created: ${db.getPath()}`);
   });

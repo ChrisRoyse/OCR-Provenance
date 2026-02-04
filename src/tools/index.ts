@@ -8,3 +8,4 @@
 
 export * from './database.js';
 export * from './ingestion.js';
+export * from './search.js';
