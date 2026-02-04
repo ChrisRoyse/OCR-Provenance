@@ -285,6 +285,10 @@ export class ProvenanceTracker {
   /**
    * Build chain_path array based on type
    * Returns human-readable path from root to current type
+   *
+   * Note: For EMBEDDING, the chain_path depends on the parent type.
+   * This method returns the default CHUNK->EMBEDDING path.
+   * For VLM_DESCRIPTION->EMBEDDING, the chain_path is built dynamically from parent.
    */
   private buildChainPath(type: ProvenanceType): string[] {
     switch (type) {
@@ -294,7 +298,13 @@ export class ProvenanceTracker {
         return ['DOCUMENT', 'OCR_RESULT'];
       case ProvenanceType.CHUNK:
         return ['DOCUMENT', 'OCR_RESULT', 'CHUNK'];
+      case ProvenanceType.IMAGE:
+        return ['DOCUMENT', 'OCR_RESULT', 'IMAGE'];
+      case ProvenanceType.VLM_DESCRIPTION:
+        return ['DOCUMENT', 'OCR_RESULT', 'IMAGE', 'VLM_DESCRIPTION'];
       case ProvenanceType.EMBEDDING:
+        // Default path is from CHUNK. For VLM_DESCRIPTION embeddings,
+        // the chain_path will be dynamically built from the parent chain.
         return ['DOCUMENT', 'OCR_RESULT', 'CHUNK', 'EMBEDDING'];
       default:
         // This should never happen due to type validation above

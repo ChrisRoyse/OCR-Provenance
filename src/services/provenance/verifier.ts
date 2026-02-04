@@ -27,12 +27,15 @@ import {
   rowToChunk,
   rowToEmbedding,
   rowToProvenance,
+  rowToImage,
 } from '../storage/database/converters.js';
+import type { ImageReference } from '../../models/image.js';
 import {
   OCRResultRow,
   ChunkRow,
   EmbeddingRow,
   ProvenanceRow,
+  ImageRow,
 } from '../storage/database/types.js';
 
 /** Error codes for verifier operations */
@@ -88,6 +91,8 @@ export interface DatabaseVerificationResult extends VerificationResult {
   ocr_results_verified: number;
   chunks_verified: number;
   embeddings_verified: number;
+  images_verified: number;
+  vlm_descriptions_verified: number;
   duration_ms: number;
 }
 
@@ -239,6 +244,8 @@ export class ProvenanceVerifier {
     let ocrResultsVerified = 0;
     let chunksVerified = 0;
     let embeddingsVerified = 0;
+    let imagesVerified = 0;
+    let vlmDescriptionsVerified = 0;
 
     for (const record of allProvenance) {
       try {
@@ -257,6 +264,12 @@ export class ProvenanceVerifier {
             break;
           case ProvenanceType.EMBEDDING:
             embeddingsVerified++;
+            break;
+          case ProvenanceType.IMAGE:
+            imagesVerified++;
+            break;
+          case ProvenanceType.VLM_DESCRIPTION:
+            vlmDescriptionsVerified++;
             break;
         }
 
@@ -296,6 +309,8 @@ export class ProvenanceVerifier {
       ocr_results_verified: ocrResultsVerified,
       chunks_verified: chunksVerified,
       embeddings_verified: embeddingsVerified,
+      images_verified: imagesVerified,
+      vlm_descriptions_verified: vlmDescriptionsVerified,
       duration_ms: durationMs,
     };
   }
@@ -424,6 +439,64 @@ export class ProvenanceVerifier {
         return { content: emb.original_text, expectedHash: emb.content_hash, isFile: false };
       }
 
+      case ProvenanceType.IMAGE: {
+        // IMAGE verification: hash the extracted image file
+        const image = this.getImageByProvenanceId(record.id);
+        if (!image) {
+          throw new VerifierError(
+            `Image not found for provenance ${record.id}`,
+            VerifierErrorCode.CONTENT_NOT_FOUND,
+            { provenanceId: record.id, type: record.type }
+          );
+        }
+
+        // Check extracted file exists
+        if (!image.extracted_path || !fs.existsSync(image.extracted_path)) {
+          throw new VerifierError(
+            `Extracted image file not found: ${image.extracted_path}`,
+            VerifierErrorCode.FILE_NOT_FOUND,
+            { provenanceId: record.id, imagePath: image.extracted_path }
+          );
+        }
+
+        // Return file path - caller will hash the file
+        return { content: image.extracted_path, expectedHash: record.content_hash, isFile: true };
+      }
+
+      case ProvenanceType.VLM_DESCRIPTION: {
+        // VLM_DESCRIPTION verification: hash the VLM description text
+        // The description is stored in images.vlm_description, but we need to find it
+        // via the provenance chain - the parent should be an IMAGE
+
+        // Get the parent IMAGE to find the VLM description
+        if (!record.parent_id) {
+          throw new VerifierError(
+            `VLM_DESCRIPTION has no parent_id: ${record.id}`,
+            VerifierErrorCode.CHAIN_BROKEN,
+            { provenanceId: record.id }
+          );
+        }
+
+        const image = this.getImageByProvenanceId(record.parent_id);
+        if (!image) {
+          throw new VerifierError(
+            `Parent image not found for VLM_DESCRIPTION ${record.id}`,
+            VerifierErrorCode.CONTENT_NOT_FOUND,
+            { provenanceId: record.id, parentId: record.parent_id }
+          );
+        }
+
+        if (!image.vlm_description) {
+          throw new VerifierError(
+            `VLM description is empty for image ${image.id}`,
+            VerifierErrorCode.CONTENT_NOT_FOUND,
+            { provenanceId: record.id, imageId: image.id }
+          );
+        }
+
+        return { content: image.vlm_description, expectedHash: record.content_hash, isFile: false };
+      }
+
       default: {
         const unknownType: never = record.type;
         throw new VerifierError(
@@ -492,6 +565,16 @@ export class ProvenanceVerifier {
       'SELECT * FROM embeddings WHERE provenance_id = ?'
     ).get(provenanceId) as EmbeddingRow | undefined;
     return row ? rowToEmbedding(row) : null;
+  }
+
+  /**
+   * Get image by its provenance_id
+   */
+  private getImageByProvenanceId(provenanceId: string): ImageReference | null {
+    const row = this.rawDb.prepare(
+      'SELECT * FROM images WHERE provenance_id = ?'
+    ).get(provenanceId) as ImageRow | undefined;
+    return row ? rowToImage(row) : null;
   }
 
   /**

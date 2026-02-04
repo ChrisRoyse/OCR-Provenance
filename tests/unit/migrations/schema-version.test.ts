@@ -20,6 +20,7 @@ import {
   migrateToLatest,
   getCurrentSchemaVersion,
 } from '../../../src/services/storage/migrations.js';
+import { SCHEMA_VERSION } from '../../../src/services/storage/migrations/schema-definitions.js';
 
 describe('Schema Version Management', () => {
   const ctx: TestContext = {
@@ -57,13 +58,13 @@ describe('Schema Version Management', () => {
     () => {
       initializeDatabase(ctx.db);
       const version = checkSchemaVersion(ctx.db);
-      expect(version).toBe(1);
+      expect(version).toBe(SCHEMA_VERSION);
     }
   );
 
   it('should return correct current schema version constant', () => {
     const version = getCurrentSchemaVersion();
-    expect(version).toBe(1);
+    expect(version).toBe(SCHEMA_VERSION);
   });
 
   it.skipIf(!sqliteVecAvailable)(
@@ -71,7 +72,7 @@ describe('Schema Version Management', () => {
     () => {
       migrateToLatest(ctx.db);
       const version = checkSchemaVersion(ctx.db);
-      expect(version).toBe(1);
+      expect(version).toBe(SCHEMA_VERSION);
     }
   );
 
@@ -87,7 +88,7 @@ describe('Schema Version Management', () => {
       const version2 = checkSchemaVersion(ctx.db);
 
       expect(version1).toBe(version2);
-      expect(version2).toBe(1);
+      expect(version2).toBe(SCHEMA_VERSION);
     }
   );
 
