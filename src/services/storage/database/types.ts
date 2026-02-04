@@ -219,3 +219,44 @@ export interface ProvenanceRow {
   chain_depth: number;
   chain_path: string | null;
 }
+
+/**
+ * Database row type for images
+ */
+export interface ImageRow {
+  id: string;
+  document_id: string;
+  ocr_result_id: string;
+  page_number: number;
+  bbox_x: number;
+  bbox_y: number;
+  bbox_width: number;
+  bbox_height: number;
+  image_index: number;
+  format: string;
+  width: number;
+  height: number;
+  extracted_path: string | null;
+  file_size: number | null;
+  vlm_status: string;
+  vlm_description: string | null;
+  vlm_structured_data: string | null;
+  vlm_embedding_id: string | null;
+  vlm_model: string | null;
+  vlm_confidence: number | null;
+  vlm_processed_at: string | null;
+  vlm_tokens_used: number | null;
+  context_text: string | null;
+  provenance_id: string | null;
+  created_at: string;
+  error_message: string | null;
+}
+
+/**
+ * Options for listing images
+ */
+export interface ListImagesOptions {
+  vlmStatus?: 'pending' | 'processing' | 'complete' | 'failed';
+  limit?: number;
+  offset?: number;
+}
