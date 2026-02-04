@@ -21,7 +21,8 @@
  */
 
 import { resolve } from 'path';
-import { existsSync, readdirSync, statSync } from 'fs';
+import { existsSync, readdirSync, statSync, readFileSync } from 'fs';
+import { computeHash } from '../src/utils/hash.js';
 
 // Import services directly (not via MCP)
 import { DatabaseService } from '../src/services/storage/database/index.js';
@@ -283,20 +284,80 @@ async function cmdExtract(): Promise<void> {
         continue;
       }
 
-      // Store in database
-      const imageRefs: CreateImageReference[] = extracted.map(img => ({
-        document_id: doc.id,
-        ocr_result_id: ocrResult.id,
-        page_number: img.page,
-        bounding_box: img.bbox,
-        image_index: img.index,
-        format: img.format,
-        dimensions: { width: img.width, height: img.height },
-        extracted_path: img.path,
-        file_size: img.size,
-        context_text: null,
-        provenance_id: null,
-      }));
+      // Get OCR result provenance to build parent chain
+      const ocrProv = db.getProvenance(ocrResult.provenance_id);
+      if (!ocrProv) {
+        log('WARN', `  Skipping ${doc.file_name}: OCR provenance not found`);
+        continue;
+      }
+
+      // Store in database with IMAGE provenance records
+      const imageRefs: CreateImageReference[] = [];
+
+      for (const img of extracted) {
+        const imageProvId = uuidv4();
+        const now = new Date().toISOString();
+        const imagePath = img.path;
+
+        // Build parent_ids: document provenance + OCR provenance
+        const parentIds = JSON.parse(ocrProv.parent_ids) as string[];
+        parentIds.push(ocrResult.provenance_id);
+
+        // Compute hash of the actual image file
+        const imageContent = readFileSync(imagePath);
+        const imageHash = computeHash(imageContent);
+
+        // Create IMAGE provenance record (depth 2, parallel to CHUNK)
+        db.insertProvenance({
+          id: imageProvId,
+          type: ProvenanceType.IMAGE,
+          created_at: now,
+          processed_at: now,
+          source_file_created_at: null,
+          source_file_modified_at: null,
+          source_type: 'IMAGE_EXTRACTION',
+          source_path: imagePath,
+          source_id: ocrResult.provenance_id,
+          root_document_id: ocrProv.root_document_id,
+          location: {
+            page_number: img.page,
+            bounding_box: {
+              x: img.bbox.x,
+              y: img.bbox.y,
+              width: img.bbox.width,
+              height: img.bbox.height,
+              page: img.page,
+            },
+          },
+          content_hash: imageHash,
+          input_hash: ocrProv.content_hash,
+          file_hash: doc.file_hash,
+          processor: 'pymupdf-extractor',
+          processor_version: '1.0.0',
+          processing_params: { minSize: CONFIG.IMAGE_MIN_SIZE, maxImages: CONFIG.IMAGE_MAX_PER_DOC },
+          processing_duration_ms: null,
+          processing_quality_score: null,
+          parent_id: ocrResult.provenance_id,
+          parent_ids: JSON.stringify(parentIds),
+          chain_depth: 2,
+          chain_path: JSON.stringify(['DOCUMENT', 'OCR_RESULT', 'IMAGE']),
+        });
+
+        // Create image reference with provenance_id
+        imageRefs.push({
+          document_id: doc.id,
+          ocr_result_id: ocrResult.id,
+          page_number: img.page,
+          bounding_box: img.bbox,
+          image_index: img.index,
+          format: img.format,
+          dimensions: { width: img.width, height: img.height },
+          extracted_path: img.path,
+          file_size: img.size,
+          context_text: null,
+          provenance_id: imageProvId,
+        });
+      }
 
       insertImageBatch(db.getConnection(), imageRefs);
       totalImages += extracted.length;

@@ -275,19 +275,21 @@ export class VLMPipeline {
         );
       }
 
-      // Generate embedding for description
+      // Track VLM_DESCRIPTION provenance FIRST (returns provenance ID for embedding chain)
+      let vlmProvId: string | undefined;
+      if (!this.config.skipProvenance && this.dbService) {
+        vlmProvId = this.trackProvenance(image, vlmResult);
+      }
+
+      // Generate embedding for description with VLM provenance ID
       let embeddingId: string | null = null;
 
       if (!this.config.skipEmbeddings && vlmResult.description) {
         embeddingId = await this.generateAndStoreEmbedding(
           vlmResult.description,
-          image
+          image,
+          vlmProvId
         );
-      }
-
-      // Track provenance
-      if (!this.config.skipProvenance && this.dbService) {
-        this.trackProvenance(image, vlmResult);
       }
 
       // Build VLM result for database
@@ -333,10 +335,16 @@ export class VLMPipeline {
 
   /**
    * Generate embedding and store in vector database.
+   * Creates EMBEDDING provenance at depth 4 (from VLM_DESCRIPTION).
+   *
+   * @param description - VLM description text to embed
+   * @param image - Source image reference
+   * @param vlmDescriptionProvId - VLM_DESCRIPTION provenance ID for chain tracking
    */
   private async generateAndStoreEmbedding(
     description: string,
-    image: ImageReference
+    image: ImageReference,
+    vlmDescriptionProvId?: string
   ): Promise<string> {
     // Generate embedding vector
     const vectors = await this.embeddingClient.embedChunks([description], 1);
@@ -350,6 +358,59 @@ export class VLMPipeline {
 
     // Store in database and vector storage if services available
     if (this.dbService && this.vectorService) {
+      // Create EMBEDDING provenance if we have VLM_DESCRIPTION provenance
+      let embeddingProvId = embeddingId; // Default: use embedding ID as provenance ID
+
+      if (vlmDescriptionProvId) {
+        embeddingProvId = uuidv4();
+        const vlmProv = this.dbService.getProvenance(vlmDescriptionProvId);
+
+        if (vlmProv) {
+          // Build parent_ids: ... + VLM_DESCRIPTION
+          const parentIds = JSON.parse(vlmProv.parent_ids) as string[];
+          parentIds.push(vlmDescriptionProvId);
+
+          const now = new Date().toISOString();
+
+          const embeddingProvRecord: ProvenanceRecord = {
+            id: embeddingProvId,
+            type: ProvenanceType.EMBEDDING,
+            created_at: now,
+            processed_at: now,
+            source_file_created_at: null,
+            source_file_modified_at: null,
+            source_type: 'EMBEDDING',
+            source_path: null,
+            source_id: vlmDescriptionProvId, // Parent is VLM_DESCRIPTION
+            root_document_id: vlmProv.root_document_id,
+            location: {
+              page_number: image.page_number,
+              chunk_index: image.image_index,
+            },
+            content_hash: computeHash(description),
+            input_hash: vlmProv.content_hash,
+            file_hash: vlmProv.file_hash,
+            processor: EMBEDDING_MODEL,
+            processor_version: '1.5.0',
+            processing_params: { task_type: 'search_document', dimensions: 768 },
+            processing_duration_ms: null,
+            processing_quality_score: null,
+            parent_id: vlmDescriptionProvId,
+            parent_ids: JSON.stringify(parentIds),
+            chain_depth: 4, // EMBEDDING from VLM_DESCRIPTION is depth 4
+            chain_path: JSON.stringify([
+              'DOCUMENT',
+              'OCR_RESULT',
+              'IMAGE',
+              'VLM_DESCRIPTION',
+              'EMBEDDING',
+            ]),
+          };
+
+          this.dbService.insertProvenance(embeddingProvRecord);
+        }
+      }
+
       // Create embedding record (VLM description embeddings use a simplified schema)
       this.dbService.insertEmbedding({
         id: embeddingId,
@@ -371,7 +432,7 @@ export class VLMPipeline {
         task_type: 'search_document',
         inference_mode: 'local',
         gpu_device: 'cuda:0',
-        provenance_id: image.provenance_id ?? embeddingId,
+        provenance_id: embeddingProvId, // Use embedding provenance ID
         content_hash: computeHash(description),
         generation_duration_ms: null,
       });
@@ -401,35 +462,53 @@ export class VLMPipeline {
   }
 
   /**
-   * Track provenance for VLM processing.
-   * Uses EMBEDDING type since VLM_DESCRIPTION is not a valid ProvenanceType.
+   * Track VLM_DESCRIPTION provenance for VLM processing output.
+   * Chain: DOCUMENT (0) -> OCR_RESULT (1) -> IMAGE (2) -> VLM_DESCRIPTION (3)
+   *
+   * @param image - Source image reference with provenance_id
+   * @param vlmResult - VLM analysis result
+   * @returns Provenance ID for the VLM_DESCRIPTION record (used for embedding chain)
    */
-  private trackProvenance(image: ImageReference, vlmResult: VLMAnalysisResult): void {
-    if (!this.dbService) return;
+  private trackProvenance(image: ImageReference, vlmResult: VLMAnalysisResult): string {
+    if (!this.dbService) {
+      throw new Error('DatabaseService required for provenance tracking');
+    }
 
     const provenanceId = uuidv4();
     const now = new Date().toISOString();
 
-    // Note: Using EMBEDDING type for VLM descriptions since it's the closest
-    // semantic match - both represent derived content from document processing
+    // Get IMAGE provenance to build parent chain
+    if (!image.provenance_id) {
+      throw new Error(`Image ${image.id} has no provenance_id - cannot track VLM provenance`);
+    }
+
+    const imageProv = this.dbService.getProvenance(image.provenance_id);
+    if (!imageProv) {
+      throw new Error(`Image provenance not found: ${image.provenance_id}`);
+    }
+
+    // Build parent_ids: document + OCR + IMAGE
+    const parentIds = JSON.parse(imageProv.parent_ids) as string[];
+    parentIds.push(image.provenance_id);
+
     const record: ProvenanceRecord = {
       id: provenanceId,
-      type: ProvenanceType.EMBEDDING, // VLM description is depth 3 like embeddings
+      type: ProvenanceType.VLM_DESCRIPTION, // CORRECT type for VLM descriptions
       created_at: now,
       processed_at: now,
       source_file_created_at: null,
       source_file_modified_at: null,
-      source_type: 'EMBEDDING', // Using EMBEDDING as closest match
+      source_type: 'VLM', // CORRECT source type
       source_path: image.extracted_path,
-      source_id: image.provenance_id,
-      root_document_id: image.document_id,
+      source_id: image.provenance_id, // Parent is IMAGE
+      root_document_id: imageProv.root_document_id,
       location: {
         page_number: image.page_number,
-        chunk_index: image.image_index, // Using chunk_index for image index
+        chunk_index: image.image_index,
       },
       content_hash: computeHash(vlmResult.description),
-      input_hash: null,
-      file_hash: null,
+      input_hash: imageProv.content_hash, // Input was the image
+      file_hash: imageProv.file_hash,
       processor: `gemini-vlm:${vlmResult.model}`,
       processor_version: '3.0',
       processing_params: {
@@ -440,12 +519,13 @@ export class VLMPipeline {
       processing_duration_ms: vlmResult.processingTimeMs,
       processing_quality_score: vlmResult.analysis.confidence,
       parent_id: image.provenance_id,
-      parent_ids: JSON.stringify(image.provenance_id ? [image.provenance_id] : []),
-      chain_depth: 3,
+      parent_ids: JSON.stringify(parentIds),
+      chain_depth: 3, // VLM_DESCRIPTION is depth 3
       chain_path: JSON.stringify(['DOCUMENT', 'OCR_RESULT', 'IMAGE', 'VLM_DESCRIPTION']),
     };
 
     this.dbService.insertProvenance(record);
+    return provenanceId; // Return the ID so we can use it for embedding provenance
   }
 
   /**
