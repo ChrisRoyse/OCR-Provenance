@@ -31,6 +31,9 @@ import type { DatabaseService } from '../services/storage/database/index.js';
 // HELPER FUNCTIONS
 // ═══════════════════════════════════════════════════════════════════════════════
 
+/** Detected item types from findProvenanceId - includes 'provenance' for direct provenance ID lookups */
+type DetectedItemType = 'document' | 'chunk' | 'embedding' | 'ocr_result' | 'provenance';
+
 /**
  * Find provenance ID from an item of any type.
  * Returns the provenance ID and detected item type, or null if not found.
@@ -38,7 +41,7 @@ import type { DatabaseService } from '../services/storage/database/index.js';
 function findProvenanceId(
   db: DatabaseService,
   itemId: string
-): { provenanceId: string; itemType: string } | null {
+): { provenanceId: string; itemType: DetectedItemType } | null {
   const doc = db.getDocument(itemId);
   if (doc) return { provenanceId: doc.provenance_id, itemType: 'document' };
 
@@ -66,7 +69,7 @@ export async function handleProvenanceGet(
     const { db } = requireDatabase();
 
     let provenanceId: string | null = null;
-    let itemType = input.item_type;
+    let itemType: DetectedItemType | 'auto' = input.item_type ?? 'auto';
 
     if (itemType === 'auto') {
       const found = findProvenanceId(db, input.item_id);

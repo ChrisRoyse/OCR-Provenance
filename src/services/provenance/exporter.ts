@@ -136,7 +136,7 @@ export class ProvenanceExporter {
   private static readonly OCR_PREFIX = 'http://ocr-provenance.local/ns#';
 
   constructor(
-    private readonly db: DatabaseService,
+    db: DatabaseService,
     private readonly tracker: ProvenanceTracker
   ) {
     this.rawDb = db.getConnection();

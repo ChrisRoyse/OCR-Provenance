@@ -310,14 +310,20 @@ export class ProvenanceTracker {
 
 // Singleton management
 let _tracker: ProvenanceTracker | null = null;
+let _trackerDb: DatabaseService | null = null;
 
 /**
  * Get or create ProvenanceTracker singleton
  * @param db - DatabaseService instance
  */
 export function getProvenanceTracker(db: DatabaseService): ProvenanceTracker {
+  // If the database instance has changed, recreate the tracker
+  if (_tracker && _trackerDb !== db) {
+    _tracker = null;
+  }
   if (!_tracker) {
     _tracker = new ProvenanceTracker(db);
+    _trackerDb = db;
   }
   return _tracker;
 }
@@ -327,4 +333,5 @@ export function getProvenanceTracker(db: DatabaseService): ProvenanceTracker {
  */
 export function resetProvenanceTracker(): void {
   _tracker = null;
+  _trackerDb = null;
 }
