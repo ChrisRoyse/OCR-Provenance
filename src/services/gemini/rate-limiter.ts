@@ -50,7 +50,7 @@ export class GeminiRateLimiter {
     if (this.requestCount >= this.maxRPM || this.tokenCount + estimatedTokens > this.maxTPM) {
       const waitTime = this.windowMs - (Date.now() - this.windowStart);
       if (waitTime > 0) {
-        console.log(`[RateLimiter] Rate limit reached, waiting ${waitTime}ms`);
+        console.error(`[RateLimiter] Rate limit reached, waiting ${waitTime}ms`);
         await this.sleep(waitTime);
         // Reset after waiting
         this.requestCount = 0;

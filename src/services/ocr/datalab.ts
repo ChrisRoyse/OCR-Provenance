@@ -57,7 +57,7 @@ export class DatalabClient {
   constructor(config: DatalabClientConfig = {}) {
     this.pythonPath = config.pythonPath ?? 'python3';
     this.workerPath = resolve(__dirname, '../../../python/ocr_worker.py');
-    this.timeout = config.timeout ?? 300000; // 5 minutes
+    this.timeout = config.timeout ?? parseInt(process.env.DATALAB_TIMEOUT || '900000'); // 15 minutes
   }
 
   /**

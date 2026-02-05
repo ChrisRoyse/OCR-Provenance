@@ -20,7 +20,7 @@ import { OCRProcessor } from '../services/ocr/processor.js';
 import { chunkText, ChunkResult, DEFAULT_CHUNKING_CONFIG } from '../services/chunking/chunker.js';
 import { EmbeddingService } from '../services/embedding/embedder.js';
 import { ProvenanceTracker } from '../services/provenance/tracker.js';
-import { computeHash } from '../utils/hash.js';
+import { computeHash, hashFile } from '../utils/hash.js';
 import {
   state,
   requireDatabase,
@@ -44,7 +44,8 @@ import type { Document, OCRResult } from '../models/document.js';
 import type { Chunk } from '../models/chunk.js';
 import type { CreateImageReference, ImageReference } from '../models/image.js';
 import { ProvenanceType } from '../models/provenance.js';
-import { insertImageBatch } from '../services/storage/database/image-operations.js';
+import { insertImageBatch, updateImageProvenance } from '../services/storage/database/image-operations.js';
+import { getProvenanceTracker } from '../services/provenance/index.js';
 import { createVLMPipeline } from '../services/vlm/pipeline.js';
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -174,6 +175,52 @@ function storeChunks(
 }
 
 /**
+ * Extract a context text window from OCR text based on estimated page position.
+ *
+ * Uses a best-effort heuristic: estimates page position as (targetPage - 1) / pageCount * textLength,
+ * then takes a ±500 char window around that position, trimmed to word boundaries.
+ *
+ * @param ocrText - Full OCR extracted text
+ * @param pageCount - Total number of pages in the document
+ * @param targetPage - The page number to extract context for (1-indexed)
+ * @returns Context text window (max ~1000 chars)
+ */
+function extractContextText(ocrText: string, pageCount: number, targetPage: number): string {
+  if (!ocrText || ocrText.length === 0 || pageCount <= 0) {
+    return '';
+  }
+
+  const textLength = ocrText.length;
+  const safePageCount = Math.max(1, pageCount);
+  const safePage = Math.max(1, Math.min(targetPage, safePageCount));
+
+  // Estimate position in text for this page
+  const estimatedPosition = Math.floor(((safePage - 1) / safePageCount) * textLength);
+
+  // Take ±500 char window
+  const windowStart = Math.max(0, estimatedPosition - 500);
+  const windowEnd = Math.min(textLength, estimatedPosition + 500);
+
+  let context = ocrText.slice(windowStart, windowEnd);
+
+  // Trim to word boundaries
+  if (windowStart > 0) {
+    const firstSpace = context.indexOf(' ');
+    if (firstSpace > 0 && firstSpace < 50) {
+      context = context.slice(firstSpace + 1);
+    }
+  }
+  if (windowEnd < textLength) {
+    const lastSpace = context.lastIndexOf(' ');
+    if (lastSpace > 0 && lastSpace > context.length - 50) {
+      context = context.slice(0, lastSpace);
+    }
+  }
+
+  return context.trim();
+}
+
+/**
  * Save images from Datalab to disk and store references in database.
  *
  * Images come from Datalab as {filename: base64_data}.
@@ -222,6 +269,13 @@ function saveAndStoreImages(
     const ext = extname(filename).slice(1).toLowerCase();
     const format = ext || 'png';
 
+    // Extract context text from OCR for this page
+    const contextText = extractContextText(
+      ocrResult.extracted_text,
+      ocrResult.page_count ?? 1,
+      pageNumber
+    );
+
     // Create image reference for database
     // Note: dimensions will be estimated - VLM pipeline can update if needed
     imageRefs.push({
@@ -234,8 +288,8 @@ function saveAndStoreImages(
       dimensions: { width: 0, height: 0 }, // Will be populated by VLM or left as 0
       extracted_path: filePath,
       file_size: buffer.length,
-      context_text: null,
-      provenance_id: null,
+      context_text: contextText || null,
+      provenance_id: null, // Will be set after insert with provenance record
     });
 
     imageIndex++;
@@ -243,7 +297,40 @@ function saveAndStoreImages(
 
   // Batch insert all images
   if (imageRefs.length > 0) {
-    return insertImageBatch(db.getConnection(), imageRefs);
+    const insertedImages = insertImageBatch(db.getConnection(), imageRefs);
+
+    // Create IMAGE provenance records and update image records
+    const tracker = getProvenanceTracker(db);
+    for (const img of insertedImages) {
+      try {
+        const provenanceId = tracker.createProvenance({
+          type: ProvenanceType.IMAGE,
+          source_type: 'IMAGE_EXTRACTION',
+          source_id: ocrResult.provenance_id,
+          root_document_id: doc.provenance_id,
+          content_hash: computeHash(img.extracted_path ?? img.id),
+          source_path: img.extracted_path ?? undefined,
+          processor: 'datalab-image-extraction',
+          processor_version: '1.0.0',
+          processing_params: {
+            page_number: img.page_number,
+            image_index: img.image_index,
+            format: img.format,
+          },
+          location: {
+            page_number: img.page_number,
+          },
+        });
+
+        // Update the image record with the provenance ID
+        updateImageProvenance(db.getConnection(), img.id, provenanceId);
+        img.provenance_id = provenanceId;
+      } catch (error) {
+        console.error(`[WARN] Failed to create IMAGE provenance for ${img.id}: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
+
+    return insertedImages;
   }
 
   return [];
@@ -316,6 +403,7 @@ export async function handleIngestDirectory(
         }
 
         const stats = statSync(filePath);
+        const fileHash = await hashFile(filePath);
 
         // Create document record
         const documentId = uuidv4();
@@ -336,9 +424,9 @@ export async function handleIngestDirectory(
           source_id: null,
           root_document_id: provenanceId,
           location: null,
-          content_hash: `sha256:pending-${documentId}`,
+          content_hash: fileHash,
           input_hash: null,
-          file_hash: `sha256:pending-${documentId}`,
+          file_hash: fileHash,
           processor: 'file-scanner',
           processor_version: '1.0.0',
           processing_params: { directory_path: input.directory_path, recursive: input.recursive },
@@ -355,7 +443,7 @@ export async function handleIngestDirectory(
           id: documentId,
           file_path: filePath,
           file_name: basename(filePath),
-          file_hash: `sha256:pending-${documentId}`,
+          file_hash: fileHash,
           file_size: stats.size,
           file_type: ext,
           status: 'pending',
@@ -456,6 +544,7 @@ export async function handleIngestFiles(
         const provenanceId = uuidv4();
         const now = new Date().toISOString();
         const ext = extname(filePath).slice(1).toLowerCase();
+        const fileHash = await hashFile(filePath);
 
         // Create document provenance
         db.insertProvenance({
@@ -470,9 +559,9 @@ export async function handleIngestFiles(
           source_id: null,
           root_document_id: provenanceId,
           location: null,
-          content_hash: `sha256:pending-${documentId}`,
+          content_hash: fileHash,
           input_hash: null,
-          file_hash: `sha256:pending-${documentId}`,
+          file_hash: fileHash,
           processor: 'file-scanner',
           processor_version: '1.0.0',
           processing_params: {},
@@ -489,7 +578,7 @@ export async function handleIngestFiles(
           id: documentId,
           file_path: filePath,
           file_name: basename(filePath),
-          file_hash: `sha256:pending-${documentId}`,
+          file_hash: fileHash,
           file_size: stats.size,
           file_type: ext,
           status: 'pending',
@@ -746,6 +835,122 @@ export async function handleOCRStatus(
   }
 }
 
+/**
+ * Handle ocr_chunk_complete - Chunk and embed documents that completed OCR but have no chunks
+ *
+ * Picks up documents with status='complete' that were OCR'd but never chunked/embedded.
+ */
+export async function handleChunkComplete(
+  _params: Record<string, unknown>
+): Promise<{ content: Array<{ type: 'text'; text: string }> }> {
+  try {
+    const { db, vector } = requireDatabase();
+
+    const completeDocs = db.listDocuments({ status: 'complete', limit: 1000 });
+
+    const results = { processed: 0, skipped: 0, failed: 0, errors: [] as Array<{ document_id: string; error: string }> };
+
+    for (const doc of completeDocs) {
+      try {
+        // Skip if already has chunks
+        const existingChunks = db.getChunksByDocumentId(doc.id);
+        if (existingChunks.length > 0) {
+          results.skipped++;
+          continue;
+        }
+
+        const ocrResult = db.getOCRResultByDocumentId(doc.id);
+        if (!ocrResult) {
+          results.skipped++;
+          continue;
+        }
+
+        // Chunk the OCR text
+        const chunkResults = chunkText(ocrResult.extracted_text, DEFAULT_CHUNKING_CONFIG);
+        console.error(`[INFO] Chunking doc ${doc.id}: ${chunkResults.length} chunks`);
+
+        // Store chunks with provenance
+        const chunks = storeChunks(db, doc, ocrResult, chunkResults);
+
+        // Generate embeddings
+        const embeddingService = new EmbeddingService();
+        const documentInfo = {
+          documentId: doc.id,
+          filePath: doc.file_path,
+          fileName: doc.file_name,
+          fileHash: doc.file_hash,
+          documentProvenanceId: doc.provenance_id,
+        };
+
+        const embedResult = await embeddingService.embedDocumentChunks(db, vector, chunks, documentInfo);
+        if (!embedResult.success) {
+          throw new Error(embedResult.error ?? 'Embedding generation failed');
+        }
+
+        console.error(`[INFO] Doc ${doc.id}: ${chunks.length} chunks, ${embedResult.embeddingIds.length} embeddings`);
+        results.processed++;
+      } catch (error) {
+        const errorMsg = error instanceof Error ? error.message : String(error);
+        console.error(`[ERROR] Chunk complete failed for ${doc.id}: ${errorMsg}`);
+        results.failed++;
+        results.errors.push({ document_id: doc.id, error: errorMsg });
+      }
+    }
+
+    return formatResponse(successResult({
+      processed: results.processed,
+      skipped: results.skipped,
+      failed: results.failed,
+      errors: results.errors.length > 0 ? results.errors : undefined,
+    }));
+  } catch (error) {
+    return handleError(error);
+  }
+}
+
+/**
+ * Handle ocr_retry_failed - Reset failed documents back to pending for reprocessing
+ */
+export async function handleRetryFailed(
+  params: Record<string, unknown>
+): Promise<{ content: Array<{ type: 'text'; text: string }> }> {
+  try {
+    const { db } = requireDatabase();
+
+    const documentId = typeof params.document_id === 'string' ? params.document_id : undefined;
+
+    let resetCount = 0;
+
+    if (documentId) {
+      const doc = db.getDocument(documentId);
+      if (!doc) {
+        throw documentNotFoundError(documentId);
+      }
+      if (doc.status !== 'failed') {
+        return formatResponse(successResult({
+          reset: 0,
+          message: `Document ${documentId} is not in failed state (current: ${doc.status})`,
+        }));
+      }
+      db.updateDocumentStatus(documentId, 'pending');
+      resetCount = 1;
+    } else {
+      const failedDocs = db.listDocuments({ status: 'failed', limit: 1000 });
+      for (const doc of failedDocs) {
+        db.updateDocumentStatus(doc.id, 'pending');
+        resetCount++;
+      }
+    }
+
+    return formatResponse(successResult({
+      reset: resetCount,
+      message: `Reset ${resetCount} failed document(s) to pending`,
+    }));
+  } catch (error) {
+    return handleError(error);
+  }
+}
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // TOOL DEFINITIONS FOR MCP REGISTRATION
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -789,5 +994,17 @@ export const ingestionTools: Record<string, ToolDefinition> = {
       status_filter: z.enum(['pending', 'processing', 'complete', 'failed', 'all']).default('all').describe('Filter by status'),
     },
     handler: handleOCRStatus,
+  },
+  'ocr_chunk_complete': {
+    description: 'Chunk and embed documents that completed OCR but have no chunks yet. Fixes documents that were OCR\'d but never chunked/embedded.',
+    inputSchema: {},
+    handler: handleChunkComplete,
+  },
+  'ocr_retry_failed': {
+    description: 'Reset failed documents back to pending status so they can be reprocessed',
+    inputSchema: {
+      document_id: z.string().optional().describe('Specific document ID to retry (omit to retry all failed)'),
+    },
+    handler: handleRetryFailed,
   },
 };
