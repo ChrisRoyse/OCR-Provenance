@@ -71,6 +71,12 @@ export class NomicEmbeddingClient {
     this.pythonPath = options?.pythonPath;
   }
 
+  /**
+   * Maximum chunks per Python worker call to prevent memory issues.
+   * Large documents (3000+ chunks) caused CUDA OOM when passed all at once.
+   */
+  private static readonly MAX_CHUNKS_PER_CALL = 500;
+
   async embedChunks(
     chunks: string[],
     batchSize: number = DEFAULT_BATCH_SIZE
@@ -80,6 +86,46 @@ export class NomicEmbeddingClient {
       return [];
     }
 
+    // For large chunk counts, process in sub-batches to prevent memory issues
+    if (chunks.length > NomicEmbeddingClient.MAX_CHUNKS_PER_CALL) {
+      return this.embedChunksInBatches(chunks, batchSize);
+    }
+
+    return this.embedChunksSingle(chunks, batchSize);
+  }
+
+  /**
+   * Process chunks in sub-batches, calling Python worker multiple times.
+   * Prevents memory exhaustion for large documents (1000+ chunks).
+   */
+  private async embedChunksInBatches(
+    chunks: string[],
+    batchSize: number
+  ): Promise<Float32Array[]> {
+    const allEmbeddings: Float32Array[] = [];
+    const maxPerCall = NomicEmbeddingClient.MAX_CHUNKS_PER_CALL;
+
+    for (let i = 0; i < chunks.length; i += maxPerCall) {
+      const batch = chunks.slice(i, i + maxPerCall);
+      const batchNum = Math.floor(i / maxPerCall) + 1;
+      const totalBatches = Math.ceil(chunks.length / maxPerCall);
+
+      console.error(`[EMBED] Processing batch ${batchNum}/${totalBatches} (${batch.length} chunks)`);
+
+      const embeddings = await this.embedChunksSingle(batch, batchSize);
+      allEmbeddings.push(...embeddings);
+    }
+
+    return allEmbeddings;
+  }
+
+  /**
+   * Embed a single batch of chunks via Python worker.
+   */
+  private async embedChunksSingle(
+    chunks: string[],
+    batchSize: number
+  ): Promise<Float32Array[]> {
     // Use stdin for reliability with special characters and large inputs
     const result = await this.runWorker<EmbeddingResult>(
       ['--stdin', '--batch-size', batchSize.toString(), '--json'],
