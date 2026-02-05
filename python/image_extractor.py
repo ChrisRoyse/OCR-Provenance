@@ -32,8 +32,11 @@ Output:
 
 import argparse
 import json
+import shutil
+import subprocess
 import sys
 import os
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -62,6 +65,37 @@ except ImportError:
 
 # Formats accepted by Gemini VLM - anything else must be converted to PNG
 GEMINI_NATIVE_FORMATS = {"png", "jpg", "jpeg", "gif", "webp"}
+
+# Cache inkscape availability check
+_INKSCAPE_PATH: str | None = shutil.which("inkscape")
+
+
+def _convert_with_inkscape(
+    img_bytes: bytes, ext: str, filename: str
+) -> tuple[bool, bytes]:
+    """Convert EMF/WMF to PNG using inkscape subprocess."""
+    if _INKSCAPE_PATH is None:
+        return False, img_bytes
+
+    tmpdir = tempfile.mkdtemp(prefix="pdf_img_")
+    try:
+        src = os.path.join(tmpdir, f"input.{ext}")
+        dst = os.path.join(tmpdir, "output.png")
+        with open(src, "wb") as f:
+            f.write(img_bytes)
+
+        result = subprocess.run(
+            [_INKSCAPE_PATH, src, "--export-type=png", f"--export-filename={dst}"],
+            capture_output=True, text=True, timeout=30,
+        )
+        if result.returncode == 0 and os.path.exists(dst):
+            with open(dst, "rb") as f:
+                return True, f.read()
+        return False, img_bytes
+    except Exception:
+        return False, img_bytes
+    finally:
+        shutil.rmtree(tmpdir, ignore_errors=True)
 
 
 def extract_images(
@@ -151,17 +185,24 @@ def extract_images(
                     # Convert non-native formats to PNG for VLM compatibility
                     save_ext = ext.lower()
                     if save_ext not in GEMINI_NATIVE_FORMATS:
-                        save_ext = "png"
-                        try:
-                            buf = io.BytesIO()
-                            pil_img.convert("RGBA").save(buf, format="PNG")
-                            img_bytes = buf.getvalue()
-                        except Exception as conv_e:
-                            errors.append(
-                                f"Page {page_num + 1}, image {img_idx}: "
-                                f"Failed to convert {ext} to PNG: {conv_e}"
+                        converted = False
+                        # For EMF/WMF: use inkscape
+                        if not converted and save_ext in ("emf", "wmf"):
+                            converted, img_bytes = _convert_with_inkscape(
+                                img_bytes, save_ext,
+                                f"p{page_num+1}_i{img_idx}"
                             )
-                            continue
+                            if converted:
+                                save_ext = "png"
+                        # Fallback to Pillow for simpler formats (BMP, TIFF)
+                        if not converted:
+                            try:
+                                buf = io.BytesIO()
+                                pil_img.convert("RGBA").save(buf, format="PNG")
+                                img_bytes = buf.getvalue()
+                                save_ext = "png"
+                            except Exception:
+                                pass
 
                     # Generate filename: p001_i000.png
                     filename = f"p{page_num + 1:03d}_i{img_idx:03d}.{save_ext}"
