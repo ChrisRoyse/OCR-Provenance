@@ -104,9 +104,18 @@ describe('VLMService', () => {
       expect(result.tokensUsed).toBe(1200);
     });
 
-    it('should use context prompt when contextText is provided', async () => {
+    it('should use universal prompt by default', async () => {
+      await service.describeImage('/path/to/image.png');
+
+      expect(mockClient.analyzeImage).toHaveBeenCalled();
+      const callArgs = mockClient.analyzeImage.mock.calls[0];
+      expect(callArgs[0]).toContain('blind person');
+    });
+
+    it('should use context prompt when contextText is provided and universal is disabled', async () => {
       await service.describeImage('/path/to/image.png', {
         contextText: 'This image appears after a medication list.',
+        useUniversalPrompt: false,
       });
 
       expect(mockClient.analyzeImage).toHaveBeenCalled();
@@ -114,9 +123,10 @@ describe('VLMService', () => {
       expect(callArgs[0]).toContain('SURROUNDING TEXT CONTEXT');
     });
 
-    it('should use medical prompt when useMedicalPrompt is true', async () => {
+    it('should use medical prompt when useMedicalPrompt is true and universal is disabled', async () => {
       await service.describeImage('/path/to/image.png', {
         useMedicalPrompt: true,
+        useUniversalPrompt: false,
       });
 
       expect(mockClient.analyzeImage).toHaveBeenCalled();

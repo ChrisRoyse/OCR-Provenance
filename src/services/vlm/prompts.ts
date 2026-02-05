@@ -230,43 +230,39 @@ export const DEEP_ANALYSIS_SCHEMA = {
  *
  * This prompt analyzes images in COMPLETE ISOLATION with no document context.
  */
-export const UNIVERSAL_EVALUATION_PROMPT = `You are an expert document analyst specializing in medical, legal, and business documents. Analyze this image extracted from a document with NO PRIOR CONTEXT. Describe what you observe in extreme detail.
+export const UNIVERSAL_EVALUATION_PROMPT = `You are describing an image to someone who cannot see it. Your description must be so detailed and vivid that a blind person could fully understand what this image shows.
 
-PARAGRAPH 1 - VISUAL OVERVIEW:
-Describe the overall composition, layout, and visual structure. What type of image is this? (chart, form, signature, photo, diagram, table, handwriting, stamp, logo, barcode, medical imaging, graph, flowchart, etc.) Describe colors, orientation, quality, and any visual artifacts or issues.
+PARAGRAPH 1 - WHAT THE IMAGE IS:
+Describe the overall nature and composition of this image. What type of image is this? (photograph, chart, form, medical image, diagram, table, signature, stamp, handwriting, logo, barcode, graph, flowchart, screenshot, etc.) Describe the color palette, lighting, orientation (portrait/landscape), image quality, and overall visual impression. If it is a photograph, describe the setting and atmosphere. If it is a document or form, describe the layout and structure. Give the reader a complete mental picture of what they would see at first glance. Minimum 6 sentences.
 
-PARAGRAPH 2 - CONTENT ANALYSIS:
-Extract and describe ALL visible content with extreme precision:
-- For text: transcribe all readable text, noting font styles, emphasis, and positioning
-- For charts/graphs: describe axes, labels, data points, values, trends, and scale
-- For forms: describe every field label, filled value, checkbox state, and signature area
-- For signatures: describe style (cursive, initials), legibility, date if present, witness marks
-- For medical content: note measurements, readings, annotations, anatomical references
-- For tables: describe columns, rows, headers, and cell contents
-- For photographs: describe subjects, objects, setting, lighting, visible text or labels
+PARAGRAPH 2 - WHAT THE IMAGE CONTAINS:
+Describe every visible element systematically from top-left to bottom-right:
+- For photographs: subjects, their positions, expressions, clothing, objects, background elements, any text visible on signs/labels/packaging. Describe colors precisely (not "red" but "deep crimson" or "bright cherry red"). Describe textures (smooth, rough, granular, glistening, matte). Describe spatial relationships between elements.
+- For medical/clinical images: tissue characteristics, wound bed appearance, surrounding skin condition, any medical devices or supplies visible, measurements if rulers or scales are present, staging indicators, color variations in tissue.
+- For documents/forms: transcribe ALL visible text verbatim. Describe headers, fields, checkboxes, signatures, stamps, logos. Note handwritten vs printed text.
+- For charts/graphs: axis labels, units, data values, trends, colors of data series, legends, title, scale markings.
+- For diagrams: components, connections, labels, flow direction, hierarchy.
+Minimum 8 sentences.
 
-PARAGRAPH 3 - SIGNIFICANCE & INTERPRETATION:
-Explain what this image likely represents in a document context. What purpose does it serve? What information does it convey that would be important for legal, medical, or business purposes? Note any:
-- Anomalies, redactions, or modifications
-- Official stamps, seals, or certifications
-- Handwritten annotations or corrections
-- Quality issues that affect readability
-- Potential evidentiary value
+PARAGRAPH 3 - WHAT THE IMAGE COMMUNICATES:
+Explain what this image conveys to a viewer. What is its purpose in the document? What story does it tell? What would a person seeing this image understand immediately that the description alone might not capture? Note any details that stand out as particularly significant — anomalies, changes over time, concerning findings, key data points, or important identifiers. If this is part of a series, describe what stage or progression it might represent. Minimum 6 sentences.
 
-CRITICAL RULES:
-1. Describe ONLY what you can directly observe - never assume or hallucinate
+RULES:
+1. Describe ONLY what you can directly observe — never hallucinate or assume
 2. If text is unclear, note it as "[illegible]" or "[partially visible: ...]"
-3. Be SPECIFIC with numbers, dates, and names when visible
-4. Note the approximate location of elements (top-left, center, bottom, etc.)
-5. Minimum 3 substantial paragraphs required
+3. Use precise measurements when scales/rulers are visible
+4. Describe colors with specificity (e.g., "pale yellow-green" not just "light colored")
+5. Note spatial positions (top-left, center, lower-right, etc.)
+6. Minimum 3 substantial paragraphs, each 6-10 sentences
+7. The description must be self-contained — a reader should understand the image without seeing it or reading any other document
 
 Return as JSON:
 {
-  "imageType": "chart|form|signature|photo|diagram|table|handwriting|stamp|logo|barcode|medical|graph|flowchart|screenshot|other",
+  "imageType": "string",
   "primarySubject": "Brief one-line description of main content",
-  "paragraph1": "Detailed visual overview (4-6 sentences)",
-  "paragraph2": "Comprehensive content analysis (6-10 sentences)",
-  "paragraph3": "Significance and interpretation (4-6 sentences)",
+  "paragraph1": "Detailed visual overview (6-10 sentences)",
+  "paragraph2": "Comprehensive element-by-element description (8-12 sentences)",
+  "paragraph3": "Communication and significance (6-10 sentences)",
   "extractedText": ["Array of all visible text strings"],
   "dates": ["Any dates found in any format"],
   "names": ["People names, organization names, product names"],
@@ -280,10 +276,7 @@ Return as JSON:
 export const UNIVERSAL_EVALUATION_SCHEMA = {
   type: 'object',
   properties: {
-    imageType: {
-      type: 'string',
-      enum: ['chart', 'form', 'signature', 'photo', 'diagram', 'table', 'handwriting', 'stamp', 'logo', 'barcode', 'medical', 'graph', 'flowchart', 'screenshot', 'other'],
-    },
+    imageType: { type: 'string' },
     primarySubject: { type: 'string' },
     paragraph1: { type: 'string' },
     paragraph2: { type: 'string' },
