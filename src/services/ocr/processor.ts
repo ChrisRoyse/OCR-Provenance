@@ -7,6 +7,7 @@
 
 import { v4 as uuidv4 } from 'uuid';
 import { DatalabClient, type DatalabClientConfig } from './datalab.js';
+import { OCRError } from './errors.js';
 import { DatabaseService } from '../storage/database/index.js';
 import type { Document, OCRResult } from '../../models/document.js';
 import { ProvenanceType, type ProvenanceRecord } from '../../models/provenance.js';
@@ -90,14 +91,34 @@ export class OCRProcessor {
     this.db.updateDocumentStatus(documentId, 'processing');
 
     try {
-      // 3. Generate provenance ID and call OCR
+      // 3. Generate provenance ID and call OCR (with 1 retry on timeout)
       const ocrProvenanceId = uuidv4();
-      const { result: ocrResult, images } = await this.client.processDocument(
-        document.file_path,
-        documentId,
-        ocrProvenanceId,
-        ocrMode
-      );
+      let ocrResult: OCRResult;
+      let images: Record<string, string>;
+
+      for (let attempt = 1; attempt <= 2; attempt++) {
+        try {
+          const response = await this.client.processDocument(
+            document.file_path,
+            documentId,
+            ocrProvenanceId,
+            ocrMode
+          );
+          ocrResult = response.result;
+          images = response.images;
+          break;
+        } catch (error) {
+          if (attempt === 1 && error instanceof OCRError && error.category === 'OCR_TIMEOUT') {
+            console.error(`[WARN] OCR timeout on attempt 1 for ${documentId}, retrying...`);
+            continue;
+          }
+          throw error;
+        }
+      }
+
+      // TypeScript: guaranteed assigned after loop or thrown
+      ocrResult = ocrResult!;
+      images = images!;
 
       // 4. Create OCR_RESULT provenance record
       const provenance = this.createOCRProvenance(

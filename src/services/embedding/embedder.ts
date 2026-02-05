@@ -93,6 +93,7 @@ export class EmbeddingService {
         const embedding: Omit<Embedding, 'created_at' | 'vector'> = {
           id: embeddingId,
           chunk_id: chunk.id,
+          image_id: null, // Text embeddings don't have an image
           document_id: documentInfo.documentId,
           original_text: chunk.text,
           original_text_length: chunk.text.length,

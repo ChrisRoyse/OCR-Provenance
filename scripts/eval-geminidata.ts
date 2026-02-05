@@ -48,8 +48,8 @@ const CONFIG = {
   OCR_MODE: 'accurate' as const,
   IMAGE_MIN_SIZE: 100,
   IMAGE_MAX_PER_DOC: 300,
-  VLM_BATCH_SIZE: 10,
-  VLM_CONCURRENCY: 5,
+  VLM_BATCH_SIZE: 5,
+  VLM_CONCURRENCY: 1, // Free tier: 5 RPM, process sequentially
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -475,6 +475,14 @@ async function cmdReport(): Promise<void> {
 
   const avgConfidence = confidenceCount > 0 ? totalConfidence / confidenceCount : 0;
 
+  // Pre-compute document image counts
+  const { getImagesByDocument: getImagesForDoc } = await import('../src/services/storage/database/image-operations.js');
+  const docImageCounts = new Map<string, number>();
+  for (const doc of documents) {
+    const imgs = getImagesForDoc(db.getConnection(), doc.id);
+    docImageCounts.set(doc.id, imgs.length);
+  }
+
   // Generate report content
   const report = `# Gemini VLM Evaluation Report
 
@@ -504,9 +512,7 @@ Database: ${CONFIG.DATABASE_NAME}
 | File | Status | Pages | Images |
 |------|--------|-------|--------|
 ${documents.slice(0, 20).map(d => {
-  const images = (require('../src/services/storage/database/image-operations.js') as typeof import('../src/services/storage/database/image-operations.js'))
-    .getImagesByDocument(db.getConnection(), d.id);
-  return `| ${d.file_name.slice(0, 50)} | ${d.status} | ${d.page_count || 'N/A'} | ${images.length} |`;
+  return `| ${d.file_name.slice(0, 50)} | ${d.status} | ${d.page_count || 'N/A'} | ${docImageCounts.get(d.id) || 0} |`;
 }).join('\n')}
 
 ---

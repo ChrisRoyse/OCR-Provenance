@@ -74,7 +74,7 @@ export class CircuitBreaker {
     if (this.state === CircuitState.OPEN && this.lastFailureTime !== null) {
       const elapsed = Date.now() - this.lastFailureTime;
       if (elapsed >= this.config.recoveryTimeMs) {
-        console.log('[CircuitBreaker] Transitioning from OPEN to HALF_OPEN');
+        console.error('[CircuitBreaker] Transitioning from OPEN to HALF_OPEN');
         this.state = CircuitState.HALF_OPEN;
         this.successCount = 0;
       }
@@ -87,12 +87,12 @@ export class CircuitBreaker {
   private recordSuccess(): void {
     if (this.state === CircuitState.HALF_OPEN) {
       this.successCount++;
-      console.log(
+      console.error(
         `[CircuitBreaker] Success in HALF_OPEN (${this.successCount}/${this.config.halfOpenSuccessThreshold})`
       );
 
       if (this.successCount >= this.config.halfOpenSuccessThreshold) {
-        console.log('[CircuitBreaker] Recovery confirmed, transitioning to CLOSED');
+        console.error('[CircuitBreaker] Recovery confirmed, transitioning to CLOSED');
         this.state = CircuitState.CLOSED;
         this.failureCount = 0;
         this.successCount = 0;
@@ -111,17 +111,17 @@ export class CircuitBreaker {
     this.failureCount++;
     this.lastFailureTime = Date.now();
 
-    console.log(
+    console.error(
       `[CircuitBreaker] Failure recorded (${this.failureCount}/${this.config.failureThreshold})`
     );
 
     if (this.state === CircuitState.HALF_OPEN) {
       // Any failure in HALF_OPEN immediately opens the circuit
-      console.log('[CircuitBreaker] Failure in HALF_OPEN, transitioning to OPEN');
+      console.error('[CircuitBreaker] Failure in HALF_OPEN, transitioning to OPEN');
       this.state = CircuitState.OPEN;
       this.successCount = 0;
     } else if (this.failureCount >= this.config.failureThreshold) {
-      console.log(
+      console.error(
         `[CircuitBreaker] Threshold reached (${this.failureCount}), transitioning to OPEN`
       );
       this.state = CircuitState.OPEN;
@@ -174,7 +174,7 @@ export class CircuitBreaker {
     this.failureCount = 0;
     this.successCount = 0;
     this.lastFailureTime = null;
-    console.log('[CircuitBreaker] Manually reset to CLOSED');
+    console.error('[CircuitBreaker] Manually reset to CLOSED');
   }
 
   /**
@@ -183,7 +183,7 @@ export class CircuitBreaker {
   forceOpen(): void {
     this.state = CircuitState.OPEN;
     this.lastFailureTime = Date.now();
-    console.log('[CircuitBreaker] Manually forced OPEN');
+    console.error('[CircuitBreaker] Manually forced OPEN');
   }
 }
 

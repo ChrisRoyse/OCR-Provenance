@@ -100,7 +100,7 @@ export class VLMPipeline {
   private readonly config: PipelineConfig;
   private readonly db: Database.Database;
   private readonly dbService: DatabaseService | null;
-  private readonly vectorService: VectorService | null;
+  private readonly vectorService: VectorService;
 
   constructor(
     db: Database.Database,
@@ -109,15 +109,15 @@ export class VLMPipeline {
       vlmService?: VLMService;
       embeddingClient?: NomicEmbeddingClient;
       dbService?: DatabaseService;
-      vectorService?: VectorService;
-    } = {}
+      vectorService: VectorService;
+    }
   ) {
     this.db = db;
     this.vlm = options.vlmService ?? new VLMService();
     this.embeddingClient = options.embeddingClient ?? getEmbeddingClient();
     this.config = { ...DEFAULT_CONFIG, ...options.config };
     this.dbService = options.dbService ?? null;
-    this.vectorService = options.vectorService ?? null;
+    this.vectorService = options.vectorService;
   }
 
   /**
@@ -204,9 +204,13 @@ export class VLMPipeline {
   }
 
   /**
-   * Process a batch of images concurrently.
+   * Process a batch of images with rate limiting.
+   * Gemini free tier: 5 requests/minute = 1 request per 12 seconds.
+   * We use 15 seconds between requests for safety margin.
    */
   private async processBatch(images: ImageReference[]): Promise<ProcessingResult[]> {
+    const RATE_LIMIT_DELAY_MS = 1000; // 1 second between API calls (paid tier: 1000 RPM)
+
     // Mark all as processing
     for (const img of images) {
       try {
@@ -216,27 +220,38 @@ export class VLMPipeline {
       }
     }
 
-    // Process with concurrency control
+    // Process SEQUENTIALLY with rate limiting (no concurrency)
     const results: ProcessingResult[] = [];
 
-    for (let i = 0; i < images.length; i += this.config.concurrency) {
-      const concurrent = images.slice(i, i + this.config.concurrency);
-      const settled = await Promise.allSettled(
-        concurrent.map((img) => this.processImage(img))
-      );
+    for (let i = 0; i < images.length; i++) {
+      const img = images[i];
 
-      for (let j = 0; j < settled.length; j++) {
-        const result = settled[j];
-        if (result.status === 'fulfilled') {
-          results.push(result.value);
+      // Rate limit: wait between requests (skip for first request)
+      if (i > 0) {
+        console.error(`[VLMPipeline] Rate limiting: waiting ${RATE_LIMIT_DELAY_MS / 1000}s before next request...`);
+        await new Promise(resolve => setTimeout(resolve, RATE_LIMIT_DELAY_MS));
+      }
+
+      console.error(`[VLMPipeline] Processing image ${i + 1}/${images.length}: ${img.id}`);
+
+      try {
+        const result = await this.processImage(img);
+        results.push(result);
+
+        if (result.success) {
+          console.error(`[VLMPipeline] Success: ${img.id} (confidence: ${result.confidence?.toFixed(2)})`);
         } else {
-          results.push({
-            imageId: concurrent[j].id,
-            success: false,
-            error: result.reason?.message || 'Unknown error',
-            processingTimeMs: 0,
-          });
+          console.error(`[VLMPipeline] Failed: ${img.id} - ${result.error}`);
         }
+      } catch (error) {
+        const errorMessage = error instanceof Error ? error.message : String(error);
+        console.error(`[VLMPipeline] Error: ${img.id} - ${errorMessage}`);
+        results.push({
+          imageId: img.id,
+          success: false,
+          error: errorMessage,
+          processingTimeMs: 0,
+        });
       }
     }
 
@@ -356,8 +371,8 @@ export class VLMPipeline {
     const vector = vectors[0];
     const embeddingId = uuidv4();
 
-    // Store in database and vector storage if services available
-    if (this.dbService && this.vectorService) {
+    // Store in database and vector storage if database service available
+    if (this.dbService) {
       // Create EMBEDDING provenance if we have VLM_DESCRIPTION provenance
       let embeddingProvId = embeddingId; // Default: use embedding ID as provenance ID
 
@@ -411,10 +426,11 @@ export class VLMPipeline {
         }
       }
 
-      // Create embedding record (VLM description embeddings use a simplified schema)
+      // Create embedding record (VLM description embeddings use image_id, not chunk_id)
       this.dbService.insertEmbedding({
         id: embeddingId,
-        chunk_id: image.id, // Use image ID as chunk reference
+        chunk_id: null, // VLM embeddings don't have a chunk
+        image_id: image.id, // Use image ID for VLM embeddings
         document_id: image.document_id,
         original_text: description,
         original_text_length: description.length,

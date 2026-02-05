@@ -250,7 +250,7 @@ export class GeminiClient {
         if (errorMessage.includes('429') || errorMessage.toLowerCase().includes('rate limit')) {
           // Wait longer for rate limit errors
           const delay = Math.min(baseDelayMs * Math.pow(2, attempt + 1), maxDelayMs);
-          console.log(`[GeminiClient] Rate limited, waiting ${delay}ms`);
+          console.error(`[GeminiClient] Rate limited, waiting ${delay}ms`);
           await this.sleep(delay);
           continue;
         }
@@ -263,7 +263,7 @@ export class GeminiClient {
         // For other errors, use exponential backoff
         if (attempt < maxAttempts - 1) {
           const delay = Math.min(baseDelayMs * Math.pow(2, attempt), maxDelayMs);
-          console.log(`[GeminiClient] Retrying in ${delay}ms`);
+          console.error(`[GeminiClient] Retrying in ${delay}ms`);
           await this.sleep(delay);
         }
       }

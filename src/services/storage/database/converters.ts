@@ -100,6 +100,7 @@ export function rowToEmbedding(row: EmbeddingRow): Omit<Embedding, 'vector'> {
   return {
     id: row.id,
     chunk_id: row.chunk_id,
+    image_id: row.image_id,
     document_id: row.document_id,
     original_text: row.original_text,
     original_text_length: row.original_text_length,

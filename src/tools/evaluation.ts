@@ -459,10 +459,11 @@ async function generateAndStoreEmbedding(
 
   const embeddingId = uuidv4();
 
-  // Store embedding record
+  // Store embedding record (VLM embeddings use image_id, not chunk_id)
   db.insertEmbedding({
     id: embeddingId,
-    chunk_id: image.id,
+    chunk_id: null,
+    image_id: image.id,
     document_id: image.document_id,
     original_text: description,
     original_text_length: description.length,

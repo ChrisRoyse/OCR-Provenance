@@ -332,6 +332,21 @@ export function updateImageContext(
 }
 
 /**
+ * Update image provenance_id
+ *
+ * @param db - Database connection
+ * @param id - Image ID
+ * @param provenanceId - Provenance record ID to set
+ */
+export function updateImageProvenance(
+  db: Database.Database,
+  id: string,
+  provenanceId: string
+): void {
+  db.prepare('UPDATE images SET provenance_id = ? WHERE id = ?').run(provenanceId, id);
+}
+
+/**
  * Get image statistics
  *
  * @param db - Database connection
