@@ -31,6 +31,8 @@ import { computeHash } from '../../utils/hash.js';
 import type { ImageReference, VLMResult, VLMStructuredData } from '../../models/image.js';
 import { ProvenanceType } from '../../models/provenance.js';
 import type { ProvenanceRecord } from '../../models/provenance.js';
+import { ImageOptimizer, getImageOptimizer } from '../images/optimizer.js';
+import type { ImageOptimizationConfig } from '../../server/types.js';
 
 /**
  * Pipeline configuration options
@@ -50,6 +52,8 @@ export interface PipelineConfig {
   skipEmbeddings: boolean;
   /** Skip provenance tracking */
   skipProvenance: boolean;
+  /** Image optimization settings */
+  imageOptimization: ImageOptimizationConfig;
 }
 
 const DEFAULT_CONFIG: PipelineConfig = {
@@ -60,6 +64,14 @@ const DEFAULT_CONFIG: PipelineConfig = {
   useUniversalPrompt: true,
   skipEmbeddings: false,
   skipProvenance: false,
+  imageOptimization: {
+    enabled: true,
+    ocrMaxWidth: 4800,
+    vlmMaxDimension: 2048,
+    vlmSkipBelowSize: 50,
+    vlmMinRelevance: 0.3,
+    vlmSkipLogosIcons: true,
+  },
 };
 
 /**
@@ -83,6 +95,8 @@ export interface BatchResult {
   total: number;
   successful: number;
   failed: number;
+  /** Images skipped due to relevance filtering (logos, icons, decorative) */
+  skipped: number;
   totalTokens: number;
   totalTimeMs: number;
   results: ProcessingResult[];
@@ -96,6 +110,7 @@ export interface BatchResult {
  * - Embedding generation (Nomic)
  * - Vector storage (sqlite-vec)
  * - Provenance tracking
+ * - Image relevance filtering (logos, icons, decorative elements)
  */
 export class VLMPipeline {
   private readonly vlm: VLMService;
@@ -104,6 +119,7 @@ export class VLMPipeline {
   private readonly db: Database.Database;
   private readonly dbService: DatabaseService | null;
   private readonly vectorService: VectorService;
+  private readonly optimizer: ImageOptimizer;
 
   constructor(
     db: Database.Database,
@@ -113,6 +129,7 @@ export class VLMPipeline {
       embeddingClient?: NomicEmbeddingClient;
       dbService?: DatabaseService;
       vectorService: VectorService;
+      optimizer?: ImageOptimizer;
     }
   ) {
     this.db = db;
@@ -121,6 +138,11 @@ export class VLMPipeline {
     this.config = { ...DEFAULT_CONFIG, ...options.config };
     this.dbService = options.dbService ?? null;
     this.vectorService = options.vectorService;
+    this.optimizer = options.optimizer ?? getImageOptimizer({
+      vlmMaxDimension: this.config.imageOptimization.vlmMaxDimension,
+      vlmSkipBelowSize: this.config.imageOptimization.vlmSkipBelowSize,
+      minRelevanceScore: this.config.imageOptimization.vlmMinRelevance,
+    });
   }
 
   /**
@@ -138,6 +160,7 @@ export class VLMPipeline {
         total: 0,
         successful: 0,
         failed: 0,
+        skipped: 0,
         totalTokens: 0,
         totalTimeMs: 0,
         results: [],
@@ -193,13 +216,16 @@ export class VLMPipeline {
       results.push(...batchResults);
     }
 
-    const successful = results.filter((r) => r.success);
+    // Count successful (processed), skipped (relevance filtered), and failed
+    const successful = results.filter((r) => r.success && r.description);
+    const skipped = results.filter((r) => r.success && !r.description && r.error?.startsWith('Skipped:'));
     const failed = results.filter((r) => !r.success);
 
     return {
       total: results.length,
       successful: successful.length,
       failed: failed.length,
+      skipped: skipped.length,
       totalTokens: successful.reduce((sum, r) => sum + (r.tokensUsed || 0), 0),
       totalTimeMs: Date.now() - startTime,
       results,
@@ -263,6 +289,7 @@ export class VLMPipeline {
 
   /**
    * Process a single image through the full pipeline.
+   * Includes relevance filtering to skip logos, icons, and decorative elements.
    */
   private async processImage(image: ImageReference): Promise<ProcessingResult> {
     const start = Date.now();
@@ -280,8 +307,37 @@ export class VLMPipeline {
         };
       }
 
+      // Check image relevance if optimization enabled
+      if (this.config.imageOptimization.enabled) {
+        const shouldProcess = await this.checkImageRelevance(image);
+        if (!shouldProcess.process) {
+          // Mark as skipped (not failed) with reason
+          const skipReason = `Skipped: ${shouldProcess.reason}`;
+          console.error(`[VLMPipeline] ${skipReason} - ${image.id}`);
+
+          // Store skip reason in VLM result with special "skipped" status
+          setImageVLMFailed(this.db, image.id, skipReason);
+
+          return {
+            imageId: image.id,
+            success: true, // Not a failure, intentionally skipped
+            error: skipReason,
+            processingTimeMs: Date.now() - start,
+          };
+        }
+      }
+
+      // Optionally resize large images for VLM
+      let imagePath = image.extracted_path;
+      if (this.config.imageOptimization.enabled) {
+        const resized = await this.maybeResizeForVLM(image);
+        if (resized) {
+          imagePath = resized;
+        }
+      }
+
       // Run VLM analysis
-      const vlmResult = await this.vlm.describeImage(image.extracted_path, {
+      const vlmResult = await this.vlm.describeImage(imagePath, {
         contextText: image.context_text ?? undefined,
         useMedicalPrompt: this.config.useMedicalPrompts,
         useUniversalPrompt: this.config.useUniversalPrompt,
@@ -350,6 +406,117 @@ export class VLMPipeline {
         processingTimeMs: Date.now() - start,
       };
     }
+  }
+
+  /**
+   * Check if an image should be processed by VLM based on relevance analysis.
+   *
+   * Uses multi-layer heuristics to filter out:
+   * - Tiny images (likely icons)
+   * - Extreme aspect ratios (likely banners/decorative)
+   * - Low color diversity (likely logos)
+   *
+   * @param image - Image reference with dimensions
+   * @returns Object with process flag and reason
+   */
+  private async checkImageRelevance(
+    image: ImageReference
+  ): Promise<{ process: boolean; reason: string }> {
+    const { imageOptimization } = this.config;
+
+    // Quick dimension check first (no file I/O needed)
+    const width = image.dimensions?.width ?? 0;
+    const height = image.dimensions?.height ?? 0;
+
+    if (width > 0 && height > 0) {
+      // Check minimum size
+      if (
+        Math.max(width, height) < imageOptimization.vlmSkipBelowSize
+      ) {
+        return {
+          process: false,
+          reason: `Too small: ${width}x${height} < ${imageOptimization.vlmSkipBelowSize}px`,
+        };
+      }
+
+      // Check for likely icon (both dimensions small)
+      if (Math.max(width, height) < 100) {
+        return {
+          process: false,
+          reason: `Likely icon: ${width}x${height} (both dims < 100px)`,
+        };
+      }
+
+      // Check extreme aspect ratio
+      const aspectRatio = Math.max(width, height) / Math.min(width, height);
+      if (aspectRatio > 6) {
+        return {
+          process: false,
+          reason: `Extreme aspect ratio: ${aspectRatio.toFixed(1)}:1 (likely banner/separator)`,
+        };
+      }
+    }
+
+    // Full analysis if we have the file and settings allow
+    if (imageOptimization.vlmSkipLogosIcons && image.extracted_path) {
+      try {
+        const analysis = await this.optimizer.analyzeImage(image.extracted_path);
+
+        if (analysis.success && !analysis.should_vlm) {
+          return {
+            process: false,
+            reason: analysis.skip_reason ?? `Low relevance: ${analysis.overall_relevance}`,
+          };
+        }
+      } catch (error) {
+        // If analysis fails, proceed with VLM (fail open)
+        console.warn(
+          `[VLMPipeline] Relevance analysis failed for ${image.id}, proceeding with VLM: ${error}`
+        );
+      }
+    }
+
+    return { process: true, reason: 'Passed relevance checks' };
+  }
+
+  /**
+   * Resize an image for VLM if it exceeds the max dimension.
+   *
+   * @param image - Image reference
+   * @returns Path to resized image, or null if no resize needed
+   */
+  private async maybeResizeForVLM(image: ImageReference): Promise<string | null> {
+    if (!image.extracted_path) return null;
+
+    const { vlmMaxDimension } = this.config.imageOptimization;
+    const width = image.dimensions?.width ?? 0;
+    const height = image.dimensions?.height ?? 0;
+    const maxDim = Math.max(width, height);
+
+    // Only resize if we know dimensions and they exceed limit
+    if (maxDim > 0 && maxDim <= vlmMaxDimension) {
+      return null;
+    }
+
+    // Try to resize
+    try {
+      const result = await this.optimizer.resizeForVLM(image.extracted_path);
+
+      if (result.success && 'output_path' in result) {
+        if (result.resized) {
+          console.error(
+            `[VLMPipeline] Resized image for VLM: ${result.original_width}x${result.original_height} -> ${result.output_width}x${result.output_height}`
+          );
+        }
+        return result.output_path;
+      }
+    } catch (error) {
+      console.warn(
+        `[VLMPipeline] Failed to resize image ${image.id}, using original: ${error}`
+      );
+    }
+
+    return null;
   }
 
   /**

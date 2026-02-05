@@ -29,6 +29,14 @@ const defaultConfig: ServerConfig = {
   chunkSize: 2000,
   chunkOverlapPercent: 10,
   logLevel: 'info',
+  imageOptimization: {
+    enabled: true,
+    ocrMaxWidth: 4800,
+    vlmMaxDimension: 2048,
+    vlmSkipBelowSize: 50,
+    vlmMinRelevance: 0.3,
+    vlmSkipLogosIcons: true,
+  },
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
