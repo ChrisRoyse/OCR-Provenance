@@ -36,9 +36,12 @@ Output:
 
 import argparse
 import json
+import shutil
+import subprocess
 import sys
 import os
 import io
+import tempfile
 import zipfile
 import xml.etree.ElementTree as ET
 from pathlib import Path
@@ -74,6 +77,55 @@ PARAGRAPHS_PER_PAGE = 40
 
 # Formats accepted by Gemini VLM - anything else must be converted to PNG
 GEMINI_NATIVE_FORMATS = {"png", "jpg", "jpeg", "gif", "webp"}
+
+# Cache inkscape availability check
+_INKSCAPE_PATH: str | None = shutil.which("inkscape")
+
+
+def _convert_with_inkscape(
+    img_bytes: bytes, ext: str, filename: str
+) -> tuple[bool, bytes]:
+    """Convert EMF/WMF to PNG using inkscape subprocess.
+
+    Returns (success, png_bytes_or_original_bytes).
+    """
+    if _INKSCAPE_PATH is None:
+        return False, img_bytes
+
+    tmpdir = tempfile.mkdtemp(prefix="docx_img_")
+    try:
+        src = os.path.join(tmpdir, f"input.{ext}")
+        dst = os.path.join(tmpdir, "output.png")
+        with open(src, "wb") as f:
+            f.write(img_bytes)
+
+        result = subprocess.run(
+            [_INKSCAPE_PATH, src, "--export-type=png", f"--export-filename={dst}"],
+            capture_output=True, text=True, timeout=30,
+        )
+        if result.returncode == 0 and os.path.exists(dst):
+            with open(dst, "rb") as f:
+                return True, f.read()
+
+        print(
+            f"WARNING: inkscape failed for '{filename}': {result.stderr[:200]}",
+            file=sys.stderr,
+        )
+        return False, img_bytes
+    except subprocess.TimeoutExpired:
+        print(
+            f"WARNING: inkscape timed out converting '{filename}'",
+            file=sys.stderr,
+        )
+        return False, img_bytes
+    except Exception as e:
+        print(
+            f"WARNING: inkscape error for '{filename}': {e}",
+            file=sys.stderr,
+        )
+        return False, img_bytes
+    finally:
+        shutil.rmtree(tmpdir, ignore_errors=True)
 
 
 def _parse_relationships(zf: zipfile.ZipFile) -> dict[str, str]:
@@ -307,23 +359,35 @@ def extract_images(
             }
 
             # Convert non-native formats (EMF, WMF, BMP, TIFF) to PNG
-            # so the VLM pipeline (Gemini) can process them
+            # so the VLM pipeline (Gemini) can process them.
             save_ext = ext
             if ext not in GEMINI_NATIVE_FORMATS:
-                save_ext = "png"
-                try:
-                    buf = io.BytesIO()
-                    # Convert to RGBA to handle transparency, then save as PNG
-                    pil_img.convert("RGBA").save(buf, format="PNG")
-                    img_bytes = buf.getvalue()
-                    width, height = pil_img.size  # dimensions unchanged
-                except Exception as e:
-                    errors.append(
-                        f"File '{zip_entry}': Failed to convert {ext.upper()} to PNG: "
-                        f"{type(e).__name__}: {e}. "
-                        f"Install Pillow with full format support: pip install Pillow"
+                converted = False
+                # For EMF/WMF: use inkscape (best Linux EMF rasterizer)
+                if not converted and ext in ("emf", "wmf"):
+                    converted, img_bytes = _convert_with_inkscape(
+                        img_bytes, ext, media_filename
                     )
-                    continue
+                    if converted:
+                        save_ext = "png"
+                # Fallback to Pillow for simpler formats (BMP, TIFF)
+                if not converted:
+                    try:
+                        buf = io.BytesIO()
+                        pil_img.convert("RGBA").save(buf, format="PNG")
+                        img_bytes = buf.getvalue()
+                        save_ext = "png"
+                        converted = True
+                    except Exception:
+                        pass
+                if not converted:
+                    print(
+                        f"WARNING: Cannot convert {ext.upper()} to PNG for "
+                        f"'{media_filename}'. Saving as-is. VLM processing will "
+                        f"skip this image. To enable conversion, install "
+                        f"inkscape: sudo apt install inkscape",
+                        file=sys.stderr,
+                    )
 
             # Generate filename matching PDF extractor pattern
             filename = f"p{page:03d}_i{count:03d}.{save_ext}"

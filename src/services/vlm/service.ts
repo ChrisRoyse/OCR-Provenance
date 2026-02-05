@@ -16,6 +16,8 @@ import {
   CLASSIFY_IMAGE_PROMPT,
   DEEP_ANALYSIS_PROMPT,
   MEDICAL_IMAGE_PROMPT,
+  UNIVERSAL_EVALUATION_PROMPT,
+  UNIVERSAL_EVALUATION_SCHEMA,
   createContextPrompt,
   IMAGE_ANALYSIS_SCHEMA,
   CLASSIFICATION_SCHEMA,
@@ -94,6 +96,8 @@ export interface DescribeImageOptions {
   useMedicalPrompt?: boolean;
   /** Use high resolution mode */
   highResolution?: boolean;
+  /** Use universal blind-person-detail prompt (default: true) */
+  useUniversalPrompt?: boolean;
 }
 
 /**
@@ -124,19 +128,34 @@ export class VLMService {
     options: DescribeImageOptions = {}
   ): Promise<VLMAnalysisResult> {
     const fileRef = GeminiClient.fileRefFromPath(imagePath);
+    return this.analyzeFileRef(fileRef, options);
+  }
 
-    // Select prompt based on options
-    let prompt: string;
-    if (options.contextText) {
-      prompt = createContextPrompt(options.contextText);
-    } else if (options.useMedicalPrompt) {
-      prompt = MEDICAL_IMAGE_PROMPT;
-    } else {
-      prompt = LEGAL_IMAGE_PROMPT;
-    }
+  /**
+   * Analyze image from a FileRef (already loaded buffer).
+   *
+   * @param fileRef - Pre-loaded file reference
+   * @param options - Analysis options
+   * @returns VLMAnalysisResult
+   */
+  async describeImageFromRef(
+    fileRef: FileRef,
+    options: DescribeImageOptions = {}
+  ): Promise<VLMAnalysisResult> {
+    return this.analyzeFileRef(fileRef, options);
+  }
+
+  /**
+   * Core analysis logic shared by describeImage and describeImageFromRef.
+   */
+  private async analyzeFileRef(
+    fileRef: FileRef,
+    options: DescribeImageOptions
+  ): Promise<VLMAnalysisResult> {
+    const { prompt, schema } = this.selectPromptAndSchema(options);
 
     const response = await this.client.analyzeImage(prompt, fileRef, {
-      schema: IMAGE_ANALYSIS_SCHEMA,
+      schema,
       mediaResolution: options.highResolution !== false
         ? 'MEDIA_RESOLUTION_HIGH'
         : 'MEDIA_RESOLUTION_LOW',
@@ -159,46 +178,20 @@ export class VLMService {
   }
 
   /**
-   * Analyze image from a FileRef (already loaded buffer).
-   *
-   * @param fileRef - Pre-loaded file reference
-   * @param options - Analysis options
-   * @returns VLMAnalysisResult
+   * Select prompt and schema based on analysis options.
+   * Universal prompt is the default for all images.
    */
-  async describeImageFromRef(
-    fileRef: FileRef,
-    options: DescribeImageOptions = {}
-  ): Promise<VLMAnalysisResult> {
-    let prompt: string;
-    if (options.contextText) {
-      prompt = createContextPrompt(options.contextText);
-    } else if (options.useMedicalPrompt) {
-      prompt = MEDICAL_IMAGE_PROMPT;
-    } else {
-      prompt = LEGAL_IMAGE_PROMPT;
+  private selectPromptAndSchema(options: DescribeImageOptions): { prompt: string; schema: object } {
+    if (options.useUniversalPrompt !== false) {
+      return { prompt: UNIVERSAL_EVALUATION_PROMPT, schema: UNIVERSAL_EVALUATION_SCHEMA };
     }
-
-    const response = await this.client.analyzeImage(prompt, fileRef, {
-      schema: IMAGE_ANALYSIS_SCHEMA,
-      mediaResolution: options.highResolution !== false
-        ? 'MEDIA_RESOLUTION_HIGH'
-        : 'MEDIA_RESOLUTION_LOW',
-    });
-
-    const analysis = this.parseAnalysis(response.text);
-    const description = [
-      analysis.paragraph1,
-      analysis.paragraph2,
-      analysis.paragraph3,
-    ].filter(Boolean).join('\n\n');
-
-    return {
-      description,
-      analysis,
-      model: response.model,
-      processingTimeMs: response.processingTimeMs,
-      tokensUsed: response.usage.totalTokens,
-    };
+    if (options.contextText) {
+      return { prompt: createContextPrompt(options.contextText), schema: IMAGE_ANALYSIS_SCHEMA };
+    }
+    if (options.useMedicalPrompt) {
+      return { prompt: MEDICAL_IMAGE_PROMPT, schema: IMAGE_ANALYSIS_SCHEMA };
+    }
+    return { prompt: LEGAL_IMAGE_PROMPT, schema: IMAGE_ANALYSIS_SCHEMA };
   }
 
   /**

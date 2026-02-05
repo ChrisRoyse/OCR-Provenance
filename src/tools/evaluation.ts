@@ -31,6 +31,8 @@ import {
 import { getEmbeddingClient, MODEL_NAME as EMBEDDING_MODEL } from '../services/embedding/nomic.js';
 import { computeHash } from '../utils/hash.js';
 import type { VLMResult } from '../models/image.js';
+import { ProvenanceType } from '../models/provenance.js';
+import type { ProvenanceRecord } from '../models/provenance.js';
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // EVALUATION TOOL HANDLERS
@@ -458,8 +460,94 @@ async function generateAndStoreEmbedding(
   }
 
   const embeddingId = uuidv4();
+  const now = new Date().toISOString();
+  const descriptionHash = computeHash(description);
 
-  // Store embedding record (VLM embeddings use image_id, not chunk_id)
+  // Step 1: Get IMAGE provenance to build chain
+  if (!image.provenance_id) {
+    throw new Error(`Image ${image.id} has no provenance_id — cannot create VLM_DESCRIPTION provenance`);
+  }
+
+  const imageProv = db.getProvenance(image.provenance_id);
+  if (!imageProv) {
+    throw new Error(`Image provenance not found: ${image.provenance_id} — provenance chain is broken`);
+  }
+
+  // Step 2: Create VLM_DESCRIPTION provenance (depth 3)
+  const vlmDescProvId = uuidv4();
+  const imageParentIds = JSON.parse(imageProv.parent_ids) as string[];
+  const vlmParentIds = [...imageParentIds, image.provenance_id];
+
+  const vlmDescProv: ProvenanceRecord = {
+    id: vlmDescProvId,
+    type: ProvenanceType.VLM_DESCRIPTION,
+    created_at: now,
+    processed_at: now,
+    source_file_created_at: null,
+    source_file_modified_at: null,
+    source_type: 'VLM',
+    source_path: image.extracted_path,
+    source_id: image.provenance_id,
+    root_document_id: imageProv.root_document_id,
+    location: {
+      page_number: image.page_number,
+      chunk_index: image.image_index,
+    },
+    content_hash: descriptionHash,
+    input_hash: imageProv.content_hash,
+    file_hash: imageProv.file_hash,
+    processor: 'gemini-vlm:universal-evaluation',
+    processor_version: '3.0',
+    processing_params: {
+      type: 'vlm_description',
+      prompt: 'UNIVERSAL_EVALUATION_PROMPT',
+    },
+    processing_duration_ms: null,
+    processing_quality_score: null,
+    parent_id: image.provenance_id,
+    parent_ids: JSON.stringify(vlmParentIds),
+    chain_depth: 3,
+    chain_path: JSON.stringify(['DOCUMENT', 'OCR_RESULT', 'IMAGE', 'VLM_DESCRIPTION']),
+  };
+
+  db.insertProvenance(vlmDescProv);
+
+  // Step 3: Create EMBEDDING provenance (depth 4)
+  const embeddingProvId = uuidv4();
+  const embeddingParentIds = [...vlmParentIds, vlmDescProvId];
+
+  const embeddingProv: ProvenanceRecord = {
+    id: embeddingProvId,
+    type: ProvenanceType.EMBEDDING,
+    created_at: now,
+    processed_at: now,
+    source_file_created_at: null,
+    source_file_modified_at: null,
+    source_type: 'EMBEDDING',
+    source_path: null,
+    source_id: vlmDescProvId,
+    root_document_id: imageProv.root_document_id,
+    location: {
+      page_number: image.page_number,
+      chunk_index: image.image_index,
+    },
+    content_hash: descriptionHash,
+    input_hash: descriptionHash,
+    file_hash: imageProv.file_hash,
+    processor: EMBEDDING_MODEL,
+    processor_version: '1.5.0',
+    processing_params: { task_type: 'search_document', dimensions: 768 },
+    processing_duration_ms: null,
+    processing_quality_score: null,
+    parent_id: vlmDescProvId,
+    parent_ids: JSON.stringify(embeddingParentIds),
+    chain_depth: 4,
+    chain_path: JSON.stringify(['DOCUMENT', 'OCR_RESULT', 'IMAGE', 'VLM_DESCRIPTION', 'EMBEDDING']),
+  };
+
+  db.insertProvenance(embeddingProv);
+
+  // Step 4: Store embedding record with EMBEDDING provenance ID
   db.insertEmbedding({
     id: embeddingId,
     chunk_id: null,
@@ -481,13 +569,15 @@ async function generateAndStoreEmbedding(
     task_type: 'search_document',
     inference_mode: 'local',
     gpu_device: 'cuda:0',
-    provenance_id: image.provenance_id ?? embeddingId,
-    content_hash: computeHash(description),
+    provenance_id: embeddingProvId,
+    content_hash: descriptionHash,
     generation_duration_ms: null,
   });
 
-  // Store vector
+  // Step 5: Store vector
   vector.storeVector(embeddingId, vectors[0]);
+
+  console.error(`[INFO] Provenance chain created: IMAGE(${image.provenance_id}) → VLM_DESC(${vlmDescProvId}) → EMBED(${embeddingProvId})`);
 
   return embeddingId;
 }

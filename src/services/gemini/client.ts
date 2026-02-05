@@ -334,7 +334,9 @@ export class GeminiClient {
     const mimeType = mimeTypes[ext];
     if (!mimeType) {
       throw new Error(
-        `Unsupported file type: ${ext}. Allowed: ${ALLOWED_MIME_TYPES.join(', ')}`
+        `Unsupported image format for VLM: '${ext}' (file: ${path.basename(filePath)}). ` +
+        `Gemini accepts: png, jpg, jpeg, gif, webp, pdf. ` +
+        `To convert EMF/WMF images, install LibreOffice: sudo apt install libreoffice-core`
       );
     }
 
