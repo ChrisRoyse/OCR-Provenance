@@ -74,6 +74,29 @@ export function failureResult(
 export type OCRMode = 'fast' | 'balanced' | 'accurate';
 
 /**
+ * Image optimization configuration
+ */
+export interface ImageOptimizationConfig {
+  /** Enable image optimization (default: true) */
+  enabled: boolean;
+
+  /** Maximum width for OCR resize - Datalab API limit (default: 4800) */
+  ocrMaxWidth: number;
+
+  /** Maximum dimension for VLM resize - optimize tokens (default: 2048) */
+  vlmMaxDimension: number;
+
+  /** Skip images smaller than this for VLM (default: 50) */
+  vlmSkipBelowSize: number;
+
+  /** Minimum relevance score for VLM processing (default: 0.3) */
+  vlmMinRelevance: number;
+
+  /** Skip images predicted as logos/icons (default: true) */
+  vlmSkipLogosIcons: boolean;
+}
+
+/**
  * Server configuration options
  */
 export interface ServerConfig {
@@ -100,6 +123,9 @@ export interface ServerConfig {
 
   /** Log level */
   logLevel: string;
+
+  /** Image optimization settings */
+  imageOptimization: ImageOptimizationConfig;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
