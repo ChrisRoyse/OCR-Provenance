@@ -34,12 +34,11 @@ import {
   OCRStatusInput,
 } from '../utils/validation.js';
 import {
-  MCPError,
-  formatErrorResponse,
   pathNotFoundError,
   pathNotDirectoryError,
   documentNotFoundError,
 } from '../server/errors.js';
+import { formatResponse, handleError, type ToolDefinition } from './shared.js';
 import type { Document, OCRResult } from '../models/document.js';
 import type { Chunk } from '../models/chunk.js';
 import type { CreateImageReference, ImageReference } from '../models/image.js';
@@ -47,26 +46,11 @@ import { ProvenanceType } from '../models/provenance.js';
 import { insertImageBatch, updateImageProvenance } from '../services/storage/database/image-operations.js';
 import { getProvenanceTracker } from '../services/provenance/index.js';
 import { createVLMPipeline } from '../services/vlm/pipeline.js';
+import { ImageExtractor } from '../services/images/extractor.js';
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // TYPE DEFINITIONS
 // ═══════════════════════════════════════════════════════════════════════════════
-
-/**
- * Tool handler type - matches MCP SDK expectations
- */
-type ToolHandler = (params: Record<string, unknown>) => Promise<{
-  content: Array<{ type: 'text'; text: string }>;
-}>;
-
-/**
- * Tool definition with description, schema, and handler
- */
-interface ToolDefinition {
-  description: string;
-  inputSchema: Record<string, z.ZodTypeAny>;
-  handler: ToolHandler;
-}
 
 /**
  * Ingestion item result for tracking status
@@ -82,24 +66,6 @@ interface IngestionItem {
 // ═══════════════════════════════════════════════════════════════════════════════
 // HELPER FUNCTIONS
 // ═══════════════════════════════════════════════════════════════════════════════
-
-/**
- * Format tool result as MCP content response
- */
-function formatResponse(result: unknown): { content: Array<{ type: 'text'; text: string }> } {
-  return {
-    content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
-  };
-}
-
-/**
- * Handle errors uniformly - FAIL FAST
- */
-function handleError(error: unknown): { content: Array<{ type: 'text'; text: string }> } {
-  const mcpError = MCPError.fromUnknown(error);
-  console.error(`[ERROR] ${mcpError.category}: ${mcpError.message}`);
-  return formatResponse(formatErrorResponse(mcpError));
-}
 
 /**
  * Store chunks in database with provenance records
@@ -677,13 +643,89 @@ export async function handleProcessPending(
 
         // Step 1.5: Extract and store images from OCR result (if any)
         let imageCount = 0;
+        const imageOutputDir = resolve(imagesBaseDir, doc.id);
+
         if (processResult.images && Object.keys(processResult.images).length > 0) {
-          const imageOutputDir = resolve(imagesBaseDir, doc.id);
           const imageRefs = saveAndStoreImages(
             db, doc, ocrResult, processResult.images, imageOutputDir
           );
           imageCount = imageRefs.length;
-          console.error(`[INFO] Images extracted and stored: ${imageCount}`);
+          console.error(`[INFO] Images from Datalab: ${imageCount}`);
+        }
+
+        // Step 1.6: File-based image extraction fallback
+        // If Datalab didn't return images, extract directly from file (PDF or DOCX)
+        if (imageCount === 0 && ImageExtractor.isSupported(doc.file_path)) {
+          console.error(`[INFO] No images from Datalab for ${doc.file_type} file, running file-based extraction`);
+          const extractor = new ImageExtractor();
+          const extractedImages = await extractor.extractImages(doc.file_path, {
+            outputDir: imageOutputDir,
+            minSize: 50,
+            maxImages: 500,
+          });
+
+          if (extractedImages.length > 0) {
+            const imageRefs: CreateImageReference[] = extractedImages.map((img, idx) => {
+              const contextText = extractContextText(
+                ocrResult.extracted_text,
+                ocrResult.page_count ?? 1,
+                img.page
+              );
+              return {
+                document_id: doc.id,
+                ocr_result_id: ocrResult.id,
+                page_number: img.page,
+                bounding_box: img.bbox,
+                image_index: idx,
+                format: img.format,
+                dimensions: { width: img.width, height: img.height },
+                extracted_path: img.path,
+                file_size: img.size,
+                context_text: contextText || null,
+                provenance_id: null,
+              };
+            });
+
+            const insertedImages = insertImageBatch(db.getConnection(), imageRefs);
+
+            // Create IMAGE provenance records
+            const tracker = getProvenanceTracker(db);
+            for (const img of insertedImages) {
+              try {
+                const provenanceId = tracker.createProvenance({
+                  type: ProvenanceType.IMAGE,
+                  source_type: 'IMAGE_EXTRACTION',
+                  source_id: ocrResult.provenance_id,
+                  root_document_id: doc.provenance_id,
+                  content_hash: computeHash(img.extracted_path ?? img.id),
+                  source_path: img.extracted_path ?? undefined,
+                  processor: `${doc.file_type}-image-extraction`,
+                  processor_version: '1.0.0',
+                  processing_params: {
+                    page_number: img.page_number,
+                    image_index: img.image_index,
+                    format: img.format,
+                    extraction_method: 'file-based',
+                  },
+                  location: {
+                    page_number: img.page_number,
+                  },
+                });
+                updateImageProvenance(db.getConnection(), img.id, provenanceId);
+              } catch (provError) {
+                console.error(
+                  `[ERROR] Failed to create IMAGE provenance for ${img.id}: ` +
+                  `${provError instanceof Error ? provError.message : String(provError)}`
+                );
+                throw provError;
+              }
+            }
+
+            imageCount = insertedImages.length;
+            console.error(`[INFO] File-based extraction: ${imageCount} images`);
+          } else {
+            console.error(`[INFO] File-based extraction: no images found in document`);
+          }
         }
 
         // Step 2: Chunk the OCR text
