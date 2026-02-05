@@ -1,8 +1,8 @@
 /**
  * Image Extractor Service
  *
- * TypeScript wrapper for the Python image extraction script.
- * Extracts images from PDF documents for VLM analysis.
+ * TypeScript wrapper for Python image extraction scripts.
+ * Extracts images from PDF and DOCX documents for VLM analysis.
  */
 
 import { spawn } from 'child_process';
@@ -33,6 +33,9 @@ export interface ExtractorConfig {
   timeout?: number;
 }
 
+/** Supported file types for image extraction */
+const SUPPORTED_EXTRACTION_TYPES = new Set(['.pdf', '.docx']);
+
 const DEFAULT_CONFIG: ExtractorConfig = {
   pythonPath: 'python',
   timeout: 120000,
@@ -43,13 +46,51 @@ const DEFAULT_CONFIG: ExtractorConfig = {
  */
 export class ImageExtractor {
   private readonly config: ExtractorConfig;
-  private readonly scriptPath: string;
+  private readonly pdfScriptPath: string;
+  private readonly docxScriptPath: string;
 
   constructor(config: Partial<ExtractorConfig> = {}) {
     this.config = { ...DEFAULT_CONFIG, ...config };
-    this.scriptPath =
+    this.pdfScriptPath =
       this.config.scriptPath ||
       path.join(process.cwd(), 'python', 'image_extractor.py');
+    this.docxScriptPath =
+      path.join(process.cwd(), 'python', 'docx_image_extractor.py');
+  }
+
+  /**
+   * Extract images from any supported document type.
+   * Routes to the correct extractor based on file extension.
+   *
+   * @param filePath - Path to the document file
+   * @param options - Extraction options
+   * @returns Promise<ExtractedImage[]> - Array of extracted images
+   * @throws Error if file type is unsupported or extraction fails
+   */
+  async extractImages(
+    filePath: string,
+    options: ImageExtractionOptions
+  ): Promise<ExtractedImage[]> {
+    const ext = path.extname(filePath).toLowerCase();
+
+    switch (ext) {
+      case '.pdf':
+        return this.extractFromPDF(filePath, options);
+      case '.docx':
+        return this.extractFromDOCX(filePath, options);
+      default:
+        throw new Error(
+          `Unsupported file type for image extraction: '${ext}'. ` +
+          `Supported types: ${[...SUPPORTED_EXTRACTION_TYPES].join(', ')}`
+        );
+    }
+  }
+
+  /**
+   * Check if a file type is supported for image extraction.
+   */
+  static isSupported(filePath: string): boolean {
+    return SUPPORTED_EXTRACTION_TYPES.has(path.extname(filePath).toLowerCase());
   }
 
   /**
@@ -70,9 +111,9 @@ export class ImageExtractor {
     }
 
     // Validate script exists
-    if (!fs.existsSync(this.scriptPath)) {
+    if (!fs.existsSync(this.pdfScriptPath)) {
       throw new Error(
-        `Image extractor script not found: ${this.scriptPath}. ` +
+        `Image extractor script not found: ${this.pdfScriptPath}. ` +
           `Ensure python/image_extractor.py exists.`
       );
     }
@@ -82,7 +123,11 @@ export class ImageExtractor {
       fs.mkdirSync(options.outputDir, { recursive: true });
     }
 
-    const result = await this.runPythonScript(pdfPath, options);
+    const result = await this.runPythonExtractorScript(
+      this.pdfScriptPath,
+      pdfPath,
+      options
+    );
 
     if (!result.success) {
       throw new Error(`Image extraction failed: ${result.error}`);
@@ -91,6 +136,52 @@ export class ImageExtractor {
     if (result.warnings && result.warnings.length > 0) {
       console.warn(
         `[ImageExtractor] Warnings during extraction: ${result.warnings.join('; ')}`
+      );
+    }
+
+    return result.images;
+  }
+
+  /**
+   * Extract images from a DOCX document
+   *
+   * @param docxPath - Path to the DOCX file
+   * @param options - Extraction options
+   * @returns Promise<ExtractedImage[]> - Array of extracted images
+   * @throws Error if extraction fails
+   */
+  async extractFromDOCX(
+    docxPath: string,
+    options: ImageExtractionOptions
+  ): Promise<ExtractedImage[]> {
+    if (!fs.existsSync(docxPath)) {
+      throw new Error(`DOCX file not found: ${docxPath}`);
+    }
+
+    if (!fs.existsSync(this.docxScriptPath)) {
+      throw new Error(
+        `DOCX image extractor script not found: ${this.docxScriptPath}. ` +
+          `Ensure python/docx_image_extractor.py exists.`
+      );
+    }
+
+    if (!fs.existsSync(options.outputDir)) {
+      fs.mkdirSync(options.outputDir, { recursive: true });
+    }
+
+    const result = await this.runPythonExtractorScript(
+      this.docxScriptPath,
+      docxPath,
+      options
+    );
+
+    if (!result.success) {
+      throw new Error(`DOCX image extraction failed: ${result.error}`);
+    }
+
+    if (result.warnings && result.warnings.length > 0) {
+      console.warn(
+        `[ImageExtractor] DOCX extraction warnings: ${result.warnings.join('; ')}`
       );
     }
 
@@ -151,17 +242,18 @@ export class ImageExtractor {
   }
 
   /**
-   * Run the Python extraction script
+   * Run a Python extraction script (works for both PDF and DOCX extractors)
    */
-  private runPythonScript(
-    pdfPath: string,
+  private runPythonExtractorScript(
+    scriptPath: string,
+    inputPath: string,
     options: ImageExtractionOptions
   ): Promise<ExtractionResult> {
     return new Promise((resolve, reject) => {
       const args = [
-        this.scriptPath,
+        scriptPath,
         '--input',
-        pdfPath,
+        inputPath,
         '--output',
         options.outputDir,
         '--min-size',

@@ -62,10 +62,10 @@ export async function handleExtractImages(
     }
 
     const fileType = doc.file_type.toLowerCase();
-    if (fileType !== 'pdf') {
+    if (!ImageExtractor.isSupported(doc.file_path)) {
       throw new MCPError(
         'VALIDATION_ERROR',
-        `Image extraction only supports PDF files. Got: ${fileType}`,
+        `Image extraction not supported for file type: ${fileType}. Supported: pdf, docx`,
         { file_type: fileType, document_id: documentId }
       );
     }
@@ -90,9 +90,9 @@ export async function handleExtractImages(
     console.error(`[INFO] Extracting images from: ${doc.file_path}`);
     console.error(`[INFO] Output directory: ${imageOutputDir}`);
 
-    // Extract images using PyMuPDF
+    // Extract images using appropriate extractor (PDF or DOCX)
     const extractor = new ImageExtractor();
-    const extractedImages = await extractor.extractFromPDF(doc.file_path, {
+    const extractedImages = await extractor.extractImages(doc.file_path, {
       outputDir: imageOutputDir,
       minSize,
       maxImages,
@@ -160,17 +160,17 @@ export async function handleExtractImagesBatch(
 
     const { db } = requireDatabase();
 
-    // Get documents that are complete (OCR done) and are PDFs
+    // Get documents that are complete (OCR done) and have supported file types
     const documents = db.listDocuments({
       status: statusFilter === 'all' ? undefined : (statusFilter as 'pending' | 'processing' | 'complete' | 'failed' | undefined) || 'complete',
       limit,
-    }).filter(d => d.file_type.toLowerCase() === 'pdf');
+    }).filter(d => ImageExtractor.isSupported(d.file_path));
 
     if (documents.length === 0) {
       return formatResponse(successResult({
         processed: 0,
         total_images: 0,
-        message: 'No PDF documents found for extraction',
+        message: 'No documents with supported image extraction types found (supported: pdf, docx)',
       }));
     }
 
@@ -229,7 +229,7 @@ export async function handleExtractImagesBatch(
 
         console.error(`[INFO] Extracting from: ${doc.file_name}`);
 
-        const extractedImages = await extractor.extractFromPDF(doc.file_path, {
+        const extractedImages = await extractor.extractImages(doc.file_path, {
           outputDir: imageOutputDir,
           minSize,
           maxImages: maxImagesPerDoc,
@@ -324,7 +324,7 @@ export async function handleExtractionCheck(
  */
 export const extractionTools: Record<string, ToolDefinition> = {
   'ocr_extract_images': {
-    description: 'Extract images from a PDF document using PyMuPDF (independent of Datalab). Saves images to disk and creates database records for VLM processing.',
+    description: 'Extract images from a document (PDF or DOCX). Saves images to disk and creates database records for VLM processing.',
     inputSchema: {
       document_id: z.string().min(1).describe('Document ID (must be OCR processed first)'),
       min_size: z.number().int().min(10).max(1000).default(100).describe('Minimum image dimension in pixels'),
@@ -335,7 +335,7 @@ export const extractionTools: Record<string, ToolDefinition> = {
   },
 
   'ocr_extract_images_batch': {
-    description: 'Extract images from all PDF documents that have been OCR processed',
+    description: 'Extract images from all documents (PDF, DOCX) that have been OCR processed',
     inputSchema: {
       min_size: z.number().int().min(10).max(1000).default(100).describe('Minimum image dimension in pixels'),
       max_images_per_doc: z.number().int().min(1).max(1000).default(200).describe('Maximum images per document'),
