@@ -28,6 +28,7 @@ import * as ocrOps from './ocr-operations.js';
 import * as chunkOps from './chunk-operations.js';
 import * as embOps from './embedding-operations.js';
 import * as provOps from './provenance-operations.js';
+import { updateImageProvenance } from './image-operations.js';
 
 /**
  * DatabaseService class for all database operations
@@ -211,5 +212,11 @@ export class DatabaseService {
 
   getProvenanceChildren(parentId: string): ProvenanceRecord[] {
     return provOps.getProvenanceChildren(this.db, parentId);
+  }
+
+  // ==================== IMAGE OPERATIONS ====================
+
+  updateImageProvenance(id: string, provenanceId: string): void {
+    updateImageProvenance(this.db, id, provenanceId);
   }
 }

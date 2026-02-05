@@ -186,6 +186,107 @@ function migrateV1ToV2(db: Database.Database): void {
 }
 
 /**
+ * Migrate from schema version 2 to version 3
+ *
+ * Changes in v3:
+ * - embeddings.chunk_id: Changed from NOT NULL to nullable
+ * - embeddings.image_id: New column (nullable) for VLM description embeddings
+ * - embeddings: Added CHECK constraint (chunk_id IS NOT NULL OR image_id IS NOT NULL)
+ * - embeddings: Added FOREIGN KEY (image_id) REFERENCES images(id)
+ *
+ * This migration allows embeddings to reference either chunks (text embeddings)
+ * or images (VLM description embeddings).
+ *
+ * @param db - Database instance from better-sqlite3
+ * @throws MigrationError if migration fails
+ */
+function migrateV2ToV3(db: Database.Database): void {
+  try {
+    db.exec('BEGIN TRANSACTION');
+
+    // Step 1: Create new embeddings table with updated schema
+    db.exec(`
+      CREATE TABLE embeddings_new (
+        id TEXT PRIMARY KEY,
+        chunk_id TEXT,
+        image_id TEXT,
+        document_id TEXT NOT NULL,
+        original_text TEXT NOT NULL,
+        original_text_length INTEGER NOT NULL,
+        source_file_path TEXT NOT NULL,
+        source_file_name TEXT NOT NULL,
+        source_file_hash TEXT NOT NULL,
+        page_number INTEGER,
+        page_range TEXT,
+        character_start INTEGER NOT NULL,
+        character_end INTEGER NOT NULL,
+        chunk_index INTEGER NOT NULL,
+        total_chunks INTEGER NOT NULL,
+        model_name TEXT NOT NULL,
+        model_version TEXT NOT NULL,
+        task_type TEXT NOT NULL CHECK (task_type IN ('search_document', 'search_query')),
+        inference_mode TEXT NOT NULL CHECK (inference_mode = 'local'),
+        gpu_device TEXT,
+        provenance_id TEXT NOT NULL UNIQUE,
+        content_hash TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        generation_duration_ms INTEGER,
+        FOREIGN KEY (chunk_id) REFERENCES chunks(id),
+        FOREIGN KEY (image_id) REFERENCES images(id),
+        FOREIGN KEY (document_id) REFERENCES documents(id),
+        FOREIGN KEY (provenance_id) REFERENCES provenance(id),
+        CHECK (chunk_id IS NOT NULL OR image_id IS NOT NULL)
+      )
+    `);
+
+    // Step 2: Copy existing data (image_id will be NULL for existing embeddings)
+    db.exec(`
+      INSERT INTO embeddings_new (
+        id, chunk_id, image_id, document_id, original_text, original_text_length,
+        source_file_path, source_file_name, source_file_hash, page_number, page_range,
+        character_start, character_end, chunk_index, total_chunks, model_name,
+        model_version, task_type, inference_mode, gpu_device, provenance_id,
+        content_hash, created_at, generation_duration_ms
+      )
+      SELECT
+        id, chunk_id, NULL, document_id, original_text, original_text_length,
+        source_file_path, source_file_name, source_file_hash, page_number, page_range,
+        character_start, character_end, chunk_index, total_chunks, model_name,
+        model_version, task_type, inference_mode, gpu_device, provenance_id,
+        content_hash, created_at, generation_duration_ms
+      FROM embeddings
+    `);
+
+    // Step 3: Drop old table
+    db.exec('DROP TABLE embeddings');
+
+    // Step 4: Rename new table
+    db.exec('ALTER TABLE embeddings_new RENAME TO embeddings');
+
+    // Step 5: Recreate indexes
+    db.exec('CREATE INDEX IF NOT EXISTS idx_embeddings_chunk_id ON embeddings(chunk_id)');
+    db.exec('CREATE INDEX IF NOT EXISTS idx_embeddings_image_id ON embeddings(image_id)');
+    db.exec('CREATE INDEX IF NOT EXISTS idx_embeddings_document_id ON embeddings(document_id)');
+    db.exec('CREATE INDEX IF NOT EXISTS idx_embeddings_source_file ON embeddings(source_file_path)');
+    db.exec('CREATE INDEX IF NOT EXISTS idx_embeddings_page ON embeddings(page_number)');
+
+    db.exec('COMMIT');
+  } catch (error) {
+    try {
+      db.exec('ROLLBACK');
+    } catch {
+      // Ignore rollback errors
+    }
+    throw new MigrationError(
+      'Failed to migrate embeddings table from v2 to v3',
+      'migrate',
+      'embeddings',
+      error
+    );
+  }
+}
+
+/**
  * Migrate database to the latest schema version
  *
  * Checks current version and applies any necessary migrations.
@@ -219,6 +320,10 @@ export function migrateToLatest(db: Database.Database): void {
   // Apply migrations incrementally
   if (currentVersion < 2) {
     migrateV1ToV2(db);
+  }
+
+  if (currentVersion < 3) {
+    migrateV2ToV3(db);
   }
 
   // Update schema version after successful migration
