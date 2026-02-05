@@ -115,8 +115,10 @@ function migrateV1ToV2(db: Database.Database): void {
   try {
     // SQLite doesn't support ALTER TABLE to modify CHECK constraints.
     // We need to recreate the provenance table with the new constraints.
-    // This is done in a transaction to ensure atomicity.
+    // Foreign keys must be disabled during table recreation to avoid
+    // constraint failures when dropping the old table (other tables reference it).
 
+    db.exec('PRAGMA foreign_keys = OFF');
     db.exec('BEGIN TRANSACTION');
 
     // Step 1: Create a new table with updated CHECK constraints
@@ -168,16 +170,60 @@ function migrateV1ToV2(db: Database.Database): void {
     db.exec('CREATE INDEX IF NOT EXISTS idx_provenance_root_document_id ON provenance(root_document_id)');
     db.exec('CREATE INDEX IF NOT EXISTS idx_provenance_parent_id ON provenance(parent_id)');
 
+    // Step 6: Create images table (new in v2 - supports IMAGE provenance type)
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS images (
+        id TEXT PRIMARY KEY,
+        document_id TEXT NOT NULL,
+        ocr_result_id TEXT NOT NULL,
+        page_number INTEGER NOT NULL,
+        bbox_x REAL NOT NULL,
+        bbox_y REAL NOT NULL,
+        bbox_width REAL NOT NULL,
+        bbox_height REAL NOT NULL,
+        image_index INTEGER NOT NULL,
+        format TEXT NOT NULL,
+        width INTEGER NOT NULL,
+        height INTEGER NOT NULL,
+        extracted_path TEXT,
+        file_size INTEGER,
+        vlm_status TEXT NOT NULL DEFAULT 'pending' CHECK (vlm_status IN ('pending', 'processing', 'complete', 'failed')),
+        vlm_description TEXT,
+        vlm_structured_data TEXT,
+        vlm_embedding_id TEXT,
+        vlm_model TEXT,
+        vlm_confidence REAL,
+        vlm_processed_at TEXT,
+        vlm_tokens_used INTEGER,
+        context_text TEXT,
+        provenance_id TEXT,
+        created_at TEXT NOT NULL,
+        error_message TEXT,
+        FOREIGN KEY (document_id) REFERENCES documents(id) ON DELETE CASCADE,
+        FOREIGN KEY (ocr_result_id) REFERENCES ocr_results(id) ON DELETE CASCADE,
+        FOREIGN KEY (vlm_embedding_id) REFERENCES embeddings(id),
+        FOREIGN KEY (provenance_id) REFERENCES provenance(id)
+      )
+    `);
+    db.exec('CREATE INDEX IF NOT EXISTS idx_images_document_id ON images(document_id)');
+    db.exec('CREATE INDEX IF NOT EXISTS idx_images_ocr_result_id ON images(ocr_result_id)');
+    db.exec('CREATE INDEX IF NOT EXISTS idx_images_page ON images(page_number)');
+    db.exec('CREATE INDEX IF NOT EXISTS idx_images_vlm_status ON images(vlm_status)');
+    db.exec(`CREATE INDEX IF NOT EXISTS idx_images_pending ON images(vlm_status) WHERE vlm_status = 'pending'`);
+
     db.exec('COMMIT');
+    db.exec('PRAGMA foreign_keys = ON');
   } catch (error) {
     // Rollback on error
     try {
       db.exec('ROLLBACK');
+      db.exec('PRAGMA foreign_keys = ON');
     } catch {
       // Ignore rollback errors
     }
+    const cause = error instanceof Error ? error.message : String(error);
     throw new MigrationError(
-      'Failed to migrate provenance table from v1 to v2',
+      `Failed to migrate provenance table from v1 to v2: ${cause}`,
       'migrate',
       'provenance',
       error
@@ -202,6 +248,8 @@ function migrateV1ToV2(db: Database.Database): void {
  */
 function migrateV2ToV3(db: Database.Database): void {
   try {
+    // Foreign keys must be disabled during table recreation
+    db.exec('PRAGMA foreign_keys = OFF');
     db.exec('BEGIN TRANSACTION');
 
     // Step 1: Create new embeddings table with updated schema
@@ -271,14 +319,17 @@ function migrateV2ToV3(db: Database.Database): void {
     db.exec('CREATE INDEX IF NOT EXISTS idx_embeddings_page ON embeddings(page_number)');
 
     db.exec('COMMIT');
+    db.exec('PRAGMA foreign_keys = ON');
   } catch (error) {
     try {
       db.exec('ROLLBACK');
+      db.exec('PRAGMA foreign_keys = ON');
     } catch {
       // Ignore rollback errors
     }
+    const cause = error instanceof Error ? error.message : String(error);
     throw new MigrationError(
-      'Failed to migrate embeddings table from v2 to v3',
+      `Failed to migrate embeddings table from v2 to v3: ${cause}`,
       'migrate',
       'embeddings',
       error

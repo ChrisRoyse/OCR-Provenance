@@ -88,6 +88,18 @@ export interface ServerConfig {
 
   /** Batch size for embedding generation */
   embeddingBatchSize: number;
+
+  /** GPU device for embedding generation */
+  embeddingDevice: string;
+
+  /** Chunk size in characters */
+  chunkSize: number;
+
+  /** Chunk overlap percentage (0-50) */
+  chunkOverlapPercent: number;
+
+  /** Log level */
+  logLevel: string;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════

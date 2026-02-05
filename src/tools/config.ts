@@ -12,7 +12,7 @@
 
 import { z } from 'zod';
 import { state, getConfig, updateConfig } from '../server/state.js';
-import { successResult } from '../server/types.js';
+import { successResult, type ServerConfig } from '../server/types.js';
 import {
   validateInput,
   ConfigGetInput,
@@ -29,19 +29,15 @@ import { formatResponse, handleError, type ToolResponse, type ToolDefinition } f
 /** Immutable configuration keys - cannot be changed at runtime */
 const IMMUTABLE_KEYS = ['embedding_model', 'embedding_dimensions', 'hash_algorithm'];
 
-/** Default values for config keys not yet stored in state */
-const CONFIG_DEFAULTS: Record<string, unknown> = {
-  embedding_device: 'cuda:0',
-  chunk_size: 2000,
-  chunk_overlap_percent: 10,
-  log_level: 'info',
-};
-
 /** Map config keys to their state property names */
 const CONFIG_KEY_MAP: Record<string, string> = {
   datalab_default_mode: 'defaultOCRMode',
   datalab_max_concurrent: 'maxConcurrent',
   embedding_batch_size: 'embeddingBatchSize',
+  embedding_device: 'embeddingDevice',
+  chunk_size: 'chunkSize',
+  chunk_overlap_percent: 'chunkOverlapPercent',
+  log_level: 'logLevel',
 };
 
 function getConfigValue(key: z.infer<typeof ConfigKey>): unknown {
@@ -51,34 +47,51 @@ function getConfigValue(key: z.infer<typeof ConfigKey>): unknown {
   if (mappedKey && mappedKey in config) {
     return config[mappedKey as keyof typeof config];
   }
-  if (key in CONFIG_DEFAULTS) {
-    return CONFIG_DEFAULTS[key];
-  }
   throw validationError(`Unknown configuration key: ${key}`, { key });
 }
 
+/** Validation rules per config key */
+const CONFIG_VALIDATORS: Record<string, (value: unknown) => void> = {
+  datalab_default_mode: (v) => {
+    if (typeof v !== 'string' || !['fast', 'balanced', 'accurate'].includes(v))
+      throw validationError('datalab_default_mode must be "fast", "balanced", or "accurate"', { value: v });
+  },
+  datalab_max_concurrent: (v) => {
+    if (typeof v !== 'number' || v < 1 || v > 10)
+      throw validationError('datalab_max_concurrent must be a number between 1 and 10', { value: v });
+  },
+  embedding_batch_size: (v) => {
+    if (typeof v !== 'number' || v < 1 || v > 1024)
+      throw validationError('embedding_batch_size must be a number between 1 and 1024', { value: v });
+  },
+  embedding_device: (v) => {
+    if (typeof v !== 'string')
+      throw validationError('embedding_device must be a string', { value: v });
+  },
+  chunk_size: (v) => {
+    if (typeof v !== 'number' || v < 100 || v > 10000)
+      throw validationError('chunk_size must be a number between 100 and 10000', { value: v });
+  },
+  chunk_overlap_percent: (v) => {
+    if (typeof v !== 'number' || v < 0 || v > 50)
+      throw validationError('chunk_overlap_percent must be a number between 0 and 50', { value: v });
+  },
+  log_level: (v) => {
+    if (typeof v !== 'string' || !['debug', 'info', 'warn', 'error'].includes(v))
+      throw validationError('log_level must be "debug", "info", "warn", or "error"', { value: v });
+  },
+};
+
 function setConfigValue(key: z.infer<typeof ConfigKey>, value: string | number | boolean): void {
-  if (key === 'datalab_default_mode') {
-    if (typeof value !== 'string' || !['fast', 'balanced', 'accurate'].includes(value)) {
-      throw validationError('datalab_default_mode must be "fast", "balanced", or "accurate"', { key, value });
-    }
-    updateConfig({ defaultOCRMode: value as 'fast' | 'balanced' | 'accurate' });
-  } else if (key === 'datalab_max_concurrent') {
-    if (typeof value !== 'number' || value < 1 || value > 10) {
-      throw validationError('datalab_max_concurrent must be a number between 1 and 10', { key, value });
-    }
-    updateConfig({ maxConcurrent: value });
-  } else if (key === 'embedding_batch_size') {
-    if (typeof value !== 'number' || value < 1 || value > 1024) {
-      throw validationError('embedding_batch_size must be a number between 1 and 1024', { key, value });
-    }
-    updateConfig({ embeddingBatchSize: value });
-  } else if (key in CONFIG_DEFAULTS) {
-    // These config keys are not yet persisted - log for visibility
-    console.error(`[CONFIG] Setting ${key} to ${String(value)} (not yet persisted)`);
-  } else {
+  const mappedKey = CONFIG_KEY_MAP[key];
+  if (!mappedKey) {
     throw validationError(`Unknown configuration key: ${key}`, { key });
   }
+
+  const validator = CONFIG_VALIDATORS[key];
+  if (validator) validator(value);
+
+  updateConfig({ [mappedKey]: value } as Partial<ServerConfig>);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -112,11 +125,11 @@ export async function handleConfigGet(
       embedding_dimensions: 768,
       hash_algorithm: 'sha256',
 
-      // Additional config values
-      embedding_device: 'cuda:0',
-      chunk_size: 2000,
-      chunk_overlap_percent: 10,
-      log_level: 'info',
+      // Mutable config values from state
+      embedding_device: config.embeddingDevice,
+      chunk_size: config.chunkSize,
+      chunk_overlap_percent: config.chunkOverlapPercent,
+      log_level: config.logLevel,
     }));
   } catch (error) {
     return handleError(error);
