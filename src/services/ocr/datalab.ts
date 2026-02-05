@@ -124,7 +124,18 @@ export class DatalabClient {
           if (error instanceof OCRError) {
             reject(error);
           } else {
-            reject(new OCRError(`Python worker failed: ${error.message}`, 'OCR_API_ERROR'));
+            // PythonShellError puts parsed JSON stdout in error.logs array
+            const logs = (error as Record<string, unknown>).logs as unknown[] | undefined;
+            if (logs && logs.length > 0) {
+              const lastLog = logs[logs.length - 1];
+              if (this.isErrorResponse(lastLog)) {
+                reject(mapPythonError(lastLog.category, lastLog.error, lastLog.details));
+                return;
+              }
+            }
+            const stderr = (error as Record<string, unknown>).traceback ?? (error as Record<string, unknown>).stderr ?? '';
+            const detail = stderr ? `${error.message}\nPython stderr:\n${stderr}` : error.message;
+            reject(new OCRError(`Python worker failed: ${detail}`, 'OCR_API_ERROR'));
           }
         });
     });

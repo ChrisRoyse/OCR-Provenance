@@ -25,6 +25,10 @@ const defaultConfig: ServerConfig = {
   defaultOCRMode: 'balanced',
   maxConcurrent: 3,
   embeddingBatchSize: 32,
+  embeddingDevice: 'cuda:0',
+  chunkSize: 2000,
+  chunkOverlapPercent: 10,
+  logLevel: 'info',
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════

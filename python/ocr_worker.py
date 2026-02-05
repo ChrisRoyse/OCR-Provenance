@@ -77,9 +77,9 @@ class OCRAuthenticationError(OCRError):
 
     def __init__(self, message: str, status_code: int):
         # Provide actionable error message
-        if "subscription" in message.lower() or "expired" in message.lower():
+        if "subscription" in message.lower() or "expired" in message.lower() or status_code == 403:
             detailed_msg = (
-                f"Datalab API subscription expired. {message} "
+                f"Datalab API subscription inactive (HTTP {status_code}). {message} "
                 "Action: Renew subscription at https://www.datalab.to/settings"
             )
         elif status_code == 401:
@@ -383,6 +383,9 @@ def process_document(
         if status == 429 or "rate limit" in error_msg.lower():
             logger.error(f"Rate limit exceeded: {e}")
             raise OCRRateLimitError(error_msg) from e
+        elif status in (401, 403):
+            logger.error(f"Authentication error ({status}): {e}")
+            raise OCRAuthenticationError(error_msg, status) from e
         else:
             logger.error(f"API error ({status}): {e}")
             raise OCRAPIError(error_msg, status, request_id) from e
@@ -577,6 +580,15 @@ Examples:
 
     except Exception as e:
         logger.exception(f"Fatal error: {e}")
+        if args.json:
+            details = {}
+            if hasattr(e, 'status_code'):
+                details['status_code'] = e.status_code
+            if hasattr(e, 'request_id'):
+                details['request_id'] = e.request_id
+            if hasattr(e, 'file_path'):
+                details['file_path'] = e.file_path
+            print(json.dumps({"error": str(e), "category": getattr(e, 'category', 'OCR_API_ERROR'), "details": details}))
         sys.exit(1)
 
 
