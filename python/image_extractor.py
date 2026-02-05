@@ -60,6 +60,10 @@ except ImportError:
     sys.exit(1)
 
 
+# Formats accepted by Gemini VLM - anything else must be converted to PNG
+GEMINI_NATIVE_FORMATS = {"png", "jpg", "jpeg", "gif", "webp"}
+
+
 def extract_images(
     pdf_path: str,
     output_dir: str,
@@ -144,8 +148,23 @@ def extract_images(
                             "height": float(height)
                         }
 
+                    # Convert non-native formats to PNG for VLM compatibility
+                    save_ext = ext.lower()
+                    if save_ext not in GEMINI_NATIVE_FORMATS:
+                        save_ext = "png"
+                        try:
+                            buf = io.BytesIO()
+                            pil_img.convert("RGBA").save(buf, format="PNG")
+                            img_bytes = buf.getvalue()
+                        except Exception as conv_e:
+                            errors.append(
+                                f"Page {page_num + 1}, image {img_idx}: "
+                                f"Failed to convert {ext} to PNG: {conv_e}"
+                            )
+                            continue
+
                     # Generate filename: p001_i000.png
-                    filename = f"p{page_num + 1:03d}_i{img_idx:03d}.{ext}"
+                    filename = f"p{page_num + 1:03d}_i{img_idx:03d}.{save_ext}"
                     filepath = output / filename
 
                     # Save image
@@ -155,7 +174,7 @@ def extract_images(
                     images.append({
                         "page": page_num + 1,  # 1-indexed
                         "index": img_idx,
-                        "format": ext,
+                        "format": save_ext,
                         "width": width,
                         "height": height,
                         "bbox": bbox,
