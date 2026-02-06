@@ -55,13 +55,19 @@ describe('Index Verification', () => {
     'idx_embeddings_document_id',
     'idx_embeddings_source_file',
     'idx_embeddings_page',
+    'idx_images_document_id',
+    'idx_images_ocr_result_id',
+    'idx_images_vlm_status',
+    'idx_images_page',
+    'idx_images_pending',
+    'idx_images_content_hash',
     'idx_provenance_source_id',
     'idx_provenance_type',
     'idx_provenance_root_document_id',
     'idx_provenance_parent_id',
   ];
 
-  it.skipIf(!sqliteVecAvailable)('should create all 15 required indexes', () => {
+  it.skipIf(!sqliteVecAvailable)('should create all 21 required indexes', () => {
     initializeDatabase(ctx.db);
     const indexes = getIndexNames(ctx.db!);
 

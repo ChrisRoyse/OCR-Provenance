@@ -36,6 +36,10 @@ interface PythonOCRResponse {
   error: string | null;
   /** Images extracted by Datalab: {filename: base64_data} */
   images: Record<string, string> | null;
+  /** JSON block hierarchy from Datalab (when output_format includes 'json') */
+  json_blocks: Record<string, unknown> | null;
+  /** Datalab metadata (page_stats, block_counts, etc.) */
+  metadata: Record<string, unknown> | null;
 }
 
 interface PythonErrorResponse {
@@ -70,7 +74,13 @@ export class DatalabClient {
     documentId: string,
     provenanceId: string,
     mode: 'fast' | 'balanced' | 'accurate' = 'accurate'
-  ): Promise<{ result: OCRResult; pageOffsets: PageOffset[]; images: Record<string, string> }> {
+  ): Promise<{
+    result: OCRResult;
+    pageOffsets: PageOffset[];
+    images: Record<string, string>;
+    jsonBlocks: Record<string, unknown> | null;
+    metadata: Record<string, unknown> | null;
+  }> {
     const options: Options = {
       mode: 'json',
       pythonPath: this.pythonPath,
@@ -117,6 +127,8 @@ export class DatalabClient {
             result: this.toOCRResult(ocrResponse),
             pageOffsets: this.toPageOffsets(ocrResponse.page_offsets),
             images: ocrResponse.images ?? {},
+            jsonBlocks: ocrResponse.json_blocks ?? null,
+            metadata: ocrResponse.metadata ?? null,
           });
         })
         .catch((error) => {

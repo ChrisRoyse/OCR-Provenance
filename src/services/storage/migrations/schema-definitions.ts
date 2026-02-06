@@ -8,7 +8,7 @@
  */
 
 /** Current schema version */
-export const SCHEMA_VERSION = 4;
+export const SCHEMA_VERSION = 5;
 
 /**
  * Database configuration pragmas for optimal performance and safety
@@ -288,6 +288,9 @@ CREATE TABLE IF NOT EXISTS images (
   provenance_id TEXT,
   created_at TEXT NOT NULL,
   error_message TEXT,
+  block_type TEXT,
+  is_header_footer INTEGER NOT NULL DEFAULT 0,
+  content_hash TEXT,
   FOREIGN KEY (document_id) REFERENCES documents(id) ON DELETE CASCADE,
   FOREIGN KEY (ocr_result_id) REFERENCES ocr_results(id) ON DELETE CASCADE,
   FOREIGN KEY (vlm_embedding_id) REFERENCES embeddings(id),
@@ -324,6 +327,7 @@ export const CREATE_INDEXES = [
   'CREATE INDEX IF NOT EXISTS idx_images_ocr_result_id ON images(ocr_result_id)',
   'CREATE INDEX IF NOT EXISTS idx_images_page ON images(document_id, page_number)',
   'CREATE INDEX IF NOT EXISTS idx_images_vlm_status ON images(vlm_status)',
+  'CREATE INDEX IF NOT EXISTS idx_images_content_hash ON images(content_hash)',
   'CREATE INDEX IF NOT EXISTS idx_images_pending ON images(vlm_status) WHERE vlm_status = \'pending\'',
 
   // Provenance indexes
@@ -383,6 +387,7 @@ export const REQUIRED_INDEXES = [
   'idx_images_page',
   'idx_images_vlm_status',
   'idx_images_pending',
+  'idx_images_content_hash',
   'idx_provenance_source_id',
   'idx_provenance_type',
   'idx_provenance_root_document_id',

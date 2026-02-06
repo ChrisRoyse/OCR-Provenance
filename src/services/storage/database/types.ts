@@ -253,6 +253,9 @@ export interface ImageRow {
   provenance_id: string | null;
   created_at: string;
   error_message: string | null;
+  block_type: string | null;
+  is_header_footer: number;
+  content_hash: string | null;
 }
 
 /**

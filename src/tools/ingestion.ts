@@ -12,7 +12,8 @@
 
 import { z } from 'zod';
 import { v4 as uuidv4 } from 'uuid';
-import { existsSync, statSync, readdirSync, mkdirSync, writeFileSync } from 'fs';
+import { createHash } from 'crypto';
+import { existsSync, statSync, readdirSync, mkdirSync, writeFileSync, readFileSync } from 'fs';
 import { resolve, extname, basename } from 'path';
 
 import { DatabaseService } from '../services/storage/database/index.js';
@@ -187,6 +188,107 @@ function extractContextText(ocrText: string, pageCount: number, targetPage: numb
 }
 
 /**
+ * Parse Datalab block type from image filename.
+ * Datalab names images like: _page_0_Picture_21.jpeg, _page_0_Figure_3.jpeg
+ * Returns block_type string or null if pattern doesn't match.
+ */
+function parseBlockTypeFromFilename(filename: string): string | null {
+  const match = filename.match(/_page_\d+_([A-Za-z]+)_\d+\./);
+  return match ? match[1] : null;
+}
+
+/**
+ * Page-level image classification from Datalab JSON block hierarchy.
+ */
+interface PageImageClassification {
+  hasFigure: boolean;
+  hasPicture: boolean;
+  pictureInHeaderFooter: number;
+  pictureInBody: number;
+  figureCount: number;
+}
+
+/**
+ * From Datalab JSON block hierarchy, classify each page's image regions.
+ * Returns a map: pageNumber -> PageImageClassification
+ *
+ * The JSON structure has top-level children (pages), each page has children (blocks).
+ * Image blocks have block_type 'Figure', 'Picture', 'FigureGroup', 'PictureGroup'.
+ * Layout blocks have block_type 'PageHeader', 'PageFooter'.
+ */
+function buildPageBlockClassification(
+  jsonBlocks: Record<string, unknown>
+): Map<number, PageImageClassification> {
+  const pageMap = new Map<number, PageImageClassification>();
+
+  const topChildren = (jsonBlocks as Record<string, unknown[]>).children
+    ?? (jsonBlocks as Record<string, unknown[]>).blocks
+    ?? [];
+
+  if (!Array.isArray(topChildren)) {
+    console.error('[WARN] JSON blocks has no children/blocks array');
+    return pageMap;
+  }
+
+  let pageNum = 0;
+  for (const pageBlock of topChildren) {
+    const block = pageBlock as Record<string, unknown>;
+    if (block.block_type === 'Page' || !block.block_type) {
+      pageNum++;
+    } else {
+      continue;
+    }
+
+    const classification: PageImageClassification = {
+      hasFigure: false,
+      hasPicture: false,
+      pictureInHeaderFooter: 0,
+      pictureInBody: 0,
+      figureCount: 0,
+    };
+
+    const walkChildren = (children: unknown[], inHeaderFooter: boolean) => {
+      if (!Array.isArray(children)) return;
+      for (const child of children) {
+        const c = child as Record<string, unknown>;
+        const btype = c.block_type as string | undefined;
+
+        const isHF = inHeaderFooter || btype === 'PageHeader' || btype === 'PageFooter';
+
+        if (btype === 'Figure' || btype === 'FigureGroup') {
+          classification.hasFigure = true;
+          classification.figureCount++;
+        }
+        if (btype === 'Picture' || btype === 'PictureGroup') {
+          classification.hasPicture = true;
+          if (isHF) {
+            classification.pictureInHeaderFooter++;
+          } else {
+            classification.pictureInBody++;
+          }
+        }
+
+        if (c.children) {
+          walkChildren(c.children as unknown[], isHF);
+        }
+      }
+    };
+
+    walkChildren((block.children as unknown[]) ?? [], false);
+    pageMap.set(pageNum, classification);
+  }
+
+  return pageMap;
+}
+
+/**
+ * Compute SHA-256 content hash of a buffer in the project's standard format.
+ */
+function computeContentHash(buffer: Buffer): string {
+  return `sha256:${createHash('sha256').update(buffer).digest('hex')}`;
+}
+
+/**
  * Save images from Datalab to disk and store references in database.
  *
  * Images come from Datalab as {filename: base64_data}.
@@ -207,12 +309,18 @@ function saveAndStoreImages(
   doc: Document,
   ocrResult: OCRResult,
   images: Record<string, string>,
-  outputDir: string
+  outputDir: string,
+  jsonBlocks?: Record<string, unknown> | null,
 ): ImageReference[] {
   // Create output directory
   if (!existsSync(outputDir)) {
     mkdirSync(outputDir, { recursive: true });
   }
+
+  // Build page-level image classification from JSON blocks
+  const pageClassification = jsonBlocks
+    ? buildPageBlockClassification(jsonBlocks)
+    : new Map<number, PageImageClassification>();
 
   const imageRefs: CreateImageReference[] = [];
   let imageIndex = 0;
@@ -230,6 +338,20 @@ function saveAndStoreImages(
     const pageNumber = pageMatch
       ? parseInt(pageMatch[1] || pageMatch[2], 10)
       : 1;
+
+    // Compute content hash for deduplication
+    const contentHash = computeContentHash(buffer);
+
+    // Parse block type from Datalab filename
+    const blockType = parseBlockTypeFromFilename(filename);
+
+    // Determine if image is in header/footer region
+    const pageInfo = pageClassification.get(pageNumber);
+    const isHeaderFooter = blockType === 'PageHeader' || blockType === 'PageFooter'
+      || (pageInfo !== undefined
+          && !pageInfo.hasFigure
+          && pageInfo.pictureInHeaderFooter > 0
+          && pageInfo.pictureInBody === 0);
 
     // Get image format from extension
     const ext = extname(filename).slice(1).toLowerCase();
@@ -256,6 +378,9 @@ function saveAndStoreImages(
       file_size: buffer.length,
       context_text: contextText || null,
       provenance_id: null, // Will be set after insert with provenance record
+      block_type: blockType,
+      is_header_footer: isHeaderFooter,
+      content_hash: contentHash,
     });
 
     imageIndex++;
@@ -274,7 +399,7 @@ function saveAndStoreImages(
           source_type: 'IMAGE_EXTRACTION',
           source_id: ocrResult.provenance_id,
           root_document_id: doc.provenance_id,
-          content_hash: computeHash(img.extracted_path ?? img.id),
+          content_hash: img.content_hash ?? computeHash(img.extracted_path ?? img.id),
           source_path: img.extracted_path ?? undefined,
           processor: 'datalab-image-extraction',
           processor_version: '1.0.0',
@@ -282,6 +407,8 @@ function saveAndStoreImages(
             page_number: img.page_number,
             image_index: img.image_index,
             format: img.format,
+            block_type: img.block_type,
+            is_header_footer: img.is_header_footer,
           },
           location: {
             page_number: img.page_number,
@@ -647,7 +774,8 @@ export async function handleProcessPending(
 
         if (processResult.images && Object.keys(processResult.images).length > 0) {
           const imageRefs = saveAndStoreImages(
-            db, doc, ocrResult, processResult.images, imageOutputDir
+            db, doc, ocrResult, processResult.images, imageOutputDir,
+            processResult.jsonBlocks,
           );
           imageCount = imageRefs.length;
           console.error(`[INFO] Images from Datalab: ${imageCount}`);
@@ -665,7 +793,22 @@ export async function handleProcessPending(
           });
 
           if (extractedImages.length > 0) {
+            // Build page classification from JSON blocks for header/footer detection
+            const pageClassification = processResult.jsonBlocks
+              ? buildPageBlockClassification(processResult.jsonBlocks)
+              : new Map<number, PageImageClassification>();
+
             const imageRefs: CreateImageReference[] = extractedImages.map((img, idx) => {
+              // Compute content hash from the extracted file
+              const imgBytes = readFileSync(img.path);
+              const contentHash = computeContentHash(imgBytes);
+
+              const pageInfo = pageClassification.get(img.page);
+              const isHeaderFooter = pageInfo !== undefined
+                && !pageInfo.hasFigure
+                && pageInfo.pictureInHeaderFooter > 0
+                && pageInfo.pictureInBody === 0;
+
               const contextText = extractContextText(
                 ocrResult.extracted_text,
                 ocrResult.page_count ?? 1,
@@ -683,6 +826,9 @@ export async function handleProcessPending(
                 file_size: img.size,
                 context_text: contextText || null,
                 provenance_id: null,
+                block_type: null, // File-based extraction has no block type
+                is_header_footer: isHeaderFooter,
+                content_hash: contentHash,
               };
             });
 
@@ -697,7 +843,7 @@ export async function handleProcessPending(
                   source_type: 'IMAGE_EXTRACTION',
                   source_id: ocrResult.provenance_id,
                   root_document_id: doc.provenance_id,
-                  content_hash: computeHash(img.extracted_path ?? img.id),
+                  content_hash: img.content_hash ?? computeHash(img.extracted_path ?? img.id),
                   source_path: img.extracted_path ?? undefined,
                   processor: `${doc.file_type}-image-extraction`,
                   processor_version: '1.0.0',
@@ -706,6 +852,7 @@ export async function handleProcessPending(
                     image_index: img.image_index,
                     format: img.format,
                     extraction_method: 'file-based',
+                    is_header_footer: img.is_header_footer,
                   },
                   location: {
                     page_number: img.page_number,

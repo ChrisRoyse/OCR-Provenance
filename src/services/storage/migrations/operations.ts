@@ -394,6 +394,42 @@ function migrateV3ToV4(db: Database.Database): void {
 }
 
 /**
+ * Migrate from schema version 4 to version 5
+ *
+ * Changes in v5:
+ * - images.block_type: Datalab block type (Figure, Picture, PageHeader, etc.)
+ * - images.is_header_footer: Boolean flag for header/footer images
+ * - images.content_hash: SHA-256 of image bytes for deduplication
+ * - idx_images_content_hash: Index for fast dedup lookups
+ *
+ * @param db - Database instance from better-sqlite3
+ * @throws MigrationError if migration fails
+ */
+function migrateV4ToV5(db: Database.Database): void {
+  db.exec('PRAGMA foreign_keys = OFF');
+  const transaction = db.transaction(() => {
+    db.exec('ALTER TABLE images ADD COLUMN block_type TEXT');
+    db.exec('ALTER TABLE images ADD COLUMN is_header_footer INTEGER NOT NULL DEFAULT 0');
+    db.exec('ALTER TABLE images ADD COLUMN content_hash TEXT');
+    db.exec('CREATE INDEX IF NOT EXISTS idx_images_content_hash ON images(content_hash)');
+  });
+
+  try {
+    transaction();
+    db.exec('PRAGMA foreign_keys = ON');
+  } catch (error) {
+    db.exec('PRAGMA foreign_keys = ON');
+    const cause = error instanceof Error ? error.message : String(error);
+    throw new MigrationError(
+      `Failed to migrate from v4 to v5 (image filtering columns): ${cause}`,
+      'migrate',
+      'images',
+      error
+    );
+  }
+}
+
+/**
  * Migrate database to the latest schema version
  *
  * Checks current version and applies any necessary migrations.
@@ -435,6 +471,10 @@ export function migrateToLatest(db: Database.Database): void {
 
   if (currentVersion < 4) {
     migrateV3ToV4(db);
+  }
+
+  if (currentVersion < 5) {
+    migrateV4ToV5(db);
   }
 
   // Update schema version after successful migration
