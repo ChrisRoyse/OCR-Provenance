@@ -190,7 +190,7 @@ function buildStatsResponse(
     document_count: stats.total_documents,
     chunk_count: stats.total_chunks,
     embedding_count: stats.total_embeddings,
-    provenance_count: stats.total_ocr_results,
+    provenance_count: stats.total_provenance,
     ocr_result_count: stats.total_ocr_results,
     pending_documents: stats.documents_by_status.pending,
     processing_documents: stats.documents_by_status.processing,

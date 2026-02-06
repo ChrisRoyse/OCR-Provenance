@@ -41,6 +41,7 @@ export interface DatabaseStats {
     failed: number;
   };
   total_embeddings: number;
+  total_provenance: number;
   storage_size_bytes: number;
   avg_chunks_per_document: number;
   avg_embeddings_per_chunk: number;

@@ -18,7 +18,10 @@ import { successResult } from '../server/types.js';
 import { MCPError } from '../server/errors.js';
 import { formatResponse, handleError, type ToolResponse, type ToolDefinition } from './shared.js';
 import { ImageExtractor } from '../services/images/extractor.js';
-import { insertImageBatch, getImagesByDocument } from '../services/storage/database/image-operations.js';
+import { insertImageBatch, getImagesByDocument, updateImageProvenance } from '../services/storage/database/image-operations.js';
+import { getProvenanceTracker } from '../services/provenance/index.js';
+import { ProvenanceType } from '../models/provenance.js';
+import { computeHash } from '../utils/hash.js';
 import type { CreateImageReference } from '../models/image.js';
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -120,6 +123,37 @@ export async function handleExtractImages(
 
     // Store in database
     const storedImages = insertImageBatch(db.getConnection(), imageRefs);
+
+    // Create IMAGE provenance records
+    const tracker = getProvenanceTracker(db);
+    for (const img of storedImages) {
+      try {
+        const provenanceId = tracker.createProvenance({
+          type: ProvenanceType.IMAGE,
+          source_type: 'IMAGE_EXTRACTION',
+          source_id: ocrResult.provenance_id,
+          root_document_id: doc.provenance_id,
+          content_hash: img.content_hash ?? computeHash(img.extracted_path ?? img.id),
+          source_path: img.extracted_path ?? undefined,
+          processor: `${fileType}-file-extraction`,
+          processor_version: '1.0.0',
+          processing_params: {
+            page_number: img.page_number,
+            image_index: img.image_index,
+            format: img.format,
+            block_type: img.block_type,
+            is_header_footer: img.is_header_footer,
+          },
+          location: {
+            page_number: img.page_number,
+          },
+        });
+        updateImageProvenance(db.getConnection(), img.id, provenanceId);
+        img.provenance_id = provenanceId;
+      } catch (error) {
+        console.error(`[WARN] Failed to create IMAGE provenance for ${img.id}: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
 
     console.error(`[INFO] Stored ${storedImages.length} image records in database`);
 
@@ -257,7 +291,39 @@ export async function handleExtractImagesBatch(
         }));
 
         if (imageRefs.length > 0) {
-          insertImageBatch(db.getConnection(), imageRefs);
+          const batchImages = insertImageBatch(db.getConnection(), imageRefs);
+
+          // Create IMAGE provenance records
+          const ocrProv = ocrResult.provenance_id;
+          const docProv = doc.provenance_id;
+          if (ocrProv && docProv) {
+            const batchTracker = getProvenanceTracker(db);
+            for (const img of batchImages) {
+              try {
+                const provenanceId = batchTracker.createProvenance({
+                  type: ProvenanceType.IMAGE,
+                  source_type: 'IMAGE_EXTRACTION',
+                  source_id: ocrProv,
+                  root_document_id: docProv,
+                  content_hash: img.content_hash ?? computeHash(img.extracted_path ?? img.id),
+                  source_path: img.extracted_path ?? undefined,
+                  processor: `${doc.file_type}-file-extraction`,
+                  processor_version: '1.0.0',
+                  processing_params: {
+                    page_number: img.page_number,
+                    image_index: img.image_index,
+                    format: img.format,
+                  },
+                  location: {
+                    page_number: img.page_number,
+                  },
+                });
+                updateImageProvenance(db.getConnection(), img.id, provenanceId);
+              } catch (provError) {
+                console.error(`[WARN] Failed to create IMAGE provenance for ${img.id}: ${provError instanceof Error ? provError.message : String(provError)}`);
+              }
+            }
+          }
         }
 
         totalImages += extractedImages.length;
