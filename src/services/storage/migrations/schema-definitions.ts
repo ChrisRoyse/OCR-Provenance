@@ -8,7 +8,7 @@
  */
 
 /** Current schema version */
-export const SCHEMA_VERSION = 3;
+export const SCHEMA_VERSION = 4;
 
 /**
  * Database configuration pragmas for optimal performance and safety
@@ -212,6 +212,51 @@ CREATE VIRTUAL TABLE IF NOT EXISTS vec_embeddings USING vec0(
 `;
 
 /**
+ * FTS5 full-text search index over chunks
+ * Uses external content mode - no data duplication
+ * Tokenizer: porter stemmer + unicode support
+ */
+export const CREATE_CHUNKS_FTS_TABLE = `
+CREATE VIRTUAL TABLE IF NOT EXISTS chunks_fts USING fts5(
+  text,
+  content='chunks',
+  content_rowid='rowid',
+  tokenize='porter unicode61'
+)
+`;
+
+/**
+ * Triggers to keep FTS5 in sync with chunks table
+ * CRITICAL: These must be created in v4 migration
+ */
+export const CREATE_FTS_TRIGGERS = [
+  `CREATE TRIGGER IF NOT EXISTS chunks_fts_ai AFTER INSERT ON chunks BEGIN
+    INSERT INTO chunks_fts(rowid, text) VALUES (new.rowid, new.text);
+  END`,
+  `CREATE TRIGGER IF NOT EXISTS chunks_fts_ad AFTER DELETE ON chunks BEGIN
+    INSERT INTO chunks_fts(chunks_fts, rowid, text) VALUES('delete', old.rowid, old.text);
+  END`,
+  `CREATE TRIGGER IF NOT EXISTS chunks_fts_au AFTER UPDATE OF text ON chunks BEGIN
+    INSERT INTO chunks_fts(chunks_fts, rowid, text) VALUES('delete', old.rowid, old.text);
+    INSERT INTO chunks_fts(rowid, text) VALUES (new.rowid, new.text);
+  END`,
+] as const;
+
+/**
+ * FTS5 index metadata for audit trail
+ */
+export const CREATE_FTS_INDEX_METADATA = `
+CREATE TABLE IF NOT EXISTS fts_index_metadata (
+  id INTEGER PRIMARY KEY CHECK (id = 1),
+  last_rebuild_at TEXT,
+  chunks_indexed INTEGER NOT NULL DEFAULT 0,
+  tokenizer TEXT NOT NULL DEFAULT 'porter unicode61',
+  schema_version INTEGER NOT NULL DEFAULT 4,
+  content_hash TEXT
+)
+`;
+
+/**
  * Images table - extracted images from documents for VLM analysis
  * Provenance depth: 2 (after OCR extraction)
  */
@@ -314,6 +359,8 @@ export const REQUIRED_TABLES = [
   'embeddings',
   'vec_embeddings',
   'images',
+  'chunks_fts',
+  'fts_index_metadata',
 ] as const;
 
 /**

@@ -280,6 +280,31 @@ export const SearchHybridInput = z
     { message: 'Semantic and keyword weights must sum to 1.0' }
   );
 
+/**
+ * Schema for BM25 full-text search
+ */
+export const SearchBM25Input = z.object({
+  query: z.string().min(1, 'Query is required').max(1000, 'Query must be 1000 characters or less'),
+  limit: z.number().int().min(1).max(100).default(10),
+  phrase_search: z.boolean().default(false),
+  include_highlight: z.boolean().default(true),
+  include_provenance: z.boolean().default(false),
+  document_filter: z.array(z.string()).optional(),
+});
+
+/**
+ * Schema for RRF hybrid search (BM25 + semantic)
+ */
+export const SearchRRFInput = z.object({
+  query: z.string().min(1, 'Query is required').max(1000, 'Query must be 1000 characters or less'),
+  limit: z.number().int().min(1).max(100).default(10),
+  bm25_weight: z.number().min(0).max(2).default(1.0),
+  semantic_weight: z.number().min(0).max(2).default(1.0),
+  rrf_k: z.number().int().min(1).max(100).default(60),
+  include_provenance: z.boolean().default(false),
+  document_filter: z.array(z.string()).optional(),
+});
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // DOCUMENT MANAGEMENT SCHEMAS
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -404,6 +429,10 @@ export type OCRStatusInput = z.infer<typeof OCRStatusInput>;
 export type SearchSemanticInput = z.infer<typeof SearchSemanticInput>;
 export type SearchTextInput = z.infer<typeof SearchTextInput>;
 export type SearchHybridInput = z.infer<typeof SearchHybridInput>;
+
+// BM25/RRF search types
+export type SearchBM25Input = z.infer<typeof SearchBM25Input>;
+export type SearchRRFInput = z.infer<typeof SearchRRFInput>;
 
 // Document management types
 export type DocumentListInput = z.infer<typeof DocumentListInput>;

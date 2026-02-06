@@ -14,6 +14,9 @@ import {
   DATABASE_PRAGMAS,
   CREATE_SCHEMA_VERSION_TABLE,
   CREATE_VEC_EMBEDDINGS_TABLE,
+  CREATE_CHUNKS_FTS_TABLE,
+  CREATE_FTS_TRIGGERS,
+  CREATE_FTS_INDEX_METADATA,
   CREATE_INDEXES,
   TABLE_DEFINITIONS,
   SCHEMA_VERSION,
@@ -121,6 +124,33 @@ export function createIndexes(db: Database.Database): void {
         error
       );
     }
+  }
+}
+
+/**
+ * Create FTS5 full-text search tables and triggers
+ * @param db - Database instance
+ */
+export function createFTSTables(db: Database.Database): void {
+  try {
+    db.exec(CREATE_CHUNKS_FTS_TABLE);
+    for (const trigger of CREATE_FTS_TRIGGERS) {
+      db.exec(trigger);
+    }
+    db.exec(CREATE_FTS_INDEX_METADATA);
+
+    // Initialize metadata row for fresh databases (0 chunks indexed)
+    db.prepare(`
+      INSERT OR IGNORE INTO fts_index_metadata (id, last_rebuild_at, chunks_indexed, tokenizer, schema_version, content_hash)
+      VALUES (1, ?, 0, 'porter unicode61', ${SCHEMA_VERSION}, NULL)
+    `).run(new Date().toISOString());
+  } catch (error) {
+    throw new MigrationError(
+      'Failed to create FTS5 tables',
+      'create_table',
+      'chunks_fts',
+      error
+    );
   }
 }
 

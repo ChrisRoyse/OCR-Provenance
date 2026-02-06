@@ -2,7 +2,7 @@
  * OCR Provenance MCP Server
  *
  * Entry point for the MCP server using stdio transport.
- * Exposes 43 OCR, search, and provenance tools via JSON-RPC.
+ * Exposes 47 OCR, search, and provenance tools via JSON-RPC.
  *
  * CRITICAL: NEVER use console.log() - stdout is reserved for JSON-RPC protocol.
  * Use console.error() for all logging.
@@ -61,7 +61,7 @@ for (const [name, tool] of Object.entries(ingestionTools)) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// SEARCH TOOLS (3) - Extracted to src/tools/search.ts
+// SEARCH TOOLS (7) - Extracted to src/tools/search.ts
 // ═══════════════════════════════════════════════════════════════════════════════
 
 // Register search tools from extracted module
@@ -149,7 +149,7 @@ async function main() {
   const transport = new StdioServerTransport();
   await server.connect(transport);
   console.error('OCR Provenance MCP Server running on stdio');
-  console.error('Tools registered: 43');
+  console.error('Tools registered: 47');
 }
 
 main().catch((error) => {

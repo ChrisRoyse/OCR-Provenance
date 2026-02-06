@@ -9,16 +9,23 @@
 
 import type Database from 'better-sqlite3';
 import { MigrationError } from './types.js';
-import { SCHEMA_VERSION } from './schema-definitions.js';
+import {
+  SCHEMA_VERSION,
+  CREATE_CHUNKS_FTS_TABLE,
+  CREATE_FTS_TRIGGERS,
+  CREATE_FTS_INDEX_METADATA,
+} from './schema-definitions.js';
 import {
   configurePragmas,
   initializeSchemaVersion,
   createTables,
   createVecTable,
   createIndexes,
+  createFTSTables,
   initializeDatabaseMetadata,
   loadSqliteVecExtension,
 } from './schema-helpers.js';
+import { computeFTSContentHash } from '../../search/bm25.js';
 
 /**
  * Check the current schema version of the database
@@ -91,6 +98,9 @@ export function initializeDatabase(db: Database.Database): void {
 
   // Step 6: Create indexes
   createIndexes(db);
+
+  // Step 6.5: Create FTS5 tables and triggers
+  createFTSTables(db);
 
   // Step 7: Initialize metadata
   initializeDatabaseMetadata(db);
@@ -338,6 +348,52 @@ function migrateV2ToV3(db: Database.Database): void {
 }
 
 /**
+ * Migrate from schema version 3 to version 4
+ *
+ * Changes in v4:
+ * - chunks_fts: FTS5 virtual table for BM25 full-text search
+ * - chunks_fts_ai/ad/au: Sync triggers to keep FTS5 in sync with chunks
+ * - fts_index_metadata: Audit trail for FTS index rebuilds
+ *
+ * @param db - Database instance from better-sqlite3
+ * @throws MigrationError if migration fails
+ */
+function migrateV3ToV4(db: Database.Database): void {
+  try {
+    // 1. Create FTS5 virtual table
+    db.exec(CREATE_CHUNKS_FTS_TABLE);
+
+    // 2. Create sync triggers
+    for (const trigger of CREATE_FTS_TRIGGERS) {
+      db.exec(trigger);
+    }
+
+    // 3. Create metadata table
+    db.exec(CREATE_FTS_INDEX_METADATA);
+
+    // 4. Populate FTS5 from existing chunks
+    db.exec("INSERT INTO chunks_fts(chunks_fts) VALUES('rebuild')");
+
+    // 5. Count indexed chunks and store metadata
+    const count = db.prepare('SELECT COUNT(*) as cnt FROM chunks').get() as { cnt: number };
+    const contentHash = computeFTSContentHash(db);
+
+    db.prepare(`
+      INSERT INTO fts_index_metadata (id, last_rebuild_at, chunks_indexed, tokenizer, schema_version, content_hash)
+      VALUES (1, ?, ?, 'porter unicode61', 4, ?)
+    `).run(new Date().toISOString(), count.cnt, contentHash);
+  } catch (error) {
+    const cause = error instanceof Error ? error.message : String(error);
+    throw new MigrationError(
+      `Failed to migrate from v3 to v4 (FTS5 setup): ${cause}`,
+      'migrate',
+      'chunks_fts',
+      error
+    );
+  }
+}
+
+/**
  * Migrate database to the latest schema version
  *
  * Checks current version and applies any necessary migrations.
@@ -375,6 +431,10 @@ export function migrateToLatest(db: Database.Database): void {
 
   if (currentVersion < 3) {
     migrateV2ToV3(db);
+  }
+
+  if (currentVersion < 4) {
+    migrateV3ToV4(db);
   }
 
   // Update schema version after successful migration
