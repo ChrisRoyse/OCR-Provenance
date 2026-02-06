@@ -185,7 +185,7 @@ function insertTestDocument(
 
 describe('FORENSIC VERIFICATION - Phase 1: Source of Truth', () => {
   describe('Tool Count Verification', () => {
-    it('EVIDENCE: Total tool count is exactly 20', () => {
+    it('EVIDENCE: Total tool count for core modules', () => {
       const dbCount = Object.keys(databaseTools).length;
       const ingestionCount = Object.keys(ingestionTools).length;
       const searchCount = Object.keys(searchTools).length;
@@ -201,15 +201,15 @@ describe('FORENSIC VERIFICATION - Phase 1: Source of Truth', () => {
       console.error('[DB STATE] Config tools:', configCount);
 
       const total = dbCount + ingestionCount + searchCount + documentCount + provenanceCount + configCount;
-      console.error('[EVIDENCE] TOTAL TOOLS:', total);
+      console.error('[EVIDENCE] TOTAL TOOLS (6 modules):', total);
 
       expect(dbCount).toBe(5);
       expect(ingestionCount).toBe(6);
-      expect(searchCount).toBe(3);
+      expect(searchCount).toBe(4);
       expect(documentCount).toBe(3);
       expect(provenanceCount).toBe(3);
       expect(configCount).toBe(2);
-      expect(total).toBe(22);
+      expect(total).toBe(23);
     });
 
     it('EVIDENCE: Document tools exports correct handlers', () => {
@@ -575,7 +575,7 @@ describe('FORENSIC VERIFICATION - Summary', () => {
     console.error('SUBJECT: Task 22 - Document/Provenance/Config Tool Extraction');
     console.error('');
     console.error('EVIDENCE COLLECTED:');
-    console.error('  1. Tool Count: 20 (5+4+3+3+3+2)');
+    console.error('  1. Tool Count: 23 (5+6+4+3+3+2)');
     console.error('  2. File Structure: 6 modules + index.ts');
     console.error('  3. Handler Exports: All handlers exported correctly');
     console.error('  4. Physical DB Tests: All CRUD operations verified');
