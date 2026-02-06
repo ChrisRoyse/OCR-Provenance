@@ -99,10 +99,10 @@ export function initializeDatabase(db: Database.Database): void {
   // Step 6: Create indexes
   createIndexes(db);
 
-  // Step 6.5: Create FTS5 tables and triggers
+  // Step 7: Create FTS5 tables and triggers
   createFTSTables(db);
 
-  // Step 7: Initialize metadata
+  // Step 8: Initialize metadata
   initializeDatabaseMetadata(db);
 }
 

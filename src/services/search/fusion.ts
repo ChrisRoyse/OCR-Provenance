@@ -123,13 +123,8 @@ export class RRFFusion {
         existing.semantic_rank = result.rank;
         existing.semantic_score = result.score;
         existing.found_in_semantic = true;
-
-        if (existing.provenance_id !== result.provenance_id) {
-          throw new Error(
-            `Provenance mismatch for chunk ${result.chunk_id}: ` +
-            `BM25 has ${existing.provenance_id}, Semantic has ${result.provenance_id}`
-          );
-        }
+        // BM25 provenance_id (chunk-level, depth 2) is kept over semantic's
+        // (embedding-level, depth 3) — both are valid but chunk-level is canonical
       } else {
         fusedMap.set(result.chunk_id, buildFusedResult(result, rrfContribution, 'semantic'));
       }
