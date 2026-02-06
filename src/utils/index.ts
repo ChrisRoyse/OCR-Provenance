@@ -48,7 +48,6 @@ export {
 
   // Shared enums
   OCRMode,
-  MatchType,
   ProcessingStatus,
   ItemType,
   ProvenanceFormat,
@@ -74,8 +73,9 @@ export {
 
   // Search schemas
   SearchSemanticInput,
-  SearchTextInput,
+  SearchInput,
   SearchHybridInput,
+  FTSManageInput,
 
   // Document management schemas
   DocumentListInput,
@@ -95,7 +95,6 @@ export {
 // Re-export types from validation - using direct names (avoid redundant aliasing)
 export type {
   OCRMode as OCRModeType,
-  MatchType as MatchTypeValue,
   ProcessingStatus as ProcessingStatusType,
   ItemType as ItemTypeValue,
   ProvenanceFormat as ProvenanceFormatType,
@@ -118,8 +117,9 @@ export type {
   ProcessPendingInput as ProcessPendingInputType,
   OCRStatusInput as OCRStatusInputType,
   SearchSemanticInput as SearchSemanticInputType,
-  SearchTextInput as SearchTextInputType,
+  SearchInput as SearchInputType,
   SearchHybridInput as SearchHybridInputType,
+  FTSManageInput as FTSManageInputType,
   DocumentListInput as DocumentListInputType,
   DocumentGetInput as DocumentGetInputType,
   DocumentDeleteInput as DocumentDeleteInputType,

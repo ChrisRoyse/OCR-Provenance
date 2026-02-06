@@ -3,7 +3,7 @@
  *
  * This file has been modularized. All tests are now located in:
  * - ./validation/helpers.test.ts - validateInput, safeValidateInput tests
- * - ./validation/enums.test.ts - Enum tests (OCRMode, MatchType, etc.)
+ * - ./validation/enums.test.ts - Enum tests (OCRMode, ProcessingStatus, etc.)
  * - ./validation/database-schemas.test.ts - Database management schemas
  * - ./validation/ingestion-schemas.test.ts - Document ingestion schemas
  * - ./validation/search-schemas.test.ts - Search schemas
