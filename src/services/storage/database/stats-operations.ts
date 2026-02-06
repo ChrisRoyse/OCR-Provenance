@@ -71,6 +71,12 @@ export function getStats(
       .get() as { count: number }
   ).count;
 
+  const provenanceCount = (
+    db
+      .prepare('SELECT COUNT(*) as count FROM provenance')
+      .get() as { count: number }
+  ).count;
+
   const stats = statSync(path);
 
   const avgChunksPerDocument =
@@ -95,6 +101,7 @@ export function getStats(
       failed: chunkStats.failed,
     },
     total_embeddings: embeddingCount,
+    total_provenance: provenanceCount,
     storage_size_bytes: stats.size,
     avg_chunks_per_document: avgChunksPerDocument,
     avg_embeddings_per_chunk: avgEmbeddingsPerChunk,
