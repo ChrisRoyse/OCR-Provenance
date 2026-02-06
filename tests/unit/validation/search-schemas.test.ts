@@ -1,14 +1,15 @@
 /**
  * Unit Tests for Search Schemas
  *
- * Tests SearchSemanticInput, SearchTextInput, SearchHybridInput
+ * Tests SearchSemanticInput, SearchInput, SearchHybridInput, FTSManageInput
  */
 
 import { describe, it, expect } from 'vitest';
 import {
   SearchSemanticInput,
-  SearchTextInput,
+  SearchInput,
   SearchHybridInput,
+  FTSManageInput,
 } from './fixtures.js';
 
 describe('Search Schemas', () => {
@@ -57,48 +58,91 @@ describe('Search Schemas', () => {
     });
   });
 
-  describe('SearchTextInput', () => {
-    it('should accept valid input', () => {
-      const result = SearchTextInput.parse({ query: 'termination clause' });
+  describe('SearchInput', () => {
+    it('should accept valid query', () => {
+      const result = SearchInput.parse({ query: 'termination clause' });
       expect(result.query).toBe('termination clause');
-      expect(result.match_type).toBe('fuzzy');
     });
 
-    it('should accept different match types', () => {
-      expect(SearchTextInput.parse({ query: 'test', match_type: 'exact' }).match_type).toBe(
-        'exact'
-      );
-      expect(SearchTextInput.parse({ query: 'test', match_type: 'regex' }).match_type).toBe(
-        'regex'
-      );
+    it('should provide defaults', () => {
+      const result = SearchInput.parse({ query: 'test' });
+      expect(result.limit).toBe(10);
+      expect(result.phrase_search).toBe(false);
+      expect(result.include_highlight).toBe(true);
+      expect(result.include_provenance).toBe(false);
+    });
+
+    it('should reject empty query', () => {
+      expect(() => SearchInput.parse({ query: '' })).toThrow('required');
+    });
+
+    it('should accept phrase_search flag', () => {
+      const result = SearchInput.parse({ query: 'exact phrase', phrase_search: true });
+      expect(result.phrase_search).toBe(true);
+    });
+
+    it('should accept document_filter', () => {
+      const result = SearchInput.parse({
+        query: 'test',
+        document_filter: ['doc1'],
+      });
+      expect(result.document_filter).toEqual(['doc1']);
     });
   });
 
   describe('SearchHybridInput', () => {
-    it('should accept valid input with default weights', () => {
+    it('should accept valid input with defaults', () => {
       const result = SearchHybridInput.parse({ query: 'test' });
-      expect(result.semantic_weight).toBe(0.7);
-      expect(result.keyword_weight).toBe(0.3);
+      expect(result.bm25_weight).toBe(1.0);
+      expect(result.semantic_weight).toBe(1.0);
+      expect(result.rrf_k).toBe(60);
     });
 
-    it('should accept custom weights that sum to 1', () => {
+    it('should accept custom weights (no sum constraint)', () => {
       const result = SearchHybridInput.parse({
         query: 'test',
+        bm25_weight: 1.5,
         semantic_weight: 0.5,
-        keyword_weight: 0.5,
       });
+      expect(result.bm25_weight).toBe(1.5);
       expect(result.semantic_weight).toBe(0.5);
-      expect(result.keyword_weight).toBe(0.5);
     });
 
-    it('should reject weights that do not sum to 1', () => {
+    it('should reject weights above 2', () => {
       expect(() =>
-        SearchHybridInput.parse({
-          query: 'test',
-          semantic_weight: 0.5,
-          keyword_weight: 0.3,
-        })
-      ).toThrow('sum to 1.0');
+        SearchHybridInput.parse({ query: 'test', bm25_weight: 2.5 })
+      ).toThrow();
+    });
+
+    it('should accept custom rrf_k', () => {
+      const result = SearchHybridInput.parse({ query: 'test', rrf_k: 30 });
+      expect(result.rrf_k).toBe(30);
+    });
+
+    it('should reject rrf_k below 1', () => {
+      expect(() =>
+        SearchHybridInput.parse({ query: 'test', rrf_k: 0 })
+      ).toThrow();
+    });
+  });
+
+  describe('FTSManageInput', () => {
+    it('should accept rebuild action', () => {
+      const result = FTSManageInput.parse({ action: 'rebuild' });
+      expect(result.action).toBe('rebuild');
+    });
+
+    it('should accept status action', () => {
+      const result = FTSManageInput.parse({ action: 'status' });
+      expect(result.action).toBe('status');
+    });
+
+    it('should reject invalid action', () => {
+      expect(() => FTSManageInput.parse({ action: 'invalid' })).toThrow();
+    });
+
+    it('should reject missing action', () => {
+      expect(() => FTSManageInput.parse({})).toThrow();
     });
   });
 });

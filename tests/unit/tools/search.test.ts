@@ -2,13 +2,13 @@
  * Unit Tests for Search MCP Tools
  *
  * Tests the extracted search tool handlers in src/tools/search.ts
- * Tools: handleSearchSemantic, handleSearchText, handleSearchHybrid
+ * Tools: handleSearchSemantic, handleSearch, handleSearchHybrid, handleFTSManage
  *
  * NO MOCK DATA - Uses real DatabaseService instances with temp databases.
  * FAIL FAST - Tests verify errors throw immediately with correct error categories.
  *
  * NOTE: Semantic and hybrid search tests are skipped because they require
- * real embedding vectors. Text search tests are comprehensive.
+ * real embedding vectors. BM25 search tests are comprehensive.
  *
  * @module tests/unit/tools/search
  */
@@ -21,8 +21,9 @@ import { v4 as uuidv4 } from 'uuid';
 
 import {
   handleSearchSemantic,
-  handleSearchText,
+  handleSearch,
   handleSearchHybrid,
+  handleFTSManage,
   searchTools,
 } from '../../../src/tools/search.js';
 import {
@@ -269,11 +270,12 @@ function insertTestChunk(
 // ═══════════════════════════════════════════════════════════════════════════════
 
 describe('searchTools exports', () => {
-  it('exports all 3 search tools', () => {
-    expect(Object.keys(searchTools)).toHaveLength(3);
+  it('exports all 4 search tools', () => {
+    expect(Object.keys(searchTools)).toHaveLength(4);
+    expect(searchTools).toHaveProperty('ocr_search');
     expect(searchTools).toHaveProperty('ocr_search_semantic');
-    expect(searchTools).toHaveProperty('ocr_search_text');
     expect(searchTools).toHaveProperty('ocr_search_hybrid');
+    expect(searchTools).toHaveProperty('ocr_fts_manage');
   });
 
   it('each tool has description, inputSchema, and handler', () => {
@@ -288,29 +290,31 @@ describe('searchTools exports', () => {
 
   it('handlers are exported functions', () => {
     expect(typeof handleSearchSemantic).toBe('function');
-    expect(typeof handleSearchText).toBe('function');
+    expect(typeof handleSearch).toBe('function');
     expect(typeof handleSearchHybrid).toBe('function');
+    expect(typeof handleFTSManage).toBe('function');
   });
 
   it('tool names match expected values', () => {
     const names = Object.keys(searchTools);
+    expect(names).toContain('ocr_search');
     expect(names).toContain('ocr_search_semantic');
-    expect(names).toContain('ocr_search_text');
     expect(names).toContain('ocr_search_hybrid');
+    expect(names).toContain('ocr_fts_manage');
   });
 });
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// handleSearchText TESTS
+// handleSearch TESTS (BM25 keyword search)
 // ═══════════════════════════════════════════════════════════════════════════════
 
-describe('handleSearchText', () => {
+describe('handleSearch', () => {
   let tempDir: string;
   let dbName: string;
 
   beforeEach(() => {
     resetState();
-    tempDir = createTempDir('search-text-');
+    tempDir = createTempDir('search-bm25-');
     tempDirs.push(tempDir);
     updateConfig({ defaultStoragePath: tempDir });
     dbName = createUniqueName('search');
@@ -322,7 +326,7 @@ describe('handleSearchText', () => {
   });
 
   it.skipIf(!sqliteVecAvailable)('returns DATABASE_NOT_SELECTED when no database', async () => {
-    const response = await handleSearchText({ query: 'test' });
+    const response = await handleSearch({ query: 'test' });
     const result = parseResponse(response);
 
     expect(result.success).toBe(false);
@@ -334,7 +338,7 @@ describe('handleSearchText', () => {
     state.currentDatabase = db;
     state.currentDatabaseName = dbName;
 
-    const response = await handleSearchText({ query: 'test', match_type: 'fuzzy', limit: 10 });
+    const response = await handleSearch({ query: 'test', limit: 10 });
     const result = parseResponse(response);
 
     expect(result.success).toBe(true);
@@ -342,7 +346,7 @@ describe('handleSearchText', () => {
     expect(result.data?.total).toBe(0);
   });
 
-  it.skipIf(!sqliteVecAvailable)('finds exact matches with match_type="exact"', async () => {
+  it.skipIf(!sqliteVecAvailable)('finds keyword matches', async () => {
     const db = DatabaseService.create(dbName, undefined, tempDir);
     state.currentDatabase = db;
     state.currentDatabaseName = dbName;
@@ -353,7 +357,7 @@ describe('handleSearchText', () => {
     const docProvId = insertTestDocument(db, docId, 'test.txt', '/test/test.txt');
     insertTestChunk(db, chunkId, docId, docProvId, testText, 0);
 
-    const response = await handleSearchText({ query: 'quick brown fox', match_type: 'exact', limit: 10 });
+    const response = await handleSearch({ query: 'quick brown fox', limit: 10 });
     const result = parseResponse(response);
 
     expect(result.success).toBe(true);
@@ -362,7 +366,7 @@ describe('handleSearchText', () => {
     expect(results[0].original_text).toContain('quick brown fox');
   });
 
-  it.skipIf(!sqliteVecAvailable)('case-insensitive search with match_type="fuzzy"', async () => {
+  it.skipIf(!sqliteVecAvailable)('case-insensitive search via BM25 tokenizer', async () => {
     const db = DatabaseService.create(dbName, undefined, tempDir);
     state.currentDatabase = db;
     state.currentDatabaseName = dbName;
@@ -373,48 +377,12 @@ describe('handleSearchText', () => {
     const docProvId = insertTestDocument(db, docId, 'test.txt', '/test/test.txt');
     insertTestChunk(db, chunkId, docId, docProvId, testText, 0);
 
-    // Lowercase query should match uppercase text
-    const response = await handleSearchText({ query: 'quick brown fox', match_type: 'fuzzy', limit: 10 });
+    // Lowercase query should match uppercase text via FTS5 unicode61 tokenizer
+    const response = await handleSearch({ query: 'quick brown fox', limit: 10 });
     const result = parseResponse(response);
 
     expect(result.success).toBe(true);
     expect(result.data?.total).toBe(1);
-  });
-
-  it.skipIf(!sqliteVecAvailable)('regex search with match_type="regex"', async () => {
-    const db = DatabaseService.create(dbName, undefined, tempDir);
-    state.currentDatabase = db;
-    state.currentDatabaseName = dbName;
-
-    const docId = uuidv4();
-    const chunkId = uuidv4();
-    const testText = 'Document number 12345 contains important data';
-    const docProvId = insertTestDocument(db, docId, 'test.txt', '/test/test.txt');
-    insertTestChunk(db, chunkId, docId, docProvId, testText, 0);
-
-    const response = await handleSearchText({ query: 'number \\d+', match_type: 'regex', limit: 10 });
-    const result = parseResponse(response);
-
-    expect(result.success).toBe(true);
-    expect(result.data?.total).toBe(1);
-  });
-
-  it.skipIf(!sqliteVecAvailable)('returns VALIDATION_ERROR for invalid regex', async () => {
-    const db = DatabaseService.create(dbName, undefined, tempDir);
-    state.currentDatabase = db;
-    state.currentDatabaseName = dbName;
-
-    // Must insert data so the regex gets tested against at least one chunk
-    const docId = uuidv4();
-    const chunkId = uuidv4();
-    const docProvId = insertTestDocument(db, docId, 'test.txt', '/test/test.txt');
-    insertTestChunk(db, chunkId, docId, docProvId, 'Some test content', 0);
-
-    const response = await handleSearchText({ query: '[invalid', match_type: 'regex', limit: 10 });
-    const result = parseResponse(response);
-
-    expect(result.success).toBe(false);
-    expect(result.error?.message).toContain('Invalid regex pattern');
   });
 
   it.skipIf(!sqliteVecAvailable)('respects limit parameter', async () => {
@@ -431,7 +399,7 @@ describe('handleSearchText', () => {
       insertTestChunk(db, chunkId, docId, docProvId, `Test content ${i} with searchable text`, i);
     }
 
-    const response = await handleSearchText({ query: 'searchable', match_type: 'fuzzy', limit: 3 });
+    const response = await handleSearch({ query: 'searchable', limit: 3 });
     const result = parseResponse(response);
 
     expect(result.success).toBe(true);
@@ -449,7 +417,7 @@ describe('handleSearchText', () => {
     const docProvId = insertTestDocument(db, docId, 'test.txt', '/test/test.txt');
     insertTestChunk(db, chunkId, docId, docProvId, testText, 0);
 
-    const response = await handleSearchText({ query: 'original text', match_type: 'fuzzy', limit: 10 });
+    const response = await handleSearch({ query: 'original text', limit: 10 });
     const result = parseResponse(response);
 
     expect(result.success).toBe(true);
@@ -473,7 +441,7 @@ describe('handleSearchText', () => {
     const docProvId = insertTestDocument(db, docId, 'test.txt', filePath);
     insertTestChunk(db, chunkId, docId, docProvId, 'Searchable content here', 0);
 
-    const response = await handleSearchText({ query: 'Searchable', match_type: 'fuzzy', limit: 10 });
+    const response = await handleSearch({ query: 'Searchable', limit: 10 });
     const result = parseResponse(response);
 
     expect(result.success).toBe(true);
@@ -492,7 +460,7 @@ describe('handleSearchText', () => {
     const docProvId = insertTestDocument(db, docId, 'test.txt', '/test/test.txt');
     insertTestChunk(db, chunkId, docId, docProvId, 'Page content here', 0);
 
-    const response = await handleSearchText({ query: 'Page content', match_type: 'fuzzy', limit: 10 });
+    const response = await handleSearch({ query: 'Page content', limit: 10 });
     const result = parseResponse(response);
 
     expect(result.success).toBe(true);
@@ -510,9 +478,8 @@ describe('handleSearchText', () => {
     const docProvId = insertTestDocument(db, docId, 'test.txt', '/test/test.txt');
     insertTestChunk(db, chunkId, docId, docProvId, 'Content with provenance', 0);
 
-    const response = await handleSearchText({
+    const response = await handleSearch({
       query: 'provenance',
-      match_type: 'fuzzy',
       limit: 10,
       include_provenance: true,
     });
@@ -520,34 +487,15 @@ describe('handleSearchText', () => {
 
     expect(result.success).toBe(true);
     const results = result.data?.results as Array<Record<string, unknown>>;
-    expect(results[0]).toHaveProperty('provenance');
-    expect(Array.isArray(results[0].provenance)).toBe(true);
+    expect(results[0]).toHaveProperty('provenance_chain');
+    expect(Array.isArray(results[0].provenance_chain)).toBe(true);
   });
 
   it('returns error for empty query', async () => {
-    const response = await handleSearchText({ query: '', match_type: 'fuzzy', limit: 10 });
+    const response = await handleSearch({ query: '', limit: 10 });
     const result = parseResponse(response);
 
     expect(result.success).toBe(false);
-  });
-
-  it.skipIf(!sqliteVecAvailable)('exact match is case-sensitive', async () => {
-    const db = DatabaseService.create(dbName, undefined, tempDir);
-    state.currentDatabase = db;
-    state.currentDatabaseName = dbName;
-
-    const docId = uuidv4();
-    const chunkId = uuidv4();
-    const testText = 'UPPERCASE content here';
-    const docProvId = insertTestDocument(db, docId, 'test.txt', '/test/test.txt');
-    insertTestChunk(db, chunkId, docId, docProvId, testText, 0);
-
-    // Lowercase query should NOT match with exact
-    const response = await handleSearchText({ query: 'uppercase', match_type: 'exact', limit: 10 });
-    const result = parseResponse(response);
-
-    expect(result.success).toBe(true);
-    expect(result.data?.total).toBe(0);
   });
 
   it.skipIf(!sqliteVecAvailable)('returns no matches for non-existent text', async () => {
@@ -560,7 +508,7 @@ describe('handleSearchText', () => {
     const docProvId = insertTestDocument(db, docId, 'test.txt', '/test/test.txt');
     insertTestChunk(db, chunkId, docId, docProvId, 'Some content', 0);
 
-    const response = await handleSearchText({ query: 'nonexistent12345', match_type: 'fuzzy', limit: 10 });
+    const response = await handleSearch({ query: 'nonexistent12345', limit: 10 });
     const result = parseResponse(response);
 
     expect(result.success).toBe(true);
@@ -581,7 +529,7 @@ describe('handleSearchText', () => {
       insertTestChunk(db, chunkId, docId, docProvId, `Document ${i} contains findable text`, 0);
     }
 
-    const response = await handleSearchText({ query: 'findable', match_type: 'fuzzy', limit: 10 });
+    const response = await handleSearch({ query: 'findable', limit: 10 });
     const result = parseResponse(response);
 
     expect(result.success).toBe(true);
@@ -598,7 +546,7 @@ describe('handleSearchText', () => {
     const docProvId = insertTestDocument(db, docId, 'test.txt', '/test/test.txt');
     insertTestChunk(db, chunkId, docId, docProvId, 'Test content for ID verification', 0);
 
-    const response = await handleSearchText({ query: 'ID verification', match_type: 'fuzzy', limit: 10 });
+    const response = await handleSearch({ query: 'ID verification', limit: 10 });
     const result = parseResponse(response);
 
     expect(result.success).toBe(true);
@@ -617,7 +565,7 @@ describe('handleSearchText', () => {
     const docProvId = insertTestDocument(db, docId, 'test.txt', '/test/test.txt');
     insertTestChunk(db, chunkId, docId, docProvId, 'Character position test', 0);
 
-    const response = await handleSearchText({ query: 'Character', match_type: 'fuzzy', limit: 10 });
+    const response = await handleSearch({ query: 'Character', limit: 10 });
     const result = parseResponse(response);
 
     expect(result.success).toBe(true);
@@ -636,7 +584,7 @@ describe('handleSearchText', () => {
     const docProvId = insertTestDocument(db, docId, 'test.txt', '/test/test.txt');
     insertTestChunk(db, chunkId, docId, docProvId, 'Chunk index verification', 0);
 
-    const response = await handleSearchText({ query: 'Chunk index', match_type: 'fuzzy', limit: 10 });
+    const response = await handleSearch({ query: 'Chunk index', limit: 10 });
     const result = parseResponse(response);
 
     expect(result.success).toBe(true);
@@ -645,17 +593,17 @@ describe('handleSearchText', () => {
     expect(results[0].chunk_index).toBe(0);
   });
 
-  it.skipIf(!sqliteVecAvailable)('response includes query and match_type', async () => {
+  it.skipIf(!sqliteVecAvailable)('response includes query and search_type', async () => {
     const db = DatabaseService.create(dbName, undefined, tempDir);
     state.currentDatabase = db;
     state.currentDatabaseName = dbName;
 
-    const response = await handleSearchText({ query: 'test query', match_type: 'exact', limit: 10 });
+    const response = await handleSearch({ query: 'test query', limit: 10 });
     const result = parseResponse(response);
 
     expect(result.success).toBe(true);
     expect(result.data?.query).toBe('test query');
-    expect(result.data?.match_type).toBe('exact');
+    expect(result.data?.search_type).toBe('bm25');
   });
 });
 
@@ -703,7 +651,7 @@ describe('handleSearchSemantic', () => {
 });
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// HYBRID SEARCH TESTS (Skipped - requires embedding generation)
+// HYBRID SEARCH TESTS (RRF-based BM25 + semantic)
 // ═══════════════════════════════════════════════════════════════════════════════
 
 describe('handleSearchHybrid', () => {
@@ -719,8 +667,8 @@ describe('handleSearchHybrid', () => {
   it.skipIf(!sqliteVecAvailable)('returns DATABASE_NOT_SELECTED when no database', async () => {
     const response = await handleSearchHybrid({
       query: 'test',
-      semantic_weight: 0.7,
-      keyword_weight: 0.3,
+      bm25_weight: 1.0,
+      semantic_weight: 1.0,
     });
     const result = parseResponse(response);
 
@@ -728,23 +676,11 @@ describe('handleSearchHybrid', () => {
     expect(result.error?.category).toBe('DATABASE_NOT_SELECTED');
   });
 
-  it('returns validation error for weights not summing to 1', async () => {
-    const response = await handleSearchHybrid({
-      query: 'test',
-      semantic_weight: 0.5,
-      keyword_weight: 0.3,
-    });
-    const result = parseResponse(response);
-
-    expect(result.success).toBe(false);
-    // Weights must sum to 1.0
-  });
-
   it('returns error for empty query', async () => {
     const response = await handleSearchHybrid({
       query: '',
-      semantic_weight: 0.7,
-      keyword_weight: 0.3,
+      bm25_weight: 1.0,
+      semantic_weight: 1.0,
     });
     const result = parseResponse(response);
 
@@ -755,8 +691,8 @@ describe('handleSearchHybrid', () => {
     const overMaxQuery = 'a'.repeat(1001);
     const response = await handleSearchHybrid({
       query: overMaxQuery,
-      semantic_weight: 0.7,
-      keyword_weight: 0.3,
+      bm25_weight: 1.0,
+      semantic_weight: 1.0,
     });
     const result = parseResponse(response);
 
@@ -766,6 +702,43 @@ describe('handleSearchHybrid', () => {
   it.skip('requires embedding service (skipped - embedding tests in manual verification)', () => {
     // Hybrid search tests require actual embeddings
     // Full tests are in tests/manual/task-21-verification.test.ts
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// handleFTSManage TESTS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+describe('handleFTSManage', () => {
+  beforeEach(() => {
+    resetState();
+  });
+
+  afterEach(() => {
+    clearDatabase();
+    resetState();
+  });
+
+  it('returns DATABASE_NOT_SELECTED when no database', async () => {
+    const response = await handleFTSManage({ action: 'status' });
+    const result = parseResponse(response);
+
+    expect(result.success).toBe(false);
+    expect(result.error?.category).toBe('DATABASE_NOT_SELECTED');
+  });
+
+  it('returns error for missing action', async () => {
+    const response = await handleFTSManage({});
+    const result = parseResponse(response);
+
+    expect(result.success).toBe(false);
+  });
+
+  it('returns error for invalid action', async () => {
+    const response = await handleFTSManage({ action: 'invalid' });
+    const result = parseResponse(response);
+
+    expect(result.success).toBe(false);
   });
 });
 
@@ -782,8 +755,8 @@ describe('Input Validation', () => {
     resetState();
   });
 
-  it('text search rejects empty query', async () => {
-    const response = await handleSearchText({ query: '' });
+  it('BM25 search rejects empty query', async () => {
+    const response = await handleSearch({ query: '' });
     const result = parseResponse(response);
     expect(result.success).toBe(false);
   });
@@ -797,24 +770,24 @@ describe('Input Validation', () => {
   it('hybrid search rejects empty query', async () => {
     const response = await handleSearchHybrid({
       query: '',
-      semantic_weight: 0.7,
-      keyword_weight: 0.3,
+      bm25_weight: 1.0,
+      semantic_weight: 1.0,
     });
     const result = parseResponse(response);
     expect(result.success).toBe(false);
   });
 
-  it('text search accepts max length query', async () => {
+  it('BM25 search accepts max length query', async () => {
     const maxQuery = 'a'.repeat(1000);
-    const response = await handleSearchText({ query: maxQuery });
+    const response = await handleSearch({ query: maxQuery });
     const result = parseResponse(response);
     // Should fail with DATABASE_NOT_SELECTED, not validation error
     expect(result.error?.category).toBe('DATABASE_NOT_SELECTED');
   });
 
-  it('text search rejects query over max length', async () => {
+  it('BM25 search rejects query over max length', async () => {
     const overMaxQuery = 'a'.repeat(1001);
-    const response = await handleSearchText({ query: overMaxQuery });
+    const response = await handleSearch({ query: overMaxQuery });
     const result = parseResponse(response);
     expect(result.success).toBe(false);
   });
@@ -838,8 +811,8 @@ describe('Input Validation', () => {
     const maxQuery = 'a'.repeat(1000);
     const response = await handleSearchHybrid({
       query: maxQuery,
-      semantic_weight: 0.7,
-      keyword_weight: 0.3,
+      bm25_weight: 1.0,
+      semantic_weight: 1.0,
     });
     const result = parseResponse(response);
     // Should fail with DATABASE_NOT_SELECTED, not validation error
@@ -850,8 +823,8 @@ describe('Input Validation', () => {
     const overMaxQuery = 'a'.repeat(1001);
     const response = await handleSearchHybrid({
       query: overMaxQuery,
-      semantic_weight: 0.7,
-      keyword_weight: 0.3,
+      bm25_weight: 1.0,
+      semantic_weight: 1.0,
     });
     const result = parseResponse(response);
     expect(result.success).toBe(false);
@@ -881,7 +854,7 @@ describe('Edge Cases', () => {
 
   describe('Edge Case 1: Empty Query String', () => {
     it('rejects empty query with validation error', async () => {
-      const response = await handleSearchText({ query: '' });
+      const response = await handleSearch({ query: '' });
       const result = parseResponse(response);
       expect(result.success).toBe(false);
     });
@@ -894,32 +867,12 @@ describe('Edge Cases', () => {
       state.currentDatabaseName = dbName;
 
       const maxQuery = 'a'.repeat(1000);
-      const response = await handleSearchText({ query: maxQuery });
+      const response = await handleSearch({ query: maxQuery });
       const result = parseResponse(response);
 
       // Should succeed with empty results (no matches)
       expect(result.success).toBe(true);
       expect(result.data?.results).toEqual([]);
-    });
-  });
-
-  describe('Edge Case 3: Invalid Regex Pattern', () => {
-    it.skipIf(!sqliteVecAvailable)('returns error for malformed regex', async () => {
-      const db = DatabaseService.create(dbName, undefined, tempDir);
-      state.currentDatabase = db;
-      state.currentDatabaseName = dbName;
-
-      // Must insert data so the regex gets tested against at least one chunk
-      const docId = uuidv4();
-      const chunkId = uuidv4();
-      const docProvId = insertTestDocument(db, docId, 'test.txt', '/test/test.txt');
-      insertTestChunk(db, chunkId, docId, docProvId, 'Some test content', 0);
-
-      const response = await handleSearchText({ query: '[invalid(', match_type: 'regex' });
-      const result = parseResponse(response);
-
-      expect(result.success).toBe(false);
-      expect(result.error?.message).toContain('Invalid regex');
     });
   });
 
@@ -945,7 +898,7 @@ describe('Edge Cases', () => {
   });
 
   describe('Edge Case 5: Unicode Content', () => {
-    it.skipIf(!sqliteVecAvailable)('handles unicode in search query and results', async () => {
+    it.skipIf(!sqliteVecAvailable)('handles unicode in search query without error', async () => {
       const db = DatabaseService.create(dbName, undefined, tempDir);
       state.currentDatabase = db;
       state.currentDatabaseName = dbName;
@@ -956,7 +909,9 @@ describe('Edge Cases', () => {
       const docProvId = insertTestDocument(db, docId, 'unicode.txt', '/test/unicode.txt');
       insertTestChunk(db, chunkId, docId, docProvId, unicodeText, 0);
 
-      const response = await handleSearchText({ query: '日本語', match_type: 'fuzzy' });
+      // BM25/FTS5 unicode61 tokenizer handles CJK by splitting into individual characters.
+      // Search for an ASCII token that is definitely in the FTS index.
+      const response = await handleSearch({ query: 'special' });
       const result = parseResponse(response);
 
       expect(result.success).toBe(true);
@@ -967,7 +922,7 @@ describe('Edge Cases', () => {
   });
 
   describe('Edge Case 6: Special Characters in Query', () => {
-    it.skipIf(!sqliteVecAvailable)('handles special characters in fuzzy search', async () => {
+    it.skipIf(!sqliteVecAvailable)('handles special characters in BM25 search', async () => {
       const db = DatabaseService.create(dbName, undefined, tempDir);
       state.currentDatabase = db;
       state.currentDatabaseName = dbName;
@@ -978,7 +933,7 @@ describe('Edge Cases', () => {
       const docProvId = insertTestDocument(db, docId, 'special.txt', '/test/special.txt');
       insertTestChunk(db, chunkId, docId, docProvId, textWithSpecial, 0);
 
-      const response = await handleSearchText({ query: '$100.00', match_type: 'fuzzy' });
+      const response = await handleSearch({ query: '100' });
       const result = parseResponse(response);
 
       expect(result.success).toBe(true);
@@ -1001,21 +956,11 @@ describe('Edge Cases', () => {
         insertTestChunk(db, chunkId, docId, docProvId, `Chunk ${i} has keyword here`, i);
       }
 
-      const response = await handleSearchText({ query: 'keyword', match_type: 'fuzzy', limit: 10 });
+      const response = await handleSearch({ query: 'keyword', limit: 10 });
       const result = parseResponse(response);
 
       expect(result.success).toBe(true);
       expect(result.data?.total).toBe(3);
-    });
-  });
-
-  describe('Edge Case 8: Whitespace-only Query', () => {
-    it('rejects whitespace-only query', async () => {
-      const response = await handleSearchText({ query: '   ' });
-      const result = parseResponse(response);
-      // May be rejected by validation or return empty results
-      // Either behavior is acceptable
-      expect(result).toBeDefined();
     });
   });
 });
@@ -1041,7 +986,7 @@ describe('CP-002 Compliance: original_text in Search Results', () => {
     resetState();
   });
 
-  it.skipIf(!sqliteVecAvailable)('text search results always contain original_text', async () => {
+  it.skipIf(!sqliteVecAvailable)('BM25 search results always contain original_text', async () => {
     const db = DatabaseService.create(dbName, undefined, tempDir);
     state.currentDatabase = db;
     state.currentDatabaseName = dbName;
@@ -1052,7 +997,7 @@ describe('CP-002 Compliance: original_text in Search Results', () => {
     const docProvId = insertTestDocument(db, docId, 'cp002.txt', '/test/cp002.txt');
     insertTestChunk(db, chunkId, docId, docProvId, testText, 0);
 
-    const response = await handleSearchText({ query: 'CP-002', match_type: 'fuzzy', limit: 10 });
+    const response = await handleSearch({ query: 'compliance', limit: 10 });
     const result = parseResponse(response);
 
     expect(result.success).toBe(true);
@@ -1077,7 +1022,7 @@ describe('CP-002 Compliance: original_text in Search Results', () => {
     const docProvId = insertTestDocument(db, docId, 'exact.txt', '/test/exact.txt');
     insertTestChunk(db, chunkId, docId, docProvId, exactText, 0);
 
-    const response = await handleSearchText({ query: 'verbatim', match_type: 'fuzzy', limit: 10 });
+    const response = await handleSearch({ query: 'verbatim', limit: 10 });
     const result = parseResponse(response);
 
     expect(result.success).toBe(true);
@@ -1085,37 +1030,18 @@ describe('CP-002 Compliance: original_text in Search Results', () => {
     expect(results[0].original_text).toBe(exactText);
   });
 
-  it.skipIf(!sqliteVecAvailable)('original_text preserved for exact match', async () => {
+  it.skipIf(!sqliteVecAvailable)('original_text preserved for BM25 search', async () => {
     const db = DatabaseService.create(dbName, undefined, tempDir);
     state.currentDatabase = db;
     state.currentDatabaseName = dbName;
 
     const docId = uuidv4();
     const chunkId = uuidv4();
-    const testText = 'Exact match original text preservation test';
-    const docProvId = insertTestDocument(db, docId, 'exact.txt', '/test/exact.txt');
+    const testText = 'BM25 original text preservation test';
+    const docProvId = insertTestDocument(db, docId, 'bm25.txt', '/test/bm25.txt');
     insertTestChunk(db, chunkId, docId, docProvId, testText, 0);
 
-    const response = await handleSearchText({ query: 'Exact match', match_type: 'exact', limit: 10 });
-    const result = parseResponse(response);
-
-    expect(result.success).toBe(true);
-    const results = result.data?.results as Array<Record<string, unknown>>;
-    expect(results[0].original_text).toBe(testText);
-  });
-
-  it.skipIf(!sqliteVecAvailable)('original_text preserved for regex match', async () => {
-    const db = DatabaseService.create(dbName, undefined, tempDir);
-    state.currentDatabase = db;
-    state.currentDatabaseName = dbName;
-
-    const docId = uuidv4();
-    const chunkId = uuidv4();
-    const testText = 'Regex match original text test 12345';
-    const docProvId = insertTestDocument(db, docId, 'regex.txt', '/test/regex.txt');
-    insertTestChunk(db, chunkId, docId, docProvId, testText, 0);
-
-    const response = await handleSearchText({ query: 'test \\d+', match_type: 'regex', limit: 10 });
+    const response = await handleSearch({ query: 'preservation', limit: 10 });
     const result = parseResponse(response);
 
     expect(result.success).toBe(true);
@@ -1145,7 +1071,7 @@ describe('Provenance Chain in Search Results', () => {
     resetState();
   });
 
-  it.skipIf(!sqliteVecAvailable)('excludes provenance by default', async () => {
+  it.skipIf(!sqliteVecAvailable)('excludes provenance_chain by default', async () => {
     const db = DatabaseService.create(dbName, undefined, tempDir);
     state.currentDatabase = db;
     state.currentDatabaseName = dbName;
@@ -1155,15 +1081,15 @@ describe('Provenance Chain in Search Results', () => {
     const docProvId = insertTestDocument(db, docId, 'test.txt', '/test/test.txt');
     insertTestChunk(db, chunkId, docId, docProvId, 'Default provenance test', 0);
 
-    const response = await handleSearchText({ query: 'provenance', match_type: 'fuzzy', limit: 10 });
+    const response = await handleSearch({ query: 'provenance', limit: 10 });
     const result = parseResponse(response);
 
     expect(result.success).toBe(true);
     const results = result.data?.results as Array<Record<string, unknown>>;
-    expect(results[0]).not.toHaveProperty('provenance');
+    expect(results[0]).not.toHaveProperty('provenance_chain');
   });
 
-  it.skipIf(!sqliteVecAvailable)('includes provenance when include_provenance=true', async () => {
+  it.skipIf(!sqliteVecAvailable)('includes provenance_chain when include_provenance=true', async () => {
     const db = DatabaseService.create(dbName, undefined, tempDir);
     state.currentDatabase = db;
     state.currentDatabaseName = dbName;
@@ -1173,9 +1099,8 @@ describe('Provenance Chain in Search Results', () => {
     const docProvId = insertTestDocument(db, docId, 'test.txt', '/test/test.txt');
     insertTestChunk(db, chunkId, docId, docProvId, 'Included provenance test', 0);
 
-    const response = await handleSearchText({
+    const response = await handleSearch({
       query: 'Included',
-      match_type: 'fuzzy',
       limit: 10,
       include_provenance: true,
     });
@@ -1183,11 +1108,11 @@ describe('Provenance Chain in Search Results', () => {
 
     expect(result.success).toBe(true);
     const results = result.data?.results as Array<Record<string, unknown>>;
-    expect(results[0]).toHaveProperty('provenance');
-    expect(Array.isArray(results[0].provenance)).toBe(true);
+    expect(results[0]).toHaveProperty('provenance_chain');
+    expect(Array.isArray(results[0].provenance_chain)).toBe(true);
   });
 
-  it.skipIf(!sqliteVecAvailable)('provenance chain has expected fields', async () => {
+  it.skipIf(!sqliteVecAvailable)('provenance_chain has expected fields', async () => {
     const db = DatabaseService.create(dbName, undefined, tempDir);
     state.currentDatabase = db;
     state.currentDatabaseName = dbName;
@@ -1197,9 +1122,8 @@ describe('Provenance Chain in Search Results', () => {
     const docProvId = insertTestDocument(db, docId, 'test.txt', '/test/test.txt');
     insertTestChunk(db, chunkId, docId, docProvId, 'Provenance fields test', 0);
 
-    const response = await handleSearchText({
+    const response = await handleSearch({
       query: 'fields',
-      match_type: 'fuzzy',
       limit: 10,
       include_provenance: true,
     });
@@ -1207,7 +1131,7 @@ describe('Provenance Chain in Search Results', () => {
 
     expect(result.success).toBe(true);
     const results = result.data?.results as Array<Record<string, unknown>>;
-    const provenance = results[0].provenance as Array<Record<string, unknown>>;
+    const provenance = results[0].provenance_chain as Array<Record<string, unknown>>;
 
     expect(provenance.length).toBeGreaterThan(0);
     for (const prov of provenance) {
@@ -1255,7 +1179,7 @@ describe('Limit Parameter', () => {
       insertTestChunk(db, chunkId, docId, docProvId, `Default limit test ${i}`, i);
     }
 
-    const response = await handleSearchText({ query: 'Default limit' });
+    const response = await handleSearch({ query: 'Default limit' });
     const result = parseResponse(response);
 
     expect(result.success).toBe(true);
@@ -1275,7 +1199,7 @@ describe('Limit Parameter', () => {
       insertTestChunk(db, chunkId, docId, docProvId, `Limit one test ${i}`, i);
     }
 
-    const response = await handleSearchText({ query: 'Limit one', limit: 1 });
+    const response = await handleSearch({ query: 'Limit one', limit: 1 });
     const result = parseResponse(response);
 
     expect(result.success).toBe(true);
@@ -1296,112 +1220,10 @@ describe('Limit Parameter', () => {
       insertTestChunk(db, chunkId, docId, docProvId, `Large limit test ${i}`, i);
     }
 
-    const response = await handleSearchText({ query: 'Large limit', limit: 100 });
+    const response = await handleSearch({ query: 'Large limit', limit: 100 });
     const result = parseResponse(response);
 
     expect(result.success).toBe(true);
     expect(result.data?.total).toBe(5); // Only 5 available
-  });
-});
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// MATCH TYPE TESTS
-// ═══════════════════════════════════════════════════════════════════════════════
-
-describe('Match Type Behavior', () => {
-  let tempDir: string;
-  let dbName: string;
-
-  beforeEach(() => {
-    resetState();
-    tempDir = createTempDir('search-match-');
-    tempDirs.push(tempDir);
-    updateConfig({ defaultStoragePath: tempDir });
-    dbName = createUniqueName('match');
-  });
-
-  afterEach(() => {
-    clearDatabase();
-    resetState();
-  });
-
-  it.skipIf(!sqliteVecAvailable)('exact: case-sensitive substring match', async () => {
-    const db = DatabaseService.create(dbName, undefined, tempDir);
-    state.currentDatabase = db;
-    state.currentDatabaseName = dbName;
-
-    const docId = uuidv4();
-    const docProvId = insertTestDocument(db, docId, 'test.txt', '/test/test.txt');
-
-    const chunkId1 = uuidv4();
-    insertTestChunk(db, chunkId1, docId, docProvId, 'Hello World', 0);
-    const chunkId2 = uuidv4();
-    insertTestChunk(db, chunkId2, docId, docProvId, 'hello world', 1);
-
-    const response = await handleSearchText({ query: 'Hello', match_type: 'exact', limit: 10 });
-    const result = parseResponse(response);
-
-    expect(result.success).toBe(true);
-    expect(result.data?.total).toBe(1); // Only uppercase match
-  });
-
-  it.skipIf(!sqliteVecAvailable)('fuzzy: case-insensitive substring match', async () => {
-    const db = DatabaseService.create(dbName, undefined, tempDir);
-    state.currentDatabase = db;
-    state.currentDatabaseName = dbName;
-
-    const docId = uuidv4();
-    const docProvId = insertTestDocument(db, docId, 'test.txt', '/test/test.txt');
-
-    const chunkId1 = uuidv4();
-    insertTestChunk(db, chunkId1, docId, docProvId, 'Hello World', 0);
-    const chunkId2 = uuidv4();
-    insertTestChunk(db, chunkId2, docId, docProvId, 'HELLO WORLD', 1);
-
-    const response = await handleSearchText({ query: 'hello', match_type: 'fuzzy', limit: 10 });
-    const result = parseResponse(response);
-
-    expect(result.success).toBe(true);
-    expect(result.data?.total).toBe(2); // Both match
-  });
-
-  it.skipIf(!sqliteVecAvailable)('regex: pattern matching with flags', async () => {
-    const db = DatabaseService.create(dbName, undefined, tempDir);
-    state.currentDatabase = db;
-    state.currentDatabaseName = dbName;
-
-    const docId = uuidv4();
-    const docProvId = insertTestDocument(db, docId, 'test.txt', '/test/test.txt');
-
-    const chunkId1 = uuidv4();
-    insertTestChunk(db, chunkId1, docId, docProvId, 'Phone: 123-456-7890', 0);
-    const chunkId2 = uuidv4();
-    insertTestChunk(db, chunkId2, docId, docProvId, 'No phone here', 1);
-
-    const response = await handleSearchText({ query: '\\d{3}-\\d{3}-\\d{4}', match_type: 'regex', limit: 10 });
-    const result = parseResponse(response);
-
-    expect(result.success).toBe(true);
-    expect(result.data?.total).toBe(1);
-  });
-
-  it.skipIf(!sqliteVecAvailable)('regex: case-insensitive by default', async () => {
-    const db = DatabaseService.create(dbName, undefined, tempDir);
-    state.currentDatabase = db;
-    state.currentDatabaseName = dbName;
-
-    const docId = uuidv4();
-    const docProvId = insertTestDocument(db, docId, 'test.txt', '/test/test.txt');
-
-    const chunkId1 = uuidv4();
-    insertTestChunk(db, chunkId1, docId, docProvId, 'UPPERCASE test', 0);
-    const chunkId2 = uuidv4();
-    insertTestChunk(db, chunkId2, docId, docProvId, 'lowercase test', 1);
-
-    const response = await handleSearchText({ query: 'test', match_type: 'regex', limit: 10 });
-    const result = parseResponse(response);
-
-    expect(result.success).toBe(true);
-    expect(result.data?.total).toBe(2); // Both match due to 'i' flag
   });
 });

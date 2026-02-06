@@ -1,13 +1,12 @@
 /**
  * Unit Tests for Validation Enums
  *
- * Tests OCRMode, MatchType, ProcessingStatus, ItemType, and ConfigKey enums
+ * Tests OCRMode, ProcessingStatus, ItemType, and ConfigKey enums
  */
 
 import { describe, it, expect } from 'vitest';
 import {
   OCRMode,
-  MatchType,
   ProcessingStatus,
   ItemType,
   ConfigKey,
@@ -23,14 +22,6 @@ describe('Enums', () => {
 
     it('should reject invalid modes', () => {
       expect(() => OCRMode.parse('invalid')).toThrow();
-    });
-  });
-
-  describe('MatchType', () => {
-    it('should accept valid match types', () => {
-      expect(MatchType.parse('exact')).toBe('exact');
-      expect(MatchType.parse('fuzzy')).toBe('fuzzy');
-      expect(MatchType.parse('regex')).toBe('regex');
     });
   });
 

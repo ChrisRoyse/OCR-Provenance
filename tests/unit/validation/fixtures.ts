@@ -11,7 +11,6 @@ export {
 
   // Enums
   OCRMode,
-  MatchType,
   ProcessingStatus,
   ItemType,
   ConfigKey,
@@ -31,8 +30,9 @@ export {
 
   // Search schemas
   SearchSemanticInput,
-  SearchTextInput,
+  SearchInput,
   SearchHybridInput,
+  FTSManageInput,
 
   // Document management schemas
   DocumentListInput,

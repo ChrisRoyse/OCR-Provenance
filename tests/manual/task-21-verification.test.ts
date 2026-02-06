@@ -20,7 +20,7 @@ import { v4 as uuidv4 } from 'uuid';
 
 import {
   handleSearchSemantic,
-  handleSearchText,
+  handleSearch,
   handleSearchHybrid,
   searchTools,
 } from '../../src/tools/search.js';
@@ -308,15 +308,16 @@ describe('Task 21: Search Tools Verification', { timeout: TEST_TIMEOUT }, () => 
   // ═══════════════════════════════════════════════════════════════════════════════
 
   describe('VERIFY: Tool Exports', () => {
-    it('searchTools exports exactly 3 tools', () => {
+    it('searchTools exports exactly 4 tools', () => {
       console.error('\n[TEST] Verifying searchTools exports');
       const toolNames = Object.keys(searchTools);
 
       console.error(`[EVIDENCE] Exported tools: ${toolNames.join(', ')}`);
-      expect(toolNames).toHaveLength(3);
+      expect(toolNames).toHaveLength(4);
+      expect(toolNames).toContain('ocr_search');
       expect(toolNames).toContain('ocr_search_semantic');
-      expect(toolNames).toContain('ocr_search_text');
       expect(toolNames).toContain('ocr_search_hybrid');
+      expect(toolNames).toContain('ocr_fts_manage');
     });
 
     it('each tool has required properties', () => {
@@ -335,12 +336,11 @@ describe('Task 21: Search Tools Verification', { timeout: TEST_TIMEOUT }, () => 
   // ═══════════════════════════════════════════════════════════════════════════════
 
   describe('VERIFY: Text Search CP-002 Compliance', () => {
-    it('original_text is ALWAYS present in fuzzy search results', async () => {
-      console.error('\n[TEST] CP-002: Fuzzy search returns original_text');
+    it('original_text is ALWAYS present in BM25 search results', async () => {
+      console.error('\n[TEST] CP-002: BM25 search returns original_text');
 
-      const response = await handleSearchText({
+      const response = await handleSearch({
         query: 'quick brown fox',
-        match_type: 'fuzzy',
         limit: 10,
       });
       const result = parseResponse(response);
@@ -364,12 +364,12 @@ describe('Task 21: Search Tools Verification', { timeout: TEST_TIMEOUT }, () => 
       }
     });
 
-    it('original_text is ALWAYS present in exact search results', async () => {
-      console.error('\n[TEST] CP-002: Exact search returns original_text');
+    it('original_text is ALWAYS present in phrase search results', async () => {
+      console.error('\n[TEST] CP-002: Phrase search returns original_text');
 
-      const response = await handleSearchText({
-        query: 'The quick brown fox',
-        match_type: 'exact',
+      const response = await handleSearch({
+        query: 'quick brown fox',
+        phrase_search: true,
         limit: 10,
       });
       const result = parseResponse(response);
@@ -380,18 +380,17 @@ describe('Task 21: Search Tools Verification', { timeout: TEST_TIMEOUT }, () => 
       if (results && results.length > 0) {
         for (const r of results) {
           expect(r.original_text).toBeDefined();
-          expect((r.original_text as string)).toContain('The quick brown fox');
-          console.error(`[EVIDENCE] Exact match original_text verified`);
+          expect((r.original_text as string)).toContain('quick brown fox');
+          console.error(`[EVIDENCE] Phrase search original_text verified`);
         }
       }
     });
 
-    it('original_text is ALWAYS present in regex search results', async () => {
-      console.error('\n[TEST] CP-002: Regex search returns original_text');
+    it('original_text is ALWAYS present in multi-word BM25 results', async () => {
+      console.error('\n[TEST] CP-002: Multi-word BM25 search returns original_text');
 
-      const response = await handleSearchText({
-        query: 'fox.*lazy',
-        match_type: 'regex',
+      const response = await handleSearch({
+        query: 'fox lazy dog',
         limit: 10,
       });
       const result = parseResponse(response);
@@ -402,7 +401,7 @@ describe('Task 21: Search Tools Verification', { timeout: TEST_TIMEOUT }, () => 
       if (results && results.length > 0) {
         for (const r of results) {
           expect(r.original_text).toBeDefined();
-          console.error(`[EVIDENCE] Regex match original_text: "${(r.original_text as string).slice(0, 50)}..."`);
+          console.error(`[EVIDENCE] Multi-word BM25 original_text: "${(r.original_text as string).slice(0, 50)}..."`);
         }
       }
     });
@@ -416,9 +415,8 @@ describe('Task 21: Search Tools Verification', { timeout: TEST_TIMEOUT }, () => 
     it('source_file_path is present in all results', async () => {
       console.error('\n[TEST] Verifying source_file_path presence');
 
-      const response = await handleSearchText({
+      const response = await handleSearch({
         query: 'contract',
-        match_type: 'fuzzy',
         limit: 10,
       });
       const result = parseResponse(response);
@@ -438,9 +436,8 @@ describe('Task 21: Search Tools Verification', { timeout: TEST_TIMEOUT }, () => 
     it('page_number is present in results', async () => {
       console.error('\n[TEST] Verifying page_number presence');
 
-      const response = await handleSearchText({
+      const response = await handleSearch({
         query: 'API endpoint',
-        match_type: 'fuzzy',
         limit: 10,
       });
       const result = parseResponse(response);
@@ -463,9 +460,8 @@ describe('Task 21: Search Tools Verification', { timeout: TEST_TIMEOUT }, () => 
     it('includes provenance when requested', async () => {
       console.error('\n[TEST] Verifying provenance chain inclusion');
 
-      const response = await handleSearchText({
+      const response = await handleSearch({
         query: 'WHEREAS',
-        match_type: 'exact',
         limit: 10,
         include_provenance: true,
       });
@@ -477,10 +473,10 @@ describe('Task 21: Search Tools Verification', { timeout: TEST_TIMEOUT }, () => 
       expect(results.length).toBeGreaterThan(0);
       const firstResult = results[0];
 
-      expect(firstResult.provenance).toBeDefined();
-      expect(Array.isArray(firstResult.provenance)).toBe(true);
+      expect(firstResult.provenance_chain).toBeDefined();
+      expect(Array.isArray(firstResult.provenance_chain)).toBe(true);
 
-      const provenance = firstResult.provenance as Array<Record<string, unknown>>;
+      const provenance = firstResult.provenance_chain as Array<Record<string, unknown>>;
       console.error(`[EVIDENCE] Provenance chain length: ${provenance.length}`);
 
       for (const p of provenance) {
@@ -491,9 +487,8 @@ describe('Task 21: Search Tools Verification', { timeout: TEST_TIMEOUT }, () => 
     it('excludes provenance when not requested', async () => {
       console.error('\n[TEST] Verifying provenance exclusion');
 
-      const response = await handleSearchText({
+      const response = await handleSearch({
         query: 'WHEREAS',
-        match_type: 'exact',
         limit: 10,
         include_provenance: false,
       });
@@ -503,7 +498,7 @@ describe('Task 21: Search Tools Verification', { timeout: TEST_TIMEOUT }, () => 
       const results = result.data?.results as Array<Record<string, unknown>>;
 
       if (results.length > 0) {
-        expect(results[0].provenance).toBeUndefined();
+        expect(results[0].provenance_chain).toBeUndefined();
         console.error('[EVIDENCE] Provenance correctly excluded');
       }
     });
@@ -517,9 +512,8 @@ describe('Task 21: Search Tools Verification', { timeout: TEST_TIMEOUT }, () => 
     it('respects limit=1', async () => {
       console.error('\n[TEST] Verifying limit parameter');
 
-      const response = await handleSearchText({
+      const response = await handleSearch({
         query: 'the',
-        match_type: 'fuzzy',
         limit: 1,
       });
       const result = parseResponse(response);
@@ -532,9 +526,8 @@ describe('Task 21: Search Tools Verification', { timeout: TEST_TIMEOUT }, () => 
     it('returns all matches when limit exceeds results', async () => {
       console.error('\n[TEST] Verifying limit > available results');
 
-      const response = await handleSearchText({
+      const response = await handleSearch({
         query: 'IN WITNESS WHEREOF',
-        match_type: 'exact',
         limit: 100,
       });
       const result = parseResponse(response);
@@ -554,9 +547,8 @@ describe('Task 21: Search Tools Verification', { timeout: TEST_TIMEOUT }, () => 
     it('Edge Case 1: Empty query fails fast', async () => {
       console.error('\n[TEST] Edge Case: Empty query');
 
-      const response = await handleSearchText({
+      const response = await handleSearch({
         query: '',
-        match_type: 'fuzzy',
         limit: 10,
       });
       const result = parseResponse(response);
@@ -565,27 +557,25 @@ describe('Task 21: Search Tools Verification', { timeout: TEST_TIMEOUT }, () => 
       console.error(`[EVIDENCE] Empty query error: ${result.error?.message}`);
     });
 
-    it('Edge Case 2: Invalid regex fails fast', async () => {
-      console.error('\n[TEST] Edge Case: Invalid regex');
+    it('Edge Case 2: Query over max length fails fast', async () => {
+      console.error('\n[TEST] Edge Case: Query over max length');
 
-      const response = await handleSearchText({
-        query: '[invalid(',
-        match_type: 'regex',
+      const overMaxQuery = 'a'.repeat(1001);
+      const response = await handleSearch({
+        query: overMaxQuery,
         limit: 10,
       });
       const result = parseResponse(response);
 
       expect(result.success).toBe(false);
-      expect(result.error?.message).toContain('Invalid regex');
-      console.error(`[EVIDENCE] Invalid regex error: ${result.error?.message}`);
+      console.error(`[EVIDENCE] Over max length error: ${result.error?.message}`);
     });
 
     it('Edge Case 3: No matches returns empty results', async () => {
       console.error('\n[TEST] Edge Case: No matches');
 
-      const response = await handleSearchText({
+      const response = await handleSearch({
         query: 'xyznonexistent12345',
-        match_type: 'exact',
         limit: 10,
       });
       const result = parseResponse(response);
@@ -605,9 +595,8 @@ describe('Task 21: Search Tools Verification', { timeout: TEST_TIMEOUT }, () => 
         '日本語テキスト and émojis 🎉 and symbols €£¥',
       ]);
 
-      const response = await handleSearchText({
+      const response = await handleSearch({
         query: '日本語',
-        match_type: 'fuzzy',
         limit: 10,
       });
       const result = parseResponse(response);
@@ -640,9 +629,8 @@ describe('Task 21: Search Tools Verification', { timeout: TEST_TIMEOUT }, () => 
       }
 
       // Now search via handler
-      const response = await handleSearchText({
+      const response = await handleSearch({
         query: 'dog',
-        match_type: 'fuzzy',
         limit: 100,
       });
       const result = parseResponse(response);
@@ -658,9 +646,8 @@ describe('Task 21: Search Tools Verification', { timeout: TEST_TIMEOUT }, () => 
     it('All chunk IDs in results exist in database', async () => {
       console.error('\n[TEST] Source of Truth: Chunk ID verification');
 
-      const response = await handleSearchText({
+      const response = await handleSearch({
         query: 'the',
-        match_type: 'fuzzy',
         limit: 10,
       });
       const result = parseResponse(response);

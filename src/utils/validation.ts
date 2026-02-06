@@ -83,11 +83,6 @@ export function safeValidateInput<T>(
 export const OCRMode = z.enum(['fast', 'balanced', 'accurate']);
 
 /**
- * Text match type for search operations
- */
-export const MatchType = z.enum(['exact', 'fuzzy', 'regex']);
-
-/**
  * Document/processing status
  */
 export const ProcessingStatus = z.enum(['pending', 'processing', 'complete', 'failed']);
@@ -249,41 +244,9 @@ export const SearchSemanticInput = z.object({
 });
 
 /**
- * Schema for text/keyword search
+ * Schema for keyword search (BM25 full-text)
  */
-export const SearchTextInput = z.object({
-  query: z.string().min(1, 'Query is required').max(1000, 'Query must be 1000 characters or less'),
-  match_type: MatchType.default('fuzzy'),
-  limit: z.number().int().min(1).max(100).default(10),
-  include_provenance: z.boolean().default(false),
-});
-
-/**
- * Schema for hybrid search (semantic + keyword)
- */
-export const SearchHybridInput = z
-  .object({
-    query: z
-      .string()
-      .min(1, 'Query is required')
-      .max(1000, 'Query must be 1000 characters or less'),
-    semantic_weight: z.number().min(0).max(1).default(0.7),
-    keyword_weight: z.number().min(0).max(1).default(0.3),
-    limit: z.number().int().min(1).max(100).default(10),
-    include_provenance: z.boolean().default(false),
-  })
-  .refine(
-    (data) => {
-      const total = data.semantic_weight + data.keyword_weight;
-      return total > 0.99 && total < 1.01;
-    },
-    { message: 'Semantic and keyword weights must sum to 1.0' }
-  );
-
-/**
- * Schema for BM25 full-text search
- */
-export const SearchBM25Input = z.object({
+export const SearchInput = z.object({
   query: z.string().min(1, 'Query is required').max(1000, 'Query must be 1000 characters or less'),
   limit: z.number().int().min(1).max(100).default(10),
   phrase_search: z.boolean().default(false),
@@ -293,9 +256,9 @@ export const SearchBM25Input = z.object({
 });
 
 /**
- * Schema for RRF hybrid search (BM25 + semantic)
+ * Schema for hybrid search (RRF fusion of BM25 + semantic)
  */
-export const SearchRRFInput = z.object({
+export const SearchHybridInput = z.object({
   query: z.string().min(1, 'Query is required').max(1000, 'Query must be 1000 characters or less'),
   limit: z.number().int().min(1).max(100).default(10),
   bm25_weight: z.number().min(0).max(2).default(1.0),
@@ -303,6 +266,13 @@ export const SearchRRFInput = z.object({
   rrf_k: z.number().int().min(1).max(100).default(60),
   include_provenance: z.boolean().default(false),
   document_filter: z.array(z.string()).optional(),
+});
+
+/**
+ * Schema for FTS5 index management
+ */
+export const FTSManageInput = z.object({
+  action: z.enum(['rebuild', 'status']),
 });
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -402,7 +372,6 @@ export const ConfigSetInput = z.object({
 
 // Enum types
 export type OCRMode = z.infer<typeof OCRMode>;
-export type MatchType = z.infer<typeof MatchType>;
 export type ProcessingStatus = z.infer<typeof ProcessingStatus>;
 export type ItemType = z.infer<typeof ItemType>;
 export type ProvenanceFormat = z.infer<typeof ProvenanceFormat>;
@@ -427,12 +396,9 @@ export type OCRStatusInput = z.infer<typeof OCRStatusInput>;
 
 // Search types
 export type SearchSemanticInput = z.infer<typeof SearchSemanticInput>;
-export type SearchTextInput = z.infer<typeof SearchTextInput>;
+export type SearchInput = z.infer<typeof SearchInput>;
 export type SearchHybridInput = z.infer<typeof SearchHybridInput>;
-
-// BM25/RRF search types
-export type SearchBM25Input = z.infer<typeof SearchBM25Input>;
-export type SearchRRFInput = z.infer<typeof SearchRRFInput>;
+export type FTSManageInput = z.infer<typeof FTSManageInput>;
 
 // Document management types
 export type DocumentListInput = z.infer<typeof DocumentListInput>;

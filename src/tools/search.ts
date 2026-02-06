@@ -1,8 +1,7 @@
 /**
  * Search MCP Tools
  *
- * Tools: ocr_search_semantic, ocr_search_text, ocr_search_hybrid,
- *         ocr_search_bm25, ocr_search_rrf, ocr_fts_rebuild, ocr_fts_status
+ * Tools: ocr_search, ocr_search_semantic, ocr_search_hybrid, ocr_fts_manage
  *
  * CRITICAL: NEVER use console.log() - stdout is reserved for JSON-RPC protocol.
  * Use console.error() for all logging.
@@ -17,12 +16,10 @@ import { successResult } from '../server/types.js';
 import {
   validateInput,
   SearchSemanticInput,
-  SearchTextInput,
+  SearchInput,
   SearchHybridInput,
-  SearchBM25Input,
-  SearchRRFInput,
+  FTSManageInput,
 } from '../utils/validation.js';
-import { validationError } from '../server/errors.js';
 import {
   formatResponse,
   handleError,
@@ -31,35 +28,10 @@ import {
 } from './shared.js';
 import { BM25SearchService } from '../services/search/bm25.js';
 import { RRFFusion } from '../services/search/fusion.js';
-import type { Document } from '../models/document.js';
-import type { Chunk } from '../models/chunk.js';
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // TYPE DEFINITIONS
 // ═══════════════════════════════════════════════════════════════════════════════
-
-/** Chunk match for hybrid search */
-interface ChunkMatch {
-  chunk: Pick<Chunk, 'id' | 'document_id' | 'text' | 'chunk_index' | 'page_number' | 'character_start' | 'character_end' | 'provenance_id'>;
-  doc: Pick<Document, 'id' | 'file_name' | 'file_path'>;
-}
-
-/** Combined search score result */
-interface CombinedScore {
-  score: number;
-  semantic_score: number;
-  keyword_score: number;
-  chunk_id: string;
-  document_id: string;
-  original_text: string;
-  source_file_name: string;
-  source_file_path: string;
-  page_number: number | null;
-  character_start: number;
-  character_end: number;
-  chunk_index: number;
-  provenance_id: string;
-}
 
 /** Provenance record summary for search results */
 interface ProvenanceSummary {
@@ -145,230 +117,13 @@ export async function handleSearchSemantic(
 }
 
 /**
- * Handle ocr_search_text - Keyword/text search
+ * Handle ocr_search - BM25 full-text keyword search
  */
-export async function handleSearchText(
+export async function handleSearch(
   params: Record<string, unknown>
 ): Promise<ToolResponse> {
   try {
-    const input = validateInput(SearchTextInput, params);
-    const { db } = requireDatabase();
-
-    // Extract with defaults (Zod provides these, but TypeScript needs explicit handling)
-    const limit = input.limit ?? 10;
-    const matchType = input.match_type ?? 'fuzzy';
-
-    // Get all chunks and search by text
-    const allDocs = db.listDocuments({ status: 'complete', limit: 1000 });
-    const results: Array<Record<string, unknown>> = [];
-
-    // Validate regex pattern early to fail fast
-    if (matchType === 'regex') {
-      try {
-        new RegExp(input.query, 'i');
-      } catch {
-        throw validationError(`Invalid regex pattern: ${input.query}`);
-      }
-    }
-
-    for (const doc of allDocs) {
-      if (results.length >= limit) break;
-
-      const chunks = db.getChunksByDocumentId(doc.id);
-      for (const chunk of chunks) {
-        if (results.length >= limit) break;
-
-        const matches = matchText(chunk.text, input.query, matchType);
-        if (!matches) continue;
-
-        const result: Record<string, unknown> = {
-          chunk_id: chunk.id,
-          document_id: chunk.document_id,
-          original_text: chunk.text,
-          source_file_name: doc.file_name,
-          source_file_path: doc.file_path,
-          page_number: chunk.page_number,
-          character_start: chunk.character_start,
-          character_end: chunk.character_end,
-          chunk_index: chunk.chunk_index,
-        };
-
-        if (input.include_provenance) {
-          result.provenance = formatProvenanceChain(db, chunk.provenance_id);
-        }
-
-        results.push(result);
-      }
-    }
-
-    return formatResponse(successResult({
-      query: input.query,
-      match_type: matchType,
-      results,
-      total: results.length,
-    }));
-  } catch (error) {
-    return handleError(error);
-  }
-}
-
-/**
- * Match text against query using specified match type
- */
-function matchText(text: string, query: string, matchType: 'exact' | 'fuzzy' | 'regex'): boolean {
-  switch (matchType) {
-    case 'exact':
-      return text.includes(query);
-    case 'fuzzy':
-      return text.toLowerCase().includes(query.toLowerCase());
-    case 'regex':
-      return new RegExp(query, 'i').test(text);
-  }
-}
-
-/**
- * Handle ocr_search_hybrid - Combined semantic + keyword search
- */
-export async function handleSearchHybrid(
-  params: Record<string, unknown>
-): Promise<ToolResponse> {
-  try {
-    const input = validateInput(SearchHybridInput, params);
-    const { db, vector } = requireDatabase();
-
-    // Extract with defaults (Zod provides these, but TypeScript needs explicit handling)
-    const limit = input.limit ?? 10;
-    const semanticWeight = input.semantic_weight ?? 0.7;
-    const keywordWeight = input.keyword_weight ?? 0.3;
-
-    // Get semantic results
-    const embedder = getEmbeddingService();
-    const queryVector = await embedder.embedSearchQuery(input.query);
-    const semanticResults = vector.searchSimilar(queryVector, { limit: limit * 2 });
-
-    // Get text results
-    const allDocs = db.listDocuments({ status: 'complete', limit: 1000 });
-    const textMatches: Map<string, ChunkMatch> = new Map();
-
-    for (const doc of allDocs) {
-      const chunks = db.getChunksByDocumentId(doc.id);
-      for (const chunk of chunks) {
-        if (chunk.text.toLowerCase().includes(input.query.toLowerCase())) {
-          textMatches.set(chunk.id, {
-            chunk: {
-              id: chunk.id,
-              document_id: chunk.document_id,
-              text: chunk.text,
-              chunk_index: chunk.chunk_index,
-              page_number: chunk.page_number,
-              character_start: chunk.character_start,
-              character_end: chunk.character_end,
-              provenance_id: chunk.provenance_id,
-            },
-            doc: { id: doc.id, file_name: doc.file_name, file_path: doc.file_path },
-          });
-        }
-      }
-    }
-
-    // Combine and score results
-    const combinedScores: Map<string, CombinedScore> = new Map();
-
-    for (const r of semanticResults) {
-      const hasKeywordMatch = textMatches.has(r.chunk_id);
-      const semanticScoreVal = r.similarity_score * semanticWeight;
-      const keywordScoreVal = hasKeywordMatch ? keywordWeight : 0;
-
-      combinedScores.set(r.chunk_id, {
-        score: semanticScoreVal + keywordScoreVal,
-        semantic_score: r.similarity_score,
-        keyword_score: hasKeywordMatch ? 1 : 0,
-        chunk_id: r.chunk_id,
-        document_id: r.document_id,
-        original_text: r.original_text,
-        source_file_name: r.source_file_name,
-        source_file_path: r.source_file_path,
-        page_number: r.page_number,
-        character_start: r.character_start,
-        character_end: r.character_end,
-        chunk_index: r.chunk_index,
-        provenance_id: r.provenance_id,
-      });
-    }
-
-    // Add text-only matches (not found in semantic results)
-    for (const [chunkId, { chunk, doc }] of textMatches) {
-      if (!combinedScores.has(chunkId)) {
-        combinedScores.set(chunkId, {
-          score: keywordWeight,
-          semantic_score: 0,
-          keyword_score: 1,
-          chunk_id: chunk.id,
-          document_id: chunk.document_id,
-          original_text: chunk.text,
-          source_file_name: doc.file_name,
-          source_file_path: doc.file_path,
-          page_number: chunk.page_number,
-          character_start: chunk.character_start,
-          character_end: chunk.character_end,
-          chunk_index: chunk.chunk_index,
-          provenance_id: chunk.provenance_id,
-        });
-      }
-    }
-
-    // Sort by combined score and limit
-    const sortedResults = Array.from(combinedScores.values())
-      .sort((a, b) => b.score - a.score)
-      .slice(0, limit);
-
-    const formattedResults = sortedResults.map(r => {
-      const result: Record<string, unknown> = {
-        chunk_id: r.chunk_id,
-        document_id: r.document_id,
-        original_text: r.original_text,
-        source_file_name: r.source_file_name,
-        source_file_path: r.source_file_path,
-        page_number: r.page_number,
-        character_start: r.character_start,
-        character_end: r.character_end,
-        chunk_index: r.chunk_index,
-        combined_score: r.score,
-        semantic_score: r.semantic_score,
-        keyword_score: r.keyword_score,
-      };
-
-      if (input.include_provenance) {
-        result.provenance = formatProvenanceChain(db, r.provenance_id);
-      }
-
-      return result;
-    });
-
-    return formatResponse(successResult({
-      query: input.query,
-      semantic_weight: semanticWeight,
-      keyword_weight: keywordWeight,
-      results: formattedResults,
-      total: formattedResults.length,
-    }));
-  } catch (error) {
-    return handleError(error);
-  }
-}
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// BM25 / RRF SEARCH TOOL HANDLERS
-// ═══════════════════════════════════════════════════════════════════════════════
-
-/**
- * Handle ocr_search_bm25 - BM25 full-text search with ranking
- */
-export async function handleSearchBM25(
-  params: Record<string, unknown>
-): Promise<ToolResponse> {
-  try {
-    const input = validateInput(SearchBM25Input, params);
+    const input = validateInput(SearchInput, params);
     const { db } = requireDatabase();
 
     const bm25 = new BM25SearchService(db.getConnection());
@@ -397,13 +152,13 @@ export async function handleSearchBM25(
 }
 
 /**
- * Handle ocr_search_rrf - Hybrid search using Reciprocal Rank Fusion
+ * Handle ocr_search_hybrid - Hybrid search using Reciprocal Rank Fusion
  */
-export async function handleSearchRRF(
+export async function handleSearchHybrid(
   params: Record<string, unknown>
 ): Promise<ToolResponse> {
   try {
-    const input = validateInput(SearchRRFInput, params);
+    const input = validateInput(SearchHybridInput, params);
     const { db, vector } = requireDatabase();
     const limit = input.limit ?? 10;
 
@@ -493,36 +248,22 @@ export async function handleSearchRRF(
 }
 
 /**
- * Handle ocr_fts_rebuild - Rebuild FTS5 full-text search index
+ * Handle ocr_fts_manage - Manage FTS5 index (rebuild or check status)
  */
-export async function handleFTSRebuild(
-  _params: Record<string, unknown>
+export async function handleFTSManage(
+  params: Record<string, unknown>
 ): Promise<ToolResponse> {
   try {
+    const input = validateInput(FTSManageInput, params);
     const { db } = requireDatabase();
     const bm25 = new BM25SearchService(db.getConnection());
-    const result = bm25.rebuildIndex();
 
-    return formatResponse(successResult({
-      operation: 'fts_rebuild',
-      ...result,
-    }));
-  } catch (error) {
-    return handleError(error);
-  }
-}
+    if (input.action === 'rebuild') {
+      const result = bm25.rebuildIndex();
+      return formatResponse(successResult({ operation: 'fts_rebuild', ...result }));
+    }
 
-/**
- * Handle ocr_fts_status - Get FTS5 index status and statistics
- */
-export async function handleFTSStatus(
-  _params: Record<string, unknown>
-): Promise<ToolResponse> {
-  try {
-    const { db } = requireDatabase();
-    const bm25 = new BM25SearchService(db.getConnection());
     const status = bm25.getStatus();
-
     return formatResponse(successResult(status));
   } catch (error) {
     return handleError(error);
@@ -537,6 +278,18 @@ export async function handleFTSStatus(
  * Search tools collection for MCP server registration
  */
 export const searchTools: Record<string, ToolDefinition> = {
+  ocr_search: {
+    description: 'Search documents using BM25 full-text ranking (best for exact terms, codes, IDs)',
+    inputSchema: {
+      query: z.string().min(1).max(1000).describe('Search query'),
+      limit: z.number().int().min(1).max(100).default(10).describe('Maximum results'),
+      phrase_search: z.boolean().default(false).describe('Treat as exact phrase'),
+      include_highlight: z.boolean().default(true).describe('Include highlighted snippets'),
+      include_provenance: z.boolean().default(false).describe('Include provenance chain'),
+      document_filter: z.array(z.string()).optional().describe('Filter by document IDs'),
+    },
+    handler: handleSearch,
+  },
   ocr_search_semantic: {
     description: 'Search documents using semantic similarity (vector search)',
     inputSchema: {
@@ -548,40 +301,7 @@ export const searchTools: Record<string, ToolDefinition> = {
     },
     handler: handleSearchSemantic,
   },
-  ocr_search_text: {
-    description: 'Search documents using keyword/text matching',
-    inputSchema: {
-      query: z.string().min(1).max(1000).describe('Search query'),
-      match_type: z.enum(['exact', 'fuzzy', 'regex']).default('fuzzy').describe('Match type'),
-      limit: z.number().int().min(1).max(100).default(10).describe('Maximum results to return'),
-      include_provenance: z.boolean().default(false).describe('Include provenance chain in results'),
-    },
-    handler: handleSearchText,
-  },
   ocr_search_hybrid: {
-    description: 'Search using combined semantic and keyword matching',
-    inputSchema: {
-      query: z.string().min(1).max(1000).describe('Search query'),
-      semantic_weight: z.number().min(0).max(1).default(0.7).describe('Weight for semantic results (0-1)'),
-      keyword_weight: z.number().min(0).max(1).default(0.3).describe('Weight for keyword results (0-1)'),
-      limit: z.number().int().min(1).max(100).default(10).describe('Maximum results to return'),
-      include_provenance: z.boolean().default(false).describe('Include provenance chain in results'),
-    },
-    handler: handleSearchHybrid,
-  },
-  ocr_search_bm25: {
-    description: 'Search using BM25 full-text ranking (best for exact terms, codes, IDs)',
-    inputSchema: {
-      query: z.string().min(1).max(1000).describe('Search query'),
-      limit: z.number().int().min(1).max(100).default(10).describe('Maximum results'),
-      phrase_search: z.boolean().default(false).describe('Treat as exact phrase'),
-      include_highlight: z.boolean().default(true).describe('Include highlighted snippets'),
-      include_provenance: z.boolean().default(false).describe('Include provenance chain'),
-      document_filter: z.array(z.string()).optional().describe('Filter by document IDs'),
-    },
-    handler: handleSearchBM25,
-  },
-  ocr_search_rrf: {
     description: 'Hybrid search using Reciprocal Rank Fusion (BM25 + semantic)',
     inputSchema: {
       query: z.string().min(1).max(1000).describe('Search query'),
@@ -592,17 +312,14 @@ export const searchTools: Record<string, ToolDefinition> = {
       include_provenance: z.boolean().default(false).describe('Include provenance chain'),
       document_filter: z.array(z.string()).optional().describe('Filter by document IDs'),
     },
-    handler: handleSearchRRF,
+    handler: handleSearchHybrid,
   },
-  ocr_fts_rebuild: {
-    description: 'Rebuild FTS5 full-text search index',
-    inputSchema: {},
-    handler: handleFTSRebuild,
-  },
-  ocr_fts_status: {
-    description: 'Get FTS5 index status and statistics',
-    inputSchema: {},
-    handler: handleFTSStatus,
+  ocr_fts_manage: {
+    description: 'Manage FTS5 full-text search index (rebuild or check status)',
+    inputSchema: {
+      action: z.enum(['rebuild', 'status']).describe('Action: rebuild index or check status'),
+    },
+    handler: handleFTSManage,
   },
 };
 
