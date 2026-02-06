@@ -6,9 +6,7 @@
  *
  * NO MOCK DATA - Uses real DatabaseService instances with temp databases.
  * FAIL FAST - Tests verify errors throw immediately with correct error categories.
- *
- * NOTE: Semantic and hybrid search tests are skipped because they require
- * real embedding vectors. BM25 search tests are comprehensive.
+ * Uses real GPU embeddings (nomic-embed-text-v1.5) for semantic/hybrid search tests.
  *
  * @module tests/unit/tools/search
  */
@@ -33,6 +31,9 @@ import {
   clearDatabase,
 } from '../../../src/server/state.js';
 import { DatabaseService } from '../../../src/services/storage/database/index.js';
+import { VectorService } from '../../../src/services/storage/vector.js';
+import { EmbeddingService, resetEmbeddingService } from '../../../src/services/embedding/embedder.js';
+import { BM25SearchService } from '../../../src/services/search/bm25.js';
 import { computeHash } from '../../../src/utils/hash.js';
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -644,10 +645,62 @@ describe('handleSearchSemantic', () => {
     expect(result.success).toBe(false);
   });
 
-  it.skip('requires embedding service (skipped - embedding tests in manual verification)', () => {
-    // Semantic search tests require actual embeddings
-    // Full tests are in tests/manual/task-21-verification.test.ts
-  });
+  it.skipIf(!sqliteVecAvailable)('finds semantically similar chunks with real embeddings', async () => {
+    const tempDir = createTempDir('search-semantic-embed-');
+    tempDirs.push(tempDir);
+    updateConfig({ defaultStoragePath: tempDir });
+    const dbName = createUniqueName('semantic');
+
+    const db = DatabaseService.create(dbName, undefined, tempDir);
+    state.currentDatabase = db;
+    state.currentDatabaseName = dbName;
+
+    const docId = uuidv4();
+    const chunkId1 = uuidv4();
+    const chunkId2 = uuidv4();
+    const text1 = 'The patient was diagnosed with severe hypertension and prescribed medication for blood pressure management.';
+    const text2 = 'Financial quarterly report shows increased revenue and profit margins for the fiscal year.';
+
+    const docProvId = insertTestDocument(db, docId, 'medical.txt', '/test/medical.txt');
+    const chunkProvId1 = insertTestChunk(db, chunkId1, docId, docProvId, text1, 0);
+    const chunkProvId2 = insertTestChunk(db, chunkId2, docId, docProvId, text2, 1);
+
+    // Generate real embeddings using GPU
+    const embedder = new EmbeddingService();
+    const vector = new VectorService(db.getConnection());
+    const chunks = db.getChunksByDocumentId(docId);
+
+    await embedder.embedDocumentChunks(db, vector, chunks, {
+      documentId: docId,
+      filePath: '/test/medical.txt',
+      fileName: 'medical.txt',
+      fileHash: computeHash('/test/medical.txt'),
+      documentProvenanceId: docProvId,
+    });
+
+    // Search for medical content — should rank medical chunk higher
+    const response = await handleSearchSemantic({
+      query: 'hypertension blood pressure treatment',
+      limit: 10,
+      similarity_threshold: 0.3,
+    });
+    const result = parseResponse(response);
+
+    expect(result.success).toBe(true);
+    expect(result.data?.total).toBeGreaterThan(0);
+
+    const results = result.data?.results as Array<Record<string, unknown>>;
+    expect(results.length).toBeGreaterThan(0);
+
+    // CP-002: original_text always present
+    expect(results[0].original_text).toBeTruthy();
+    expect(typeof results[0].similarity_score).toBe('number');
+
+    // Medical chunk should be the top result for a medical query
+    expect(results[0].original_text).toContain('hypertension');
+
+    resetEmbeddingService();
+  }, 30000);
 });
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -699,10 +752,72 @@ describe('handleSearchHybrid', () => {
     expect(result.success).toBe(false);
   });
 
-  it.skip('requires embedding service (skipped - embedding tests in manual verification)', () => {
-    // Hybrid search tests require actual embeddings
-    // Full tests are in tests/manual/task-21-verification.test.ts
-  });
+  it.skipIf(!sqliteVecAvailable)('combines BM25 and semantic results with real embeddings', async () => {
+    const tempDir = createTempDir('search-hybrid-embed-');
+    tempDirs.push(tempDir);
+    updateConfig({ defaultStoragePath: tempDir });
+    const dbName = createUniqueName('hybrid');
+
+    const db = DatabaseService.create(dbName, undefined, tempDir);
+    state.currentDatabase = db;
+    state.currentDatabaseName = dbName;
+
+    const docId = uuidv4();
+    const chunkId1 = uuidv4();
+    const chunkId2 = uuidv4();
+    const text1 = 'The contract stipulates that all parties must agree to the terms and conditions before signing.';
+    const text2 = 'Laboratory analysis confirmed the presence of elevated biomarkers in the blood sample results.';
+
+    const docProvId = insertTestDocument(db, docId, 'legal.txt', '/test/legal.txt');
+    insertTestChunk(db, chunkId1, docId, docProvId, text1, 0);
+    insertTestChunk(db, chunkId2, docId, docProvId, text2, 1);
+
+    // Generate real embeddings using GPU
+    const embedder = new EmbeddingService();
+    const vector = new VectorService(db.getConnection());
+    const chunks = db.getChunksByDocumentId(docId);
+
+    await embedder.embedDocumentChunks(db, vector, chunks, {
+      documentId: docId,
+      filePath: '/test/legal.txt',
+      fileName: 'legal.txt',
+      fileHash: computeHash('/test/legal.txt'),
+      documentProvenanceId: docProvId,
+    });
+
+    // Rebuild FTS index to ensure BM25 picks up newly inserted chunks
+    const bm25 = new BM25SearchService(db.getConnection());
+    bm25.rebuildIndex();
+
+    // Hybrid search — both BM25 and semantic should find results
+    const response = await handleSearchHybrid({
+      query: 'contract terms conditions',
+      limit: 10,
+      bm25_weight: 1.0,
+      semantic_weight: 1.0,
+    });
+    const result = parseResponse(response);
+
+    expect(result.success).toBe(true);
+    expect(result.data?.search_type).toBe('rrf_hybrid');
+    expect(result.data?.total).toBeGreaterThan(0);
+
+    const results = result.data?.results as Array<Record<string, unknown>>;
+    expect(results.length).toBeGreaterThan(0);
+
+    // CP-002: original_text always present
+    expect(results[0].original_text).toBeTruthy();
+
+    // Should have source counts from both search types
+    const sources = result.data?.sources as Record<string, number>;
+    expect(sources.bm25_count).toBeGreaterThan(0);
+    expect(sources.semantic_count).toBeGreaterThan(0);
+
+    // Contract chunk should rank first for a contract-related query
+    expect(results[0].original_text).toContain('contract');
+
+    resetEmbeddingService();
+  }, 30000);
 });
 
 // ═══════════════════════════════════════════════════════════════════════════════
