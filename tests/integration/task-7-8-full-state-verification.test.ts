@@ -72,14 +72,16 @@ describe('FULL STATE VERIFICATION: Tasks 7 & 8', () => {
 
       const tableNames = tables.map(t => t.name);
       // Filter out sqlite-vec internal tables
+      // Filter out sqlite-vec internal tables and FTS5 shadow tables
       const coreTables = tableNames.filter(name =>
         !name.includes('_chunks') &&
         !name.includes('_info') &&
         !name.includes('_rowids') &&
-        !name.includes('_vector_chunks')
+        !name.includes('_vector_chunks') &&
+        !name.startsWith('chunks_fts_')  // FTS5 shadow tables
       );
       console.log('\n[EVIDENCE] Core tables created:', coreTables.join(', '));
-      console.log('[EVIDENCE] All tables (including vec internals):', tableNames.join(', '));
+      console.log('[EVIDENCE] All tables (including vec/fts internals):', tableNames.join(', '));
 
       expect(coreTables).toContain('schema_version');
       expect(coreTables).toContain('provenance');
@@ -90,7 +92,9 @@ describe('FULL STATE VERIFICATION: Tasks 7 & 8', () => {
       expect(coreTables).toContain('embeddings');
       expect(coreTables).toContain('vec_embeddings');
       expect(coreTables).toContain('images');
-      expect(coreTables.length).toBe(9);
+      expect(coreTables).toContain('chunks_fts');
+      expect(coreTables).toContain('fts_index_metadata');
+      expect(coreTables.length).toBe(11);
 
       db.close();
     });
@@ -115,16 +119,17 @@ describe('FULL STATE VERIFICATION: Tasks 7 & 8', () => {
       console.log('\n[EVIDENCE] Indexes created:', indexNames.length);
       indexNames.forEach(name => console.log(`  - ${name}`));
 
-      expect(indexNames.length).toBe(20);
+      expect(indexNames.length).toBe(21);
       expect(indexNames).toContain('idx_documents_file_path');
+      expect(indexNames).toContain('idx_documents_file_hash');
+      expect(indexNames).toContain('idx_documents_status');
       expect(indexNames).toContain('idx_images_document_id');
       expect(indexNames).toContain('idx_images_ocr_result_id');
       expect(indexNames).toContain('idx_images_vlm_status');
-      expect(indexNames).toContain('idx_images_page_number');
-      expect(indexNames).toContain('idx_images_vlm_embedding_id');
-      expect(indexNames).toContain('idx_documents_file_hash');
-      expect(indexNames).toContain('idx_documents_status');
+      expect(indexNames).toContain('idx_images_page');
+      expect(indexNames).toContain('idx_images_pending');
       expect(indexNames).toContain('idx_provenance_root_document_id');
+      expect(indexNames).toContain('idx_provenance_type');
 
       db.close();
     });

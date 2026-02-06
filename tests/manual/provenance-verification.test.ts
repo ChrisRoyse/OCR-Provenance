@@ -47,9 +47,7 @@ function isSqliteVecAvailable(): boolean {
 
 const sqliteVecAvailable = isSqliteVecAvailable();
 
-// Test configuration
-const DB_NAME = 'gemini-evaluation';
-const DB_PATH = resolve(process.env.HOME || '/tmp', '.ocr-provenance', 'databases');
+// Test configuration — create ephemeral database (no dependency on external DBs)
 const TEST_IMAGE_DIR = resolve(process.env.HOME || '/tmp', '.ocr-provenance', 'images', 'test-provenance');
 
 // Synthetic test data
@@ -109,6 +107,8 @@ describe('Complete Provenance Chain Verification', () => {
   let embeddingId: string;
   let vlmEmbeddingId: string;
 
+  let testDir: string;
+
   beforeAll(async () => {
     if (!sqliteVecAvailable) {
       console.warn('sqlite-vec not available, skipping tests');
@@ -119,8 +119,11 @@ describe('Complete Provenance Chain Verification', () => {
     console.log('COMPLETE PROVENANCE CHAIN VERIFICATION');
     console.log('='.repeat(80));
 
-    // Open existing database
-    db = DatabaseService.open(DB_NAME, DB_PATH);
+    // Create ephemeral test database
+    testDir = join(tmpdir(), `prov-verify-${Date.now()}`);
+    mkdirSync(testDir, { recursive: true });
+    const dbName = `prov-verify-${Date.now()}`;
+    db = DatabaseService.create(dbName, 'Provenance verification test', testDir);
     rawDb = db.getConnection();
 
     // Reset tracker singleton
@@ -128,21 +131,55 @@ describe('Complete Provenance Chain Verification', () => {
     tracker = getProvenanceTracker(db);
     verifier = new ProvenanceVerifier(db, tracker);
 
-    // Get first document for testing
-    const docs = db.listDocuments({ limit: 1 });
-    if (docs.length === 0) {
-      throw new Error('No documents in database - cannot run verification test');
-    }
-
-    testDocId = docs[0].id;
-    docProvenanceId = docs[0].provenance_id;
-    testFilePath = docs[0].file_path;
-
-    // Verify file exists and get hash
-    if (!existsSync(testFilePath)) {
-      throw new Error(`Document file not found: ${testFilePath}`);
-    }
+    // Create a synthetic test file
+    testFilePath = join(testDir, 'test-document.pdf');
+    writeFileSync(testFilePath, 'Synthetic test document content for provenance verification');
     testFileHash = await hashFile(testFilePath);
+
+    // Create DOCUMENT provenance (depth 0) — root of all chains
+    docProvenanceId = uuidv4();
+    db.insertProvenance({
+      id: docProvenanceId,
+      type: ProvenanceType.DOCUMENT,
+      created_at: new Date().toISOString(),
+      processed_at: new Date().toISOString(),
+      source_file_created_at: new Date().toISOString(),
+      source_file_modified_at: new Date().toISOString(),
+      source_type: 'FILE',
+      source_path: testFilePath,
+      source_id: null,
+      root_document_id: docProvenanceId,
+      location: null,
+      content_hash: testFileHash,
+      input_hash: null,
+      file_hash: testFileHash,
+      processor: 'ingestion',
+      processor_version: '1.0.0',
+      processing_params: {},
+      processing_duration_ms: 10,
+      processing_quality_score: null,
+      parent_id: null,
+      parent_ids: '[]',
+      chain_depth: 0,
+      chain_path: JSON.stringify(['DOCUMENT']),
+    });
+
+    // Create document record
+    testDocId = uuidv4();
+    db.insertDocument({
+      id: testDocId,
+      file_path: testFilePath,
+      file_name: 'test-document.pdf',
+      file_hash: testFileHash,
+      file_size: 57,
+      file_type: 'pdf',
+      status: 'complete',
+      page_count: 1,
+      provenance_id: docProvenanceId,
+      modified_at: null,
+      ocr_completed_at: new Date().toISOString(),
+      error_message: null,
+    });
 
     // Create test image directory and file
     if (!existsSync(TEST_IMAGE_DIR)) {
@@ -152,7 +189,7 @@ describe('Complete Provenance Chain Verification', () => {
     createTestImage(testImagePath);
 
     console.log('\n[TEST SETUP]');
-    console.log(`  Database: ${DB_NAME}`);
+    console.log(`  Database: ephemeral (${testDir})`);
     console.log(`  Document ID: ${testDocId}`);
     console.log(`  Document provenance: ${docProvenanceId}`);
     console.log(`  File path: ${testFilePath}`);
@@ -161,54 +198,22 @@ describe('Complete Provenance Chain Verification', () => {
   });
 
   afterAll(async () => {
-    // Cleanup test data (in reverse order of creation)
-    if (rawDb && sqliteVecAvailable) {
-      console.log('\n[CLEANUP]');
-
-      // Delete embeddings
-      if (vlmEmbeddingId) {
-        rawDb.prepare('DELETE FROM embeddings WHERE id = ?').run(vlmEmbeddingId);
-        console.log(`  Deleted VLM embedding: ${vlmEmbeddingId}`);
-      }
-      if (embeddingId) {
-        rawDb.prepare('DELETE FROM embeddings WHERE id = ?').run(embeddingId);
-        console.log(`  Deleted embedding: ${embeddingId}`);
-      }
-
-      // Delete chunk
-      if (chunkId) {
-        rawDb.prepare('DELETE FROM chunks WHERE id = ?').run(chunkId);
-        console.log(`  Deleted chunk: ${chunkId}`);
-      }
-
-      // Delete image
-      if (imageId) {
-        rawDb.prepare('DELETE FROM images WHERE id = ?').run(imageId);
-        console.log(`  Deleted image: ${imageId}`);
-      }
-
-      // Delete OCR result
-      if (ocrId) {
-        rawDb.prepare('DELETE FROM ocr_results WHERE id = ?').run(ocrId);
-        console.log(`  Deleted OCR result: ${ocrId}`);
-      }
-
-      // Delete provenance records (in reverse order)
-      const provIds = [vlmEmbeddingProvId, embeddingProvId, vlmProvId, chunkProvId, imageProvId, ocrProvId].filter(Boolean);
-      for (const provId of provIds) {
-        rawDb.prepare('DELETE FROM provenance WHERE id = ?').run(provId);
-        console.log(`  Deleted provenance: ${provId}`);
-      }
-    }
+    console.log('\n[CLEANUP]');
 
     // Remove test image file
     if (testImagePath && existsSync(testImagePath)) {
       rmSync(testImagePath);
-      console.log(`  Removed test image file`);
+      console.log('  Removed test image file');
     }
 
     if (db) {
       db.close();
+    }
+
+    // Remove ephemeral test directory (contains the entire DB)
+    if (testDir && existsSync(testDir)) {
+      rmSync(testDir, { recursive: true, force: true });
+      console.log(`  Removed test directory: ${testDir}`);
     }
   });
 
