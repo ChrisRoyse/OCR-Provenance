@@ -194,7 +194,7 @@ export function updateDocumentOCRComplete(
 
   const stmt = db.prepare(`
     UPDATE documents
-    SET page_count = ?, ocr_completed_at = ?, modified_at = ?
+    SET status = 'complete', page_count = ?, ocr_completed_at = ?, modified_at = ?
     WHERE id = ?
   `);
 

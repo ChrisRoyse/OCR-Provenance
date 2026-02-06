@@ -122,6 +122,7 @@ describe('Column Verification', () => {
     const expectedColumns = [
       'id',
       'chunk_id',
+      'image_id',
       'document_id',
       'original_text',
       'original_text_length',

@@ -235,7 +235,7 @@ describe('DatabaseService - Document Operations', () => {
   });
 
   describe('updateDocumentOCRComplete()', () => {
-    it.skipIf(!sqliteVecAvailable)('updates page_count and ocr_completed_at without changing status', () => {
+    it.skipIf(!sqliteVecAvailable)('updates status to complete with page_count and ocr_completed_at', () => {
       const prov = createTestProvenance();
       dbService!.insertProvenance(prov);
       const doc = createTestDocument(prov.id, { status: 'processing' });
@@ -245,7 +245,7 @@ describe('DatabaseService - Document Operations', () => {
       dbService!.updateDocumentOCRComplete(doc.id, 5, completedAt);
 
       const retrieved = dbService!.getDocument(doc.id);
-      expect(retrieved!.status).toBe('processing');
+      expect(retrieved!.status).toBe('complete');
       expect(retrieved!.page_count).toBe(5);
       expect(retrieved!.ocr_completed_at).toBe(completedAt);
     });
