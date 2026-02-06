@@ -28,6 +28,10 @@ export interface ProcessResult {
   error?: string;
   /** Images extracted by Datalab: {filename: base64_data} */
   images?: Record<string, string>;
+  /** JSON block hierarchy from Datalab (when output_format includes 'json') */
+  jsonBlocks?: Record<string, unknown> | null;
+  /** Datalab metadata (page_stats, block_counts, etc.) */
+  metadata?: Record<string, unknown> | null;
 }
 
 export interface BatchResult {
@@ -95,6 +99,8 @@ export class OCRProcessor {
       const ocrProvenanceId = uuidv4();
       let ocrResult: OCRResult;
       let images: Record<string, string>;
+      let jsonBlocks: Record<string, unknown> | null = null;
+      let metadata: Record<string, unknown> | null = null;
 
       for (let attempt = 1; attempt <= 2; attempt++) {
         try {
@@ -106,6 +112,8 @@ export class OCRProcessor {
           );
           ocrResult = response.result;
           images = response.images;
+          jsonBlocks = response.jsonBlocks;
+          metadata = response.metadata;
           break;
         } catch (error) {
           if (attempt === 1 && error instanceof OCRError && error.category === 'OCR_TIMEOUT') {
@@ -154,6 +162,8 @@ export class OCRProcessor {
         textLength: ocrResult.text_length,
         durationMs: Date.now() - startTime,
         images: imageCount > 0 ? images : undefined,
+        jsonBlocks,
+        metadata,
       };
 
     } catch (error) {
@@ -243,7 +253,7 @@ export class OCRProcessor {
       processor_version: DATALAB_SDK_VERSION,
       processing_params: {
         mode,
-        output_format: 'markdown',
+        output_format: 'markdown,json',
         request_id: ocrResult.datalab_request_id,
         paginate: true,
       },

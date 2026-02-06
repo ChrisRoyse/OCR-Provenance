@@ -198,5 +198,8 @@ export function rowToImage(row: ImageRow): ImageReference {
     provenance_id: row.provenance_id,
     created_at: row.created_at,
     error_message: row.error_message,
+    block_type: row.block_type ?? null,
+    is_header_footer: Boolean(row.is_header_footer),
+    content_hash: row.content_hash ?? null,
   };
 }

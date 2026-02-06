@@ -23,6 +23,8 @@ import {
   updateImageVLMResult,
   setImageVLMFailed,
   getImageStats,
+  findByContentHash,
+  copyVLMResult,
 } from '../storage/database/image-operations.js';
 import { NomicEmbeddingClient, getEmbeddingClient, MODEL_NAME as EMBEDDING_MODEL } from '../embedding/nomic.js';
 import { DatabaseService } from '../storage/database/index.js';
@@ -311,12 +313,16 @@ export class VLMPipeline {
       if (this.config.imageOptimization.enabled) {
         const shouldProcess = await this.checkImageRelevance(image);
         if (!shouldProcess.process) {
-          // Mark as skipped (not failed) with reason
           const skipReason = `Skipped: ${shouldProcess.reason}`;
           console.error(`[VLMPipeline] ${skipReason} - ${image.id}`);
 
-          // Store skip reason in VLM result with special "skipped" status
-          setImageVLMFailed(this.db, image.id, skipReason);
+          // Dedup copies are already marked 'complete' by copyVLMResult — don't re-mark as failed
+          if (shouldProcess.dedupSource) {
+            // Create VLM_DESCRIPTION provenance for the dedup copy
+            this.trackDedupProvenance(image, shouldProcess.dedupSource);
+          } else {
+            setImageVLMFailed(this.db, image.id, skipReason);
+          }
 
           return {
             imageId: image.id,
@@ -421,25 +427,48 @@ export class VLMPipeline {
    */
   private async checkImageRelevance(
     image: ImageReference
-  ): Promise<{ process: boolean; reason: string }> {
+  ): Promise<{ process: boolean; reason: string; dedupSource?: ImageReference }> {
     const { imageOptimization } = this.config;
 
-    // Quick dimension check first (no file I/O needed)
+    // LAYER 1: Header/footer block classification (from Datalab JSON)
+    if (image.is_header_footer) {
+      return {
+        process: false,
+        reason: `Header/footer decorative: block_type=${image.block_type ?? 'unknown'}`,
+      };
+    }
+
+    // LAYER 2: Figure blocks are always content — skip further checks
+    if (image.block_type === 'Figure' || image.block_type === 'FigureGroup') {
+      return { process: true, reason: 'Figure block — content image' };
+    }
+
+    // LAYER 3: Content hash deduplication
+    if (image.content_hash) {
+      const duplicate = findByContentHash(this.db, image.content_hash, image.id);
+      if (duplicate) {
+        // Copy VLM results from the existing processed image
+        copyVLMResult(this.db, image.id, duplicate);
+        return {
+          process: false,
+          reason: `Duplicate of image ${duplicate.id} — VLM results copied, 0 tokens used`,
+          dedupSource: duplicate,
+        };
+      }
+    }
+
+    // LAYER 4: Quick dimension check (no file I/O needed)
     const width = image.dimensions?.width ?? 0;
     const height = image.dimensions?.height ?? 0;
 
     if (width > 0 && height > 0) {
-      // Check minimum size
-      if (
-        Math.max(width, height) < imageOptimization.vlmSkipBelowSize
-      ) {
+      if (Math.max(width, height) < imageOptimization.vlmSkipBelowSize) {
         return {
           process: false,
           reason: `Too small: ${width}x${height} < ${imageOptimization.vlmSkipBelowSize}px`,
         };
       }
 
-      // Check for likely icon (both dimensions small)
       if (Math.max(width, height) < 100) {
         return {
           process: false,
@@ -447,7 +476,6 @@ export class VLMPipeline {
         };
       }
 
-      // Check extreme aspect ratio
       const aspectRatio = Math.max(width, height) / Math.min(width, height);
       if (aspectRatio > 6) {
         return {
@@ -457,7 +485,7 @@ export class VLMPipeline {
       }
     }
 
-    // Full analysis if we have the file and settings allow
+    // LAYER 5: Full file-based analysis (existing Python optimizer)
     if (imageOptimization.vlmSkipLogosIcons && image.extracted_path) {
       try {
         const analysis = await this.optimizer.analyzeImage(image.extracted_path);
@@ -476,7 +504,7 @@ export class VLMPipeline {
       }
     }
 
-    return { process: true, reason: 'Passed relevance checks' };
+    return { process: true, reason: 'Passed all relevance checks' };
   }
 
   /**
@@ -713,6 +741,71 @@ export class VLMPipeline {
 
     this.dbService.insertProvenance(record);
     return provenanceId; // Return the ID so we can use it for embedding provenance
+  }
+
+  /**
+   * Track VLM_DESCRIPTION provenance for a deduplicated image.
+   * Creates provenance record documenting that VLM results were copied from a source image
+   * with identical content hash, preserving full chain: DOCUMENT(0) -> OCR_RESULT(1) -> IMAGE(2) -> VLM_DESCRIPTION(3).
+   *
+   * @param image - The dedup copy image that received copied VLM results
+   * @param source - The source image whose VLM results were copied
+   */
+  private trackDedupProvenance(image: ImageReference, source: ImageReference): void {
+    if (!this.dbService || this.config.skipProvenance) return;
+
+    if (!image.provenance_id) {
+      console.error(`[VLMPipeline] Cannot track dedup provenance: image ${image.id} has no provenance_id`);
+      return;
+    }
+
+    const imageProv = this.dbService.getProvenance(image.provenance_id);
+    if (!imageProv) {
+      console.error(`[VLMPipeline] Image provenance not found: ${image.provenance_id}`);
+      return;
+    }
+
+    const provenanceId = uuidv4();
+    const now = new Date().toISOString();
+
+    const parentIds = JSON.parse(imageProv.parent_ids) as string[];
+    parentIds.push(image.provenance_id);
+
+    const record: ProvenanceRecord = {
+      id: provenanceId,
+      type: ProvenanceType.VLM_DESCRIPTION,
+      created_at: now,
+      processed_at: now,
+      source_file_created_at: null,
+      source_file_modified_at: null,
+      source_type: 'VLM_DEDUP',
+      source_path: image.extracted_path,
+      source_id: image.provenance_id,
+      root_document_id: imageProv.root_document_id,
+      location: {
+        page_number: image.page_number,
+        chunk_index: image.image_index,
+      },
+      content_hash: computeHash(source.vlm_description ?? ''),
+      input_hash: imageProv.content_hash,
+      file_hash: imageProv.file_hash,
+      processor: 'dedup-copy',
+      processor_version: '1.0.0',
+      processing_params: {
+        type: 'vlm_dedup_copy',
+        source_image_id: source.id,
+        content_hash: image.content_hash,
+      },
+      processing_duration_ms: 0,
+      processing_quality_score: source.vlm_confidence,
+      parent_id: image.provenance_id,
+      parent_ids: JSON.stringify(parentIds),
+      chain_depth: 3,
+      chain_path: JSON.stringify(['DOCUMENT', 'OCR_RESULT', 'IMAGE', 'VLM_DESCRIPTION']),
+    };
+
+    this.dbService.insertProvenance(record);
+    console.error(`[VLMPipeline] Created dedup VLM_DESCRIPTION provenance: ${provenanceId} (source: ${source.id})`);
   }
 
   /**

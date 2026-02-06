@@ -19,6 +19,8 @@ import {
   deleteImage,
   deleteImagesByDocument,
   resetFailedImages,
+  findByContentHash,
+  copyVLMResult,
 } from '../../../src/services/storage/database/image-operations.js';
 import { CREATE_IMAGES_TABLE } from '../../../src/services/storage/migrations/schema-definitions.js';
 import type { CreateImageReference, VLMResult } from '../../../src/models/image.js';
@@ -79,6 +81,9 @@ describe('Image Operations', () => {
     file_size: 12345,
     context_text: 'Surrounding text from document',
     provenance_id: null,
+    block_type: null,
+    is_header_footer: false,
+    content_hash: null,
     ...overrides,
   });
 
@@ -407,6 +412,198 @@ describe('Image Operations', () => {
 
       expect(getImage(db, img1.id)?.vlm_status).toBe('pending');
       expect(getImage(db, img2.id)?.vlm_status).toBe('failed');
+    });
+  });
+
+  describe('new image filtering fields', () => {
+    it('should store and retrieve block_type', () => {
+      const img = insertImage(db, createTestImage({ block_type: 'Figure' }));
+      expect(img.block_type).toBe('Figure');
+
+      const retrieved = getImage(db, img.id);
+      expect(retrieved?.block_type).toBe('Figure');
+    });
+
+    it('should store and retrieve is_header_footer as boolean', () => {
+      const img = insertImage(db, createTestImage({ is_header_footer: true }));
+      expect(img.is_header_footer).toBe(true);
+
+      const retrieved = getImage(db, img.id);
+      expect(retrieved?.is_header_footer).toBe(true);
+    });
+
+    it('should default is_header_footer to false', () => {
+      const img = insertImage(db, createTestImage());
+      expect(img.is_header_footer).toBe(false);
+    });
+
+    it('should store and retrieve content_hash', () => {
+      const hash = 'sha256:abc123def456';
+      const img = insertImage(db, createTestImage({ content_hash: hash }));
+      expect(img.content_hash).toBe(hash);
+
+      const retrieved = getImage(db, img.id);
+      expect(retrieved?.content_hash).toBe(hash);
+    });
+
+    it('should allow null for all new fields', () => {
+      const img = insertImage(db, createTestImage({
+        block_type: null,
+        is_header_footer: false,
+        content_hash: null,
+      }));
+
+      const retrieved = getImage(db, img.id);
+      expect(retrieved?.block_type).toBeNull();
+      expect(retrieved?.is_header_footer).toBe(false);
+      expect(retrieved?.content_hash).toBeNull();
+    });
+  });
+
+  describe('findByContentHash', () => {
+    it('should find a VLM-complete image by content hash', () => {
+      const hash = 'sha256:duplicateimage123';
+      const img = insertImage(db, createTestImage({
+        content_hash: hash,
+        image_index: 0,
+      }));
+
+      // Insert dummy embedding for FK constraint
+      db.prepare('INSERT INTO embeddings (id) VALUES (?)').run('emb-123');
+
+      // Mark as VLM complete
+      const vlmResult: VLMResult = {
+        description: 'A test image description',
+        structuredData: { imageType: 'photo', primarySubject: 'test' },
+        embeddingId: 'emb-123',
+        model: 'gemini-2.0-flash',
+        confidence: 0.95,
+        tokensUsed: 100,
+      };
+      updateImageVLMResult(db, img.id, vlmResult);
+
+      // Should find it by hash
+      const found = findByContentHash(db, hash);
+      expect(found).not.toBeNull();
+      expect(found?.id).toBe(img.id);
+      expect(found?.vlm_status).toBe('complete');
+    });
+
+    it('should NOT find a pending image by content hash', () => {
+      const hash = 'sha256:pendingimage456';
+      insertImage(db, createTestImage({ content_hash: hash }));
+
+      // Should not find pending images
+      const found = findByContentHash(db, hash);
+      expect(found).toBeNull();
+    });
+
+    it('should exclude a specific image ID', () => {
+      const hash = 'sha256:excludetest789';
+
+      const img1 = insertImage(db, createTestImage({
+        content_hash: hash,
+        image_index: 0,
+      }));
+      db.prepare('INSERT OR IGNORE INTO embeddings (id) VALUES (?)').run('emb-1');
+      const vlmResult: VLMResult = {
+        description: 'Description for img1',
+        structuredData: { imageType: 'photo', primarySubject: 'test' },
+        embeddingId: 'emb-1',
+        model: 'gemini-2.0-flash',
+        confidence: 0.9,
+        tokensUsed: 50,
+      };
+      updateImageVLMResult(db, img1.id, vlmResult);
+
+      // When excluding img1, should return null (only one match)
+      const found = findByContentHash(db, hash, img1.id);
+      expect(found).toBeNull();
+    });
+
+    it('should return null for non-existent hash', () => {
+      const found = findByContentHash(db, 'sha256:doesnotexist');
+      expect(found).toBeNull();
+    });
+  });
+
+  describe('copyVLMResult', () => {
+    it('should copy VLM results from source to target image', () => {
+      // Create source image with VLM results
+      const source = insertImage(db, createTestImage({
+        content_hash: 'sha256:source',
+        image_index: 0,
+      }));
+      db.prepare('INSERT OR IGNORE INTO embeddings (id) VALUES (?)').run('emb-source');
+      const vlmResult: VLMResult = {
+        description: 'Detailed 3-paragraph description of the source image',
+        structuredData: { imageType: 'chart', primarySubject: 'data visualization' },
+        embeddingId: 'emb-source',
+        model: 'gemini-2.0-flash',
+        confidence: 0.92,
+        tokensUsed: 150,
+      };
+      updateImageVLMResult(db, source.id, vlmResult);
+
+      // Reload source to get complete fields
+      const sourceComplete = getImage(db, source.id)!;
+
+      // Create target image (same content, different document)
+      const target = insertImage(db, createTestImage({
+        content_hash: 'sha256:source',
+        image_index: 1,
+      }));
+
+      // Copy VLM results
+      copyVLMResult(db, target.id, sourceComplete);
+
+      // Verify target has copied results
+      const copied = getImage(db, target.id);
+      expect(copied).not.toBeNull();
+      expect(copied!.vlm_status).toBe('complete');
+      expect(copied!.vlm_description).toBe('Detailed 3-paragraph description of the source image');
+      expect(copied!.vlm_model).toBe('gemini-2.0-flash');
+      expect(copied!.vlm_confidence).toBe(0.92);
+      expect(copied!.vlm_tokens_used).toBe(0); // Dedup = 0 tokens
+      expect(copied!.vlm_embedding_id).toBe('emb-source'); // Embedding ID copied
+      expect(copied!.error_message).toBeNull();
+    });
+
+    it('should set vlm_tokens_used to 0 for dedup copies', () => {
+      const source = insertImage(db, createTestImage({ image_index: 0 }));
+      db.prepare('INSERT OR IGNORE INTO embeddings (id) VALUES (?)').run('');
+      updateImageVLMResult(db, source.id, {
+        description: 'test',
+        structuredData: {},
+        embeddingId: '',
+        model: 'gemini',
+        confidence: 0.8,
+        tokensUsed: 500,
+      });
+
+      const sourceComplete = getImage(db, source.id)!;
+      const target = insertImage(db, createTestImage({ image_index: 1 }));
+
+      copyVLMResult(db, target.id, sourceComplete);
+
+      const copied = getImage(db, target.id);
+      expect(copied!.vlm_tokens_used).toBe(0);
+    });
+
+    it('should throw for non-existent target', () => {
+      const source = insertImage(db, createTestImage());
+      db.prepare('INSERT OR IGNORE INTO embeddings (id) VALUES (?)').run('');
+      updateImageVLMResult(db, source.id, {
+        description: 'test',
+        structuredData: {},
+        embeddingId: '',
+        model: 'gemini',
+        confidence: 0.8,
+        tokensUsed: 50,
+      });
+      const sourceComplete = getImage(db, source.id)!;
+
+      expect(() => copyVLMResult(db, 'nonexistent', sourceComplete)).toThrow();
     });
   });
 });

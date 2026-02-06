@@ -36,8 +36,9 @@ export function insertImage(
       bbox_x, bbox_y, bbox_width, bbox_height,
       image_index, format, width, height,
       extracted_path, file_size, vlm_status,
-      context_text, provenance_id, created_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?)
+      context_text, provenance_id, created_at,
+      block_type, is_header_footer, content_hash
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?)
   `);
 
   stmt.run(
@@ -57,7 +58,10 @@ export function insertImage(
     image.file_size ?? null,
     image.context_text ?? null,
     image.provenance_id ?? null,
-    created_at
+    created_at,
+    image.block_type ?? null,
+    image.is_header_footer ? 1 : 0,
+    image.content_hash ?? null
   );
 
   return {
@@ -73,6 +77,9 @@ export function insertImage(
     vlm_processed_at: null,
     vlm_tokens_used: null,
     error_message: null,
+    block_type: image.block_type ?? null,
+    is_header_footer: image.is_header_footer ?? false,
+    content_hash: image.content_hash ?? null,
   };
 }
 
@@ -433,4 +440,74 @@ export function resetFailedImages(
   }
 
   return db.prepare(query).run().changes;
+}
+
+/**
+ * Find a VLM-complete image with the same content hash (for deduplication).
+ * Returns the first matching image or null.
+ *
+ * @param db - Database connection
+ * @param contentHash - SHA-256 hash to search for
+ * @param excludeId - Optional image ID to exclude from results
+ * @returns ImageReference | null
+ */
+export function findByContentHash(
+  db: Database.Database,
+  contentHash: string,
+  excludeId?: string
+): ImageReference | null {
+  const query = excludeId
+    ? `SELECT * FROM images WHERE content_hash = ? AND vlm_status = 'complete' AND id != ? LIMIT 1`
+    : `SELECT * FROM images WHERE content_hash = ? AND vlm_status = 'complete' LIMIT 1`;
+
+  const row = excludeId
+    ? (db.prepare(query).get(contentHash, excludeId) as ImageRow | undefined)
+    : (db.prepare(query).get(contentHash) as ImageRow | undefined);
+
+  return row ? rowToImage(row) : null;
+}
+
+/**
+ * Copy VLM results from one image to another (deduplication).
+ * Sets vlm_status='complete', vlm_tokens_used=0 (no API call made).
+ *
+ * @param db - Database connection
+ * @param targetId - Image ID to copy results TO
+ * @param source - Source image to copy results FROM
+ */
+export function copyVLMResult(
+  db: Database.Database,
+  targetId: string,
+  source: ImageReference
+): void {
+  const stmt = db.prepare(`
+    UPDATE images SET
+      vlm_status = 'complete',
+      vlm_description = ?,
+      vlm_structured_data = ?,
+      vlm_embedding_id = ?,
+      vlm_model = ?,
+      vlm_confidence = ?,
+      vlm_tokens_used = 0,
+      vlm_processed_at = ?,
+      error_message = NULL
+    WHERE id = ?
+  `);
+
+  const changes = stmt.run(
+    source.vlm_description,
+    source.vlm_structured_data ? JSON.stringify(source.vlm_structured_data) : null,
+    source.vlm_embedding_id,
+    source.vlm_model,
+    source.vlm_confidence,
+    new Date().toISOString(),
+    targetId
+  ).changes;
+
+  if (changes === 0) {
+    throw new DatabaseError(
+      `Image "${targetId}" not found`,
+      DatabaseErrorCode.EMBEDDING_NOT_FOUND
+    );
+  }
 }

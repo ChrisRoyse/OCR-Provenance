@@ -94,6 +94,9 @@ export async function handleImageExtract(
       file_size: img.size,
       context_text: null,
       provenance_id: null,
+      block_type: null,
+      is_header_footer: false,
+      content_hash: null,
     }));
 
     const stored = insertImageBatch(db.getConnection(), imageRefs);

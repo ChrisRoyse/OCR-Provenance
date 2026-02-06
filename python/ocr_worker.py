@@ -138,6 +138,12 @@ class OCRResult:
     # Images extracted by Datalab (filename -> base64 data)
     images: dict[str, str] | None = None
 
+    # JSON block hierarchy from Datalab (when output_format includes 'json')
+    json_blocks: dict | None = None
+
+    # Datalab metadata (page_stats, block_counts, etc.)
+    metadata: dict | None = None
+
 
 # =============================================================================
 # SUPPORTED FILE TYPES (match src/models/document.ts)
@@ -303,7 +309,7 @@ def process_document(
 
         # Configure options - paginate=True for page offset tracking
         options = ConvertOptions(
-            output_format="markdown",
+            output_format="markdown,json",
             mode=mode,
             paginate=True
         )
@@ -345,6 +351,29 @@ def process_document(
         if images:
             logger.info(f"Captured {len(images)} images from Datalab response")
 
+        # Capture JSON block hierarchy (from output_format="markdown,json")
+        json_blocks = None
+        raw_json = getattr(result, 'json', None)
+        if raw_json is not None:
+            if isinstance(raw_json, dict):
+                json_blocks = raw_json
+            elif hasattr(raw_json, '__dict__'):
+                json_blocks = raw_json.__dict__
+            else:
+                logger.warning(f"JSON output requested but got unexpected type: {type(raw_json)}")
+            if json_blocks is not None:
+                children = json_blocks.get('children', json_blocks.get('blocks', []))
+                logger.info(f"Captured JSON block hierarchy with {len(children) if isinstance(children, list) else 0} top-level blocks")
+
+        # Capture metadata (page_stats, block_counts, etc.)
+        metadata_dict = None
+        raw_metadata = getattr(result, 'metadata', None)
+        if raw_metadata is not None:
+            if isinstance(raw_metadata, dict):
+                metadata_dict = raw_metadata
+            elif hasattr(raw_metadata, '__dict__'):
+                metadata_dict = raw_metadata.__dict__
+
         # Parse page offsets for provenance tracking
         page_offsets = parse_page_offsets(markdown)
 
@@ -368,6 +397,8 @@ def process_document(
             processing_duration_ms=duration_ms,
             page_offsets=page_offsets,
             images=images if images else None,
+            json_blocks=json_blocks,
+            metadata=metadata_dict,
         )
 
         logger.info(
