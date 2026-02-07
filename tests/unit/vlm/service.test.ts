@@ -134,7 +134,7 @@ describe('VLMService', () => {
       expect(callArgs[0]).toContain('medical document');
     });
 
-    it('should handle parse errors gracefully', async () => {
+    it('should handle parse errors gracefully with zero confidence', async () => {
       mockClient.analyzeImage.mockResolvedValue({
         ...mockAnalysisResponse,
         text: 'Invalid JSON response that cannot be parsed',
@@ -143,7 +143,8 @@ describe('VLMService', () => {
       const result = await service.describeImage('/path/to/image.png');
 
       expect(result.analysis.imageType).toBe('unknown');
-      expect(result.analysis.confidence).toBe(0.3);
+      expect(result.analysis.confidence).toBe(0);
+      expect(result.analysis.primarySubject).toContain('[PARSE_ERROR]');
       expect(result.analysis.paragraph1).toContain('Invalid JSON');
     });
   });

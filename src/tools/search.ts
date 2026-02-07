@@ -172,14 +172,22 @@ export async function handleSearch(
       return { ...r, provenance_chain: formatProvenanceChain(db, r.provenance_id) };
     });
 
+    // Compute source counts from final merged results (not pre-merge candidates)
+    let finalChunkCount = 0;
+    let finalVlmCount = 0;
+    for (const r of results) {
+      if (r.result_type === 'chunk') finalChunkCount++;
+      else finalVlmCount++;
+    }
+
     return formatResponse(successResult({
       query: input.query,
       search_type: 'bm25',
       results,
       total: results.length,
       sources: {
-        chunk_count: chunkResults.length,
-        vlm_count: vlmResults.length,
+        chunk_count: finalChunkCount,
+        vlm_count: finalVlmCount,
       },
     }));
   } catch (error) {

@@ -366,6 +366,7 @@ export const CREATE_INDEXES = [
   'CREATE INDEX IF NOT EXISTS idx_images_vlm_status ON images(vlm_status)',
   'CREATE INDEX IF NOT EXISTS idx_images_content_hash ON images(content_hash)',
   'CREATE INDEX IF NOT EXISTS idx_images_pending ON images(vlm_status) WHERE vlm_status = \'pending\'',
+  'CREATE INDEX IF NOT EXISTS idx_images_provenance_id ON images(provenance_id)',
 
   // Provenance indexes
   'CREATE INDEX IF NOT EXISTS idx_provenance_source_id ON provenance(source_id)',
@@ -426,6 +427,7 @@ export const REQUIRED_INDEXES = [
   'idx_images_page',
   'idx_images_vlm_status',
   'idx_images_pending',
+  'idx_images_provenance_id',
   'idx_images_content_hash',
   'idx_provenance_source_id',
   'idx_provenance_type',

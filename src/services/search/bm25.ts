@@ -131,9 +131,10 @@ export class BM25SearchService {
   }
 
   private buildFTSQuery(query: string): string {
-    // L-8 fix: Preserve FTS5 boolean operators (NOT, OR, NEAR) to maintain query intent.
+    // L-8 fix: Preserve FTS5 boolean operators (NOT, OR) to maintain query intent.
     // Previously "cats NOT dogs" became "cats AND dogs" -- reversing intent.
-    const FTS5_OPERATORS = new Set(['AND', 'OR', 'NOT', 'NEAR']);
+    // Note: NEAR removed -- FTS5 requires NEAR(t1 t2, N) function syntax, not infix.
+    const FTS5_OPERATORS = new Set(['AND', 'OR', 'NOT']);
     const rawTokens = query.trim().split(/\s+/).filter(t => t.length > 0);
 
     const result: string[] = [];
@@ -336,10 +337,14 @@ export class BM25SearchService {
 
   getStatus(): {
     chunks_indexed: number;
+    current_chunk_count: number;
+    index_stale: boolean;
     last_rebuild_at: string | null;
     tokenizer: string;
     content_hash: string | null;
     vlm_indexed: number;
+    current_vlm_count: number;
+    vlm_index_stale: boolean;
     vlm_last_rebuild_at: string | null;
   } {
     const meta = this.db.prepare('SELECT * FROM fts_index_metadata WHERE id = 1').get() as {
@@ -353,15 +358,28 @@ export class BM25SearchService {
       throw new Error('FTS index metadata not found. Database migration to v4 may not have completed.');
     }
 
+    // Drift detection: compare stored count to actual count
+    const chunkCount = (this.db.prepare('SELECT COUNT(*) as cnt FROM chunks').get() as { cnt: number }).cnt;
+
     // Get VLM FTS metadata (id=2) if it exists
     const vlmMeta = this.db.prepare('SELECT * FROM fts_index_metadata WHERE id = 2').get() as {
       chunks_indexed: number;
       last_rebuild_at: string | null;
     } | undefined;
 
+    const vlmCount = (this.db.prepare(
+      'SELECT COUNT(*) as cnt FROM embeddings WHERE image_id IS NOT NULL'
+    ).get() as { cnt: number }).cnt;
+
+    const vlmIndexed = vlmMeta?.chunks_indexed ?? 0;
+
     return {
       ...meta,
-      vlm_indexed: vlmMeta?.chunks_indexed ?? 0,
+      current_chunk_count: chunkCount,
+      index_stale: meta.chunks_indexed !== chunkCount,
+      vlm_indexed: vlmIndexed,
+      current_vlm_count: vlmCount,
+      vlm_index_stale: vlmIndexed !== vlmCount,
       vlm_last_rebuild_at: vlmMeta?.last_rebuild_at ?? null,
     };
   }

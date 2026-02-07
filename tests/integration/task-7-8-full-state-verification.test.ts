@@ -121,7 +121,7 @@ describe('FULL STATE VERIFICATION: Tasks 7 & 8', () => {
       console.log('\n[EVIDENCE] Indexes created:', indexNames.length);
       indexNames.forEach(name => console.log(`  - ${name}`));
 
-      expect(indexNames.length).toBe(22);
+      expect(indexNames.length).toBe(23);
       expect(indexNames).toContain('idx_documents_file_path');
       expect(indexNames).toContain('idx_documents_file_hash');
       expect(indexNames).toContain('idx_documents_status');
@@ -130,6 +130,7 @@ describe('FULL STATE VERIFICATION: Tasks 7 & 8', () => {
       expect(indexNames).toContain('idx_images_vlm_status');
       expect(indexNames).toContain('idx_images_page');
       expect(indexNames).toContain('idx_images_pending');
+      expect(indexNames).toContain('idx_images_provenance_id');
       expect(indexNames).toContain('idx_images_content_hash');
       expect(indexNames).toContain('idx_provenance_root_document_id');
       expect(indexNames).toContain('idx_provenance_type');
