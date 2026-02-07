@@ -243,14 +243,14 @@ def analyze_image(image_path: str) -> ImageAnalysis:
     Returns:
         ImageAnalysis with relevance scores and recommendation
     """
-    img = Image.open(image_path)
-    width, height = img.size
+    with Image.open(image_path) as img:
+        width, height = img.size
 
-    # Calculate metrics
-    aspect_ratio = max(width, height) / min(width, height) if min(width, height) > 0 else 999
-    unique_colors, color_diversity = get_color_diversity(img)
-    size_score = calculate_size_score(width, height)
-    aspect_score = calculate_aspect_score(width, height)
+        # Calculate metrics
+        aspect_ratio = max(width, height) / min(width, height) if min(width, height) > 0 else 999
+        unique_colors, color_diversity = get_color_diversity(img)
+        size_score = calculate_size_score(width, height)
+        aspect_score = calculate_aspect_score(width, height)
 
     # Predict category
     category = predict_category(width, height, unique_colors, color_diversity)
@@ -323,31 +323,31 @@ def resize_for_ocr(
     Returns:
         Dict with resize results
     """
-    img = Image.open(input_path)
-    original_width, original_height = img.size
+    with Image.open(input_path) as img:
+        original_width, original_height = img.size
 
-    if original_width <= max_width:
-        # No resize needed, copy file
-        if input_path != output_path:
-            img.save(output_path, quality=95)
-        return {
-            "success": True,
-            "resized": False,
-            "original_width": original_width,
-            "original_height": original_height,
-            "output_width": original_width,
-            "output_height": original_height,
-            "output_path": output_path,
-        }
+        if original_width <= max_width:
+            # No resize needed, copy file
+            if input_path != output_path:
+                img.save(output_path, quality=95)
+            return {
+                "success": True,
+                "resized": False,
+                "original_width": original_width,
+                "original_height": original_height,
+                "output_width": original_width,
+                "output_height": original_height,
+                "output_path": output_path,
+            }
 
-    # Calculate new dimensions preserving aspect ratio
-    scale = max_width / original_width
-    new_width = max_width
-    new_height = int(original_height * scale)
+        # Calculate new dimensions preserving aspect ratio
+        scale = max_width / original_width
+        new_width = max_width
+        new_height = int(original_height * scale)
 
-    # Resize with high quality
-    resized = img.resize((new_width, new_height), Image.Resampling.LANCZOS)
-    resized.save(output_path, quality=95)
+        # Resize with high quality
+        resized = img.resize((new_width, new_height), Image.Resampling.LANCZOS)
+        resized.save(output_path, quality=95)
 
     return {
         "success": True,
@@ -379,42 +379,42 @@ def resize_for_vlm(
     Returns:
         Dict with resize results or skip indication
     """
-    img = Image.open(input_path)
-    original_width, original_height = img.size
-    max_dim = max(original_width, original_height)
+    with Image.open(input_path) as img:
+        original_width, original_height = img.size
+        max_dim = max(original_width, original_height)
 
-    # Check if too small
-    if max_dim < skip_below:
-        return {
-            "success": True,
-            "skipped": True,
-            "skip_reason": f"Image too small: {original_width}x{original_height}",
-            "original_width": original_width,
-            "original_height": original_height,
-        }
+        # Check if too small
+        if max_dim < skip_below:
+            return {
+                "success": True,
+                "skipped": True,
+                "skip_reason": f"Image too small: {original_width}x{original_height}",
+                "original_width": original_width,
+                "original_height": original_height,
+            }
 
-    # Check if resize needed
-    if max_dim <= max_dimension:
-        if input_path != output_path:
-            img.save(output_path, quality=95)
-        return {
-            "success": True,
-            "resized": False,
-            "original_width": original_width,
-            "original_height": original_height,
-            "output_width": original_width,
-            "output_height": original_height,
-            "output_path": output_path,
-        }
+        # Check if resize needed
+        if max_dim <= max_dimension:
+            if input_path != output_path:
+                img.save(output_path, quality=95)
+            return {
+                "success": True,
+                "resized": False,
+                "original_width": original_width,
+                "original_height": original_height,
+                "output_width": original_width,
+                "output_height": original_height,
+                "output_path": output_path,
+            }
 
-    # Calculate new dimensions preserving aspect ratio
-    scale = max_dimension / max_dim
-    new_width = int(original_width * scale)
-    new_height = int(original_height * scale)
+        # Calculate new dimensions preserving aspect ratio
+        scale = max_dimension / max_dim
+        new_width = int(original_width * scale)
+        new_height = int(original_height * scale)
 
-    # Resize with high quality
-    resized = img.resize((new_width, new_height), Image.Resampling.LANCZOS)
-    resized.save(output_path, quality=95)
+        # Resize with high quality
+        resized = img.resize((new_width, new_height), Image.Resampling.LANCZOS)
+        resized.save(output_path, quality=95)
 
     return {
         "success": True,

@@ -7,6 +7,7 @@
 
 import crypto from 'crypto';
 import type Database from 'better-sqlite3';
+import { SCHEMA_VERSION } from '../storage/migrations/schema-definitions.js';
 
 export interface BM25SearchOptions {
   query: string;
@@ -246,12 +247,12 @@ export class BM25SearchService {
 
     this.db.prepare(`
       INSERT INTO fts_index_metadata (id, last_rebuild_at, chunks_indexed, tokenizer, schema_version, content_hash)
-      VALUES (1, ?, ?, 'porter unicode61', 6, ?)
+      VALUES (1, ?, ?, 'porter unicode61', ?, ?)
       ON CONFLICT(id) DO UPDATE SET
         last_rebuild_at = excluded.last_rebuild_at,
         chunks_indexed = excluded.chunks_indexed,
         content_hash = excluded.content_hash
-    `).run(now, count.cnt, contentHash);
+    `).run(now, count.cnt, SCHEMA_VERSION, contentHash);
 
     // Also rebuild VLM FTS if table exists
     const vlmResult = this.rebuildVLMIndex();
@@ -286,11 +287,11 @@ export class BM25SearchService {
     const now = new Date().toISOString();
     this.db.prepare(`
       INSERT INTO fts_index_metadata (id, last_rebuild_at, chunks_indexed, tokenizer, schema_version, content_hash)
-      VALUES (2, ?, ?, 'porter unicode61', 6, NULL)
+      VALUES (2, ?, ?, 'porter unicode61', ?, NULL)
       ON CONFLICT(id) DO UPDATE SET
         last_rebuild_at = excluded.last_rebuild_at,
         chunks_indexed = excluded.chunks_indexed
-    `).run(now, count.cnt);
+    `).run(now, count.cnt, SCHEMA_VERSION);
 
     return {
       vlm_indexed: count.cnt,
