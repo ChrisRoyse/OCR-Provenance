@@ -214,6 +214,82 @@ export function updateDocumentOCRComplete(
 }
 
 /**
+ * Shared cleanup: delete all derived records for a document.
+ *
+ * Handles: vec_embeddings, orphaned image re-queuing, images, embeddings,
+ * chunks, ocr_results, and FTS metadata count updates.
+ *
+ * @returns The number of embedding IDs deleted (for logging)
+ */
+function deleteDerivedRecords(db: Database.Database, documentId: string, caller: string): number {
+  // Get all embedding IDs for this document
+  const embeddingIds = db
+    .prepare('SELECT id FROM embeddings WHERE document_id = ?')
+    .all(documentId) as { id: string }[];
+
+  // Delete from vec_embeddings for each embedding
+  const deleteVecStmt = db.prepare(
+    'DELETE FROM vec_embeddings WHERE embedding_id = ?'
+  );
+  for (const { id: embeddingId } of embeddingIds) {
+    deleteVecStmt.run(embeddingId);
+  }
+
+  // Delete from images (before embeddings due to vlm_embedding_id FK)
+  db.prepare('DELETE FROM images WHERE document_id = ?').run(documentId);
+
+  // Re-queue OTHER documents' images that shared embeddings via VLM dedup.
+  // Setting vlm_status='pending' ensures they get re-processed instead of
+  // silently remaining 'complete' but invisible to search (orphaned).
+  const orphanedImages = db.prepare(`
+    SELECT id, document_id FROM images
+    WHERE vlm_embedding_id IN (SELECT id FROM embeddings WHERE document_id = ?)
+    AND document_id != ?
+  `).all(documentId, documentId) as { id: string; document_id: string }[];
+
+  if (orphanedImages.length > 0) {
+    console.error(
+      `[WARN] ${caller} "${documentId}": re-queuing ${orphanedImages.length} images from other documents ` +
+      `that shared VLM embeddings (document_ids: ${[...new Set(orphanedImages.map(i => i.document_id))].join(', ')})`
+    );
+    db.prepare(`
+      UPDATE images SET vlm_embedding_id = NULL, vlm_status = 'pending'
+      WHERE vlm_embedding_id IN (SELECT id FROM embeddings WHERE document_id = ?)
+      AND document_id != ?
+    `).run(documentId, documentId);
+  }
+
+  // Delete from embeddings
+  db.prepare('DELETE FROM embeddings WHERE document_id = ?').run(documentId);
+
+  // Delete from chunks
+  db.prepare('DELETE FROM chunks WHERE document_id = ?').run(documentId);
+
+  // Delete from ocr_results
+  db.prepare('DELETE FROM ocr_results WHERE document_id = ?').run(documentId);
+
+  // Update FTS metadata counts after chunk/embedding deletion
+  try {
+    const chunkCount = (db.prepare('SELECT COUNT(*) as cnt FROM chunks').get() as { cnt: number }).cnt;
+    db.prepare(`
+      UPDATE fts_index_metadata SET chunks_indexed = ?, last_rebuild_at = ?
+      WHERE id = 1
+    `).run(chunkCount, new Date().toISOString());
+
+    // Update VLM FTS metadata if table exists
+    const vlmCount = (db.prepare("SELECT COUNT(*) as cnt FROM embeddings WHERE image_id IS NOT NULL").get() as { cnt: number }).cnt;
+    db.prepare(`
+      UPDATE fts_index_metadata SET chunks_indexed = ?, last_rebuild_at = ?
+      WHERE id = 2
+    `).run(vlmCount, new Date().toISOString());
+  } catch {
+    // fts_index_metadata may not exist in older schemas - ignore
+  }
+
+  return embeddingIds.length;
+}
+
+/**
  * Delete a document and all related data (CASCADE DELETE)
  *
  * @param db - Database connection
@@ -234,51 +310,7 @@ export function deleteDocument(
     );
   }
 
-  // Get all embedding IDs for this document
-  const embeddingIds = db
-    .prepare('SELECT id FROM embeddings WHERE document_id = ?')
-    .all(id) as { id: string }[];
-
-  // Delete from vec_embeddings for each embedding
-  const deleteVecStmt = db.prepare(
-    'DELETE FROM vec_embeddings WHERE embedding_id = ?'
-  );
-  for (const { id: embeddingId } of embeddingIds) {
-    deleteVecStmt.run(embeddingId);
-  }
-
-  // Delete from images (before embeddings due to vlm_embedding_id FK)
-  db.prepare('DELETE FROM images WHERE document_id = ?').run(id);
-
-  // Re-queue OTHER documents' images that shared embeddings via VLM dedup.
-  // Setting vlm_status='pending' ensures they get re-processed instead of
-  // silently remaining 'complete' but invisible to search (orphaned).
-  const orphanedImages = db.prepare(`
-    SELECT id, document_id FROM images
-    WHERE vlm_embedding_id IN (SELECT id FROM embeddings WHERE document_id = ?)
-    AND document_id != ?
-  `).all(id, id) as { id: string; document_id: string }[];
-
-  if (orphanedImages.length > 0) {
-    console.error(
-      `[WARN] deleteDocument "${id}": re-queuing ${orphanedImages.length} images from other documents ` +
-      `that shared VLM embeddings (document_ids: ${[...new Set(orphanedImages.map(i => i.document_id))].join(', ')})`
-    );
-    db.prepare(`
-      UPDATE images SET vlm_embedding_id = NULL, vlm_status = 'pending'
-      WHERE vlm_embedding_id IN (SELECT id FROM embeddings WHERE document_id = ?)
-      AND document_id != ?
-    `).run(id, id);
-  }
-
-  // Delete from embeddings
-  db.prepare('DELETE FROM embeddings WHERE document_id = ?').run(id);
-
-  // Delete from chunks
-  db.prepare('DELETE FROM chunks WHERE document_id = ?').run(id);
-
-  // Delete from ocr_results
-  db.prepare('DELETE FROM ocr_results WHERE document_id = ?').run(id);
+  deleteDerivedRecords(db, id, 'deleteDocument');
 
   // Delete the document itself BEFORE provenance
   // (document has FK to provenance via provenance_id)
@@ -296,24 +328,6 @@ export function deleteDocument(
   const deleteProvStmt = db.prepare('DELETE FROM provenance WHERE id = ?');
   for (const { id: provId } of provenanceIds) {
     deleteProvStmt.run(provId);
-  }
-
-  // Update FTS metadata counts after chunk/embedding deletion
-  try {
-    const chunkCount = (db.prepare('SELECT COUNT(*) as cnt FROM chunks').get() as { cnt: number }).cnt;
-    db.prepare(`
-      UPDATE fts_index_metadata SET chunks_indexed = ?, last_rebuild_at = ?
-      WHERE id = 1
-    `).run(chunkCount, new Date().toISOString());
-
-    // Update VLM FTS metadata if table exists
-    const vlmCount = (db.prepare("SELECT COUNT(*) as cnt FROM embeddings WHERE image_id IS NOT NULL").get() as { cnt: number }).cnt;
-    db.prepare(`
-      UPDATE fts_index_metadata SET chunks_indexed = ?, last_rebuild_at = ?
-      WHERE id = 2
-    `).run(vlmCount, new Date().toISOString());
-  } catch {
-    // fts_index_metadata may not exist in older schemas - ignore
   }
 
   // Update metadata counts
@@ -338,49 +352,7 @@ export function cleanDocumentDerivedData(db: Database.Database, documentId: stri
     );
   }
 
-  // Get all embedding IDs for this document
-  const embeddingIds = db
-    .prepare('SELECT id FROM embeddings WHERE document_id = ?')
-    .all(documentId) as { id: string }[];
-
-  // Delete from vec_embeddings for each embedding
-  const deleteVecStmt = db.prepare(
-    'DELETE FROM vec_embeddings WHERE embedding_id = ?'
-  );
-  for (const { id: embeddingId } of embeddingIds) {
-    deleteVecStmt.run(embeddingId);
-  }
-
-  // Re-queue OTHER documents' images that shared embeddings via VLM dedup
-  const orphanedImages = db.prepare(`
-    SELECT id, document_id FROM images
-    WHERE vlm_embedding_id IN (SELECT id FROM embeddings WHERE document_id = ?)
-    AND document_id != ?
-  `).all(documentId, documentId) as { id: string; document_id: string }[];
-
-  if (orphanedImages.length > 0) {
-    console.error(
-      `[WARN] cleanDocumentDerivedData "${documentId}": re-queuing ${orphanedImages.length} images from other documents ` +
-      `that shared VLM embeddings (document_ids: ${[...new Set(orphanedImages.map(i => i.document_id))].join(', ')})`
-    );
-    db.prepare(`
-      UPDATE images SET vlm_embedding_id = NULL, vlm_status = 'pending'
-      WHERE vlm_embedding_id IN (SELECT id FROM embeddings WHERE document_id = ?)
-      AND document_id != ?
-    `).run(documentId, documentId);
-  }
-
-  // Delete from images
-  db.prepare('DELETE FROM images WHERE document_id = ?').run(documentId);
-
-  // Delete from embeddings
-  db.prepare('DELETE FROM embeddings WHERE document_id = ?').run(documentId);
-
-  // Delete from chunks
-  db.prepare('DELETE FROM chunks WHERE document_id = ?').run(documentId);
-
-  // Delete from ocr_results
-  db.prepare('DELETE FROM ocr_results WHERE document_id = ?').run(documentId);
+  const embeddingCount = deleteDerivedRecords(db, documentId, 'cleanDocumentDerivedData');
 
   // Delete non-root provenance records (keep DOCUMENT-level provenance at chain_depth=0)
   // root_document_id stores the document's provenance_id, NOT document id
@@ -395,24 +367,7 @@ export function cleanDocumentDerivedData(db: Database.Database, documentId: stri
     deleteProvStmt.run(provId);
   }
 
-  // Update FTS metadata counts after chunk/embedding deletion
-  try {
-    const chunkCount = (db.prepare('SELECT COUNT(*) as cnt FROM chunks').get() as { cnt: number }).cnt;
-    db.prepare(`
-      UPDATE fts_index_metadata SET chunks_indexed = ?, last_rebuild_at = ?
-      WHERE id = 1
-    `).run(chunkCount, new Date().toISOString());
-
-    const vlmCount = (db.prepare("SELECT COUNT(*) as cnt FROM embeddings WHERE image_id IS NOT NULL").get() as { cnt: number }).cnt;
-    db.prepare(`
-      UPDATE fts_index_metadata SET chunks_indexed = ?, last_rebuild_at = ?
-      WHERE id = 2
-    `).run(vlmCount, new Date().toISOString());
-  } catch {
-    // fts_index_metadata may not exist in older schemas - ignore
-  }
-
-  console.error(`[INFO] Cleaned derived data for document ${documentId}: ${embeddingIds.length} embeddings, ${nonRootProvIds.length} provenance records removed`);
+  console.error(`[INFO] Cleaned derived data for document ${documentId}: ${embeddingCount} embeddings, ${nonRootProvIds.length} provenance records removed`);
 }
 
 /**
