@@ -160,6 +160,10 @@ export class DatabaseService {
     return chunkOps.getChunk(this.db, id);
   }
 
+  hasChunksByDocumentId(documentId: string): boolean {
+    return chunkOps.hasChunksByDocumentId(this.db, documentId);
+  }
+
   getChunksByDocumentId(documentId: string): Chunk[] {
     return chunkOps.getChunksByDocumentId(this.db, documentId);
   }

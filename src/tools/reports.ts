@@ -89,17 +89,26 @@ export async function handleEvaluationReport(
     // Get per-document stats
     const documents = db.listDocuments({ limit: 1000 });
     const docStats: DocumentImageStats[] = [];
-    const lowConfidenceImages: LowConfidenceImage[] = [];
     const imageTypeDistribution: Record<string, number> = {};
 
     let totalConfidence = 0;
     let confidenceCount = 0;
 
-    for (const doc of documents) {
-      const images = getImagesByDocument(db.getConnection(), doc.id);
-      const ocrResult = db.getOCRResultByDocumentId(doc.id);
+    // M-10: Prepare per-document image status count query (reuse statement)
+    const docImageCountStmt = db.getConnection().prepare(`
+      SELECT
+        COUNT(*) as total,
+        COUNT(CASE WHEN vlm_status = 'pending' THEN 1 END) as pending,
+        COUNT(CASE WHEN vlm_status = 'failed' THEN 1 END) as failed
+      FROM images WHERE document_id = ?
+    `);
 
-      const completeImages = images.filter(i => i.vlm_status === 'complete');
+    for (const doc of documents) {
+      // M-10: Use vlmStatus filter to only load complete images from SQL
+      const completeImages = getImagesByDocument(db.getConnection(), doc.id, { vlmStatus: 'complete' });
+      const ocrResult = db.getOCRResultByDocumentId(doc.id);
+      const docImageCounts = docImageCountStmt.get(doc.id) as { total: number; pending: number; failed: number };
+
       const confidences = completeImages
         .filter(i => i.vlm_confidence !== null)
         .map(i => i.vlm_confidence as number);
@@ -111,21 +120,6 @@ export async function handleEvaluationReport(
           const imageType = (img.vlm_structured_data as { imageType?: string }).imageType || 'other';
           docImageTypes[imageType] = (docImageTypes[imageType] || 0) + 1;
           imageTypeDistribution[imageType] = (imageTypeDistribution[imageType] || 0) + 1;
-        }
-      }
-
-      // Track low confidence images
-      for (const img of completeImages) {
-        if (img.vlm_confidence !== null && img.vlm_confidence < confidenceThreshold) {
-          lowConfidenceImages.push({
-            image_id: img.id,
-            document_id: doc.id,
-            file_name: doc.file_name,
-            page: img.page_number,
-            confidence: img.vlm_confidence,
-            image_type: (img.vlm_structured_data as { imageType?: string })?.imageType || 'unknown',
-            path: img.extracted_path || 'unknown',
-          });
         }
       }
 
@@ -142,10 +136,10 @@ export async function handleEvaluationReport(
         file_name: doc.file_name,
         page_count: doc.page_count,
         ocr_text_length: ocrResult?.text_length || 0,
-        image_count: images.length,
+        image_count: docImageCounts.total,
         vlm_complete: completeImages.length,
-        vlm_pending: images.filter(i => i.vlm_status === 'pending').length,
-        vlm_failed: images.filter(i => i.vlm_status === 'failed').length,
+        vlm_pending: docImageCounts.pending,
+        vlm_failed: docImageCounts.failed,
         avg_confidence: avgConfidence,
         min_confidence: confidences.length > 0 ? Math.min(...confidences) : 0,
         max_confidence: confidences.length > 0 ? Math.max(...confidences) : 0,
@@ -153,8 +147,20 @@ export async function handleEvaluationReport(
       });
     }
 
-    // Sort low confidence images by confidence
-    lowConfidenceImages.sort((a, b) => a.confidence - b.confidence);
+    // M-10: Direct SQL for low confidence images instead of tracking in per-document loop
+    const lowConfidenceImages = db.getConnection().prepare(`
+      SELECT i.id as image_id, i.document_id, d.file_name, i.page_number as page,
+             i.vlm_confidence as confidence,
+             COALESCE(json_extract(i.vlm_structured_data, '$.imageType'), 'unknown') as image_type,
+             COALESCE(i.extracted_path, 'unknown') as path
+      FROM images i
+      JOIN documents d ON d.id = i.document_id
+      WHERE i.vlm_status = 'complete'
+        AND i.vlm_confidence IS NOT NULL
+        AND i.vlm_confidence < ?
+      ORDER BY i.vlm_confidence ASC
+      LIMIT 50
+    `).all(confidenceThreshold) as LowConfidenceImage[];
 
     // Calculate overall average confidence
     const overallAvgConfidence = confidenceCount > 0
@@ -166,7 +172,7 @@ export async function handleEvaluationReport(
       dbStats,
       imageStats,
       docStats,
-      lowConfidenceImages: lowConfidenceImages.slice(0, 50), // Top 50 lowest
+      lowConfidenceImages, // Already limited to 50 by SQL query
       imageTypeDistribution,
       overallAvgConfidence,
       confidenceThreshold,
@@ -310,38 +316,24 @@ export async function handleQualitySummary(
 
     const imageStats = getImageStats(db.getConnection());
     const dbStats = db.getStats();
-    const documents = db.listDocuments({ limit: 1000 });
 
-    // Calculate confidence stats across all images
-    let totalConfidence = 0;
-    let minConfidence = 1;
-    let maxConfidence = 0;
-    let confidenceCount = 0;
-
-    const confidenceBuckets = {
-      high: 0,      // >= 0.9
-      medium: 0,    // >= 0.7 < 0.9
-      low: 0,       // >= 0.5 < 0.7
-      very_low: 0,  // < 0.5
+    // M-10: SQL aggregation instead of loading all images per document
+    const confStats = db.getConnection().prepare(`
+      SELECT
+        COUNT(*) as cnt,
+        AVG(vlm_confidence) as avg_conf,
+        MIN(vlm_confidence) as min_conf,
+        MAX(vlm_confidence) as max_conf,
+        SUM(CASE WHEN vlm_confidence >= 0.9 THEN 1 ELSE 0 END) as high,
+        SUM(CASE WHEN vlm_confidence >= 0.7 AND vlm_confidence < 0.9 THEN 1 ELSE 0 END) as medium,
+        SUM(CASE WHEN vlm_confidence >= 0.5 AND vlm_confidence < 0.7 THEN 1 ELSE 0 END) as low,
+        SUM(CASE WHEN vlm_confidence < 0.5 THEN 1 ELSE 0 END) as very_low
+      FROM images
+      WHERE vlm_status = 'complete' AND vlm_confidence IS NOT NULL
+    `).get() as {
+      cnt: number; avg_conf: number | null; min_conf: number | null; max_conf: number | null;
+      high: number; medium: number; low: number; very_low: number;
     };
-
-    for (const doc of documents) {
-      const images = getImagesByDocument(db.getConnection(), doc.id);
-      for (const img of images) {
-        if (img.vlm_status === 'complete' && img.vlm_confidence !== null) {
-          const conf = img.vlm_confidence;
-          totalConfidence += conf;
-          confidenceCount++;
-          minConfidence = Math.min(minConfidence, conf);
-          maxConfidence = Math.max(maxConfidence, conf);
-
-          if (conf >= 0.9) confidenceBuckets.high++;
-          else if (conf >= 0.7) confidenceBuckets.medium++;
-          else if (conf >= 0.5) confidenceBuckets.low++;
-          else confidenceBuckets.very_low++;
-        }
-      }
-    }
 
     return formatResponse(successResult({
       documents: {
@@ -364,10 +356,15 @@ export async function handleQualitySummary(
           : '0%',
       },
       vlm_confidence: {
-        average: confidenceCount > 0 ? totalConfidence / confidenceCount : null,
-        min: confidenceCount > 0 ? minConfidence : null,
-        max: confidenceCount > 0 ? maxConfidence : null,
-        distribution: confidenceBuckets,
+        average: confStats.cnt > 0 ? confStats.avg_conf : null,
+        min: confStats.cnt > 0 ? confStats.min_conf : null,
+        max: confStats.cnt > 0 ? confStats.max_conf : null,
+        distribution: {
+          high: confStats.high || 0,
+          medium: confStats.medium || 0,
+          low: confStats.low || 0,
+          very_low: confStats.very_low || 0,
+        },
       },
     }));
 

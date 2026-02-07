@@ -290,3 +290,23 @@ export function resetState(): void {
   _dbGeneration = 0;
   state.config = { ...defaultConfig };
 }
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// PROCESS EXIT CLEANUP
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/**
+ * L-5: Clean up database connections on process exit.
+ * Ensures WAL/SHM files are properly checkpointed.
+ */
+process.on('exit', () => {
+  if (state.currentDatabase) {
+    try {
+      state.currentDatabase.close();
+    } catch {
+      // Ignore errors during exit cleanup
+    }
+    state.currentDatabase = null;
+    state.currentDatabaseName = null;
+  }
+});

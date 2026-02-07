@@ -334,7 +334,7 @@ def extract_images(
                 )
                 continue
 
-            # Get dimensions using PIL
+            # Get dimensions using PIL (C-1: close pil_img after use)
             try:
                 pil_img = Image.open(io.BytesIO(img_bytes))
                 width, height = pil_img.size
@@ -348,6 +348,7 @@ def extract_images(
 
             # Skip images smaller than min_size
             if width < min_size or height < min_size:
+                pil_img.close()
                 continue
 
             # Estimate page from paragraph position
@@ -374,11 +375,15 @@ def extract_images(
                     if converted:
                         save_ext = "png"
                 # Fallback to Pillow for simpler formats (BMP, TIFF)
+                # M-6: close RGBA intermediate and BytesIO buffer
                 if not converted:
                     try:
                         buf = io.BytesIO()
-                        pil_img.convert("RGBA").save(buf, format="PNG")
+                        rgba_img = pil_img.convert("RGBA")
+                        rgba_img.save(buf, format="PNG")
+                        rgba_img.close()
                         img_bytes = buf.getvalue()
+                        buf.close()
                         save_ext = "png"
                         converted = True
                     except Exception:
@@ -400,6 +405,9 @@ def extract_images(
                     except Exception:
                         pass  # Keep original dimensions if re-read fails
 
+            # C-1: close pil_img now that dimensions and conversion are done
+            pil_img.close()
+
             # Per-page image index (matches PDF extractor pattern)
             img_idx = page_image_counts.get(page, 0)
             page_image_counts[page] = img_idx + 1
@@ -420,6 +428,10 @@ def extract_images(
                 )
                 continue
 
+            img_size = len(img_bytes)
+            # M-7: free img_bytes after writing to disk
+            del img_bytes
+
             images.append({
                 "page": page,
                 "index": img_idx,
@@ -428,7 +440,7 @@ def extract_images(
                 "height": height,
                 "bbox": bbox,
                 "path": str(filepath.absolute()),
-                "size": len(img_bytes),
+                "size": img_size,
             })
             count += 1
 

@@ -94,6 +94,8 @@ export interface DatabaseVerificationResult extends VerificationResult {
   images_verified: number;
   vlm_descriptions_verified: number;
   duration_ms: number;
+  /** Number of failed items beyond the MAX_FAILED_ITEMS cap (H-6) */
+  failed_overflow: number;
 }
 
 /**
@@ -231,12 +233,15 @@ export class ProvenanceVerifier {
 
     const allProvenance = this.getAllProvenance();
 
+    // H-6: Cap failedItems to prevent unbounded memory growth
+    const MAX_FAILED_ITEMS = 1000;
     const failedItems: Array<{
       id: string;
       expected_hash: string;
       computed_hash: string;
       type: ProvenanceType;
     }> = [];
+    let failedOverflow = 0;
 
     let hashesVerified = 0;
     let hashesFailed = 0;
@@ -277,21 +282,29 @@ export class ProvenanceVerifier {
           hashesVerified++;
         } else {
           hashesFailed++;
-          failedItems.push({
-            id: record.id,
-            expected_hash: result.expected_hash,
-            computed_hash: result.computed_hash,
-            type: record.type,
-          });
+          if (failedItems.length < MAX_FAILED_ITEMS) {
+            failedItems.push({
+              id: record.id,
+              expected_hash: result.expected_hash,
+              computed_hash: result.computed_hash,
+              type: record.type,
+            });
+          } else {
+            failedOverflow++;
+          }
         }
       } catch (error) {
         hashesFailed++;
-        failedItems.push({
-          id: record.id,
-          expected_hash: record.content_hash,
-          computed_hash: 'ERROR: ' + (error instanceof Error ? error.message : 'Unknown error'),
-          type: record.type,
-        });
+        if (failedItems.length < MAX_FAILED_ITEMS) {
+          failedItems.push({
+            id: record.id,
+            expected_hash: record.content_hash,
+            computed_hash: 'ERROR: ' + (error instanceof Error ? error.message : 'Unknown error'),
+            type: record.type,
+          });
+        } else {
+          failedOverflow++;
+        }
       }
     }
 
@@ -312,6 +325,7 @@ export class ProvenanceVerifier {
       images_verified: imagesVerified,
       vlm_descriptions_verified: vlmDescriptionsVerified,
       duration_ms: durationMs,
+      failed_overflow: failedOverflow,
     };
   }
 
@@ -581,10 +595,15 @@ export class ProvenanceVerifier {
    * Get all provenance records ordered by chain_depth
    */
   private getAllProvenance(): ProvenanceRecord[] {
-    const rows = this.rawDb.prepare(
+    // H-6: Use iterate() to avoid double-allocation (.all() + .map())
+    const records: ProvenanceRecord[] = [];
+    const stmt = this.rawDb.prepare(
       'SELECT * FROM provenance ORDER BY chain_depth ASC'
-    ).all() as ProvenanceRow[];
-    return rows.map(row => rowToProvenance(row));
+    );
+    for (const row of stmt.iterate() as Iterable<ProvenanceRow>) {
+      records.push(rowToProvenance(row));
+    }
+    return records;
   }
 
   /**

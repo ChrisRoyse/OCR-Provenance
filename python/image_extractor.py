@@ -125,110 +125,120 @@ def extract_images(
     errors: list[str] = []
 
     try:
-        doc = fitz.open(pdf_path)
-        count = 0
+        with fitz.open(pdf_path) as doc:
+            count = 0
 
-        for page_num in range(len(doc)):
-            if count >= max_images:
-                break
-
-            page = doc[page_num]
-            image_list = page.get_images(full=True)
-
-            for img_idx, img_info in enumerate(image_list):
+            for page_num in range(len(doc)):
                 if count >= max_images:
                     break
 
-                xref = img_info[0]
+                page = doc[page_num]
+                image_list = page.get_images(full=True)
 
-                try:
-                    # Extract image data
-                    base = doc.extract_image(xref)
-                    img_bytes = base["image"]
-                    ext = base["ext"]
+                for img_idx, img_info in enumerate(image_list):
+                    if count >= max_images:
+                        break
 
-                    # Filter by format if specified
-                    if formats and ext.lower() not in [f.lower() for f in formats]:
-                        continue
+                    xref = img_info[0]
 
-                    # Get dimensions using PIL
                     try:
-                        pil_img = Image.open(io.BytesIO(img_bytes))
-                        width, height = pil_img.size
+                        # Extract image data
+                        base = doc.extract_image(xref)
+                        img_bytes = base["image"]
+                        ext = base["ext"]
+
+                        # Filter by format if specified
+                        if formats and ext.lower() not in [f.lower() for f in formats]:
+                            continue
+
+                        # Get dimensions using PIL (C-1: close pil_img after use)
+                        try:
+                            pil_img = Image.open(io.BytesIO(img_bytes))
+                            width, height = pil_img.size
+                        except Exception as e:
+                            errors.append(f"Page {page_num + 1}, image {img_idx}: Failed to read dimensions: {e}")
+                            continue
+
+                        # Skip images smaller than min_size
+                        if width < min_size or height < min_size:
+                            pil_img.close()
+                            continue
+
+                        # Get bounding box on page
+                        rects = page.get_image_rects(xref)
+                        if rects and len(rects) > 0:
+                            r = rects[0]
+                            bbox = {
+                                "x": float(r.x0),
+                                "y": float(r.y0),
+                                "width": float(r.width),
+                                "height": float(r.height)
+                            }
+                        else:
+                            # Fallback: use image dimensions as bbox
+                            bbox = {
+                                "x": 0.0,
+                                "y": 0.0,
+                                "width": float(width),
+                                "height": float(height)
+                            }
+
+                        # Convert non-native formats to PNG for VLM compatibility
+                        save_ext = ext.lower()
+                        if save_ext not in GEMINI_NATIVE_FORMATS:
+                            converted = False
+                            # For EMF/WMF: use inkscape
+                            if not converted and save_ext in ("emf", "wmf"):
+                                converted, img_bytes = _convert_with_inkscape(
+                                    img_bytes, save_ext,
+                                    f"p{page_num+1}_i{img_idx}"
+                                )
+                                if converted:
+                                    save_ext = "png"
+                            # Fallback to Pillow for simpler formats (BMP, TIFF)
+                            # M-6: close RGBA intermediate and BytesIO buffer
+                            if not converted:
+                                try:
+                                    buf = io.BytesIO()
+                                    rgba_img = pil_img.convert("RGBA")
+                                    rgba_img.save(buf, format="PNG")
+                                    rgba_img.close()
+                                    img_bytes = buf.getvalue()
+                                    buf.close()
+                                    save_ext = "png"
+                                except Exception:
+                                    pass
+
+                        # C-1: close pil_img now that we have dimensions and conversion done
+                        pil_img.close()
+
+                        # Generate filename: p001_i000.png
+                        filename = f"p{page_num + 1:03d}_i{img_idx:03d}.{save_ext}"
+                        filepath = output / filename
+
+                        # Save image
+                        with open(filepath, "wb") as f:
+                            f.write(img_bytes)
+
+                        img_size = len(img_bytes)
+                        # M-7: free img_bytes after writing to disk
+                        del img_bytes
+
+                        images.append({
+                            "page": page_num + 1,  # 1-indexed
+                            "index": img_idx,
+                            "format": save_ext,
+                            "width": width,
+                            "height": height,
+                            "bbox": bbox,
+                            "path": str(filepath.absolute()),
+                            "size": img_size
+                        })
+                        count += 1
+
                     except Exception as e:
-                        errors.append(f"Page {page_num + 1}, image {img_idx}: Failed to read dimensions: {e}")
+                        errors.append(f"Page {page_num + 1}, image {img_idx}: {str(e)}")
                         continue
-
-                    # Skip images smaller than min_size
-                    if width < min_size or height < min_size:
-                        continue
-
-                    # Get bounding box on page
-                    rects = page.get_image_rects(xref)
-                    if rects and len(rects) > 0:
-                        r = rects[0]
-                        bbox = {
-                            "x": float(r.x0),
-                            "y": float(r.y0),
-                            "width": float(r.width),
-                            "height": float(r.height)
-                        }
-                    else:
-                        # Fallback: use image dimensions as bbox
-                        bbox = {
-                            "x": 0.0,
-                            "y": 0.0,
-                            "width": float(width),
-                            "height": float(height)
-                        }
-
-                    # Convert non-native formats to PNG for VLM compatibility
-                    save_ext = ext.lower()
-                    if save_ext not in GEMINI_NATIVE_FORMATS:
-                        converted = False
-                        # For EMF/WMF: use inkscape
-                        if not converted and save_ext in ("emf", "wmf"):
-                            converted, img_bytes = _convert_with_inkscape(
-                                img_bytes, save_ext,
-                                f"p{page_num+1}_i{img_idx}"
-                            )
-                            if converted:
-                                save_ext = "png"
-                        # Fallback to Pillow for simpler formats (BMP, TIFF)
-                        if not converted:
-                            try:
-                                buf = io.BytesIO()
-                                pil_img.convert("RGBA").save(buf, format="PNG")
-                                img_bytes = buf.getvalue()
-                                save_ext = "png"
-                            except Exception:
-                                pass
-
-                    # Generate filename: p001_i000.png
-                    filename = f"p{page_num + 1:03d}_i{img_idx:03d}.{save_ext}"
-                    filepath = output / filename
-
-                    # Save image
-                    with open(filepath, "wb") as f:
-                        f.write(img_bytes)
-
-                    images.append({
-                        "page": page_num + 1,  # 1-indexed
-                        "index": img_idx,
-                        "format": save_ext,
-                        "width": width,
-                        "height": height,
-                        "bbox": bbox,
-                        "path": str(filepath.absolute()),
-                        "size": len(img_bytes)
-                    })
-                    count += 1
-
-                except Exception as e:
-                    errors.append(f"Page {page_num + 1}, image {img_idx}: {str(e)}")
-                    continue
-
-        doc.close()
 
         result = {
             "success": True,

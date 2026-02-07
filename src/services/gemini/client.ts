@@ -319,7 +319,6 @@ export class GeminiClient {
    * Create FileRef from a file path
    */
   static fileRefFromPath(filePath: string): FileRef {
-    const buffer = fs.readFileSync(filePath);
     const ext = path.extname(filePath).toLowerCase().slice(1);
 
     const mimeTypes: Record<string, AllowedMimeType> = {
@@ -340,15 +339,22 @@ export class GeminiClient {
       );
     }
 
-    if (buffer.length > MAX_FILE_SIZE) {
-      throw new Error(`File too large: ${buffer.length} bytes. Max: ${MAX_FILE_SIZE} (20MB)`);
+    // C-2 fix: Use block scope so buffer is eligible for GC before return.
+    // Without this, buffer (raw bytes) and data (base64, 33% larger) coexist
+    // in the same scope, causing ~2.33x file size peak memory per call.
+    let sizeBytes: number;
+    let data: string;
+    {
+      const buffer = fs.readFileSync(filePath);
+      if (buffer.length > MAX_FILE_SIZE) {
+        throw new Error(`File too large: ${buffer.length} bytes. Max: ${MAX_FILE_SIZE} (20MB)`);
+      }
+      sizeBytes = buffer.length;
+      data = buffer.toString('base64');
+      // buffer goes out of scope here, eligible for GC
     }
 
-    return {
-      mimeType,
-      data: buffer.toString('base64'),
-      sizeBytes: buffer.length,
-    };
+    return { mimeType, data, sizeBytes };
   }
 
   /**
@@ -363,11 +369,12 @@ export class GeminiClient {
       throw new Error(`File too large: ${buffer.length} bytes. Max: ${MAX_FILE_SIZE} (20MB)`);
     }
 
-    return {
-      mimeType,
-      data: buffer.toString('base64'),
-      sizeBytes: buffer.length,
-    };
+    // C-2 fix: Capture sizeBytes before base64 conversion so callers who
+    // release their buffer reference after this call benefit from earlier GC.
+    const sizeBytes = buffer.length;
+    const data = buffer.toString('base64');
+
+    return { mimeType, data, sizeBytes };
   }
 
   /**
