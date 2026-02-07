@@ -66,9 +66,14 @@ export interface DatabaseServices {
 }
 
 /**
+ * Cached VectorService instance - cleared on database change
+ */
+let _cachedVectorService: VectorService | null = null;
+
+/**
  * Require database to be selected - FAIL FAST if not
  *
- * @returns Database service and vector service instances
+ * @returns Database service and vector service instances (VectorService is cached)
  * @throws MCPError with DATABASE_NOT_SELECTED if no database is selected
  */
 export function requireDatabase(): DatabaseServices {
@@ -76,8 +81,10 @@ export function requireDatabase(): DatabaseServices {
     throw databaseNotSelectedError();
   }
 
-  const vector = new VectorService(state.currentDatabase.getConnection());
-  return { db: state.currentDatabase, vector };
+  if (!_cachedVectorService) {
+    _cachedVectorService = new VectorService(state.currentDatabase.getConnection());
+  }
+  return { db: state.currentDatabase, vector: _cachedVectorService };
 }
 
 /**
@@ -115,6 +122,7 @@ export function selectDatabase(name: string, storagePath?: string): void {
     state.currentDatabase.close();
     state.currentDatabase = null;
     state.currentDatabaseName = null;
+    _cachedVectorService = null;
   }
 
   // Verify database exists - FAIL FAST
@@ -204,6 +212,7 @@ export function clearDatabase(): void {
     state.currentDatabase.close();
     state.currentDatabase = null;
     state.currentDatabaseName = null;
+    _cachedVectorService = null;
   }
 }
 
@@ -248,5 +257,6 @@ export function getDefaultStoragePath(): string {
  */
 export function resetState(): void {
   clearDatabase();
+  _cachedVectorService = null;
   state.config = { ...defaultConfig };
 }

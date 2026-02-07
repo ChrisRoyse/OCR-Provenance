@@ -142,7 +142,9 @@ export async function handleExtractImages(
       provenance_id: null,
       block_type: null,
       is_header_footer: false,
-      content_hash: null,
+      content_hash: img.path && fs.existsSync(img.path)
+        ? computeHash(readFileSync(img.path))
+        : null,
     }));
 
     // Store in database
@@ -157,7 +159,7 @@ export async function handleExtractImages(
           source_type: 'IMAGE_EXTRACTION',
           source_id: ocrResult.provenance_id,
           root_document_id: doc.provenance_id,
-          content_hash: img.content_hash ?? (img.extracted_path && fs.existsSync(img.extracted_path) ? computeHash(readFileSync(img.extracted_path)) : computeHash(img.id)),
+          content_hash: img.content_hash ?? computeHash(img.id),
           source_path: img.extracted_path ?? undefined,
           processor: `${fileType}-file-extraction`,
           processor_version: '1.0.0',
@@ -312,7 +314,9 @@ export async function handleExtractImagesBatch(
           provenance_id: null,
           block_type: null,
           is_header_footer: false,
-          content_hash: null,
+          content_hash: img.path && fs.existsSync(img.path)
+            ? computeHash(readFileSync(img.path))
+            : null,
         }));
 
         if (imageRefs.length > 0) {
@@ -330,7 +334,7 @@ export async function handleExtractImagesBatch(
                   source_type: 'IMAGE_EXTRACTION',
                   source_id: ocrProv,
                   root_document_id: docProv,
-                  content_hash: img.content_hash ?? (img.extracted_path && fs.existsSync(img.extracted_path) ? computeHash(readFileSync(img.extracted_path)) : computeHash(img.id)),
+                  content_hash: img.content_hash ?? computeHash(img.id),
                   source_path: img.extracted_path ?? undefined,
                   processor: `${doc.file_type}-file-extraction`,
                   processor_version: '1.0.0',

@@ -15,7 +15,7 @@ import Database from 'better-sqlite3';
 import { unlinkSync } from 'fs';
 import { v4 as uuidv4 } from 'uuid';
 
-import { VLMService, type VLMAnalysisResult, type ImageAnalysis } from './service.js';
+import { VLMService, getVLMService, type VLMAnalysisResult, type ImageAnalysis } from './service.js';
 import {
   getImage,
   getImagesByDocument,
@@ -136,7 +136,7 @@ export class VLMPipeline {
     }
   ) {
     this.db = db;
-    this.vlm = options.vlmService ?? new VLMService();
+    this.vlm = options.vlmService ?? getVLMService();
     this.embeddingClient = options.embeddingClient ?? getEmbeddingClient();
     this.config = { ...DEFAULT_CONFIG, ...options.config };
     this.dbService = options.dbService ?? null;
@@ -243,13 +243,9 @@ export class VLMPipeline {
   private async processBatch(images: ImageReference[]): Promise<ProcessingResult[]> {
     const RATE_LIMIT_DELAY_MS = 1000; // 1 second between API calls (paid tier: 1000 RPM)
 
-    // Mark all as processing
+    // Mark all as processing (returns false if image not in 'pending' state)
     for (const img of images) {
-      try {
-        setImageProcessing(this.db, img.id);
-      } catch {
-        // Ignore if already processing
-      }
+      setImageProcessing(this.db, img.id);
     }
 
     // Process SEQUENTIALLY with rate limiting (no concurrency)
