@@ -324,7 +324,7 @@ export class ImageOptimizer {
           if (code !== 0) {
             resolve({
               success: false,
-              error: `Python script exited with code ${code}: ${stderr || stdout}`,
+              error: `Python script exited with code ${code}: ${(stderr || stdout).substring(0, 2000)}`,
             } as T);
           } else {
             resolve({
