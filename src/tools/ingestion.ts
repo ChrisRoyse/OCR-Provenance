@@ -162,7 +162,8 @@ function extractContextText(ocrText: string, pageCount: number, targetPage: numb
   const safePage = Math.max(1, Math.min(targetPage, safePageCount));
 
   // Estimate position in text for this page
-  const estimatedPosition = Math.floor(((safePage - 1) / safePageCount) * textLength);
+  // Use (safePageCount - 1) as denominator so last page maps to end of text
+  const estimatedPosition = Math.floor(((safePage - 1) / Math.max(1, safePageCount - 1)) * textLength);
 
   // Take ±500 char window
   const windowStart = Math.max(0, estimatedPosition - 500);

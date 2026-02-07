@@ -349,7 +349,13 @@ export function updateImageProvenance(
   id: string,
   provenanceId: string
 ): void {
-  db.prepare('UPDATE images SET provenance_id = ? WHERE id = ?').run(provenanceId, id);
+  const result = db.prepare('UPDATE images SET provenance_id = ? WHERE id = ?').run(provenanceId, id);
+  if (result.changes === 0) {
+    throw new DatabaseError(
+      `Image "${id}" not found`,
+      DatabaseErrorCode.IMAGE_NOT_FOUND
+    );
+  }
 }
 
 /**

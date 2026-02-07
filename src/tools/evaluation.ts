@@ -19,6 +19,15 @@ import { MCPError } from '../server/errors.js';
 import { formatResponse, handleError, type ToolResponse, type ToolDefinition } from './shared.js';
 import { validateInput } from '../utils/validation.js';
 import { GeminiClient } from '../services/gemini/client.js';
+
+// Module-level singleton for GeminiClient (shared across evaluation calls)
+let _sharedGeminiClient: GeminiClient | null = null;
+function getSharedGeminiClient(): GeminiClient {
+  if (!_sharedGeminiClient) {
+    _sharedGeminiClient = new GeminiClient();
+  }
+  return _sharedGeminiClient;
+}
 import { UNIVERSAL_EVALUATION_PROMPT, UNIVERSAL_EVALUATION_SCHEMA } from '../services/vlm/prompts.js';
 import {
   getImage,
@@ -102,8 +111,8 @@ export async function handleEvaluateSingle(
     const startTime = Date.now();
 
     try {
-      // Create Gemini client and analyze with universal prompt
-      const client = new GeminiClient();
+      // Use shared Gemini client (singleton) for rate limiter/config reuse
+      const client = getSharedGeminiClient();
       const fileRef = GeminiClient.fileRefFromPath(image.extracted_path);
 
       const response = await client.analyzeImage(
@@ -220,9 +229,11 @@ export async function handleEvaluateDocument(
       );
     }
 
-    // Get all pending images for this document
+    // Get all pending images for this document, excluding header/footer decorative images
     const images = getImagesByDocument(db.getConnection(), documentId);
-    const pendingImages = images.filter(img => img.vlm_status === 'pending');
+    const pendingImages = images.filter(img =>
+      img.vlm_status === 'pending' && !img.is_header_footer
+    );
 
     if (pendingImages.length === 0) {
       return formatResponse(successResult({

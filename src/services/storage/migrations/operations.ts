@@ -409,10 +409,21 @@ function migrateV3ToV4(db: Database.Database): void {
  */
 function migrateV4ToV5(db: Database.Database): void {
   db.exec('PRAGMA foreign_keys = OFF');
+
+  // Check existing columns for idempotency (safe on retry after partial failure)
+  const columns = db.prepare('PRAGMA table_info(images)').all() as { name: string }[];
+  const columnNames = new Set(columns.map(c => c.name));
+
   const transaction = db.transaction(() => {
-    db.exec('ALTER TABLE images ADD COLUMN block_type TEXT');
-    db.exec('ALTER TABLE images ADD COLUMN is_header_footer INTEGER NOT NULL DEFAULT 0');
-    db.exec('ALTER TABLE images ADD COLUMN content_hash TEXT');
+    if (!columnNames.has('block_type')) {
+      db.exec('ALTER TABLE images ADD COLUMN block_type TEXT');
+    }
+    if (!columnNames.has('is_header_footer')) {
+      db.exec('ALTER TABLE images ADD COLUMN is_header_footer INTEGER NOT NULL DEFAULT 0');
+    }
+    if (!columnNames.has('content_hash')) {
+      db.exec('ALTER TABLE images ADD COLUMN content_hash TEXT');
+    }
     db.exec('CREATE INDEX IF NOT EXISTS idx_images_content_hash ON images(content_hash)');
   });
 
@@ -445,35 +456,67 @@ function migrateV4ToV5(db: Database.Database): void {
  */
 function migrateV5ToV6(db: Database.Database): void {
   try {
-    // 1. DDL: Recreate fts_index_metadata without CHECK (id = 1) constraint
-    // DDL operations auto-commit in SQLite WAL mode, so they stay outside the transaction.
-    db.exec('DROP TABLE IF EXISTS fts_index_metadata_old');
-    db.exec('ALTER TABLE fts_index_metadata RENAME TO fts_index_metadata_old');
-    db.exec(`
-      CREATE TABLE fts_index_metadata (
-        id INTEGER PRIMARY KEY,
-        last_rebuild_at TEXT,
-        chunks_indexed INTEGER NOT NULL DEFAULT 0,
-        tokenizer TEXT NOT NULL DEFAULT 'porter unicode61',
-        schema_version INTEGER NOT NULL DEFAULT 7,
-        content_hash TEXT
-      )
-    `);
+    // Check if DDL phase already completed (safe on retry after partial failure)
+    const vlmFtsExists = db.prepare(
+      "SELECT name FROM sqlite_master WHERE type='table' AND name='vlm_fts'"
+    ).get();
+    const newMetadataExists = db.prepare(
+      "SELECT name FROM sqlite_master WHERE type='table' AND name='fts_index_metadata'"
+    ).get();
+    const oldBackupExists = db.prepare(
+      "SELECT name FROM sqlite_master WHERE type='table' AND name='fts_index_metadata_old'"
+    ).get();
 
-    // 2. DDL: Create VLM FTS5 virtual table
-    db.exec(CREATE_VLM_FTS_TABLE);
+    if (!vlmFtsExists) {
+      // DDL phase not yet completed -- run it
 
-    // 3. DDL: Create VLM FTS sync triggers
-    for (const trigger of CREATE_VLM_FTS_TRIGGERS) {
-      db.exec(trigger);
+      // Only rename if the backup doesn't already exist from a previous interrupted run
+      if (!oldBackupExists && newMetadataExists) {
+        db.exec('ALTER TABLE fts_index_metadata RENAME TO fts_index_metadata_old');
+      }
+
+      // Create new metadata table (without CHECK (id = 1) constraint)
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS fts_index_metadata (
+          id INTEGER PRIMARY KEY,
+          last_rebuild_at TEXT,
+          chunks_indexed INTEGER NOT NULL DEFAULT 0,
+          tokenizer TEXT NOT NULL DEFAULT 'porter unicode61',
+          schema_version INTEGER NOT NULL DEFAULT 7,
+          content_hash TEXT
+        )
+      `);
+
+      // Create VLM FTS5 virtual table
+      db.exec(CREATE_VLM_FTS_TABLE);
+
+      // Create VLM FTS sync triggers
+      for (const trigger of CREATE_VLM_FTS_TRIGGERS) {
+        db.exec(trigger);
+      }
     }
 
-    // 4. DML operations wrapped in a transaction for atomicity
+    // DML phase: always safe to retry (uses INSERT OR IGNORE, checks before DROP)
     db.exec('BEGIN TRANSACTION');
     try {
-      // Copy existing data from old metadata table
-      db.exec('INSERT INTO fts_index_metadata SELECT * FROM fts_index_metadata_old');
-      db.exec('DROP TABLE fts_index_metadata_old');
+      // Copy data from old table if it still exists and new table needs it
+      const oldStillExists = db.prepare(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='fts_index_metadata_old'"
+      ).get();
+
+      if (oldStillExists) {
+        // Only copy if new table doesn't already have the data (id=1 row)
+        const hasChunkMetadata = db.prepare(
+          'SELECT id FROM fts_index_metadata WHERE id = 1'
+        ).get();
+
+        if (!hasChunkMetadata) {
+          db.exec('INSERT OR IGNORE INTO fts_index_metadata SELECT * FROM fts_index_metadata_old');
+        }
+
+        // Safe to drop backup now that data is in the new table
+        db.exec('DROP TABLE fts_index_metadata_old');
+      }
 
       // Insert VLM FTS metadata row (id=2)
       const now = new Date().toISOString();
@@ -488,10 +531,17 @@ function migrateV5ToV6(db: Database.Database): void {
       ).get() as { cnt: number };
 
       if (vlmCount.cnt > 0) {
-        db.exec(`
-          INSERT INTO vlm_fts(rowid, original_text)
-          SELECT rowid, original_text FROM embeddings WHERE image_id IS NOT NULL
-        `);
+        // Only populate if not already done (check FTS row count)
+        const ftsCount = db.prepare(
+          "SELECT COUNT(*) as cnt FROM vlm_fts"
+        ).get() as { cnt: number };
+
+        if (ftsCount.cnt === 0) {
+          db.exec(`
+            INSERT INTO vlm_fts(rowid, original_text)
+            SELECT rowid, original_text FROM embeddings WHERE image_id IS NOT NULL
+          `);
+        }
 
         // Update VLM FTS metadata with count
         db.prepare(

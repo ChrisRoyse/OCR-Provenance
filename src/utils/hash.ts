@@ -105,6 +105,7 @@ export async function hashFile(filePath: string): Promise<string> {
     });
 
     stream.on('error', (error: NodeJS.ErrnoException) => {
+      stream.destroy();
       if (error.code === 'ENOENT') {
         reject(new Error(`File not found: ${filePath}`));
       } else if (error.code === 'EACCES') {

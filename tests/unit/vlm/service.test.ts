@@ -97,7 +97,7 @@ describe('VLMService', () => {
 
       expect(mockFileRefFromPath).toHaveBeenCalledWith('/path/to/image.png');
       expect(mockClient.analyzeImage).toHaveBeenCalled();
-      expect(result.success === undefined || result).toBeDefined();
+      expect(result.description).toBeDefined();
       expect(result.description).toContain('medical laboratory report');
       expect(result.analysis.imageType).toBe('medical_document');
       expect(result.analysis.confidence).toBe(0.92);

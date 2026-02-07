@@ -250,6 +250,14 @@ export function deleteDocument(
   // Delete from images (before embeddings due to vlm_embedding_id FK)
   db.prepare('DELETE FROM images WHERE document_id = ?').run(id);
 
+  // Nullify shared vlm_embedding_id references in OTHER documents' images
+  // (copyVLMResult dedup shares embedding IDs across documents)
+  db.prepare(`
+    UPDATE images SET vlm_embedding_id = NULL
+    WHERE vlm_embedding_id IN (SELECT id FROM embeddings WHERE document_id = ?)
+    AND document_id != ?
+  `).run(id, id);
+
   // Delete from embeddings
   db.prepare('DELETE FROM embeddings WHERE document_id = ?').run(id);
 

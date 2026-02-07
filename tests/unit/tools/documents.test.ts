@@ -941,13 +941,14 @@ describe('Edge Cases', () => {
   });
 
   describe('Edge Case 6: Sort Order Edge Cases', () => {
-    it.skipIf(!sqliteVecAvailable)('list sorts by file_size ascending', async () => {
+    it.skipIf(!sqliteVecAvailable)('list returns documents in created_at descending order', async () => {
       const db = DatabaseService.create(dbName, undefined, tempDir);
       state.currentDatabase = db;
       state.currentDatabaseName = dbName;
 
-      // Insert documents (file_size is fixed at 1000 in insertTestDocument)
       insertTestDocument(db, uuidv4(), 'doc1.txt', '/test/doc1.txt');
+      // Small delay to ensure different timestamps
+      await new Promise(resolve => setTimeout(resolve, 10));
       insertTestDocument(db, uuidv4(), 'doc2.txt', '/test/doc2.txt');
 
       const response = await handleDocumentList({});
@@ -956,6 +957,9 @@ describe('Edge Cases', () => {
       expect(result.success).toBe(true);
       const documents = result.data?.documents as Array<Record<string, unknown>>;
       expect(documents).toHaveLength(2);
+      // Default sort is created_at DESC, so doc2 (newer) should come first
+      expect(documents[0].file_name).toBe('doc2.txt');
+      expect(documents[1].file_name).toBe('doc1.txt');
     });
 
     it.skipIf(!sqliteVecAvailable)('list sorts by created_at descending (default)', async () => {
