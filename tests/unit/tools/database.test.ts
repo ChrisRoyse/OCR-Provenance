@@ -198,6 +198,7 @@ describe('handleDatabaseCreate', () => {
     const result = parseResponse(response);
 
     expect(result.success).toBe(false);
+    expect(result.error?.category).toBe('INTERNAL_ERROR');
   });
 });
 
@@ -349,6 +350,7 @@ describe('handleDatabaseSelect', () => {
     const result = parseResponse(response);
 
     expect(result.success).toBe(false);
+    expect(result.error?.category).toBe('INTERNAL_ERROR');
   });
 });
 
@@ -492,6 +494,7 @@ describe('handleDatabaseDelete', () => {
     const result = parseResponse(response);
 
     expect(result.success).toBe(false);
+    expect(result.error?.category).toBe('INTERNAL_ERROR');
 
     // PHYSICAL VERIFICATION: File still exists
     const dbPath = join(tempDir, `${name}.db`);
@@ -585,8 +588,9 @@ describe('Edge Cases', () => {
       const response = await handleDatabaseDelete({ database_name: name, confirm: false as never });
       const result = parseResponse(response);
 
-      // AFTER: Throws VALIDATION_ERROR
+      // AFTER: confirm: false fails z.literal(true) Zod validation -> INTERNAL_ERROR
       expect(result.success).toBe(false);
+      expect(result.error?.category).toBe('INTERNAL_ERROR');
 
       // PHYSICAL: File still exists on disk
       expect(existsSync(dbPath)).toBe(true);
@@ -611,6 +615,7 @@ describe('Edge Cases', () => {
       const result = parseResponse(response);
 
       expect(result.success).toBe(false);
+      expect(result.error?.category).toBe('INTERNAL_ERROR');
     });
   });
 });

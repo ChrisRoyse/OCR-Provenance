@@ -693,7 +693,8 @@ describe('handleDocumentDelete', () => {
     const result = parseResponse(response);
 
     expect(result.success).toBe(false);
-    // Should fail validation due to confirm not being true
+    // confirm: false fails z.literal(true) Zod validation -> INTERNAL_ERROR
+    expect(result.error?.category).toBe('INTERNAL_ERROR');
 
     // PHYSICAL VERIFICATION: Document still exists
     const docAfter = db.getDocument(docId);
@@ -787,6 +788,7 @@ describe('Edge Cases', () => {
       const result = parseResponse(response);
 
       expect(result.success).toBe(false);
+      expect(result.error?.category).toBe('INTERNAL_ERROR');
     });
 
     it.skipIf(!sqliteVecAvailable)('delete handles empty string document_id', async () => {
@@ -798,6 +800,7 @@ describe('Edge Cases', () => {
       const result = parseResponse(response);
 
       expect(result.success).toBe(false);
+      expect(result.error?.category).toBe('INTERNAL_ERROR');
     });
 
     it.skipIf(!sqliteVecAvailable)('get handles special characters in document_id', async () => {
@@ -1056,6 +1059,7 @@ describe('Input Validation', () => {
     const result = parseResponse(response);
     // Should fail - either validation or database not selected
     expect(result.success).toBe(false);
+    expect(result.error?.category).toBe('INTERNAL_ERROR');
   });
 
   it('document_list strips unknown params like sort_by', async () => {
@@ -1064,36 +1068,42 @@ describe('Input Validation', () => {
     const response = await handleDocumentList({ sort_by: 'invalid_field' });
     const result = parseResponse(response);
     expect(result.success).toBe(false);
+    expect(result.error?.category).toBe('DATABASE_NOT_SELECTED');
   });
 
   it('document_list rejects negative limit', async () => {
     const response = await handleDocumentList({ limit: -1 });
     const result = parseResponse(response);
     expect(result.success).toBe(false);
+    expect(result.error?.category).toBe('INTERNAL_ERROR');
   });
 
   it('document_list rejects negative offset', async () => {
     const response = await handleDocumentList({ offset: -1 });
     const result = parseResponse(response);
     expect(result.success).toBe(false);
+    expect(result.error?.category).toBe('INTERNAL_ERROR');
   });
 
   it('document_get rejects missing document_id', async () => {
     const response = await handleDocumentGet({});
     const result = parseResponse(response);
     expect(result.success).toBe(false);
+    expect(result.error?.category).toBe('INTERNAL_ERROR');
   });
 
   it('document_delete rejects missing confirm', async () => {
     const response = await handleDocumentDelete({ document_id: 'test-id' });
     const result = parseResponse(response);
     expect(result.success).toBe(false);
+    expect(result.error?.category).toBe('INTERNAL_ERROR');
   });
 
   it('document_delete rejects missing document_id', async () => {
     const response = await handleDocumentDelete({ confirm: true });
     const result = parseResponse(response);
     expect(result.success).toBe(false);
+    expect(result.error?.category).toBe('INTERNAL_ERROR');
   });
 });
 

@@ -310,6 +310,9 @@ def extract_images(
         media_files.sort()
 
         count = 0
+        # Per-page image index tracking (matches PDF extractor pattern)
+        page_image_counts: dict[int, int] = {}
+
         for zip_entry in media_files:
             if count >= max_images:
                 break
@@ -381,24 +384,28 @@ def extract_images(
                     except Exception:
                         pass
                 if not converted:
-                    print(
-                        f"WARNING: Cannot convert {ext.upper()} to PNG for "
-                        f"'{media_filename}'. Saving as-is. VLM processing will "
-                        f"skip this image. To enable conversion, install "
-                        f"inkscape: sudo apt install inkscape",
-                        file=sys.stderr,
+                    errors.append(
+                        f"File '{media_filename}': Cannot convert {ext.upper()} to "
+                        f"Gemini-compatible format (png/jpg/gif/webp). Saving as "
+                        f"{ext.upper()}. VLM processing will skip this image. "
+                        f"Install inkscape to enable conversion: "
+                        f"sudo apt install inkscape"
                     )
 
                 if converted:
                     # Re-read dimensions from converted image
                     try:
-                        converted_img = Image.open(io.BytesIO(img_bytes))
-                        width, height = converted_img.size
+                        with Image.open(io.BytesIO(img_bytes)) as converted_img:
+                            width, height = converted_img.size
                     except Exception:
                         pass  # Keep original dimensions if re-read fails
 
+            # Per-page image index (matches PDF extractor pattern)
+            img_idx = page_image_counts.get(page, 0)
+            page_image_counts[page] = img_idx + 1
+
             # Generate filename matching PDF extractor pattern
-            filename = f"p{page:03d}_i{count:03d}.{save_ext}"
+            filename = f"p{page:03d}_i{img_idx:03d}.{save_ext}"
             filepath = output / filename
 
             # Save image
@@ -415,7 +422,7 @@ def extract_images(
 
             images.append({
                 "page": page,
-                "index": count,
+                "index": img_idx,
                 "format": save_ext,
                 "width": width,
                 "height": height,

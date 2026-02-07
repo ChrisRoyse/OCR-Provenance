@@ -2,103 +2,20 @@
  * Tests for Datalab block classification helpers.
  *
  * Tests the parseBlockTypeFromFilename and buildPageBlockClassification
- * functions used during ingestion to classify image regions from
- * Datalab's JSON block hierarchy.
+ * functions exported from src/tools/ingestion.ts.
  *
- * These functions are internal to ingestion.ts. We test them by importing
- * the module and exercising the public pipeline behavior.
+ * These tests import the PRODUCTION functions directly -- no copies.
+ *
+ * @module tests/unit/tools/block-classification
  */
 
 import { describe, it, expect } from 'vitest';
 import { createHash } from 'crypto';
-
-// Since the functions are private to ingestion.ts, we test the same logic
-// directly. These are the exact algorithms used in the production code.
-
-/**
- * Parse Datalab block type from image filename.
- * Exact copy of the function in src/tools/ingestion.ts for testing.
- */
-function parseBlockTypeFromFilename(filename: string): string | null {
-  const match = filename.match(/_page_\d+_([A-Za-z]+)_\d+\./);
-  return match ? match[1] : null;
-}
-
-interface PageImageClassification {
-  hasFigure: boolean;
-  hasPicture: boolean;
-  pictureInHeaderFooter: number;
-  pictureInBody: number;
-  figureCount: number;
-}
-
-/**
- * Build page block classification from JSON hierarchy.
- * Exact copy of the function in src/tools/ingestion.ts for testing.
- */
-function buildPageBlockClassification(
-  jsonBlocks: Record<string, unknown>
-): Map<number, PageImageClassification> {
-  const pageMap = new Map<number, PageImageClassification>();
-
-  const topChildren = (jsonBlocks as Record<string, unknown[]>).children
-    ?? (jsonBlocks as Record<string, unknown[]>).blocks
-    ?? [];
-
-  if (!Array.isArray(topChildren)) {
-    return pageMap;
-  }
-
-  let pageNum = 0;
-  for (const pageBlock of topChildren) {
-    const block = pageBlock as Record<string, unknown>;
-    if (block.block_type === 'Page' || !block.block_type) {
-      pageNum++;
-    } else {
-      continue;
-    }
-
-    const classification: PageImageClassification = {
-      hasFigure: false,
-      hasPicture: false,
-      pictureInHeaderFooter: 0,
-      pictureInBody: 0,
-      figureCount: 0,
-    };
-
-    const walkChildren = (children: unknown[], inHeaderFooter: boolean) => {
-      if (!Array.isArray(children)) return;
-      for (const child of children) {
-        const c = child as Record<string, unknown>;
-        const btype = c.block_type as string | undefined;
-
-        const isHF = inHeaderFooter || btype === 'PageHeader' || btype === 'PageFooter';
-
-        if (btype === 'Figure' || btype === 'FigureGroup') {
-          classification.hasFigure = true;
-          classification.figureCount++;
-        }
-        if (btype === 'Picture' || btype === 'PictureGroup') {
-          classification.hasPicture = true;
-          if (isHF) {
-            classification.pictureInHeaderFooter++;
-          } else {
-            classification.pictureInBody++;
-          }
-        }
-
-        if (c.children) {
-          walkChildren(c.children as unknown[], isHF);
-        }
-      }
-    };
-
-    walkChildren((block.children as unknown[]) ?? [], false);
-    pageMap.set(pageNum, classification);
-  }
-
-  return pageMap;
-}
+import {
+  parseBlockTypeFromFilename,
+  buildPageBlockClassification,
+  type PageImageClassification,
+} from '../../../src/tools/ingestion.js';
 
 function computeContentHash(buffer: Buffer): string {
   return `sha256:${createHash('sha256').update(buffer).digest('hex')}`;
@@ -360,7 +277,6 @@ describe('computeContentHash', () => {
 
 describe('header/footer classification logic', () => {
   it('should identify pages where all images are in headers/footers', () => {
-    // Page with only header/footer pictures, no figures
     const json = {
       children: [
         {

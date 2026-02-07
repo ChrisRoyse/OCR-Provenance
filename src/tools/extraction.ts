@@ -12,7 +12,6 @@
 
 import { z } from 'zod';
 import * as fs from 'fs';
-import { readFileSync } from 'fs';
 import { resolve } from 'path';
 import { requireDatabase, state } from '../server/state.js';
 import { successResult } from '../server/types.js';
@@ -23,7 +22,7 @@ import { ImageExtractor } from '../services/images/extractor.js';
 import { insertImageBatch, getImagesByDocument, updateImageProvenance } from '../services/storage/database/image-operations.js';
 import { getProvenanceTracker } from '../services/provenance/index.js';
 import { ProvenanceType } from '../models/provenance.js';
-import { computeHash } from '../utils/hash.js';
+import { computeHash, computeFileHashSync } from '../utils/hash.js';
 import type { CreateImageReference } from '../models/image.js';
 
 
@@ -143,7 +142,7 @@ export async function handleExtractImages(
       block_type: null,
       is_header_footer: false,
       content_hash: img.path && fs.existsSync(img.path)
-        ? computeHash(readFileSync(img.path))
+        ? computeFileHashSync(img.path)
         : null,
     }));
 
@@ -315,7 +314,7 @@ export async function handleExtractImagesBatch(
           block_type: null,
           is_header_footer: false,
           content_hash: img.path && fs.existsSync(img.path)
-            ? computeHash(readFileSync(img.path))
+            ? computeFileHashSync(img.path)
             : null,
         }));
 

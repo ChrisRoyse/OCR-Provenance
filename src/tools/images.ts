@@ -17,7 +17,6 @@ import { successResult } from '../server/types.js';
 import { MCPError } from '../server/errors.js';
 import { formatResponse, handleError, type ToolResponse, type ToolDefinition } from './shared.js';
 import { validateInput } from '../utils/validation.js';
-import { readFileSync } from 'fs';
 import { ImageExtractor } from '../services/images/extractor.js';
 import {
   getImage,
@@ -33,7 +32,7 @@ import {
 } from '../services/storage/database/image-operations.js';
 import { getProvenanceTracker } from '../services/provenance/index.js';
 import { ProvenanceType } from '../models/provenance.js';
-import { computeHash } from '../utils/hash.js';
+import { computeHash, computeFileHashSync } from '../utils/hash.js';
 import type { CreateImageReference } from '../models/image.js';
 
 
@@ -148,7 +147,9 @@ export async function handleImageExtract(
       provenance_id: null,
       block_type: null,
       is_header_footer: false,
-      content_hash: null,
+      content_hash: img.path && fs.existsSync(img.path)
+        ? computeFileHashSync(img.path)
+        : null,
     }));
 
     const stored = insertImageBatch(db.getConnection(), imageRefs);
@@ -164,7 +165,7 @@ export async function handleImageExtract(
             source_type: 'IMAGE_EXTRACTION',
             source_id: ocrResult.provenance_id,
             root_document_id: doc.provenance_id,
-            content_hash: img.content_hash ?? (img.extracted_path && fs.existsSync(img.extracted_path) ? computeHash(readFileSync(img.extracted_path)) : computeHash(img.id)),
+            content_hash: img.content_hash ?? (img.extracted_path && fs.existsSync(img.extracted_path) ? computeFileHashSync(img.extracted_path) : computeHash(img.id)),
             source_path: img.extracted_path ?? undefined,
             processor: 'pdf-image-extraction',
             processor_version: '1.0.0',

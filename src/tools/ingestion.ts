@@ -21,7 +21,7 @@ import { OCRProcessor } from '../services/ocr/processor.js';
 import { chunkText, ChunkResult, DEFAULT_CHUNKING_CONFIG } from '../services/chunking/chunker.js';
 import { EmbeddingService } from '../services/embedding/embedder.js';
 import { ProvenanceTracker } from '../services/provenance/tracker.js';
-import { computeHash, hashFile } from '../utils/hash.js';
+import { computeHash, hashFile, computeFileHashSync } from '../utils/hash.js';
 import {
   state,
   requireDatabase,
@@ -193,7 +193,7 @@ function extractContextText(ocrText: string, pageCount: number, targetPage: numb
  * Datalab names images like: _page_0_Picture_21.jpeg, _page_0_Figure_3.jpeg
  * Returns block_type string or null if pattern doesn't match.
  */
-function parseBlockTypeFromFilename(filename: string): string | null {
+export function parseBlockTypeFromFilename(filename: string): string | null {
   const match = filename.match(/_page_\d+_([A-Za-z]+)_\d+\./);
   return match ? match[1] : null;
 }
@@ -201,7 +201,7 @@ function parseBlockTypeFromFilename(filename: string): string | null {
 /**
  * Page-level image classification from Datalab JSON block hierarchy.
  */
-interface PageImageClassification {
+export interface PageImageClassification {
   hasFigure: boolean;
   hasPicture: boolean;
   pictureInHeaderFooter: number;
@@ -217,7 +217,7 @@ interface PageImageClassification {
  * Image blocks have block_type 'Figure', 'Picture', 'FigureGroup', 'PictureGroup'.
  * Layout blocks have block_type 'PageHeader', 'PageFooter'.
  */
-function buildPageBlockClassification(
+export function buildPageBlockClassification(
   jsonBlocks: Record<string, unknown>
 ): Map<number, PageImageClassification> {
   const pageMap = new Map<number, PageImageClassification>();
@@ -400,7 +400,7 @@ function saveAndStoreImages(
           source_type: 'IMAGE_EXTRACTION',
           source_id: ocrResult.provenance_id,
           root_document_id: doc.provenance_id,
-          content_hash: img.content_hash ?? (img.extracted_path && existsSync(img.extracted_path) ? computeHash(readFileSync(img.extracted_path)) : computeHash(img.id)),
+          content_hash: img.content_hash ?? (img.extracted_path && existsSync(img.extracted_path) ? computeFileHashSync(img.extracted_path) : computeHash(img.id)),
           source_path: img.extracted_path ?? undefined,
           processor: 'datalab-image-extraction',
           processor_version: '1.0.0',
@@ -800,7 +800,7 @@ export async function handleProcessPending(
               ? buildPageBlockClassification(processResult.jsonBlocks)
               : new Map<number, PageImageClassification>();
 
-            const imageRefs: CreateImageReference[] = extractedImages.map((img, idx) => {
+            const imageRefs: CreateImageReference[] = extractedImages.map((img) => {
               // Compute content hash from the extracted file
               const imgBytes = readFileSync(img.path);
               const contentHash = computeContentHash(imgBytes);
@@ -821,7 +821,7 @@ export async function handleProcessPending(
                 ocr_result_id: ocrResult.id,
                 page_number: img.page,
                 bounding_box: img.bbox,
-                image_index: idx,
+                image_index: img.index,
                 format: img.format,
                 dimensions: { width: img.width, height: img.height },
                 extracted_path: img.path,
@@ -845,7 +845,7 @@ export async function handleProcessPending(
                   source_type: 'IMAGE_EXTRACTION',
                   source_id: ocrResult.provenance_id,
                   root_document_id: doc.provenance_id,
-                  content_hash: img.content_hash ?? (img.extracted_path && existsSync(img.extracted_path) ? computeHash(readFileSync(img.extracted_path)) : computeHash(img.id)),
+                  content_hash: img.content_hash ?? (img.extracted_path && existsSync(img.extracted_path) ? computeFileHashSync(img.extracted_path) : computeHash(img.id)),
                   source_path: img.extracted_path ?? undefined,
                   processor: `${doc.file_type}-image-extraction`,
                   processor_version: '1.0.0',
