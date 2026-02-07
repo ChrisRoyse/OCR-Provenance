@@ -284,22 +284,9 @@ export class ImageOptimizer {
         if (settled) return;
         settled = true;
 
-        // If process got SIGTERM from timeout but is stuck in C extension, send SIGKILL
-        if (err.message.includes('ETIMEDOUT') || err.message.includes('killed')) {
-          try {
-            if (proc.pid && !proc.killed) {
-              sigkillTimer = setTimeout(() => {
-                try {
-                  proc.kill('SIGKILL');
-                } catch {
-                  // Process may already be gone
-                }
-              }, 5000);
-            }
-          } catch {
-            // Ignore kill errors
-          }
-        }
+        // The bottom-of-function SIGKILL timer at timeout+5000ms already covers
+        // the case where SIGTERM fails to terminate the process. No need for a
+        // second timer here (which would leak since cleanup() already ran).
 
         resolve({
           success: false,
