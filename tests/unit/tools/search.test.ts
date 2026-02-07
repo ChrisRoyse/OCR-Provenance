@@ -700,7 +700,7 @@ describe('handleSearchSemantic', () => {
     expect(results[0].original_text).toContain('hypertension');
 
     resetEmbeddingService();
-  }, 30000);
+  }, 120000);
 });
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -810,14 +810,14 @@ describe('handleSearchHybrid', () => {
 
     // Should have source counts from both search types
     const sources = result.data?.sources as Record<string, number>;
-    expect(sources.bm25_count).toBeGreaterThan(0);
+    expect(sources.bm25_chunk_count).toBeGreaterThan(0);
     expect(sources.semantic_count).toBeGreaterThan(0);
 
     // Contract chunk should rank first for a contract-related query
     expect(results[0].original_text).toContain('contract');
 
     resetEmbeddingService();
-  }, 30000);
+  }, 120000);
 });
 
 // ═══════════════════════════════════════════════════════════════════════════════

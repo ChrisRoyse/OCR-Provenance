@@ -17,6 +17,8 @@ import {
   CREATE_CHUNKS_FTS_TABLE,
   CREATE_FTS_TRIGGERS,
   CREATE_FTS_INDEX_METADATA,
+  CREATE_VLM_FTS_TABLE,
+  CREATE_VLM_FTS_TRIGGERS,
   CREATE_INDEXES,
   TABLE_DEFINITIONS,
   SCHEMA_VERSION,
@@ -133,17 +135,31 @@ export function createIndexes(db: Database.Database): void {
  */
 export function createFTSTables(db: Database.Database): void {
   try {
+    // Chunks FTS5
     db.exec(CREATE_CHUNKS_FTS_TABLE);
     for (const trigger of CREATE_FTS_TRIGGERS) {
       db.exec(trigger);
     }
     db.exec(CREATE_FTS_INDEX_METADATA);
 
-    // Initialize metadata row for fresh databases (0 chunks indexed)
+    // Initialize metadata row for chunks FTS (id=1)
+    const now = new Date().toISOString();
     db.prepare(`
       INSERT OR IGNORE INTO fts_index_metadata (id, last_rebuild_at, chunks_indexed, tokenizer, schema_version, content_hash)
       VALUES (1, ?, 0, 'porter unicode61', ${SCHEMA_VERSION}, NULL)
-    `).run(new Date().toISOString());
+    `).run(now);
+
+    // VLM FTS5
+    db.exec(CREATE_VLM_FTS_TABLE);
+    for (const trigger of CREATE_VLM_FTS_TRIGGERS) {
+      db.exec(trigger);
+    }
+
+    // Initialize metadata row for VLM FTS (id=2)
+    db.prepare(`
+      INSERT OR IGNORE INTO fts_index_metadata (id, last_rebuild_at, chunks_indexed, tokenizer, schema_version, content_hash)
+      VALUES (2, ?, 0, 'porter unicode61', ${SCHEMA_VERSION}, NULL)
+    `).run(now);
   } catch (error) {
     throw new MigrationError(
       'Failed to create FTS5 tables',

@@ -86,7 +86,9 @@ export async function handleSearchSemantic(
       const result: Record<string, unknown> = {
         embedding_id: r.embedding_id,
         chunk_id: r.chunk_id,
+        image_id: r.image_id,
         document_id: r.document_id,
+        result_type: r.result_type,
         similarity_score: r.similarity_score,
         original_text: r.original_text,
         source_file_path: r.source_file_path,
@@ -118,6 +120,7 @@ export async function handleSearchSemantic(
 
 /**
  * Handle ocr_search - BM25 full-text keyword search
+ * Searches both chunks (text) and VLM descriptions (images)
  */
 export async function handleSearch(
   params: Record<string, unknown>
@@ -127,15 +130,35 @@ export async function handleSearch(
     const { db } = requireDatabase();
 
     const bm25 = new BM25SearchService(db.getConnection());
-    const rawResults = bm25.search({
+    const limit = input.limit ?? 10;
+
+    // Search chunks FTS
+    const chunkResults = bm25.search({
       query: input.query,
-      limit: input.limit,
+      limit,
       phraseSearch: input.phrase_search,
       documentFilter: input.document_filter,
       includeHighlight: input.include_highlight,
     });
 
-    const results = rawResults.map(r => {
+    // Search VLM FTS
+    const vlmResults = bm25.searchVLM({
+      query: input.query,
+      limit,
+      phraseSearch: input.phrase_search,
+      documentFilter: input.document_filter,
+      includeHighlight: input.include_highlight,
+    });
+
+    // Merge by score (higher is better), apply combined limit
+    const allResults = [...chunkResults, ...vlmResults]
+      .sort((a, b) => b.bm25_score - a.bm25_score)
+      .slice(0, limit);
+
+    // Re-rank after merge
+    const rankedResults = allResults.map((r, i) => ({ ...r, rank: i + 1 }));
+
+    const results = rankedResults.map(r => {
       if (!input.include_provenance) return r;
       return { ...r, provenance_chain: formatProvenanceChain(db, r.provenance_id) };
     });
@@ -145,6 +168,10 @@ export async function handleSearch(
       search_type: 'bm25',
       results,
       total: results.length,
+      sources: {
+        chunk_count: chunkResults.length,
+        vlm_count: vlmResults.length,
+      },
     }));
   } catch (error) {
     return handleError(error);
@@ -153,6 +180,7 @@ export async function handleSearch(
 
 /**
  * Handle ocr_search_hybrid - Hybrid search using Reciprocal Rank Fusion
+ * BM25 side now includes both chunk and VLM results
  */
 export async function handleSearchHybrid(
   params: Record<string, unknown>
@@ -162,13 +190,24 @@ export async function handleSearchHybrid(
     const { db, vector } = requireDatabase();
     const limit = input.limit ?? 10;
 
-    // Get BM25 results
+    // Get BM25 results (chunks + VLM)
     const bm25 = new BM25SearchService(db.getConnection());
-    const bm25Results = bm25.search({
+    const bm25ChunkResults = bm25.search({
       query: input.query,
       limit: limit * 2,
       documentFilter: input.document_filter,
     });
+    const bm25VlmResults = bm25.searchVLM({
+      query: input.query,
+      limit: limit * 2,
+      documentFilter: input.document_filter,
+    });
+
+    // Merge BM25 results by score
+    const allBm25 = [...bm25ChunkResults, ...bm25VlmResults]
+      .sort((a, b) => b.bm25_score - a.bm25_score)
+      .slice(0, limit * 2)
+      .map((r, i) => ({ ...r, rank: i + 1 }));
 
     // Get semantic results
     const embedder = getEmbeddingService();
@@ -179,10 +218,13 @@ export async function handleSearchHybrid(
     });
 
     // Convert to ranked format for RRF
-    const bm25Ranked = bm25Results.map(r => ({
+    const bm25Ranked = allBm25.map(r => ({
       chunk_id: r.chunk_id,
+      image_id: r.image_id,
+      embedding_id: r.embedding_id ?? `bm25-${r.result_type}-${r.chunk_id ?? r.image_id}`,
       document_id: r.document_id,
       original_text: r.original_text,
+      result_type: r.result_type,
       source_file_path: r.source_file_path,
       source_file_name: r.source_file_name,
       source_file_hash: r.source_file_hash,
@@ -198,8 +240,11 @@ export async function handleSearchHybrid(
 
     const semanticRanked = semanticResults.map((r, i) => ({
       chunk_id: r.chunk_id,
+      image_id: r.image_id,
+      embedding_id: r.embedding_id,
       document_id: r.document_id,
       original_text: r.original_text,
+      result_type: r.result_type,
       source_file_path: r.source_file_path,
       source_file_name: r.source_file_name,
       source_file_hash: r.source_file_hash,
@@ -238,7 +283,8 @@ export async function handleSearchHybrid(
       results,
       total: results.length,
       sources: {
-        bm25_count: bm25Results.length,
+        bm25_chunk_count: bm25ChunkResults.length,
+        bm25_vlm_count: bm25VlmResults.length,
         semantic_count: semanticResults.length,
       },
     }));
@@ -248,7 +294,8 @@ export async function handleSearchHybrid(
 }
 
 /**
- * Handle ocr_fts_manage - Manage FTS5 index (rebuild or check status)
+ * Handle ocr_fts_manage - Manage FTS5 indexes (rebuild or check status)
+ * Covers both chunks FTS and VLM FTS indexes
  */
 export async function handleFTSManage(
   params: Record<string, unknown>
