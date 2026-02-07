@@ -219,7 +219,7 @@ function migrateV1ToV2(db: Database.Database): void {
     `);
     db.exec('CREATE INDEX IF NOT EXISTS idx_images_document_id ON images(document_id)');
     db.exec('CREATE INDEX IF NOT EXISTS idx_images_ocr_result_id ON images(ocr_result_id)');
-    db.exec('CREATE INDEX IF NOT EXISTS idx_images_page ON images(page_number)');
+    db.exec('CREATE INDEX IF NOT EXISTS idx_images_page ON images(document_id, page_number)');
     db.exec('CREATE INDEX IF NOT EXISTS idx_images_vlm_status ON images(vlm_status)');
     db.exec(`CREATE INDEX IF NOT EXISTS idx_images_pending ON images(vlm_status) WHERE vlm_status = 'pending'`);
 
@@ -445,8 +445,8 @@ function migrateV4ToV5(db: Database.Database): void {
  */
 function migrateV5ToV6(db: Database.Database): void {
   try {
-    // 1. Recreate fts_index_metadata without CHECK (id = 1) constraint
-    // This allows storing metadata for both chunks FTS (id=1) and VLM FTS (id=2)
+    // 1. DDL: Recreate fts_index_metadata without CHECK (id = 1) constraint
+    // DDL operations auto-commit in SQLite WAL mode, so they stay outside the transaction.
     db.exec('DROP TABLE IF EXISTS fts_index_metadata_old');
     db.exec('ALTER TABLE fts_index_metadata RENAME TO fts_index_metadata_old');
     db.exec(`
@@ -455,45 +455,58 @@ function migrateV5ToV6(db: Database.Database): void {
         last_rebuild_at TEXT,
         chunks_indexed INTEGER NOT NULL DEFAULT 0,
         tokenizer TEXT NOT NULL DEFAULT 'porter unicode61',
-        schema_version INTEGER NOT NULL DEFAULT 4,
+        schema_version INTEGER NOT NULL DEFAULT 7,
         content_hash TEXT
       )
     `);
 
-    // Copy existing data
-    db.exec('INSERT INTO fts_index_metadata SELECT * FROM fts_index_metadata_old');
-    db.exec('DROP TABLE fts_index_metadata_old');
-
-    // 2. Create VLM FTS5 virtual table
+    // 2. DDL: Create VLM FTS5 virtual table
     db.exec(CREATE_VLM_FTS_TABLE);
 
-    // 3. Create VLM FTS sync triggers
+    // 3. DDL: Create VLM FTS sync triggers
     for (const trigger of CREATE_VLM_FTS_TRIGGERS) {
       db.exec(trigger);
     }
 
-    // 4. Insert VLM FTS metadata row (id=2)
-    const now = new Date().toISOString();
-    db.prepare(`
-      INSERT OR IGNORE INTO fts_index_metadata (id, last_rebuild_at, chunks_indexed, tokenizer, schema_version, content_hash)
-      VALUES (2, ?, 0, 'porter unicode61', 6, NULL)
-    `).run(now);
+    // 4. DML operations wrapped in a transaction for atomicity
+    db.exec('BEGIN TRANSACTION');
+    try {
+      // Copy existing data from old metadata table
+      db.exec('INSERT INTO fts_index_metadata SELECT * FROM fts_index_metadata_old');
+      db.exec('DROP TABLE fts_index_metadata_old');
 
-    // 5. Populate vlm_fts from existing VLM embeddings
-    const vlmCount = db.prepare(
-      'SELECT COUNT(*) as cnt FROM embeddings WHERE image_id IS NOT NULL'
-    ).get() as { cnt: number };
+      // Insert VLM FTS metadata row (id=2)
+      const now = new Date().toISOString();
+      db.prepare(`
+        INSERT OR IGNORE INTO fts_index_metadata (id, last_rebuild_at, chunks_indexed, tokenizer, schema_version, content_hash)
+        VALUES (2, ?, 0, 'porter unicode61', 6, NULL)
+      `).run(now);
 
-    if (vlmCount.cnt > 0) {
-      db.exec(`
-        INSERT INTO vlm_fts(rowid, original_text)
-        SELECT rowid, original_text FROM embeddings WHERE image_id IS NOT NULL
-      `);
+      // Populate vlm_fts from existing VLM embeddings
+      const vlmCount = db.prepare(
+        'SELECT COUNT(*) as cnt FROM embeddings WHERE image_id IS NOT NULL'
+      ).get() as { cnt: number };
 
-      // Update VLM FTS metadata with count
-      db.prepare(
-        'UPDATE fts_index_metadata SET chunks_indexed = ?, last_rebuild_at = ? WHERE id = 2'
-      ).run(vlmCount.cnt, now);
+      if (vlmCount.cnt > 0) {
+        db.exec(`
+          INSERT INTO vlm_fts(rowid, original_text)
+          SELECT rowid, original_text FROM embeddings WHERE image_id IS NOT NULL
+        `);
+
+        // Update VLM FTS metadata with count
+        db.prepare(
+          'UPDATE fts_index_metadata SET chunks_indexed = ?, last_rebuild_at = ? WHERE id = 2'
+        ).run(vlmCount.cnt, now);
+      }
+
+      db.exec('COMMIT');
+    } catch (dmlError) {
+      try {
+        db.exec('ROLLBACK');
+      } catch {
+        // Ignore rollback errors
+      }
+      throw dmlError;
     }
   } catch (error) {
     const cause = error instanceof Error ? error.message : String(error);
@@ -501,6 +514,91 @@ function migrateV5ToV6(db: Database.Database): void {
       `Failed to migrate from v5 to v6 (VLM FTS setup): ${cause}`,
       'migrate',
       'vlm_fts',
+      error
+    );
+  }
+}
+
+
+/**
+ * Migrate from schema version 6 to version 7
+ *
+ * Changes in v7:
+ * - provenance.source_type: Added 'VLM_DEDUP' to CHECK constraint
+ *   This allows VLM pipeline to record deduplicated image results with
+ *   a distinct source_type for provenance tracking.
+ *
+ * @param db - Database instance from better-sqlite3
+ * @throws MigrationError if migration fails
+ */
+function migrateV6ToV7(db: Database.Database): void {
+  try {
+    db.exec('PRAGMA foreign_keys = OFF');
+    db.exec('BEGIN TRANSACTION');
+
+    // Step 1: Create new provenance table with VLM_DEDUP in source_type CHECK
+    db.exec(`
+      CREATE TABLE provenance_new (
+        id TEXT PRIMARY KEY,
+        type TEXT NOT NULL CHECK (type IN ('DOCUMENT', 'OCR_RESULT', 'CHUNK', 'IMAGE', 'VLM_DESCRIPTION', 'EMBEDDING')),
+        created_at TEXT NOT NULL,
+        processed_at TEXT NOT NULL,
+        source_file_created_at TEXT,
+        source_file_modified_at TEXT,
+        source_type TEXT NOT NULL CHECK (source_type IN ('FILE', 'OCR', 'CHUNKING', 'IMAGE_EXTRACTION', 'VLM', 'VLM_DEDUP', 'EMBEDDING')),
+        source_path TEXT,
+        source_id TEXT,
+        root_document_id TEXT NOT NULL,
+        location TEXT,
+        content_hash TEXT NOT NULL,
+        input_hash TEXT,
+        file_hash TEXT,
+        processor TEXT NOT NULL,
+        processor_version TEXT NOT NULL,
+        processing_params TEXT NOT NULL,
+        processing_duration_ms INTEGER,
+        processing_quality_score REAL,
+        parent_id TEXT,
+        parent_ids TEXT NOT NULL,
+        chain_depth INTEGER NOT NULL,
+        chain_path TEXT,
+        FOREIGN KEY (source_id) REFERENCES provenance_new(id),
+        FOREIGN KEY (parent_id) REFERENCES provenance_new(id)
+      )
+    `);
+
+    // Step 2: Copy existing data
+    db.exec(`
+      INSERT INTO provenance_new
+      SELECT * FROM provenance
+    `);
+
+    // Step 3: Drop old table
+    db.exec('DROP TABLE provenance');
+
+    // Step 4: Rename new table
+    db.exec('ALTER TABLE provenance_new RENAME TO provenance');
+
+    // Step 5: Recreate indexes
+    db.exec('CREATE INDEX IF NOT EXISTS idx_provenance_source_id ON provenance(source_id)');
+    db.exec('CREATE INDEX IF NOT EXISTS idx_provenance_type ON provenance(type)');
+    db.exec('CREATE INDEX IF NOT EXISTS idx_provenance_root_document_id ON provenance(root_document_id)');
+    db.exec('CREATE INDEX IF NOT EXISTS idx_provenance_parent_id ON provenance(parent_id)');
+
+    db.exec('COMMIT');
+    db.exec('PRAGMA foreign_keys = ON');
+  } catch (error) {
+    try {
+      db.exec('ROLLBACK');
+      db.exec('PRAGMA foreign_keys = ON');
+    } catch {
+      // Ignore rollback errors
+    }
+    const cause = error instanceof Error ? error.message : String(error);
+    throw new MigrationError(
+      `Failed to migrate provenance table from v6 to v7: ${cause}`,
+      'migrate',
+      'provenance',
       error
     );
   }
@@ -556,6 +654,10 @@ export function migrateToLatest(db: Database.Database): void {
 
   if (currentVersion < 6) {
     migrateV5ToV6(db);
+  }
+
+  if (currentVersion < 7) {
+    migrateV6ToV7(db);
   }
 
   // Update schema version after successful migration

@@ -17,10 +17,28 @@ import { requireDatabase } from '../server/state.js';
 import { successResult } from '../server/types.js';
 import { MCPError } from '../server/errors.js';
 import { formatResponse, handleError, type ToolResponse, type ToolDefinition } from './shared.js';
+import { validateInput } from '../utils/validation.js';
 import {
   getImageStats,
   getImagesByDocument,
 } from '../services/storage/database/image-operations.js';
+
+
+// ===============================================================================
+// VALIDATION SCHEMAS
+// ===============================================================================
+
+const EvaluationReportInput = z.object({
+  output_path: z.string().optional(),
+  confidence_threshold: z.number().min(0).max(1).default(0.7),
+  include_details: z.boolean().default(true),
+});
+
+const DocumentReportInput = z.object({
+  document_id: z.string().min(1),
+});
+
+const QualitySummaryInput = z.object({});
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // REPORT TOOL HANDLERS
@@ -58,9 +76,9 @@ export async function handleEvaluationReport(
   params: Record<string, unknown>
 ): Promise<ToolResponse> {
   try {
-    const outputPath = params.output_path as string | undefined;
-    const confidenceThreshold = (params.confidence_threshold as number) || 0.7;
-    const includeDetails = params.include_details as boolean ?? true;
+    const input = validateInput(EvaluationReportInput, params);
+    const outputPath = input.output_path;
+    const confidenceThreshold = input.confidence_threshold ?? 0.7;
 
     const { db } = requireDatabase();
 
@@ -152,7 +170,6 @@ export async function handleEvaluationReport(
       imageTypeDistribution,
       overallAvgConfidence,
       confidenceThreshold,
-      includeDetails,
     });
 
     // Save to file if path provided
@@ -193,7 +210,8 @@ export async function handleDocumentReport(
   params: Record<string, unknown>
 ): Promise<ToolResponse> {
   try {
-    const documentId = params.document_id as string;
+    const input = validateInput(DocumentReportInput, params);
+    const documentId = input.document_id;
 
     const { db } = requireDatabase();
 
@@ -283,9 +301,11 @@ export async function handleDocumentReport(
  * Handle ocr_quality_summary - Get quick quality summary
  */
 export async function handleQualitySummary(
-  _params: Record<string, unknown>
+  params: Record<string, unknown>
 ): Promise<ToolResponse> {
   try {
+    validateInput(QualitySummaryInput, params);
+
     const { db } = requireDatabase();
 
     const imageStats = getImageStats(db.getConnection());
@@ -368,7 +388,6 @@ interface ReportParams {
   imageTypeDistribution: Record<string, number>;
   overallAvgConfidence: number;
   confidenceThreshold: number;
-  includeDetails: boolean;
 }
 
 function generateMarkdownReport(params: ReportParams): string {
@@ -381,7 +400,6 @@ function generateMarkdownReport(params: ReportParams): string {
     imageTypeDistribution,
     overallAvgConfidence,
     confidenceThreshold,
-    includeDetails: _includeDetails, // Reserved for detailed per-image sections
   } = params;
 
   let report = `# Gemini VLM Evaluation Report
@@ -478,7 +496,7 @@ These images may need manual review or reprocessing.
 ### VLM Processing Rate
 
 \`\`\`
-Processed: ${'█'.repeat(Math.round((imageStats.processed / imageStats.total) * 40))}${'░'.repeat(40 - Math.round((imageStats.processed / imageStats.total) * 40))} ${((imageStats.processed / imageStats.total) * 100).toFixed(1)}%
+${imageStats.total > 0 ? `Processed: ${'█'.repeat(Math.round((imageStats.processed / imageStats.total) * 40))}${'░'.repeat(40 - Math.round((imageStats.processed / imageStats.total) * 40))} ${((imageStats.processed / imageStats.total) * 100).toFixed(1)}%` : 'No images to process.'}
 \`\`\`
 
 ---

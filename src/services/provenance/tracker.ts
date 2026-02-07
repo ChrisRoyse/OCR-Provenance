@@ -303,8 +303,9 @@ export class ProvenanceTracker {
       case ProvenanceType.VLM_DESCRIPTION:
         return ['DOCUMENT', 'OCR_RESULT', 'IMAGE', 'VLM_DESCRIPTION'];
       case ProvenanceType.EMBEDDING:
-        // Default path is from CHUNK. For VLM_DESCRIPTION embeddings,
-        // the chain_path will be dynamically built from the parent chain.
+        // Default path is from CHUNK (depth 3). VLM description embeddings
+        // (depth 4) bypass createProvenance() and build chain_path directly
+        // in pipeline.ts generateAndStoreEmbedding().
         return ['DOCUMENT', 'OCR_RESULT', 'CHUNK', 'EMBEDDING'];
       default:
         // This should never happen due to type validation above

@@ -16,6 +16,8 @@ import { requireDatabase } from '../server/state.js';
 import { successResult } from '../server/types.js';
 import { MCPError } from '../server/errors.js';
 import { formatResponse, handleError, type ToolResponse, type ToolDefinition } from './shared.js';
+import { validateInput } from '../utils/validation.js';
+import { readFileSync } from 'fs';
 import { ImageExtractor } from '../services/images/extractor.js';
 import {
   getImage,
@@ -25,9 +27,58 @@ import {
   deleteImage,
   deleteImagesByDocument,
   resetFailedImages,
+  resetProcessingImages,
   insertImageBatch,
+  updateImageProvenance,
 } from '../services/storage/database/image-operations.js';
+import { getProvenanceTracker } from '../services/provenance/index.js';
+import { ProvenanceType } from '../models/provenance.js';
+import { computeHash } from '../utils/hash.js';
 import type { CreateImageReference } from '../models/image.js';
+
+
+// ===============================================================================
+// VALIDATION SCHEMAS
+// ===============================================================================
+
+const ImageExtractInput = z.object({
+  pdf_path: z.string().min(1),
+  output_dir: z.string().min(1),
+  document_id: z.string().min(1),
+  ocr_result_id: z.string().min(1),
+  min_size: z.number().int().min(1).default(50),
+  max_images: z.number().int().min(1).max(1000).default(100),
+});
+
+const ImageListInput = z.object({
+  document_id: z.string().min(1),
+  include_descriptions: z.boolean().default(false),
+  vlm_status: z.enum(['pending', 'processing', 'complete', 'failed']).optional(),
+});
+
+const ImageGetInput = z.object({
+  image_id: z.string().min(1),
+});
+
+const ImageStatsInput = z.object({});
+
+const ImageDeleteInput = z.object({
+  image_id: z.string().min(1),
+  delete_file: z.boolean().default(false),
+});
+
+const ImageDeleteByDocumentInput = z.object({
+  document_id: z.string().min(1),
+  delete_files: z.boolean().default(false),
+});
+
+const ImageResetFailedInput = z.object({
+  document_id: z.string().optional(),
+});
+
+const ImagePendingInput = z.object({
+  limit: z.number().int().min(1).max(1000).default(100),
+});
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // IMAGE TOOL HANDLERS
@@ -40,12 +91,13 @@ export async function handleImageExtract(
   params: Record<string, unknown>
 ): Promise<ToolResponse> {
   try {
-    const pdfPath = params.pdf_path as string;
-    const outputDir = params.output_dir as string;
-    const documentId = params.document_id as string;
-    const ocrResultId = params.ocr_result_id as string;
-    const minSize = (params.min_size as number) || 50;
-    const maxImages = (params.max_images as number) || 100;
+    const input = validateInput(ImageExtractInput, params);
+    const pdfPath = input.pdf_path;
+    const outputDir = input.output_dir;
+    const documentId = input.document_id;
+    const ocrResultId = input.ocr_result_id;
+    const minSize = input.min_size ?? 50;
+    const maxImages = input.max_images ?? 100;
 
     // Validate PDF path exists
     if (!fs.existsSync(pdfPath)) {
@@ -101,6 +153,38 @@ export async function handleImageExtract(
 
     const stored = insertImageBatch(db.getConnection(), imageRefs);
 
+    // Create IMAGE provenance records
+    const ocrResult = db.getOCRResultByDocumentId(documentId);
+    if (ocrResult && doc.provenance_id) {
+      const tracker = getProvenanceTracker(db);
+      for (const img of stored) {
+        try {
+          const provenanceId = tracker.createProvenance({
+            type: ProvenanceType.IMAGE,
+            source_type: 'IMAGE_EXTRACTION',
+            source_id: ocrResult.provenance_id,
+            root_document_id: doc.provenance_id,
+            content_hash: img.content_hash ?? (img.extracted_path && fs.existsSync(img.extracted_path) ? computeHash(readFileSync(img.extracted_path)) : computeHash(img.id)),
+            source_path: img.extracted_path ?? undefined,
+            processor: 'pdf-image-extraction',
+            processor_version: '1.0.0',
+            processing_params: {
+              page_number: img.page_number,
+              image_index: img.image_index,
+              format: img.format,
+            },
+            location: {
+              page_number: img.page_number,
+            },
+          });
+          updateImageProvenance(db.getConnection(), img.id, provenanceId);
+          img.provenance_id = provenanceId;
+        } catch (error) {
+          console.error(`[WARN] Failed to create IMAGE provenance for ${img.id}: ${error instanceof Error ? error.message : String(error)}`);
+        }
+      }
+    }
+
     return formatResponse(successResult({
       document_id: documentId,
       pdf_path: pdfPath,
@@ -128,9 +212,10 @@ export async function handleImageList(
   params: Record<string, unknown>
 ): Promise<ToolResponse> {
   try {
-    const documentId = params.document_id as string;
-    const includeDescriptions = params.include_descriptions as boolean || false;
-    const vlmStatusFilter = params.vlm_status as string | undefined;
+    const input = validateInput(ImageListInput, params);
+    const documentId = input.document_id;
+    const includeDescriptions = input.include_descriptions ?? false;
+    const vlmStatusFilter = input.vlm_status;
 
     const { db } = requireDatabase();
 
@@ -180,7 +265,8 @@ export async function handleImageGet(
   params: Record<string, unknown>
 ): Promise<ToolResponse> {
   try {
-    const imageId = params.image_id as string;
+    const input = validateInput(ImageGetInput, params);
+    const imageId = input.image_id;
 
     const { db } = requireDatabase();
 
@@ -228,9 +314,11 @@ export async function handleImageGet(
  * Handle ocr_image_stats - Get image processing statistics
  */
 export async function handleImageStats(
-  _params: Record<string, unknown>
+  params: Record<string, unknown>
 ): Promise<ToolResponse> {
   try {
+    validateInput(ImageStatsInput, params);
+
     const { db } = requireDatabase();
 
     const stats = getImageStats(db.getConnection());
@@ -258,8 +346,9 @@ export async function handleImageDelete(
   params: Record<string, unknown>
 ): Promise<ToolResponse> {
   try {
-    const imageId = params.image_id as string;
-    const deleteFile = params.delete_file as boolean || false;
+    const input = validateInput(ImageDeleteInput, params);
+    const imageId = input.image_id;
+    const deleteFile = input.delete_file ?? false;
 
     const { db } = requireDatabase();
 
@@ -297,8 +386,9 @@ export async function handleImageDeleteByDocument(
   params: Record<string, unknown>
 ): Promise<ToolResponse> {
   try {
-    const documentId = params.document_id as string;
-    const deleteFiles = params.delete_files as boolean || false;
+    const input = validateInput(ImageDeleteByDocumentInput, params);
+    const documentId = input.document_id;
+    const deleteFiles = input.delete_files ?? false;
 
     const { db } = requireDatabase();
 
@@ -328,21 +418,25 @@ export async function handleImageDeleteByDocument(
 }
 
 /**
- * Handle ocr_image_reset_failed - Reset failed images to pending status
+ * Handle ocr_image_reset_failed - Reset failed and stuck processing images to pending status
  */
 export async function handleImageResetFailed(
   params: Record<string, unknown>
 ): Promise<ToolResponse> {
   try {
-    const documentId = params.document_id as string | undefined;
+    const input = validateInput(ImageResetFailedInput, params);
+    const documentId = input.document_id;
 
     const { db } = requireDatabase();
 
-    const count = resetFailedImages(db.getConnection(), documentId);
+    const failedCount = resetFailedImages(db.getConnection(), documentId);
+    const processingCount = resetProcessingImages(db.getConnection(), documentId);
 
     return formatResponse(successResult({
       document_id: documentId || 'all',
-      images_reset: count,
+      images_reset: failedCount + processingCount,
+      failed_reset: failedCount,
+      processing_reset: processingCount,
     }));
   } catch (error) {
     return handleError(error);
@@ -356,7 +450,8 @@ export async function handleImagePending(
   params: Record<string, unknown>
 ): Promise<ToolResponse> {
   try {
-    const limit = (params.limit as number) || 100;
+    const input = validateInput(ImagePendingInput, params);
+    const limit = input.limit ?? 100;
 
     const { db } = requireDatabase();
 

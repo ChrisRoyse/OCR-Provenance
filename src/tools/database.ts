@@ -30,49 +30,7 @@ import {
   DatabaseStatsInput,
   DatabaseDeleteInput,
 } from '../utils/validation.js';
-import { MCPError, formatErrorResponse } from '../server/errors.js';
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// TYPE DEFINITIONS
-// ═══════════════════════════════════════════════════════════════════════════════
-
-/**
- * Tool handler type - matches MCP SDK expectations
- */
-type ToolHandler = (params: Record<string, unknown>) => Promise<{
-  content: Array<{ type: 'text'; text: string }>;
-}>;
-
-/**
- * Tool definition with description, schema, and handler
- */
-interface ToolDefinition {
-  description: string;
-  inputSchema: Record<string, z.ZodTypeAny>;
-  handler: ToolHandler;
-}
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// HELPER FUNCTIONS
-// ═══════════════════════════════════════════════════════════════════════════════
-
-/**
- * Format tool result as MCP content response
- */
-function formatResponse(result: unknown): { content: Array<{ type: 'text'; text: string }> } {
-  return {
-    content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
-  };
-}
-
-/**
- * Handle errors uniformly - FAIL FAST
- */
-function handleError(error: unknown): { content: Array<{ type: 'text'; text: string }> } {
-  const mcpError = MCPError.fromUnknown(error);
-  console.error(`[ERROR] ${mcpError.category}: ${mcpError.message}`);
-  return formatResponse(formatErrorResponse(mcpError));
-}
+import { formatResponse, handleError, type ToolDefinition } from './shared.js';
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // DATABASE TOOL HANDLERS
@@ -128,8 +86,8 @@ export async function handleDatabaseList(
           item.chunk_count = stats.total_chunks;
           item.embedding_count = stats.total_embeddings;
           db.close();
-        } catch {
-          // If we can't get stats, just skip them
+        } catch (err) {
+          item.stats_error = err instanceof Error ? err.message : String(err);
         }
       }
 
@@ -190,6 +148,7 @@ function buildStatsResponse(
     document_count: stats.total_documents,
     chunk_count: stats.total_chunks,
     embedding_count: stats.total_embeddings,
+    image_count: stats.total_images,
     provenance_count: stats.total_provenance,
     ocr_result_count: stats.total_ocr_results,
     pending_documents: stats.documents_by_status.pending,
