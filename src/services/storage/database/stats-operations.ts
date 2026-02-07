@@ -59,29 +59,25 @@ export function getStats(
     total: number;
   };
 
-  const ocrCount = (
-    db
-      .prepare('SELECT COUNT(*) as count FROM ocr_results')
-      .get() as { count: number }
-  ).count;
+  const otherCounts = db
+    .prepare(`
+    SELECT
+      (SELECT COUNT(*) FROM ocr_results) as ocr_count,
+      (SELECT COUNT(*) FROM embeddings) as embedding_count,
+      (SELECT COUNT(*) FROM provenance) as provenance_count,
+      (SELECT COUNT(*) FROM images) as image_count
+  `)
+    .get() as {
+    ocr_count: number;
+    embedding_count: number;
+    provenance_count: number;
+    image_count: number;
+  };
 
-  const embeddingCount = (
-    db
-      .prepare('SELECT COUNT(*) as count FROM embeddings')
-      .get() as { count: number }
-  ).count;
-
-  const provenanceCount = (
-    db
-      .prepare('SELECT COUNT(*) as count FROM provenance')
-      .get() as { count: number }
-  ).count;
-
-  const imageCount = (
-    db
-      .prepare('SELECT COUNT(*) as count FROM images')
-      .get() as { count: number }
-  ).count;
+  const ocrCount = otherCounts.ocr_count;
+  const embeddingCount = otherCounts.embedding_count;
+  const provenanceCount = otherCounts.provenance_count;
+  const imageCount = otherCounts.image_count;
 
   const stats = statSync(path);
 

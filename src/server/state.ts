@@ -187,6 +187,7 @@ export function createDatabase(
       state.currentDatabase.close();
     }
     _cachedVectorService = null;
+    _dbGeneration++;
     state.currentDatabase = db;
     state.currentDatabaseName = name;
   }
