@@ -11,7 +11,9 @@
  */
 
 import { z } from 'zod';
-import { requireDatabase } from '../server/state.js';
+import { existsSync, rmSync } from 'fs';
+import { resolve } from 'path';
+import { requireDatabase, getDefaultStoragePath } from '../server/state.js';
 import { successResult } from '../server/types.js';
 import {
   validateInput,
@@ -155,6 +157,14 @@ export async function handleDocumentDelete(
     // Delete document (cascades to chunks, embeddings, provenance)
     db.deleteDocument(doc.id);
 
+    // Clean up extracted image files on disk
+    let imagesCleanedUp = false;
+    const imageDir = resolve(getDefaultStoragePath(), 'images', doc.id);
+    if (existsSync(imageDir)) {
+      rmSync(imageDir, { recursive: true, force: true });
+      imagesCleanedUp = true;
+    }
+
     return formatResponse(successResult({
       document_id: doc.id,
       deleted: true,
@@ -162,6 +172,7 @@ export async function handleDocumentDelete(
       embeddings_deleted: embeddings.length,
       vectors_deleted: vectorsDeleted,
       provenance_deleted: provenance.length,
+      images_directory_cleaned: imagesCleanedUp,
     }));
   } catch (error) {
     return handleError(error);

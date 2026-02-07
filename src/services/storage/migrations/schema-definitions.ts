@@ -18,6 +18,7 @@ export const DATABASE_PRAGMAS = [
   'PRAGMA foreign_keys = ON',
   'PRAGMA synchronous = NORMAL',
   'PRAGMA cache_size = -64000',
+  'PRAGMA wal_autocheckpoint = 1000',
 ] as const;
 
 /**

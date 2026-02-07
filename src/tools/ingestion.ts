@@ -420,6 +420,7 @@ function saveAndStoreImages(
         img.provenance_id = provenanceId;
       } catch (error) {
         console.error(`[WARN] Failed to create IMAGE provenance for ${img.id}: ${error instanceof Error ? error.message : String(error)}`);
+        throw error;
       }
     }
 
