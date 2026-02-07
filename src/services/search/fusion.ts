@@ -96,6 +96,17 @@ function buildFusedResult(
   };
 }
 
+/**
+ * Compute a stable dedup key for a ranked result.
+ * Uses chunk_id for text chunks, image_id for VLM results,
+ * with embedding_id as fallback for backwards compatibility.
+ */
+function getDedupKey(result: RankedResult): string {
+  if (result.chunk_id) return `chunk-${result.chunk_id}`;
+  if (result.image_id) return `image-${result.image_id}`;
+  return `emb-${result.embedding_id}`;
+}
+
 export class RRFFusion {
   private readonly config: RRFConfig;
 
@@ -116,17 +127,20 @@ export class RRFFusion {
     limit: number
   ): RRFSearchResult[] {
     const { k, bm25Weight, semanticWeight } = this.config;
-    // Use embedding_id as Map key to avoid collision when chunk_id is null (VLM results)
+    // Use chunk_id/image_id as dedup key so the same chunk from BM25 and semantic
+    // merges correctly, even when BM25 results lack an embedding_id.
     const fusedMap = new Map<string, RRFSearchResult>();
 
     for (const result of bm25Results) {
       const rrfScore = bm25Weight / (k + result.rank);
-      fusedMap.set(result.embedding_id, buildFusedResult(result, rrfScore, 'bm25'));
+      const dedupKey = getDedupKey(result);
+      fusedMap.set(dedupKey, buildFusedResult(result, rrfScore, 'bm25'));
     }
 
     for (const result of semanticResults) {
       const rrfContribution = semanticWeight / (k + result.rank);
-      const existing = fusedMap.get(result.embedding_id);
+      const dedupKey = getDedupKey(result);
+      const existing = fusedMap.get(dedupKey);
 
       if (existing) {
         existing.rrf_score += rrfContribution;
@@ -136,7 +150,7 @@ export class RRFFusion {
         // BM25 provenance_id (chunk-level, depth 2) is kept over semantic's
         // (embedding-level, depth 3) — both are valid but chunk-level is canonical
       } else {
-        fusedMap.set(result.embedding_id, buildFusedResult(result, rrfContribution, 'semantic'));
+        fusedMap.set(dedupKey, buildFusedResult(result, rrfContribution, 'semantic'));
       }
     }
 

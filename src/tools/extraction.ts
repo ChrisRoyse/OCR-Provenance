@@ -177,6 +177,7 @@ export async function handleExtractImages(
         img.provenance_id = provenanceId;
       } catch (error) {
         console.error(`[WARN] Failed to create IMAGE provenance for ${img.id}: ${error instanceof Error ? error.message : String(error)}`);
+        throw error;
       }
     }
 
@@ -349,6 +350,7 @@ export async function handleExtractImagesBatch(
                 updateImageProvenance(db.getConnection(), img.id, provenanceId);
               } catch (provError) {
                 console.error(`[WARN] Failed to create IMAGE provenance for ${img.id}: ${provError instanceof Error ? provError.message : String(provError)}`);
+                throw provError;
               }
             }
           } else {

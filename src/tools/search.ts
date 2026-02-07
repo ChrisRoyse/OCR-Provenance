@@ -214,6 +214,7 @@ export async function handleSearchHybrid(
     const queryVector = await embedder.embedSearchQuery(input.query);
     const semanticResults = vector.searchSimilar(queryVector, {
       limit: limit * 2,
+      threshold: 0.3, // Minimum quality floor for hybrid results
       documentFilter: input.document_filter,
     });
 
@@ -221,7 +222,7 @@ export async function handleSearchHybrid(
     const bm25Ranked = allBm25.map(r => ({
       chunk_id: r.chunk_id,
       image_id: r.image_id,
-      embedding_id: r.embedding_id ?? `bm25-${r.result_type}-${r.chunk_id ?? r.image_id}`,
+      embedding_id: r.embedding_id ?? '',
       document_id: r.document_id,
       original_text: r.original_text,
       result_type: r.result_type,

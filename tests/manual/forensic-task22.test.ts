@@ -15,7 +15,7 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach, afterAll } from 'vitest';
-import { mkdtempSync, rmSync, existsSync } from 'fs';
+import { mkdtempSync, rmSync, existsSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import { v4 as uuidv4 } from 'uuid';
@@ -58,7 +58,7 @@ import {
 } from '../../src/server/state.js';
 import { DatabaseService } from '../../src/services/storage/database/index.js';
 import { VectorService } from '../../src/services/storage/vector.js';
-import { computeHash } from '../../src/utils/hash.js';
+import { computeHash, computeFileHashSync } from '../../src/utils/hash.js';
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // SQLITE-VEC AVAILABILITY CHECK
@@ -129,12 +129,17 @@ function insertTestDocument(
   db: DatabaseService,
   docId: string,
   fileName: string,
-  filePath: string,
+  tempDirPath: string,
   status: string = 'complete'
 ): string {
   const provId = uuidv4();
   const now = new Date().toISOString();
-  const hash = computeHash(filePath);
+
+  // Create a real file so ProvenanceVerifier can hash it
+  const realFilePath = join(tempDirPath, fileName);
+  const fileContent = `Test document content for ${docId}`;
+  writeFileSync(realFilePath, fileContent);
+  const hash = computeFileHashSync(realFilePath);
 
   db.insertProvenance({
     id: provId,
@@ -144,7 +149,7 @@ function insertTestDocument(
     source_file_created_at: null,
     source_file_modified_at: null,
     source_type: 'FILE',
-    source_path: filePath,
+    source_path: realFilePath,
     source_id: null,
     root_document_id: provId,
     location: null,
@@ -164,10 +169,10 @@ function insertTestDocument(
 
   db.insertDocument({
     id: docId,
-    file_path: filePath,
+    file_path: realFilePath,
     file_name: fileName,
     file_hash: hash,
-    file_size: 1000,
+    file_size: Buffer.byteLength(fileContent),
     file_type: 'txt',
     status: status,
     page_count: 1,
@@ -291,7 +296,7 @@ describe('FORENSIC VERIFICATION - Phase 2: Physical Database', () => {
       state.vectorService = vector;
 
       const docId = uuidv4();
-      const provId = insertTestDocument(db, docId, 'forensic-test.txt', '/test/forensic.txt');
+      const provId = insertTestDocument(db, docId, 'forensic-test.txt', tempDir);
 
       console.error('[DB STATE] Document inserted:', docId);
       console.error('[DB STATE] Provenance ID:', provId);
@@ -306,7 +311,7 @@ describe('FORENSIC VERIFICATION - Phase 2: Physical Database', () => {
       expect(result.success).toBe(true);
       expect(result.data?.id).toBe(docId);
       expect(result.data?.file_name).toBe('forensic-test.txt');
-      expect(result.data?.file_path).toBe('/test/forensic.txt');
+      expect(result.data?.file_path).toBe(join(tempDir, 'forensic-test.txt'));
       expect(result.data?.provenance_id).toBe(provId);
     });
 
@@ -318,7 +323,7 @@ describe('FORENSIC VERIFICATION - Phase 2: Physical Database', () => {
       state.vectorService = vector;
 
       const docId = uuidv4();
-      insertTestDocument(db, docId, 'delete-test.txt', '/test/delete.txt');
+      insertTestDocument(db, docId, 'delete-test.txt', tempDir);
 
       // BEFORE state
       const docBefore = db.getDocument(docId);
@@ -349,7 +354,7 @@ describe('FORENSIC VERIFICATION - Phase 2: Physical Database', () => {
       state.vectorService = vector;
 
       const docId = uuidv4();
-      const provId = insertTestDocument(db, docId, 'prov-test.txt', '/test/prov.txt');
+      const provId = insertTestDocument(db, docId, 'prov-test.txt', tempDir);
 
       const response = await handleProvenanceGet({ item_id: docId, item_type: 'document' });
       const result = parseResponse(response);
@@ -374,7 +379,7 @@ describe('FORENSIC VERIFICATION - Phase 2: Physical Database', () => {
       state.vectorService = vector;
 
       const docId = uuidv4();
-      insertTestDocument(db, docId, 'verify-test.txt', '/test/verify.txt');
+      insertTestDocument(db, docId, 'verify-test.txt', tempDir);
 
       const response = await handleProvenanceVerify({
         item_id: docId,

@@ -262,7 +262,7 @@ export class OCRProcessor {
       parent_id: document.provenance_id,
       parent_ids: JSON.stringify([document.provenance_id]),
       chain_depth: 1,
-      chain_path: JSON.stringify(['document', 'ocr_result']),
+      chain_path: JSON.stringify(['DOCUMENT', 'OCR_RESULT']),
     };
   }
 }

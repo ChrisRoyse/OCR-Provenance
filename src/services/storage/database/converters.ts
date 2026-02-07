@@ -28,6 +28,18 @@ import {
 } from './types.js';
 
 /**
+ * Safely parse JSON processing_params, returning a fallback on corrupt data.
+ */
+function parseProcessingParams(id: string, raw: string): Record<string, unknown> {
+  try {
+    return JSON.parse(raw) as Record<string, unknown>;
+  } catch {
+    console.error(`[ERROR] Corrupt processing_params in provenance ${id}: ${raw}`);
+    return { _parse_error: true, _raw: raw };
+  }
+}
+
+/**
  * Convert document row to Document interface
  */
 export function rowToDocument(row: DocumentRow): Document {
@@ -149,10 +161,7 @@ export function rowToProvenance(row: ProvenanceRow): ProvenanceRecord {
     file_hash: row.file_hash,
     processor: row.processor,
     processor_version: row.processor_version,
-    processing_params: JSON.parse(row.processing_params) as Record<
-      string,
-      unknown
-    >,
+    processing_params: parseProcessingParams(row.id, row.processing_params),
     processing_duration_ms: row.processing_duration_ms,
     processing_quality_score: row.processing_quality_score,
     parent_id: row.parent_id,

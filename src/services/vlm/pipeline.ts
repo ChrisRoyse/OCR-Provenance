@@ -23,6 +23,7 @@ import {
   setImageProcessing,
   updateImageVLMResult,
   setImageVLMFailed,
+  setImageVLMSkipped,
   getImageStats,
   findByContentHash,
   copyVLMResult,
@@ -244,15 +245,21 @@ export class VLMPipeline {
     const RATE_LIMIT_DELAY_MS = 1000; // 1 second between API calls (paid tier: 1000 RPM)
 
     // Mark all as processing (returns false if image not in 'pending' state)
+    const claimedImages: ImageReference[] = [];
     for (const img of images) {
-      setImageProcessing(this.db, img.id);
+      const claimed = setImageProcessing(this.db, img.id);
+      if (!claimed) {
+        console.error(`[WARN] Image ${img.id} is no longer pending, skipping`);
+        continue;
+      }
+      claimedImages.push(img);
     }
 
     // Process SEQUENTIALLY with rate limiting (no concurrency)
     const results: ProcessingResult[] = [];
 
-    for (let i = 0; i < images.length; i++) {
-      const img = images[i];
+    for (let i = 0; i < claimedImages.length; i++) {
+      const img = claimedImages[i];
 
       // Rate limit: wait between requests (skip for first request)
       if (i > 0) {
@@ -260,7 +267,7 @@ export class VLMPipeline {
         await new Promise(resolve => setTimeout(resolve, RATE_LIMIT_DELAY_MS));
       }
 
-      console.error(`[VLMPipeline] Processing image ${i + 1}/${images.length}: ${img.id}`);
+      console.error(`[VLMPipeline] Processing image ${i + 1}/${claimedImages.length}: ${img.id}`);
 
       try {
         const result = await this.processImage(img);
@@ -313,12 +320,13 @@ export class VLMPipeline {
           const skipReason = `Skipped: ${shouldProcess.reason}`;
           console.error(`[VLMPipeline] ${skipReason} - ${image.id}`);
 
-          // Dedup copies are already marked 'complete' by copyVLMResult — don't re-mark as failed
+          // Dedup copies are already marked 'complete' by copyVLMResult — don't re-mark
           if (shouldProcess.dedupSource) {
             // Create VLM_DESCRIPTION provenance for the dedup copy
             this.trackDedupProvenance(image, shouldProcess.dedupSource);
           } else {
-            setImageVLMFailed(this.db, image.id, skipReason);
+            // Mark as 'complete' (not 'failed') so retry_failed won't reprocess intentionally-skipped images
+            setImageVLMSkipped(this.db, image.id, skipReason);
           }
 
           return {
@@ -525,8 +533,13 @@ export class VLMPipeline {
     const height = image.dimensions?.height ?? 0;
     const maxDim = Math.max(width, height);
 
-    // Only resize if we know dimensions and they exceed limit
-    if (maxDim > 0 && maxDim <= vlmMaxDimension) {
+    // Unknown dimensions (Datalab images) - skip resize
+    if (maxDim === 0) {
+      return null;
+    }
+
+    // Dimensions known but within limit - no resize needed
+    if (maxDim <= vlmMaxDimension) {
       return null;
     }
 
@@ -775,6 +788,10 @@ export class VLMPipeline {
     const parentIds = JSON.parse(imageProv.parent_ids) as string[];
     parentIds.push(image.provenance_id);
 
+    if (!source.vlm_description) {
+      throw new Error(`Cannot create dedup provenance: source image ${source.id} has null vlm_description despite vlm_status=complete`);
+    }
+
     const record: ProvenanceRecord = {
       id: provenanceId,
       type: ProvenanceType.VLM_DESCRIPTION,
@@ -790,7 +807,7 @@ export class VLMPipeline {
         page_number: image.page_number,
         chunk_index: image.image_index,
       },
-      content_hash: computeHash(source.vlm_description ?? ''),
+      content_hash: computeHash(source.vlm_description),
       input_hash: imageProv.content_hash,
       file_hash: imageProv.file_hash,
       processor: 'dedup-copy',
@@ -810,6 +827,49 @@ export class VLMPipeline {
 
     this.dbService.insertProvenance(record);
     console.error(`[VLMPipeline] Created dedup VLM_DESCRIPTION provenance: ${provenanceId} (source: ${source.id})`);
+
+    // If source has an embedding, create EMBEDDING provenance linking to target's chain
+    // This ensures the dedup target has a complete provenance chain including the shared embedding
+    if (source.vlm_embedding_id) {
+      const embProvId = uuidv4();
+      const embParentIds = [...parentIds, provenanceId];
+
+      const embRecord: ProvenanceRecord = {
+        id: embProvId,
+        type: ProvenanceType.EMBEDDING,
+        created_at: now,
+        processed_at: now,
+        source_file_created_at: null,
+        source_file_modified_at: null,
+        source_type: 'EMBEDDING',
+        source_path: null,
+        source_id: provenanceId, // Parent is the VLM_DESCRIPTION we just created
+        root_document_id: imageProv.root_document_id,
+        location: {
+          page_number: image.page_number,
+          chunk_index: image.image_index,
+        },
+        content_hash: record.content_hash, // Same content as VLM description
+        input_hash: record.content_hash,
+        file_hash: imageProv.file_hash,
+        processor: 'vlm-dedup-embedding-link',
+        processor_version: '1.0.0',
+        processing_params: {
+          source_image_id: source.id,
+          source_embedding_id: source.vlm_embedding_id,
+          dedup_reason: 'content_hash_match',
+        },
+        processing_duration_ms: 0,
+        processing_quality_score: null,
+        parent_id: provenanceId,
+        parent_ids: JSON.stringify(embParentIds),
+        chain_depth: 4, // EMBEDDING from VLM_DESCRIPTION is depth 4
+        chain_path: JSON.stringify(['DOCUMENT', 'OCR_RESULT', 'IMAGE', 'VLM_DESCRIPTION', 'EMBEDDING']),
+      };
+
+      this.dbService.insertProvenance(embRecord);
+      console.error(`[VLMPipeline] Created dedup EMBEDDING provenance: ${embProvId} (source embedding: ${source.vlm_embedding_id})`);
+    }
   }
 
   /**

@@ -381,7 +381,7 @@ function migrateV3ToV4(db: Database.Database): void {
     const contentHash = computeFTSContentHash(db);
 
     db.prepare(`
-      INSERT INTO fts_index_metadata (id, last_rebuild_at, chunks_indexed, tokenizer, schema_version, content_hash)
+      INSERT OR REPLACE INTO fts_index_metadata (id, last_rebuild_at, chunks_indexed, tokenizer, schema_version, content_hash)
       VALUES (1, ?, ?, 'porter unicode61', 4, ?)
     `).run(new Date().toISOString(), count.cnt, contentHash);
   } catch (error) {

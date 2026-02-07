@@ -168,6 +168,7 @@ export function createDatabase(
     if (state.currentDatabase) {
       state.currentDatabase.close();
     }
+    _cachedVectorService = null;
     state.currentDatabase = db;
     state.currentDatabaseName = name;
   } else {
