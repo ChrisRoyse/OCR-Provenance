@@ -20,5 +20,6 @@ export {
   migrateToLatest,
   checkSchemaVersion,
   getCurrentSchemaVersion,
+  configurePragmas,
   verifySchema,
 } from './migrations/index.js';

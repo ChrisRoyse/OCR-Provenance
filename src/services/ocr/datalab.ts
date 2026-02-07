@@ -82,8 +82,9 @@ export class DatalabClient {
     metadata: Record<string, unknown> | null;
   }> {
     const options: Options = {
-      mode: 'json',
+      mode: 'text',
       pythonPath: this.pythonPath,
+      pythonOptions: ['-u'],
       args: [
         '--file', filePath,
         '--mode', mode,
@@ -94,62 +95,97 @@ export class DatalabClient {
     };
 
     return new Promise((resolve, reject) => {
-      const timeout = setTimeout(() => {
+      let settled = false;
+      const shell = new PythonShell(this.workerPath, options);
+      let output = '';
+      let stderr = '';
+
+      const timer = setTimeout(() => {
+        if (settled) return;
+        settled = true;
+        // Kill the Python process to prevent orphans
+        try { shell.kill(); } catch { /* ignore */ }
         reject(new OCRError(`OCR timeout after ${this.timeout}ms`, 'OCR_TIMEOUT'));
       }, this.timeout);
 
-      PythonShell.run(this.workerPath, options)
-        .then((results) => {
-          clearTimeout(timeout);
+      shell.on('message', (msg: string) => {
+        output += msg + '\n';
+      });
 
-          if (!results || results.length === 0) {
-            throw new OCRError('No output from OCR worker', 'OCR_API_ERROR');
-          }
+      shell.on('stderr', (err: string) => {
+        stderr += err + '\n';
+      });
 
-          const response = results[0] as unknown;
+      shell.end((err?: Error) => {
+        clearTimeout(timer);
+        if (settled) return;
+        settled = true;
 
-          // Check for error response
-          if (this.isErrorResponse(response)) {
-            throw mapPythonError(response.category, response.error, response.details);
-          }
-
-          const ocrResponse = response as PythonOCRResponse;
-
-          // Verify required fields exist
-          if (!ocrResponse.id || !ocrResponse.content_hash || !ocrResponse.extracted_text) {
-            throw new OCRError(
-              `Invalid OCR response: missing required fields. Got: ${JSON.stringify(Object.keys(ocrResponse))}`,
-              'OCR_API_ERROR'
-            );
-          }
-
-          resolve({
-            result: this.toOCRResult(ocrResponse),
-            pageOffsets: this.toPageOffsets(ocrResponse.page_offsets),
-            images: ocrResponse.images ?? {},
-            jsonBlocks: ocrResponse.json_blocks ?? null,
-            metadata: ocrResponse.metadata ?? null,
-          });
-        })
-        .catch((error) => {
-          clearTimeout(timeout);
-          if (error instanceof OCRError) {
-            reject(error);
-          } else {
-            // PythonShellError puts parsed JSON stdout in error.logs array
-            const logs = (error as Record<string, unknown>).logs as unknown[] | undefined;
-            if (logs && logs.length > 0) {
-              const lastLog = logs[logs.length - 1];
-              if (this.isErrorResponse(lastLog)) {
-                reject(mapPythonError(lastLog.category, lastLog.error, lastLog.details));
+        if (err) {
+          // Try to parse JSON from output for structured error
+          const lines = output.trim().split('\n').filter(l => l.trim());
+          for (let i = lines.length - 1; i >= 0; i--) {
+            try {
+              const parsed = JSON.parse(lines[i]) as unknown;
+              if (this.isErrorResponse(parsed)) {
+                reject(mapPythonError(parsed.category, parsed.error, parsed.details));
                 return;
               }
-            }
-            const stderr = (error as Record<string, unknown>).traceback ?? (error as Record<string, unknown>).stderr ?? '';
-            const detail = stderr ? `${error.message}\nPython stderr:\n${stderr}` : error.message;
-            reject(new OCRError(`Python worker failed: ${detail}`, 'OCR_API_ERROR'));
+            } catch { /* not JSON, skip */ }
           }
+          const detail = stderr ? `${err.message}\nPython stderr:\n${stderr}` : err.message;
+          reject(new OCRError(`Python worker failed: ${detail}`, 'OCR_API_ERROR'));
+          return;
+        }
+
+        // Parse the last JSON line from stdout (Python may output non-JSON logging)
+        const lines = output.trim().split('\n').filter(l => l.trim());
+        if (lines.length === 0) {
+          reject(new OCRError('No output from OCR worker', 'OCR_API_ERROR'));
+          return;
+        }
+
+        let response: unknown;
+        for (let i = lines.length - 1; i >= 0; i--) {
+          try {
+            response = JSON.parse(lines[i]);
+            break;
+          } catch { /* not JSON, try previous line */ }
+        }
+
+        if (!response) {
+          reject(new OCRError(
+            `Failed to parse OCR worker output as JSON. Last line: ${lines[lines.length - 1]?.substring(0, 200)}`,
+            'OCR_API_ERROR'
+          ));
+          return;
+        }
+
+        // Check for error response
+        if (this.isErrorResponse(response)) {
+          reject(mapPythonError(response.category, response.error, response.details));
+          return;
+        }
+
+        const ocrResponse = response as PythonOCRResponse;
+
+        // Verify required fields exist
+        if (!ocrResponse.id || !ocrResponse.content_hash || !ocrResponse.extracted_text) {
+          reject(new OCRError(
+            `Invalid OCR response: missing required fields. Got: ${JSON.stringify(Object.keys(ocrResponse))}`,
+            'OCR_API_ERROR'
+          ));
+          return;
+        }
+
+        resolve({
+          result: this.toOCRResult(ocrResponse),
+          pageOffsets: this.toPageOffsets(ocrResponse.page_offsets),
+          images: ocrResponse.images ?? {},
+          jsonBlocks: ocrResponse.json_blocks ?? null,
+          metadata: ocrResponse.metadata ?? null,
         });
+      });
     });
   }
 
