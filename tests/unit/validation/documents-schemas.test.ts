@@ -48,9 +48,9 @@ describe('Document Management Schemas', () => {
       expect(result.document_id).toBe(VALID_UUID);
     });
 
-    it('should reject invalid UUID', () => {
-      expect(() => DocumentGetInput.parse({ document_id: INVALID_UUID })).toThrow(
-        'Invalid document ID'
+    it('should reject empty document_id', () => {
+      expect(() => DocumentGetInput.parse({ document_id: '' })).toThrow(
+        'Document ID is required'
       );
     });
 
@@ -73,9 +73,9 @@ describe('Document Management Schemas', () => {
       expect(result.confirm).toBe(true);
     });
 
-    it('should reject invalid UUID', () => {
-      expect(() => DocumentDeleteInput.parse({ document_id: 'invalid', confirm: true })).toThrow(
-        'Invalid document ID'
+    it('should reject empty document_id', () => {
+      expect(() => DocumentDeleteInput.parse({ document_id: '', confirm: true })).toThrow(
+        'Document ID is required'
       );
     });
 

@@ -73,21 +73,20 @@ describe('Provenance Schemas', () => {
       expect(result.scope).toBe('database');
     });
 
-    it('should accept all scope without document_id', () => {
-      const result = ProvenanceExportInput.parse({ scope: 'all' });
-      expect(result.scope).toBe('all');
-    });
-
     it('should provide default format', () => {
-      const result = ProvenanceExportInput.parse({ scope: 'all' });
+      const result = ProvenanceExportInput.parse({ scope: 'database' });
       expect(result.format).toBe('json');
     });
 
     it('should accept different export formats', () => {
-      expect(ProvenanceExportInput.parse({ scope: 'all', format: 'csv' }).format).toBe('csv');
-      expect(ProvenanceExportInput.parse({ scope: 'all', format: 'w3c-prov' }).format).toBe(
+      expect(ProvenanceExportInput.parse({ scope: 'database', format: 'csv' }).format).toBe('csv');
+      expect(ProvenanceExportInput.parse({ scope: 'database', format: 'w3c-prov' }).format).toBe(
         'w3c-prov'
       );
+    });
+
+    it('should reject invalid scope', () => {
+      expect(() => ProvenanceExportInput.parse({ scope: 'all' })).toThrow();
     });
   });
 });

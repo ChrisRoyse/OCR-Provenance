@@ -76,7 +76,7 @@ export class BM25SearchService {
     let sql = `
       SELECT
         c.id AS chunk_id,
-        (SELECT MIN(e.id) FROM embeddings e WHERE e.chunk_id = c.id) AS embedding_id,
+        (SELECT e.id FROM embeddings e WHERE e.chunk_id = c.id ORDER BY e.created_at DESC LIMIT 1) AS embedding_id,
         c.document_id,
         c.text AS original_text,
         bm25(chunks_fts) AS bm25_score,
@@ -131,19 +131,48 @@ export class BM25SearchService {
   }
 
   private buildFTSQuery(query: string): string {
-    const FTS5_KEYWORDS = new Set(['AND', 'OR', 'NOT', 'NEAR']);
-    const tokens = query
-      .trim()
-      .split(/\s+/)
-      .filter(t => t.length > 0)
-      .map(t => t.replace(/['"()*:^~\-+{}\[\]\\]/g, ''))
-      .filter(t => t.length > 0 && !FTS5_KEYWORDS.has(t.toUpperCase()));
+    // L-8 fix: Preserve FTS5 boolean operators (NOT, OR, NEAR) to maintain query intent.
+    // Previously "cats NOT dogs" became "cats AND dogs" -- reversing intent.
+    const FTS5_OPERATORS = new Set(['AND', 'OR', 'NOT', 'NEAR']);
+    const rawTokens = query.trim().split(/\s+/).filter(t => t.length > 0);
 
-    if (tokens.length === 0) {
+    const result: string[] = [];
+    for (const raw of rawTokens) {
+      if (FTS5_OPERATORS.has(raw.toUpperCase())) {
+        result.push(raw.toUpperCase());
+      } else {
+        // L-5: Treat hyphens as word separators (matching FTS5 unicode61 tokenizer)
+        const parts = raw.split(/-/)
+          .map(p => p.replace(/['"()*:^~+{}\[\]\\]/g, ''))
+          .filter(p => p.length > 0);
+        result.push(...parts);
+      }
+    }
+
+    // Strip leading/trailing operators and consecutive operators
+    while (result.length > 0 && FTS5_OPERATORS.has(result[0])) result.shift();
+    while (result.length > 0 && FTS5_OPERATORS.has(result[result.length - 1])) result.pop();
+    const cleaned: string[] = [];
+    for (const t of result) {
+      if (FTS5_OPERATORS.has(t) && cleaned.length > 0 && FTS5_OPERATORS.has(cleaned[cleaned.length - 1])) continue;
+      cleaned.push(t);
+    }
+
+    const finalTokens = cleaned.filter(t => t.length > 0);
+    if (finalTokens.length === 0) {
       throw new Error('Query contains no valid search tokens after sanitization');
     }
 
-    return tokens.join(' AND ');
+    // Insert implicit AND between consecutive non-operator tokens
+    const parts: string[] = [];
+    for (let i = 0; i < finalTokens.length; i++) {
+      parts.push(finalTokens[i]);
+      if (i < finalTokens.length - 1 && !FTS5_OPERATORS.has(finalTokens[i]) && !FTS5_OPERATORS.has(finalTokens[i + 1])) {
+        parts.push('AND');
+      }
+    }
+
+    return parts.join(' ');
   }
 
   /**
@@ -277,7 +306,14 @@ export class BM25SearchService {
 
     const start = Date.now();
 
-    this.db.exec("INSERT INTO vlm_fts(vlm_fts) VALUES('rebuild')");
+    // H-4 fix: FTS5 'rebuild' reads ALL rows from the content table (embeddings),
+    // including chunk embeddings (image_id IS NULL). This creates ghost VLM results.
+    // Instead: clear the index, then manually re-insert only VLM embeddings.
+    this.db.exec("INSERT INTO vlm_fts(vlm_fts) VALUES('delete-all')");
+    this.db.exec(`
+      INSERT INTO vlm_fts(rowid, original_text)
+      SELECT rowid, original_text FROM embeddings WHERE image_id IS NOT NULL
+    `);
 
     const count = this.db.prepare(
       'SELECT COUNT(*) as cnt FROM embeddings WHERE image_id IS NOT NULL'
@@ -337,13 +373,17 @@ export class BM25SearchService {
 
 /**
  * Compute SHA-256 content hash of all chunk IDs and text_hashes for FTS index integrity verification.
+ * L-10 fix: Uses incremental hashing with iterate() instead of loading all rows into memory.
  * Used by both BM25SearchService and the v3->v4 migration.
  */
 export function computeFTSContentHash(db: Database.Database): string {
-  const rows = db.prepare(
-    'SELECT id, text_hash FROM chunks ORDER BY id'
-  ).all() as Array<{ id: string; text_hash: string }>;
-
-  const content = rows.map(r => `${r.id}:${r.text_hash}`).join('|');
-  return 'sha256:' + crypto.createHash('sha256').update(content).digest('hex');
+  const hash = crypto.createHash('sha256');
+  let first = true;
+  for (const row of db.prepare('SELECT id, text_hash FROM chunks ORDER BY id').iterate()) {
+    const r = row as { id: string; text_hash: string };
+    if (!first) hash.update('|');
+    hash.update(`${r.id}:${r.text_hash}`);
+    first = false;
+  }
+  return 'sha256:' + hash.digest('hex');
 }

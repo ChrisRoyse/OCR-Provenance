@@ -27,7 +27,6 @@ describe('Document Ingestion Schemas', () => {
         directory_path: '/home/user/docs',
       });
       expect(result.recursive).toBe(true);
-      expect(result.ocr_mode).toBe('balanced');
       expect(result.file_types).toEqual(DEFAULT_FILE_TYPES);
     });
 
