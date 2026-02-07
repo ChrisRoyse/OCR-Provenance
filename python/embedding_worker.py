@@ -328,15 +328,20 @@ def generate_embeddings(
     torch.cuda.reset_peak_memory_stats()
 
     try:
-        embeddings, final_batch_size = embed_with_oom_recovery(chunks, batch_size, device)
+        embeddings_np, final_batch_size = embed_with_oom_recovery(chunks, batch_size, device)
 
         elapsed_ms = (time.perf_counter() - start_time) * 1000
         ms_per_chunk = elapsed_ms / len(chunks) if chunks else 0
         vram_gb = torch.cuda.max_memory_allocated() / (1024**3)
 
+        # H-8: Convert to list and delete numpy array to avoid ~7x memory overlap
+        # (numpy float32 ~1.5MB vs Python float64 list ~10.7MB for 500x768)
+        embeddings_list = embeddings_np.tolist()
+        del embeddings_np
+
         return EmbeddingResult(
             success=True,
-            embeddings=embeddings.tolist(),
+            embeddings=embeddings_list,
             count=len(chunks),
             elapsed_ms=round(elapsed_ms, 2),
             ms_per_chunk=round(ms_per_chunk, 4),

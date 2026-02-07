@@ -13,7 +13,7 @@
 import { z } from 'zod';
 import { v4 as uuidv4 } from 'uuid';
 import { createHash } from 'crypto';
-import { existsSync, statSync, readdirSync, mkdirSync, writeFileSync, readFileSync } from 'fs';
+import { existsSync, statSync, readdirSync, mkdirSync, writeFileSync } from 'fs';
 import { resolve, extname, basename } from 'path';
 
 import { DatabaseService } from '../services/storage/database/index.js';
@@ -83,6 +83,7 @@ function storeChunks(
 ): Chunk[] {
   const provenanceTracker = new ProvenanceTracker(db);
   const chunks: Chunk[] = [];
+  const now = new Date().toISOString();
 
   for (let i = 0; i < chunkResults.length; i++) {
     const cr = chunkResults[i];
@@ -131,12 +132,27 @@ function storeChunks(
       provenance_id: chunkProvId,
     });
 
-    // Retrieve the stored chunk to ensure all fields are populated
-    const storedChunk = db.getChunk(chunkId);
-    if (!storedChunk) {
-      throw new Error(`Failed to retrieve stored chunk: ${chunkId}`);
-    }
-    chunks.push(storedChunk);
+    // L-4 fix: Build Chunk object directly from insert data instead of
+    // re-fetching from DB. insertChunk uses 'pending' status, null embedded_at,
+    // and a generated created_at -- we mirror those defaults here.
+    chunks.push({
+      id: chunkId,
+      document_id: doc.id,
+      ocr_result_id: ocrResult.id,
+      text: cr.text,
+      text_hash: textHash,
+      chunk_index: i,
+      character_start: cr.startOffset,
+      character_end: cr.endOffset,
+      page_number: cr.pageNumber,
+      page_range: cr.pageRange,
+      overlap_previous: cr.overlapWithPrevious,
+      overlap_next: cr.overlapWithNext,
+      provenance_id: chunkProvId,
+      created_at: now,
+      embedding_status: 'pending',
+      embedded_at: null,
+    });
   }
 
   return chunks;
@@ -327,9 +343,15 @@ function saveAndStoreImages(
   const imageRefs: CreateImageReference[] = [];
   const pageImageCounts = new Map<number, number>();
 
-  for (const [filename, base64Data] of Object.entries(images)) {
+  for (const filename of Object.keys(images)) {
     // Decode base64 to buffer
-    const buffer = Buffer.from(base64Data, 'base64');
+    const buffer = Buffer.from(images[filename], 'base64');
+
+    // H-1 fix: Release base64 string from dict immediately after decoding.
+    // The OCR worker returns ALL images as {filename: base64_data} via stdout JSON.
+    // Without this delete, the entire dict stays alive throughout processing.
+    delete images[filename];
+
     const filePath = resolve(outputDir, filename);
 
     // Save to disk - FAIL FAST if write fails
@@ -805,9 +827,9 @@ export async function handleProcessPending(
               : new Map<number, PageImageClassification>();
 
             const imageRefs: CreateImageReference[] = extractedImages.map((img) => {
-              // Compute content hash from the extracted file
-              const imgBytes = readFileSync(img.path);
-              const contentHash = computeContentHash(imgBytes);
+              // M-5 fix: Use streaming 64KB-chunked hash instead of readFileSync.
+              // readFileSync loads the entire image into memory just to hash it.
+              const contentHash = computeFileHashSync(img.path);
 
               const pageInfo = pageClassification.get(img.page);
               const isHeaderFooter = pageInfo !== undefined
@@ -1047,9 +1069,9 @@ export async function handleChunkComplete(
 
     for (const doc of completeDocs) {
       try {
-        // Skip if already has chunks
-        const existingChunks = db.getChunksByDocumentId(doc.id);
-        if (existingChunks.length > 0) {
+        // M-9 fix: Use existence check instead of loading all chunk rows.
+        // getChunksByDocumentId loads every chunk object into memory just to check .length.
+        if (db.hasChunksByDocumentId(doc.id)) {
           results.skipped++;
           continue;
         }

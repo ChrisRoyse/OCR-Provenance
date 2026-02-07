@@ -355,10 +355,15 @@ export class ProvenanceExporter {
    * Ordered by chain_depth ASC, created_at ASC
    */
   private getAllProvenance(): ProvenanceRecord[] {
-    const rows = this.rawDb.prepare(
+    // H-5: Use iterate() to avoid double-allocation (.all() + .map())
+    const records: ProvenanceRecord[] = [];
+    const stmt = this.rawDb.prepare(
       'SELECT * FROM provenance ORDER BY chain_depth ASC, created_at ASC'
-    ).all() as ProvenanceRow[];
-    return rows.map(row => rowToProvenance(row));
+    );
+    for (const row of stmt.iterate() as Iterable<ProvenanceRow>) {
+      records.push(rowToProvenance(row));
+    }
+    return records;
   }
 
   /**
@@ -386,6 +391,12 @@ export class ProvenanceExporter {
       wasGeneratedBy: {},
       wasAttributedTo: {},
     };
+
+    // M-13: Map-based lookup to avoid O(N^2) find() in wasDerivedFrom
+    const recordById = new Map<string, ProvenanceRecord>();
+    for (const record of records) {
+      recordById.set(record.id, record);
+    }
 
     // Track unique agents
     const agents = new Map<string, string>(); // processor name -> agent ID
@@ -481,8 +492,8 @@ export class ProvenanceExporter {
 
       // 6. wasDerivedFrom - link to source entity if present
       if (record.source_id) {
-        // Find source record to get its type
-        const sourceRecord = records.find(r => r.id === record.source_id);
+        // M-13: Use Map lookup instead of O(N) find()
+        const sourceRecord = recordById.get(record.source_id);
         if (sourceRecord) {
           const sourceEntityId = `ocr:${sourceRecord.type.toLowerCase()}-${sourceRecord.id}`;
           const wdfId = `ocr:wdf-${record.id}`;
