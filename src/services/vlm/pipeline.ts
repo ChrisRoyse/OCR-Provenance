@@ -472,7 +472,7 @@ export class VLMPipeline {
       if (Math.max(width, height) < 100) {
         return {
           process: false,
-          reason: `Likely icon: ${width}x${height} (both dims < 100px)`,
+          reason: `Likely icon: ${width}x${height} (largest dim < 100px)`,
         };
       }
 

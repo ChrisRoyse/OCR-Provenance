@@ -244,6 +244,7 @@ export class VLMService {
 
   /**
    * Process multiple images in batch with concurrency control.
+   * Uses Promise.allSettled to prevent one failure from losing all results.
    *
    * @param images - Array of image paths with optional context
    * @param options - Batch options
@@ -264,8 +265,24 @@ export class VLMService {
           useMedicalPrompt: options.useMedicalPrompt,
         })
       );
-      const batchResults = await Promise.all(promises);
-      results.push(...batchResults);
+      const batchSettled = await Promise.allSettled(promises);
+      for (const result of batchSettled) {
+        if (result.status === 'fulfilled') {
+          results.push(result.value);
+        } else {
+          console.error(`[WARN] Image description failed: ${result.reason}`);
+          results.push({
+            description: '',
+            analysis: {
+              imageType: 'unknown', primarySubject: '', paragraph1: '', paragraph2: '',
+              paragraph3: '', extractedText: [], dates: [], names: [], numbers: [], confidence: 0,
+            },
+            model: '',
+            processingTimeMs: 0,
+            tokensUsed: 0,
+          });
+        }
+      }
     }
 
     return results;
@@ -273,6 +290,7 @@ export class VLMService {
 
   /**
    * Classify multiple images in batch.
+   * Uses Promise.allSettled to prevent one failure from losing all results.
    *
    * @param imagePaths - Array of image paths
    * @param concurrency - Max concurrent requests
@@ -287,8 +305,17 @@ export class VLMService {
     for (let i = 0; i < imagePaths.length; i += concurrency) {
       const batch = imagePaths.slice(i, i + concurrency);
       const promises = batch.map((path) => this.classifyImage(path));
-      const batchResults = await Promise.all(promises);
-      results.push(...batchResults);
+      const batchSettled = await Promise.allSettled(promises);
+      for (const result of batchSettled) {
+        if (result.status === 'fulfilled') {
+          results.push(result.value);
+        } else {
+          console.error(`[WARN] Image classification failed: ${result.reason}`);
+          results.push({
+            type: 'other', hasText: false, textDensity: 'unknown', complexity: 'medium', confidence: 0,
+          });
+        }
+      }
     }
 
     return results;

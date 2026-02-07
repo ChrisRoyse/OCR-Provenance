@@ -12,17 +12,40 @@
 
 import { z } from 'zod';
 import * as fs from 'fs';
+import { readFileSync } from 'fs';
 import { resolve } from 'path';
 import { requireDatabase, state } from '../server/state.js';
 import { successResult } from '../server/types.js';
 import { MCPError } from '../server/errors.js';
 import { formatResponse, handleError, type ToolResponse, type ToolDefinition } from './shared.js';
+import { validateInput } from '../utils/validation.js';
 import { ImageExtractor } from '../services/images/extractor.js';
 import { insertImageBatch, getImagesByDocument, updateImageProvenance } from '../services/storage/database/image-operations.js';
 import { getProvenanceTracker } from '../services/provenance/index.js';
 import { ProvenanceType } from '../models/provenance.js';
 import { computeHash } from '../utils/hash.js';
 import type { CreateImageReference } from '../models/image.js';
+
+
+// ===============================================================================
+// VALIDATION SCHEMAS
+// ===============================================================================
+
+const ExtractImagesInput = z.object({
+  document_id: z.string().min(1),
+  min_size: z.number().int().min(10).max(1000).default(100),
+  max_images: z.number().int().min(1).max(1000).default(500),
+  output_dir: z.string().optional(),
+});
+
+const ExtractImagesBatchInput = z.object({
+  min_size: z.number().int().min(10).max(1000).default(100),
+  max_images_per_doc: z.number().int().min(1).max(1000).default(200),
+  limit: z.number().int().min(1).max(100).default(50),
+  status: z.enum(['pending', 'processing', 'complete', 'failed', 'all']).default('complete'),
+});
+
+const ExtractionCheckInput = z.object({});
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // EXTRACTION TOOL HANDLERS
@@ -38,10 +61,11 @@ export async function handleExtractImages(
   params: Record<string, unknown>
 ): Promise<ToolResponse> {
   try {
-    const documentId = params.document_id as string;
-    const minSize = (params.min_size as number) || 100;
-    const maxImages = (params.max_images as number) || 500;
-    const outputDir = params.output_dir as string | undefined;
+    const input = validateInput(ExtractImagesInput, params);
+    const documentId = input.document_id;
+    const minSize = input.min_size ?? 100;
+    const maxImages = input.max_images ?? 500;
+    const outputDir = input.output_dir;
 
     const { db } = requireDatabase();
 
@@ -133,7 +157,7 @@ export async function handleExtractImages(
           source_type: 'IMAGE_EXTRACTION',
           source_id: ocrResult.provenance_id,
           root_document_id: doc.provenance_id,
-          content_hash: img.content_hash ?? computeHash(img.extracted_path ?? img.id),
+          content_hash: img.content_hash ?? (img.extracted_path && fs.existsSync(img.extracted_path) ? computeHash(readFileSync(img.extracted_path)) : computeHash(img.id)),
           source_path: img.extracted_path ?? undefined,
           processor: `${fileType}-file-extraction`,
           processor_version: '1.0.0',
@@ -190,10 +214,11 @@ export async function handleExtractImagesBatch(
   params: Record<string, unknown>
 ): Promise<ToolResponse> {
   try {
-    const minSize = (params.min_size as number) || 100;
-    const maxImagesPerDoc = (params.max_images_per_doc as number) || 200;
-    const limit = (params.limit as number) || 50;
-    const statusFilter = params.status as string | undefined;
+    const input = validateInput(ExtractImagesBatchInput, params);
+    const minSize = input.min_size ?? 100;
+    const maxImagesPerDoc = input.max_images_per_doc ?? 200;
+    const limit = input.limit ?? 50;
+    const statusFilter = input.status;
 
     const { db } = requireDatabase();
 
@@ -305,7 +330,7 @@ export async function handleExtractImagesBatch(
                   source_type: 'IMAGE_EXTRACTION',
                   source_id: ocrProv,
                   root_document_id: docProv,
-                  content_hash: img.content_hash ?? computeHash(img.extracted_path ?? img.id),
+                  content_hash: img.content_hash ?? (img.extracted_path && fs.existsSync(img.extracted_path) ? computeHash(readFileSync(img.extracted_path)) : computeHash(img.id)),
                   source_path: img.extracted_path ?? undefined,
                   processor: `${doc.file_type}-file-extraction`,
                   processor_version: '1.0.0',
@@ -323,6 +348,8 @@ export async function handleExtractImagesBatch(
                 console.error(`[WARN] Failed to create IMAGE provenance for ${img.id}: ${provError instanceof Error ? provError.message : String(provError)}`);
               }
             }
+          } else {
+            console.error(`[WARN] Skipping provenance creation for document ${doc.id}: missing ocrProv=${!!ocrProv} docProv=${!!docProv}`);
           }
         }
 
@@ -368,9 +395,11 @@ export async function handleExtractImagesBatch(
  * Handle ocr_extraction_check - Check Python environment for image extraction
  */
 export async function handleExtractionCheck(
-  _params: Record<string, unknown>
+  params: Record<string, unknown>
 ): Promise<ToolResponse> {
   try {
+    validateInput(ExtractionCheckInput, params);
+
     const extractor = new ImageExtractor();
     const envCheck = await extractor.checkEnvironment();
 

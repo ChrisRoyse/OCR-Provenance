@@ -198,7 +198,6 @@ export const IngestDirectoryInput = z.object({
   recursive: z.boolean().default(true),
   file_types: z.array(z.string()).optional().default(DEFAULT_FILE_TYPES),
   ocr_mode: OCRMode.default('balanced'),
-  auto_process: z.boolean().default(false),
 });
 
 /**
@@ -209,7 +208,6 @@ export const IngestFilesInput = z.object({
     .array(z.string().min(1, 'File path cannot be empty'))
     .min(1, 'At least one file path is required'),
   ocr_mode: OCRMode.default('balanced'),
-  auto_process: z.boolean().default(false),
 });
 
 /**
@@ -284,8 +282,6 @@ export const FTSManageInput = z.object({
  */
 export const DocumentListInput = z.object({
   status_filter: ProcessingStatus.optional(),
-  sort_by: DocumentSortField.default('created_at'),
-  sort_order: SortOrder.default('desc'),
   limit: z.number().int().min(1).max(1000).default(50),
   offset: z.number().int().min(0).default(0),
 });
@@ -320,7 +316,6 @@ export const DocumentDeleteInput = z.object({
 export const ProvenanceGetInput = z.object({
   item_id: z.string().min(1, 'Item ID is required'),
   item_type: ItemType.default('auto'),
-  format: ProvenanceFormat.default('chain'),
 });
 
 /**
@@ -340,7 +335,6 @@ export const ProvenanceExportInput = z
     scope: ExportScope,
     document_id: z.string().optional(),
     format: ExportFormat.default('json'),
-    output_path: z.string().optional(),
   })
   .refine((data) => data.scope !== 'document' || data.document_id !== undefined, {
     message: 'document_id is required when scope is "document"',

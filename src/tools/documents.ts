@@ -180,8 +180,6 @@ export const documentTools: Record<string, ToolDefinition> = {
     description: 'List documents in the current database',
     inputSchema: {
       status_filter: z.enum(['pending', 'processing', 'complete', 'failed']).optional().describe('Filter by status'),
-      sort_by: z.enum(['created_at', 'file_name', 'file_size']).default('created_at').describe('Sort field'),
-      sort_order: z.enum(['asc', 'desc']).default('desc').describe('Sort order'),
       limit: z.number().int().min(1).max(1000).default(50).describe('Maximum results'),
       offset: z.number().int().min(0).default(0).describe('Offset for pagination'),
     },

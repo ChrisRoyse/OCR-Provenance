@@ -41,6 +41,7 @@ export interface DatabaseStats {
     failed: number;
   };
   total_embeddings: number;
+  total_images: number;
   total_provenance: number;
   storage_size_bytes: number;
   avg_chunks_per_document: number;
@@ -67,6 +68,7 @@ export enum DatabaseErrorCode {
   OCR_RESULT_NOT_FOUND = 'OCR_RESULT_NOT_FOUND',
   CHUNK_NOT_FOUND = 'CHUNK_NOT_FOUND',
   EMBEDDING_NOT_FOUND = 'EMBEDDING_NOT_FOUND',
+  IMAGE_NOT_FOUND = 'IMAGE_NOT_FOUND',
   PROVENANCE_NOT_FOUND = 'PROVENANCE_NOT_FOUND',
   FOREIGN_KEY_VIOLATION = 'FOREIGN_KEY_VIOLATION',
   SCHEMA_MISMATCH = 'SCHEMA_MISMATCH',

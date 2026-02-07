@@ -156,17 +156,21 @@ export async function handleProvenanceVerify(
       // Verify chain integrity
       if (input.verify_chain) {
         // Check chain depth is correct
-        if (prov.chain_depth !== i) {
+        // chain[0] is the deepest (queried item), chain[last] is the root (depth 0)
+        const expectedDepth = chain.length - 1 - i;
+        if (prov.chain_depth !== expectedDepth) {
           step.chain_verified = false;
           chainIntegrity = false;
-          errors.push(`Chain depth mismatch at ${prov.id}: expected ${i}, got ${prov.chain_depth}`);
+          errors.push(`Chain depth mismatch at ${prov.id}: expected ${expectedDepth}, got ${prov.chain_depth}`);
         }
 
-        // Check parent link (except for root)
-        if (i > 0 && prov.parent_id !== chain[i - 1].id) {
+        // Check parent link (except for root, which is the last item)
+        // Each preceding item's parent_id should point to the current item
+        // since we walk from deepest to shallowest
+        if (i > 0 && chain[i - 1].parent_id !== prov.id) {
           step.chain_verified = false;
           chainIntegrity = false;
-          errors.push(`Parent link broken at ${prov.id}`);
+          errors.push(`Parent link broken at ${chain[i - 1].id}`);
         }
       }
 
@@ -306,7 +310,6 @@ export const provenanceTools: Record<string, ToolDefinition> = {
     inputSchema: {
       item_id: z.string().min(1).describe('ID of the item (document, chunk, embedding, or provenance)'),
       item_type: z.enum(['document', 'ocr_result', 'chunk', 'embedding', 'auto']).default('auto').describe('Type of item'),
-      format: z.enum(['chain', 'tree', 'flat']).default('chain').describe('Output format'),
     },
     handler: handleProvenanceGet,
   },
@@ -325,7 +328,6 @@ export const provenanceTools: Record<string, ToolDefinition> = {
       scope: z.enum(['document', 'database', 'all']).describe('Export scope'),
       document_id: z.string().optional().describe('Document ID (required when scope is document)'),
       format: z.enum(['json', 'w3c-prov', 'csv']).default('json').describe('Export format'),
-      output_path: z.string().optional().describe('Optional output file path'),
     },
     handler: handleProvenanceExport,
   },

@@ -373,7 +373,7 @@ function saveAndStoreImages(
       bounding_box: { x: 0, y: 0, width: 0, height: 0 }, // Datalab doesn't provide bbox
       image_index: imageIndex,
       format,
-      dimensions: { width: 0, height: 0 }, // Will be populated by VLM or left as 0
+      dimensions: { width: 0, height: 0 }, // Datalab does not provide dimensions; filtering pipeline bypasses dimension check when both are 0
       extracted_path: filePath,
       file_size: buffer.length,
       context_text: contextText || null,
@@ -399,7 +399,7 @@ function saveAndStoreImages(
           source_type: 'IMAGE_EXTRACTION',
           source_id: ocrResult.provenance_id,
           root_document_id: doc.provenance_id,
-          content_hash: img.content_hash ?? computeHash(img.extracted_path ?? img.id),
+          content_hash: img.content_hash ?? (img.extracted_path && existsSync(img.extracted_path) ? computeHash(readFileSync(img.extracted_path)) : computeHash(img.id)),
           source_path: img.extracted_path ?? undefined,
           processor: 'datalab-image-extraction',
           processor_version: '1.0.0',
@@ -843,7 +843,7 @@ export async function handleProcessPending(
                   source_type: 'IMAGE_EXTRACTION',
                   source_id: ocrResult.provenance_id,
                   root_document_id: doc.provenance_id,
-                  content_hash: img.content_hash ?? computeHash(img.extracted_path ?? img.id),
+                  content_hash: img.content_hash ?? (img.extracted_path && existsSync(img.extracted_path) ? computeHash(readFileSync(img.extracted_path)) : computeHash(img.id)),
                   source_path: img.extracted_path ?? undefined,
                   processor: `${doc.file_type}-image-extraction`,
                   processor_version: '1.0.0',
@@ -1155,7 +1155,6 @@ export const ingestionTools: Record<string, ToolDefinition> = {
       recursive: z.boolean().default(true).describe('Scan subdirectories'),
       file_types: z.array(z.string()).optional().describe('File types to include (default: pdf, png, jpg, docx, etc.)'),
       ocr_mode: z.enum(['fast', 'balanced', 'accurate']).default('balanced').describe('OCR processing mode'),
-      auto_process: z.boolean().default(false).describe('Automatically process documents after ingestion'),
     },
     handler: handleIngestDirectory,
   },
@@ -1164,7 +1163,6 @@ export const ingestionTools: Record<string, ToolDefinition> = {
     inputSchema: {
       file_paths: z.array(z.string().min(1)).min(1).describe('Array of file paths to ingest'),
       ocr_mode: z.enum(['fast', 'balanced', 'accurate']).default('balanced').describe('OCR processing mode'),
-      auto_process: z.boolean().default(false).describe('Automatically process documents after ingestion'),
     },
     handler: handleIngestFiles,
   },

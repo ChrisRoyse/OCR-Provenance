@@ -77,6 +77,12 @@ export function getStats(
       .get() as { count: number }
   ).count;
 
+  const imageCount = (
+    db
+      .prepare('SELECT COUNT(*) as count FROM images')
+      .get() as { count: number }
+  ).count;
+
   const stats = statSync(path);
 
   const avgChunksPerDocument =
@@ -101,6 +107,7 @@ export function getStats(
       failed: chunkStats.failed,
     },
     total_embeddings: embeddingCount,
+    total_images: imageCount,
     total_provenance: provenanceCount,
     storage_size_bytes: stats.size,
     avg_chunks_per_document: avgChunksPerDocument,

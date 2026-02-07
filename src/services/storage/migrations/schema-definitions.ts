@@ -8,7 +8,7 @@
  */
 
 /** Current schema version */
-export const SCHEMA_VERSION = 6;
+export const SCHEMA_VERSION = 7;
 
 /**
  * Database configuration pragmas for optimal performance and safety
@@ -44,7 +44,7 @@ CREATE TABLE IF NOT EXISTS provenance (
   processed_at TEXT NOT NULL,
   source_file_created_at TEXT,
   source_file_modified_at TEXT,
-  source_type TEXT NOT NULL CHECK (source_type IN ('FILE', 'OCR', 'CHUNKING', 'IMAGE_EXTRACTION', 'VLM', 'EMBEDDING')),
+  source_type TEXT NOT NULL CHECK (source_type IN ('FILE', 'OCR', 'CHUNKING', 'IMAGE_EXTRACTION', 'VLM', 'VLM_DEDUP', 'EMBEDDING')),
   source_path TEXT,
   source_id TEXT,
   root_document_id TEXT NOT NULL,
@@ -252,7 +252,7 @@ CREATE TABLE IF NOT EXISTS fts_index_metadata (
   last_rebuild_at TEXT,
   chunks_indexed INTEGER NOT NULL DEFAULT 0,
   tokenizer TEXT NOT NULL DEFAULT 'porter unicode61',
-  schema_version INTEGER NOT NULL DEFAULT 4,
+  schema_version INTEGER NOT NULL DEFAULT 7,
   content_hash TEXT
 )
 `;

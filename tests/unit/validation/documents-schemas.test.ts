@@ -17,8 +17,6 @@ describe('Document Management Schemas', () => {
   describe('DocumentListInput', () => {
     it('should provide defaults', () => {
       const result = DocumentListInput.parse({});
-      expect(result.sort_by).toBe('created_at');
-      expect(result.sort_order).toBe('desc');
       expect(result.limit).toBe(50);
       expect(result.offset).toBe(0);
     });
@@ -28,8 +26,9 @@ describe('Document Management Schemas', () => {
       expect(result.status_filter).toBe('complete');
     });
 
-    it('should reject invalid sort_by', () => {
-      expect(() => DocumentListInput.parse({ sort_by: 'invalid' })).toThrow();
+    it('should strip unknown fields like sort_by', () => {
+      const result = DocumentListInput.parse({ sort_by: 'invalid' });
+      expect((result as Record<string, unknown>).sort_by).toBeUndefined();
     });
 
     it('should reject limit above maximum', () => {

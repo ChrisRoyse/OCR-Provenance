@@ -389,6 +389,14 @@ def extract_images(
                         file=sys.stderr,
                     )
 
+                if converted:
+                    # Re-read dimensions from converted image
+                    try:
+                        converted_img = Image.open(io.BytesIO(img_bytes))
+                        width, height = converted_img.size
+                    except Exception:
+                        pass  # Keep original dimensions if re-read fails
+
             # Generate filename matching PDF extractor pattern
             filename = f"p{page:03d}_i{count:03d}.{save_ext}"
             filepath = output / filename

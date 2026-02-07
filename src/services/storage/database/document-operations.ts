@@ -129,6 +129,9 @@ export function listDocuments(
   }
 
   if (options?.offset !== undefined) {
+    if (options?.limit === undefined) {
+      query += ' LIMIT -1';
+    }
     query += ' OFFSET ?';
     params.push(options.offset);
   }
@@ -244,6 +247,9 @@ export function deleteDocument(
     deleteVecStmt.run(embeddingId);
   }
 
+  // Delete from images (before embeddings due to vlm_embedding_id FK)
+  db.prepare('DELETE FROM images WHERE document_id = ?').run(id);
+
   // Delete from embeddings
   db.prepare('DELETE FROM embeddings WHERE document_id = ?').run(id);
 
@@ -273,4 +279,16 @@ export function deleteDocument(
 
   // Update metadata counts
   updateMetadataCounts();
+}
+
+/**
+ * Reset documents stuck in 'processing' status back to 'pending'
+ *
+ * @param db - Database connection
+ * @returns number - Number of documents reset
+ */
+export function resetProcessingDocuments(db: Database.Database): number {
+  return db.prepare(
+    "UPDATE documents SET status = 'pending', error_message = 'Reset from stuck processing state' WHERE status = 'processing'"
+  ).run().changes;
 }
