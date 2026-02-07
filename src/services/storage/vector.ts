@@ -60,8 +60,12 @@ export class VectorError extends Error {
 export interface VectorSearchResult {
   // Identity
   embedding_id: string;
-  chunk_id: string;
+  chunk_id: string | null;
+  image_id: string | null;
   document_id: string;
+
+  // Result type discriminator
+  result_type: 'chunk' | 'vlm';
 
   // Similarity (computed from distance)
   similarity_score: number; // 1 - distance (0-1, higher = better)
@@ -115,7 +119,8 @@ export interface VectorSearchOptions {
 interface SearchRow {
   embedding_id: string;
   distance: number;
-  chunk_id: string;
+  chunk_id: string | null;
+  image_id: string | null;
   document_id: string;
   original_text: string;
   original_text_length: number;
@@ -339,6 +344,7 @@ export class VectorService {
       SELECT
         e.id as embedding_id,
         e.chunk_id,
+        e.image_id,
         e.document_id,
         e.original_text,
         e.original_text_length,
@@ -395,6 +401,7 @@ export class VectorService {
         SELECT
           e.id as embedding_id,
           e.chunk_id,
+          e.image_id,
           e.document_id,
           e.original_text,
           e.original_text_length,
@@ -442,7 +449,9 @@ export class VectorService {
       .map((row) => ({
         embedding_id: row.embedding_id,
         chunk_id: row.chunk_id,
+        image_id: row.image_id,
         document_id: row.document_id,
+        result_type: (row.chunk_id !== null ? 'chunk' : 'vlm') as 'chunk' | 'vlm',
         similarity_score: 1 - row.distance, // Convert distance to similarity
         distance: row.distance,
         original_text: row.original_text,

@@ -8,7 +8,7 @@
  */
 
 /** Current schema version */
-export const SCHEMA_VERSION = 5;
+export const SCHEMA_VERSION = 6;
 
 /**
  * Database configuration pragmas for optimal performance and safety
@@ -244,10 +244,11 @@ export const CREATE_FTS_TRIGGERS = [
 
 /**
  * FTS5 index metadata for audit trail
+ * Note: v6 removes CHECK (id = 1) to allow id=2 row for VLM FTS metadata
  */
 export const CREATE_FTS_INDEX_METADATA = `
 CREATE TABLE IF NOT EXISTS fts_index_metadata (
-  id INTEGER PRIMARY KEY CHECK (id = 1),
+  id INTEGER PRIMARY KEY,
   last_rebuild_at TEXT,
   chunks_indexed INTEGER NOT NULL DEFAULT 0,
   tokenizer TEXT NOT NULL DEFAULT 'porter unicode61',
@@ -255,6 +256,41 @@ CREATE TABLE IF NOT EXISTS fts_index_metadata (
   content_hash TEXT
 )
 `;
+
+/**
+ * FTS5 full-text search index over VLM description embeddings
+ * Uses external content mode - reads original_text from embeddings table
+ * Only indexes embeddings where image_id IS NOT NULL (VLM descriptions)
+ * Tokenizer: porter stemmer + unicode support
+ */
+export const CREATE_VLM_FTS_TABLE = `
+CREATE VIRTUAL TABLE IF NOT EXISTS vlm_fts USING fts5(
+  original_text,
+  content='embeddings',
+  content_rowid='rowid',
+  tokenize='porter unicode61'
+)
+`;
+
+/**
+ * Triggers to keep VLM FTS5 in sync with embeddings table
+ * Only fire for embeddings with image_id IS NOT NULL (VLM description embeddings)
+ */
+export const CREATE_VLM_FTS_TRIGGERS = [
+  `CREATE TRIGGER IF NOT EXISTS vlm_fts_ai AFTER INSERT ON embeddings
+   WHEN new.image_id IS NOT NULL BEGIN
+    INSERT INTO vlm_fts(rowid, original_text) VALUES (new.rowid, new.original_text);
+  END`,
+  `CREATE TRIGGER IF NOT EXISTS vlm_fts_ad AFTER DELETE ON embeddings
+   WHEN old.image_id IS NOT NULL BEGIN
+    INSERT INTO vlm_fts(vlm_fts, rowid, original_text) VALUES('delete', old.rowid, old.original_text);
+  END`,
+  `CREATE TRIGGER IF NOT EXISTS vlm_fts_au AFTER UPDATE OF original_text ON embeddings
+   WHEN new.image_id IS NOT NULL BEGIN
+    INSERT INTO vlm_fts(vlm_fts, rowid, original_text) VALUES('delete', old.rowid, old.original_text);
+    INSERT INTO vlm_fts(rowid, original_text) VALUES (new.rowid, new.original_text);
+  END`,
+] as const;
 
 /**
  * Images table - extracted images from documents for VLM analysis
@@ -365,6 +401,7 @@ export const REQUIRED_TABLES = [
   'images',
   'chunks_fts',
   'fts_index_metadata',
+  'vlm_fts',
 ] as const;
 
 /**
@@ -379,6 +416,7 @@ export const REQUIRED_INDEXES = [
   'idx_chunks_ocr_result_id',
   'idx_chunks_embedding_status',
   'idx_embeddings_chunk_id',
+  'idx_embeddings_image_id',
   'idx_embeddings_document_id',
   'idx_embeddings_source_file',
   'idx_embeddings_page',

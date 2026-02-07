@@ -12,9 +12,12 @@ export interface RRFConfig {
 }
 
 export interface RRFSearchResult {
-  chunk_id: string;
+  chunk_id: string | null;
+  image_id: string | null;
+  embedding_id: string;
   document_id: string;
   original_text: string;
+  result_type: 'chunk' | 'vlm';
   rrf_score: number;
   bm25_rank: number | null;
   bm25_score: number | null;
@@ -34,9 +37,12 @@ export interface RRFSearchResult {
 }
 
 export interface RankedResult {
-  chunk_id: string;
+  chunk_id: string | null;
+  image_id: string | null;
+  embedding_id: string;
   rank: number;
   score: number;
+  result_type: 'chunk' | 'vlm';
   document_id: string;
   original_text: string;
   source_file_path: string;
@@ -66,8 +72,11 @@ function buildFusedResult(
 ): RRFSearchResult {
   return {
     chunk_id: result.chunk_id,
+    image_id: result.image_id,
+    embedding_id: result.embedding_id,
     document_id: result.document_id,
     original_text: result.original_text,
+    result_type: result.result_type,
     rrf_score: rrfScore,
     bm25_rank: source === 'bm25' ? result.rank : null,
     bm25_score: source === 'bm25' ? result.score : null,
@@ -107,16 +116,17 @@ export class RRFFusion {
     limit: number
   ): RRFSearchResult[] {
     const { k, bm25Weight, semanticWeight } = this.config;
+    // Use embedding_id as Map key to avoid collision when chunk_id is null (VLM results)
     const fusedMap = new Map<string, RRFSearchResult>();
 
     for (const result of bm25Results) {
       const rrfScore = bm25Weight / (k + result.rank);
-      fusedMap.set(result.chunk_id, buildFusedResult(result, rrfScore, 'bm25'));
+      fusedMap.set(result.embedding_id, buildFusedResult(result, rrfScore, 'bm25'));
     }
 
     for (const result of semanticResults) {
       const rrfContribution = semanticWeight / (k + result.rank);
-      const existing = fusedMap.get(result.chunk_id);
+      const existing = fusedMap.get(result.embedding_id);
 
       if (existing) {
         existing.rrf_score += rrfContribution;
@@ -126,7 +136,7 @@ export class RRFFusion {
         // BM25 provenance_id (chunk-level, depth 2) is kept over semantic's
         // (embedding-level, depth 3) — both are valid but chunk-level is canonical
       } else {
-        fusedMap.set(result.chunk_id, buildFusedResult(result, rrfContribution, 'semantic'));
+        fusedMap.set(result.embedding_id, buildFusedResult(result, rrfContribution, 'semantic'));
       }
     }
 

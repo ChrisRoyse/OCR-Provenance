@@ -14,6 +14,8 @@ import {
   CREATE_CHUNKS_FTS_TABLE,
   CREATE_FTS_TRIGGERS,
   CREATE_FTS_INDEX_METADATA,
+  CREATE_VLM_FTS_TABLE,
+  CREATE_VLM_FTS_TRIGGERS,
 } from './schema-definitions.js';
 import {
   configurePragmas,
@@ -430,6 +432,81 @@ function migrateV4ToV5(db: Database.Database): void {
 }
 
 /**
+ * Migrate from schema version 5 to version 6
+ *
+ * Changes in v6:
+ * - vlm_fts: FTS5 virtual table for VLM description full-text search
+ * - vlm_fts_ai/ad/au: Sync triggers on embeddings (where image_id IS NOT NULL)
+ * - fts_index_metadata: Remove CHECK (id = 1) constraint to allow id=2 row for VLM FTS
+ * - fts_index_metadata id=2: VLM FTS metadata row
+ *
+ * @param db - Database instance from better-sqlite3
+ * @throws MigrationError if migration fails
+ */
+function migrateV5ToV6(db: Database.Database): void {
+  try {
+    // 1. Recreate fts_index_metadata without CHECK (id = 1) constraint
+    // This allows storing metadata for both chunks FTS (id=1) and VLM FTS (id=2)
+    db.exec('DROP TABLE IF EXISTS fts_index_metadata_old');
+    db.exec('ALTER TABLE fts_index_metadata RENAME TO fts_index_metadata_old');
+    db.exec(`
+      CREATE TABLE fts_index_metadata (
+        id INTEGER PRIMARY KEY,
+        last_rebuild_at TEXT,
+        chunks_indexed INTEGER NOT NULL DEFAULT 0,
+        tokenizer TEXT NOT NULL DEFAULT 'porter unicode61',
+        schema_version INTEGER NOT NULL DEFAULT 4,
+        content_hash TEXT
+      )
+    `);
+
+    // Copy existing data
+    db.exec('INSERT INTO fts_index_metadata SELECT * FROM fts_index_metadata_old');
+    db.exec('DROP TABLE fts_index_metadata_old');
+
+    // 2. Create VLM FTS5 virtual table
+    db.exec(CREATE_VLM_FTS_TABLE);
+
+    // 3. Create VLM FTS sync triggers
+    for (const trigger of CREATE_VLM_FTS_TRIGGERS) {
+      db.exec(trigger);
+    }
+
+    // 4. Insert VLM FTS metadata row (id=2)
+    const now = new Date().toISOString();
+    db.prepare(`
+      INSERT OR IGNORE INTO fts_index_metadata (id, last_rebuild_at, chunks_indexed, tokenizer, schema_version, content_hash)
+      VALUES (2, ?, 0, 'porter unicode61', 6, NULL)
+    `).run(now);
+
+    // 5. Populate vlm_fts from existing VLM embeddings
+    const vlmCount = db.prepare(
+      'SELECT COUNT(*) as cnt FROM embeddings WHERE image_id IS NOT NULL'
+    ).get() as { cnt: number };
+
+    if (vlmCount.cnt > 0) {
+      db.exec(`
+        INSERT INTO vlm_fts(rowid, original_text)
+        SELECT rowid, original_text FROM embeddings WHERE image_id IS NOT NULL
+      `);
+
+      // Update VLM FTS metadata with count
+      db.prepare(
+        'UPDATE fts_index_metadata SET chunks_indexed = ?, last_rebuild_at = ? WHERE id = 2'
+      ).run(vlmCount.cnt, now);
+    }
+  } catch (error) {
+    const cause = error instanceof Error ? error.message : String(error);
+    throw new MigrationError(
+      `Failed to migrate from v5 to v6 (VLM FTS setup): ${cause}`,
+      'migrate',
+      'vlm_fts',
+      error
+    );
+  }
+}
+
+/**
  * Migrate database to the latest schema version
  *
  * Checks current version and applies any necessary migrations.
@@ -475,6 +552,10 @@ export function migrateToLatest(db: Database.Database): void {
 
   if (currentVersion < 5) {
     migrateV4ToV5(db);
+  }
+
+  if (currentVersion < 6) {
+    migrateV5ToV6(db);
   }
 
   // Update schema version after successful migration

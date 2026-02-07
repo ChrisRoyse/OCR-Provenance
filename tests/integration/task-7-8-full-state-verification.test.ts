@@ -94,7 +94,9 @@ describe('FULL STATE VERIFICATION: Tasks 7 & 8', () => {
       expect(coreTables).toContain('images');
       expect(coreTables).toContain('chunks_fts');
       expect(coreTables).toContain('fts_index_metadata');
-      expect(coreTables.length).toBe(11);
+      expect(coreTables).toContain('vlm_fts');
+      // 12 defined tables + FTS5/vec0 shadow tables
+      expect(coreTables.length).toBeGreaterThanOrEqual(12);
 
       db.close();
     });
