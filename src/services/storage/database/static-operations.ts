@@ -5,7 +5,7 @@
 import Database from 'better-sqlite3';
 import { statSync, existsSync, mkdirSync, readdirSync, unlinkSync, writeFileSync, chmodSync } from 'fs';
 import { createRequire } from 'module';
-import { initializeDatabase, migrateToLatest, verifySchema } from '../migrations.js';
+import { initializeDatabase, migrateToLatest, verifySchema, configurePragmas } from '../migrations.js';
 import { SqliteVecModule } from '../types.js';
 import { DatabaseInfo, DatabaseError, DatabaseErrorCode, MetadataRow } from './types.js';
 import { DEFAULT_STORAGE_PATH, validateName, getDatabasePath } from './helpers.js';
@@ -103,6 +103,15 @@ export function openDatabase(
       DatabaseErrorCode.SCHEMA_MISMATCH,
       error
     );
+  }
+
+  // Configure per-connection pragmas (FK enforcement, synchronous, cache_size)
+  // These are NOT persistent in SQLite -- must be set on every connection open
+  try {
+    configurePragmas(db);
+  } catch (error) {
+    db.close();
+    throw error;
   }
 
   try {

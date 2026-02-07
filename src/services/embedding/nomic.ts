@@ -195,8 +195,15 @@ export class NomicEmbeddingClient {
     return new Float32Array(result.embedding);
   }
 
+  /** Embedding worker timeout: 5 minutes (CUDA hang protection) */
+  private static readonly WORKER_TIMEOUT_MS = 300_000;
+
+  /** Max stderr accumulation: 10KB */
+  private static readonly MAX_STDERR_LENGTH = 10_240;
+
   private async runWorker<T>(args: string[], stdin?: string): Promise<T> {
     return new Promise((resolve, reject) => {
+      let settled = false;
       const options: PythonShellOptions = {
         mode: 'text',
         pythonPath: this.pythonPath,
@@ -208,45 +215,75 @@ export class NomicEmbeddingClient {
       let output = '';
       let stderr = '';
 
+      // Timeout: kill the Python process if CUDA hangs
+      const timer = setTimeout(() => {
+        if (settled) return;
+        settled = true;
+        try { shell.kill(); } catch { /* ignore */ }
+        reject(
+          new EmbeddingError(
+            `Embedding worker timeout after ${NomicEmbeddingClient.WORKER_TIMEOUT_MS}ms (possible CUDA hang)`,
+            'WORKER_ERROR',
+            { stderr: stderr.substring(0, 1000) }
+          )
+        );
+      }, NomicEmbeddingClient.WORKER_TIMEOUT_MS);
+
       shell.on('message', (msg: string) => {
         output += msg;
       });
 
       shell.on('stderr', (err: string) => {
-        stderr += err + '\n';
+        // Cap stderr accumulation to prevent unbounded memory growth
+        if (stderr.length < NomicEmbeddingClient.MAX_STDERR_LENGTH) {
+          stderr += err + '\n';
+        }
       });
 
       const handleEnd = (err?: Error) => {
+        clearTimeout(timer);
+        if (settled) return;
+        settled = true;
+
         if (err) {
           console.error('[EmbeddingWorker] Error:', err.message);
-          if (stderr) console.error('[EmbeddingWorker] Stderr:', stderr);
+          if (stderr) console.error('[EmbeddingWorker] Stderr:', stderr.substring(0, 1000));
 
           reject(
             new EmbeddingError(
               `Worker error: ${err.message}`,
               this.classifyError(stderr || err.message),
-              { stderr, stack: err.stack }
+              { stderr: stderr.substring(0, 1000), stack: err.stack }
             )
           );
           return;
         }
 
         if (!output.trim()) {
-          reject(new EmbeddingError('Worker produced no output', 'WORKER_ERROR', { stderr }));
+          reject(new EmbeddingError('Worker produced no output', 'WORKER_ERROR', { stderr: stderr.substring(0, 1000) }));
           return;
         }
 
-        try {
-          resolve(JSON.parse(output) as T);
-        } catch (parseError) {
-          console.error('[EmbeddingWorker] Parse error:', parseError);
+        // Parse the last JSON line (torch/sentence_transformers may output non-JSON to stdout)
+        const lines = output.trim().split('\n');
+        let parsed: T | undefined;
+        for (let i = lines.length - 1; i >= 0; i--) {
+          try {
+            parsed = JSON.parse(lines[i]) as T;
+            break;
+          } catch { /* not JSON, try previous line */ }
+        }
+
+        if (parsed !== undefined) {
+          resolve(parsed);
+        } else {
+          console.error('[EmbeddingWorker] Parse error: no valid JSON in output');
           console.error('[EmbeddingWorker] Raw output:', output.substring(0, 500));
 
           reject(
             new EmbeddingError('Failed to parse worker output as JSON', 'PARSE_ERROR', {
               output: output.substring(0, 1000),
-              stderr,
-              parseError: String(parseError),
+              stderr: stderr.substring(0, 1000),
             })
           );
         }

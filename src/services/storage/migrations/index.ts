@@ -21,5 +21,8 @@ export {
   getCurrentSchemaVersion,
 } from './operations.js';
 
+// Re-export schema helpers needed by static-operations
+export { configurePragmas } from './schema-helpers.js';
+
 // Re-export verification
 export { verifySchema } from './verification.js';

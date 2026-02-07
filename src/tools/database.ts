@@ -79,15 +79,17 @@ export async function handleDatabaseList(
       };
 
       if (input.include_stats) {
+        let statsDb: DatabaseService | null = null;
         try {
-          const db = DatabaseService.open(dbInfo.name, storagePath);
-          const stats = db.getStats();
+          statsDb = DatabaseService.open(dbInfo.name, storagePath);
+          const stats = statsDb.getStats();
           item.document_count = stats.total_documents;
           item.chunk_count = stats.total_chunks;
           item.embedding_count = stats.total_embeddings;
-          db.close();
         } catch (err) {
           item.stats_error = err instanceof Error ? err.message : String(err);
+        } finally {
+          statsDb?.close();
         }
       }
 
@@ -172,10 +174,13 @@ export async function handleDatabaseStats(
     if (input.database_name && input.database_name !== state.currentDatabaseName) {
       const storagePath = getDefaultStoragePath();
       const db = DatabaseService.open(input.database_name, storagePath);
-      const vector = new VectorService(db.getConnection());
-      const result = buildStatsResponse(db, vector);
-      db.close();
-      return formatResponse(successResult(result));
+      try {
+        const vector = new VectorService(db.getConnection());
+        const result = buildStatsResponse(db, vector);
+        return formatResponse(successResult(result));
+      } finally {
+        db.close();
+      }
     }
 
     // Use current database

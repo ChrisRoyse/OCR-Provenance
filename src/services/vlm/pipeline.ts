@@ -12,6 +12,7 @@
  */
 
 import Database from 'better-sqlite3';
+import { unlinkSync } from 'fs';
 import { v4 as uuidv4 } from 'uuid';
 
 import { VLMService, type VLMAnalysisResult, type ImageAnalysis } from './service.js';
@@ -342,59 +343,66 @@ export class VLMPipeline {
         }
       }
 
-      // Run VLM analysis
-      const vlmResult = await this.vlm.describeImage(imagePath, {
-        contextText: image.context_text ?? undefined,
-        useMedicalPrompt: this.config.useMedicalPrompts,
-        useUniversalPrompt: this.config.useUniversalPrompt,
-      });
+      try {
+        // Run VLM analysis
+        const vlmResult = await this.vlm.describeImage(imagePath, {
+          contextText: image.context_text ?? undefined,
+          useMedicalPrompt: this.config.useMedicalPrompts,
+          useUniversalPrompt: this.config.useUniversalPrompt,
+        });
 
-      // Check confidence threshold
-      if (vlmResult.analysis.confidence < this.config.minConfidence) {
-        console.warn(
-          `[VLMPipeline] Low confidence (${vlmResult.analysis.confidence}) for image ${image.id}`
-        );
+        // Check confidence threshold
+        if (vlmResult.analysis.confidence < this.config.minConfidence) {
+          console.warn(
+            `[VLMPipeline] Low confidence (${vlmResult.analysis.confidence}) for image ${image.id}`
+          );
+        }
+
+        // Track VLM_DESCRIPTION provenance FIRST (returns provenance ID for embedding chain)
+        let vlmProvId: string | undefined;
+        if (!this.config.skipProvenance && this.dbService) {
+          vlmProvId = this.trackProvenance(image, vlmResult);
+        }
+
+        // Generate embedding for description with VLM provenance ID
+        let embeddingId: string | null = null;
+
+        if (!this.config.skipEmbeddings && vlmResult.description) {
+          embeddingId = await this.generateAndStoreEmbedding(
+            vlmResult.description,
+            image,
+            vlmProvId
+          );
+        }
+
+        // Build VLM result for database
+        const dbResult: VLMResult = {
+          description: vlmResult.description,
+          structuredData: this.convertToStructuredData(vlmResult.analysis),
+          embeddingId: embeddingId || '',
+          model: vlmResult.model,
+          confidence: vlmResult.analysis.confidence,
+          tokensUsed: vlmResult.tokensUsed,
+        };
+
+        // Update database record
+        updateImageVLMResult(this.db, image.id, dbResult);
+
+        return {
+          imageId: image.id,
+          success: true,
+          description: vlmResult.description,
+          embeddingId: embeddingId ?? undefined,
+          tokensUsed: vlmResult.tokensUsed,
+          confidence: vlmResult.analysis.confidence,
+          processingTimeMs: Date.now() - start,
+        };
+      } finally {
+        // Clean up temp resized file if it differs from the original
+        if (imagePath !== image.extracted_path) {
+          try { unlinkSync(imagePath); } catch { /* ignore cleanup errors */ }
+        }
       }
-
-      // Track VLM_DESCRIPTION provenance FIRST (returns provenance ID for embedding chain)
-      let vlmProvId: string | undefined;
-      if (!this.config.skipProvenance && this.dbService) {
-        vlmProvId = this.trackProvenance(image, vlmResult);
-      }
-
-      // Generate embedding for description with VLM provenance ID
-      let embeddingId: string | null = null;
-
-      if (!this.config.skipEmbeddings && vlmResult.description) {
-        embeddingId = await this.generateAndStoreEmbedding(
-          vlmResult.description,
-          image,
-          vlmProvId
-        );
-      }
-
-      // Build VLM result for database
-      const dbResult: VLMResult = {
-        description: vlmResult.description,
-        structuredData: this.convertToStructuredData(vlmResult.analysis),
-        embeddingId: embeddingId || '',
-        model: vlmResult.model,
-        confidence: vlmResult.analysis.confidence,
-        tokensUsed: vlmResult.tokensUsed,
-      };
-
-      // Update database record
-      updateImageVLMResult(this.db, image.id, dbResult);
-
-      return {
-        imageId: image.id,
-        success: true,
-        description: vlmResult.description,
-        embeddingId: embeddingId ?? undefined,
-        tokensUsed: vlmResult.tokensUsed,
-        confidence: vlmResult.analysis.confidence,
-        processingTimeMs: Date.now() - start,
-      };
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
 
