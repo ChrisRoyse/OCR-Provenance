@@ -11,7 +11,7 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach, afterAll } from 'vitest';
-import { mkdtempSync, rmSync, existsSync } from 'fs';
+import { mkdtempSync, rmSync, existsSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import { v4 as uuidv4 } from 'uuid';
@@ -29,7 +29,7 @@ import {
   clearDatabase,
 } from '../../../src/server/state.js';
 import { DatabaseService } from '../../../src/services/storage/database/index.js';
-import { computeHash } from '../../../src/utils/hash.js';
+import { computeHash, computeFileHashSync } from '../../../src/utils/hash.js';
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // SQLITE-VEC AVAILABILITY CHECK
@@ -97,17 +97,24 @@ afterAll(() => {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /**
- * Insert test document with provenance
+ * Insert test document with provenance.
+ * Creates a REAL file on disk so ProvenanceVerifier can hash it.
+ * @param tempDir - Temp directory for creating the real file
  */
 function insertTestDocument(
   db: DatabaseService,
   docId: string,
   fileName: string,
-  filePath: string
+  tempDir: string
 ): string {
   const provId = uuidv4();
   const now = new Date().toISOString();
-  const hash = computeHash(filePath);
+
+  // Create a real file so ProvenanceVerifier can hash it
+  const realFilePath = join(tempDir, fileName);
+  const fileContent = `Test document content for ${docId}`;
+  writeFileSync(realFilePath, fileContent);
+  const hash = computeFileHashSync(realFilePath);
 
   db.insertProvenance({
     id: provId,
@@ -117,7 +124,7 @@ function insertTestDocument(
     source_file_created_at: null,
     source_file_modified_at: null,
     source_type: 'FILE',
-    source_path: filePath,
+    source_path: realFilePath,
     source_id: null,
     root_document_id: provId,
     location: null,
@@ -137,10 +144,10 @@ function insertTestDocument(
 
   db.insertDocument({
     id: docId,
-    file_path: filePath,
+    file_path: realFilePath,
     file_name: fileName,
     file_hash: hash,
-    file_size: 1000,
+    file_size: Buffer.byteLength(fileContent),
     file_type: 'txt',
     status: 'complete',
     page_count: 1,
@@ -369,7 +376,7 @@ describe('handleProvenanceGet', () => {
     state.currentDatabaseName = dbName;
 
     const docId = uuidv4();
-    const docProvId = insertTestDocument(db, docId, 'test.txt', '/test/test.txt');
+    const docProvId = insertTestDocument(db, docId, 'test.txt', tempDir);
 
     const response = await handleProvenanceGet({ item_id: docId, item_type: 'document' });
     const result = parseResponse(response);
@@ -391,7 +398,7 @@ describe('handleProvenanceGet', () => {
 
     const docId = uuidv4();
     const chunkId = uuidv4();
-    const docProvId = insertTestDocument(db, docId, 'test.txt', '/test/test.txt');
+    const docProvId = insertTestDocument(db, docId, 'test.txt', tempDir);
     insertTestChunk(db, chunkId, docId, docProvId, 'Test content', 0);
 
     const response = await handleProvenanceGet({ item_id: chunkId, item_type: 'chunk' });
@@ -411,7 +418,7 @@ describe('handleProvenanceGet', () => {
     state.currentDatabaseName = dbName;
 
     const docId = uuidv4();
-    insertTestDocument(db, docId, 'test.txt', '/test/test.txt');
+    insertTestDocument(db, docId, 'test.txt', tempDir);
 
     const response = await handleProvenanceGet({ item_id: docId, item_type: 'auto' });
     const result = parseResponse(response);
@@ -439,7 +446,7 @@ describe('handleProvenanceGet', () => {
 
     const docId = uuidv4();
     const chunkId = uuidv4();
-    const docProvId = insertTestDocument(db, docId, 'test.txt', '/test/test.txt');
+    const docProvId = insertTestDocument(db, docId, 'test.txt', tempDir);
     insertTestChunk(db, chunkId, docId, docProvId, 'Test content', 0);
 
     const response = await handleProvenanceGet({ item_id: chunkId, item_type: 'chunk' });
@@ -459,7 +466,7 @@ describe('handleProvenanceGet', () => {
     state.currentDatabaseName = dbName;
 
     const docId = uuidv4();
-    const docProvId = insertTestDocument(db, docId, 'test.txt', '/test/test.txt');
+    const docProvId = insertTestDocument(db, docId, 'test.txt', tempDir);
 
     const response = await handleProvenanceGet({ item_id: docId, item_type: 'document' });
     const result = parseResponse(response);
@@ -474,7 +481,7 @@ describe('handleProvenanceGet', () => {
     state.currentDatabaseName = dbName;
 
     const docId = uuidv4();
-    insertTestDocument(db, docId, 'test.txt', '/test/test.txt');
+    insertTestDocument(db, docId, 'test.txt', tempDir);
 
     const response = await handleProvenanceGet({ item_id: docId, item_type: 'document' });
     const result = parseResponse(response);
@@ -529,7 +536,7 @@ describe('handleProvenanceVerify', () => {
     state.currentDatabaseName = dbName;
 
     const docId = uuidv4();
-    insertTestDocument(db, docId, 'test.txt', '/test/test.txt');
+    insertTestDocument(db, docId, 'test.txt', tempDir);
 
     const response = await handleProvenanceVerify({
       item_id: docId,
@@ -550,7 +557,7 @@ describe('handleProvenanceVerify', () => {
 
     // Use document directly for cleaner chain integrity test
     const docId = uuidv4();
-    insertTestDocument(db, docId, 'test.txt', '/test/test.txt');
+    insertTestDocument(db, docId, 'test.txt', tempDir);
 
     const response = await handleProvenanceVerify({
       item_id: docId,
@@ -569,7 +576,7 @@ describe('handleProvenanceVerify', () => {
     state.currentDatabaseName = dbName;
 
     const docId = uuidv4();
-    insertTestDocument(db, docId, 'test.txt', '/test/test.txt');
+    insertTestDocument(db, docId, 'test.txt', tempDir);
 
     const response = await handleProvenanceVerify({
       item_id: docId,
@@ -598,7 +605,7 @@ describe('handleProvenanceVerify', () => {
     state.currentDatabaseName = dbName;
 
     const docId = uuidv4();
-    const docProvId = insertTestDocument(db, docId, 'test.txt', '/test/test.txt');
+    const docProvId = insertTestDocument(db, docId, 'test.txt', tempDir);
 
     // Insert provenance with invalid hash
     const invalidProvId = uuidv4();
@@ -640,7 +647,7 @@ describe('handleProvenanceVerify', () => {
     state.currentDatabaseName = dbName;
 
     const docId = uuidv4();
-    insertTestDocument(db, docId, 'test.txt', '/test/test.txt');
+    insertTestDocument(db, docId, 'test.txt', tempDir);
 
     const response = await handleProvenanceVerify({
       item_id: docId,
@@ -661,7 +668,7 @@ describe('handleProvenanceVerify', () => {
     state.currentDatabaseName = dbName;
 
     const docId = uuidv4();
-    insertTestDocument(db, docId, 'test.txt', '/test/test.txt');
+    insertTestDocument(db, docId, 'test.txt', tempDir);
 
     const response = await handleProvenanceVerify({
       item_id: docId,
@@ -713,7 +720,7 @@ describe('handleProvenanceExport', () => {
     state.currentDatabaseName = dbName;
 
     const docId = uuidv4();
-    insertTestDocument(db, docId, 'test.txt', '/test/test.txt');
+    insertTestDocument(db, docId, 'test.txt', tempDir);
 
     const response = await handleProvenanceExport({
       scope: 'document',
@@ -741,7 +748,7 @@ describe('handleProvenanceExport', () => {
     state.currentDatabaseName = dbName;
 
     const docId = uuidv4();
-    insertTestDocument(db, docId, 'test.txt', '/test/test.txt');
+    insertTestDocument(db, docId, 'test.txt', tempDir);
 
     const response = await handleProvenanceExport({
       scope: 'document',
@@ -753,11 +760,13 @@ describe('handleProvenanceExport', () => {
     expect(result.success).toBe(true);
     expect(result.data?.format).toBe('w3c-prov');
     const exportData = result.data?.data as Record<string, unknown>;
-    expect(exportData).toHaveProperty('@context');
-    expect(exportData['@context']).toBe('https://www.w3.org/ns/prov');
+    expect(exportData).toHaveProperty('prefix');
+    expect(exportData['prefix']).toHaveProperty('prov', 'http://www.w3.org/ns/prov#');
     expect(exportData).toHaveProperty('entity');
     expect(exportData).toHaveProperty('activity');
+    expect(exportData).toHaveProperty('wasGeneratedBy');
     expect(exportData).toHaveProperty('wasDerivedFrom');
+    expect(exportData).toHaveProperty('used');
   });
 
   it.skipIf(!sqliteVecAvailable)('exports CSV format', async () => {
@@ -766,7 +775,7 @@ describe('handleProvenanceExport', () => {
     state.currentDatabaseName = dbName;
 
     const docId = uuidv4();
-    insertTestDocument(db, docId, 'test.txt', '/test/test.txt');
+    insertTestDocument(db, docId, 'test.txt', tempDir);
 
     const response = await handleProvenanceExport({
       scope: 'document',
@@ -794,8 +803,8 @@ describe('handleProvenanceExport', () => {
     // Insert multiple documents
     const docId1 = uuidv4();
     const docId2 = uuidv4();
-    insertTestDocument(db, docId1, 'test1.txt', '/test/test1.txt');
-    insertTestDocument(db, docId2, 'test2.txt', '/test/test2.txt');
+    insertTestDocument(db, docId1, 'test1.txt', tempDir);
+    insertTestDocument(db, docId2, 'test2.txt', tempDir);
 
     const response = await handleProvenanceExport({
       scope: 'database',
@@ -850,7 +859,7 @@ describe('handleProvenanceExport', () => {
 
     const docId = uuidv4();
     const chunkId = uuidv4();
-    const docProvId = insertTestDocument(db, docId, 'test.txt', '/test/test.txt');
+    const docProvId = insertTestDocument(db, docId, 'test.txt', tempDir);
     insertTestChunk(db, chunkId, docId, docProvId, 'Test content', 0);
 
     const response = await handleProvenanceExport({
@@ -936,7 +945,7 @@ describe('Edge Cases', () => {
       state.currentDatabaseName = dbName;
 
       const docId = uuidv4();
-      const docProvId = insertTestDocument(db, docId, 'test.txt', '/test/test.txt');
+      const docProvId = insertTestDocument(db, docId, 'test.txt', tempDir);
 
       // Insert multiple chunks
       for (let i = 0; i < 3; i++) {
@@ -961,7 +970,7 @@ describe('Edge Cases', () => {
       state.currentDatabaseName = dbName;
 
       const docId = uuidv4();
-      insertTestDocument(db, docId, 'test.txt', '/test/test.txt');
+      insertTestDocument(db, docId, 'test.txt', tempDir);
 
       const response = await handleProvenanceVerify({
         item_id: docId,
@@ -986,7 +995,7 @@ describe('Edge Cases', () => {
       state.currentDatabaseName = dbName;
 
       const docId = uuidv4();
-      insertTestDocument(db, docId, 'test.txt', '/test/test.txt');
+      insertTestDocument(db, docId, 'test.txt', tempDir);
 
       const response = await handleProvenanceVerify({
         item_id: docId,
@@ -1011,7 +1020,7 @@ describe('Edge Cases', () => {
       state.currentDatabaseName = dbName;
 
       const docId = uuidv4();
-      insertTestDocument(db, docId, 'test.txt', '/test/test.txt');
+      insertTestDocument(db, docId, 'test.txt', tempDir);
 
       const response = await handleProvenanceExport({
         scope: 'all',
@@ -1032,7 +1041,7 @@ describe('Edge Cases', () => {
 
       const docId = uuidv4();
       const chunkId = uuidv4();
-      const docProvId = insertTestDocument(db, docId, 'test.txt', '/test/test.txt');
+      const docProvId = insertTestDocument(db, docId, 'test.txt', tempDir);
       insertTestChunk(db, chunkId, docId, docProvId, 'Test content', 0);
 
       const response = await handleProvenanceExport({
@@ -1068,7 +1077,7 @@ describe('Edge Cases', () => {
       state.currentDatabaseName = dbName;
 
       const docId = uuidv4();
-      insertTestDocument(db, docId, 'test.txt', '/test/test.txt');
+      insertTestDocument(db, docId, 'test.txt', tempDir);
 
       const response = await handleProvenanceExport({
         scope: 'document',
@@ -1097,7 +1106,7 @@ describe('Edge Cases', () => {
       state.currentDatabaseName = dbName;
 
       const docId = uuidv4();
-      const docProvId = insertTestDocument(db, docId, 'test.txt', '/test/test.txt');
+      const docProvId = insertTestDocument(db, docId, 'test.txt', tempDir);
 
       // Query using the provenance ID directly
       const response = await handleProvenanceGet({ item_id: docProvId, item_type: 'auto' });
@@ -1214,7 +1223,7 @@ describe('Provenance Chain Structure', () => {
 
     const docId = uuidv4();
     const chunkId = uuidv4();
-    const docProvId = insertTestDocument(db, docId, 'test.txt', '/test/test.txt');
+    const docProvId = insertTestDocument(db, docId, 'test.txt', tempDir);
     insertTestChunk(db, chunkId, docId, docProvId, 'Test content', 0);
 
     const response = await handleProvenanceGet({ item_id: chunkId, item_type: 'chunk' });
@@ -1239,7 +1248,7 @@ describe('Provenance Chain Structure', () => {
     state.currentDatabaseName = dbName;
 
     const docId = uuidv4();
-    insertTestDocument(db, docId, 'test.txt', '/test/test.txt');
+    insertTestDocument(db, docId, 'test.txt', tempDir);
 
     const response = await handleProvenanceGet({ item_id: docId, item_type: 'document' });
     const result = parseResponse(response);
@@ -1256,7 +1265,7 @@ describe('Provenance Chain Structure', () => {
     state.currentDatabaseName = dbName;
 
     const docId = uuidv4();
-    insertTestDocument(db, docId, 'test.txt', '/test/test.txt');
+    insertTestDocument(db, docId, 'test.txt', tempDir);
 
     const response = await handleProvenanceGet({ item_id: docId, item_type: 'document' });
     const result = parseResponse(response);

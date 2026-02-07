@@ -360,7 +360,7 @@ let defaultOptimizer: ImageOptimizer | null = null;
 export function getImageOptimizer(
   config?: Partial<ImageOptimizerConfig>
 ): ImageOptimizer {
-  if (!defaultOptimizer || config) {
+  if (!defaultOptimizer) {
     defaultOptimizer = new ImageOptimizer(config);
   }
   return defaultOptimizer;

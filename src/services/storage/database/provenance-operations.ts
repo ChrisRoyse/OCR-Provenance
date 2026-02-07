@@ -96,7 +96,13 @@ export function getProvenanceChain(
   const chain: ProvenanceRecord[] = [];
   let currentId: string | null = id;
 
+  const MAX_CHAIN_DEPTH = 100;
+  let iterations = 0;
   while (currentId !== null) {
+    if (++iterations > MAX_CHAIN_DEPTH) {
+      console.error(`[ERROR] Provenance chain walk exceeded ${MAX_CHAIN_DEPTH} iterations -- possible circular reference at ${currentId}`);
+      break;
+    }
     const record = getProvenance(db, currentId);
     if (!record) {
       break;

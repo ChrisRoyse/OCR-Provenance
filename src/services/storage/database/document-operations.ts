@@ -285,6 +285,24 @@ export function deleteDocument(
     deleteProvStmt.run(provId);
   }
 
+  // Update FTS metadata counts after chunk/embedding deletion
+  try {
+    const chunkCount = (db.prepare('SELECT COUNT(*) as cnt FROM chunks').get() as { cnt: number }).cnt;
+    db.prepare(`
+      UPDATE fts_index_metadata SET chunks_indexed = ?, last_rebuild_at = ?
+      WHERE id = 1
+    `).run(chunkCount, new Date().toISOString());
+
+    // Update VLM FTS metadata if table exists
+    const vlmCount = (db.prepare("SELECT COUNT(*) as cnt FROM embeddings WHERE image_id IS NOT NULL").get() as { cnt: number }).cnt;
+    db.prepare(`
+      UPDATE fts_index_metadata SET chunks_indexed = ?, last_rebuild_at = ?
+      WHERE id = 2
+    `).run(vlmCount, new Date().toISOString());
+  } catch {
+    // fts_index_metadata may not exist in older schemas - ignore
+  }
+
   // Update metadata counts
   updateMetadataCounts();
 }

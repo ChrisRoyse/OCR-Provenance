@@ -26,13 +26,17 @@ import {
 } from '../server/errors.js';
 import { formatResponse, handleError, type ToolResponse, type ToolDefinition } from './shared.js';
 import type { DatabaseService } from '../services/storage/database/index.js';
+import { getImage } from '../services/storage/database/image-operations.js';
+import { getOCRResult } from '../services/storage/database/ocr-operations.js';
+import { ProvenanceVerifier } from '../services/provenance/verifier.js';
+import { ProvenanceTracker } from '../services/provenance/tracker.js';
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // HELPER FUNCTIONS
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /** Detected item types from findProvenanceId - includes 'provenance' for direct provenance ID lookups */
-type DetectedItemType = 'document' | 'chunk' | 'embedding' | 'ocr_result' | 'provenance';
+type DetectedItemType = 'document' | 'chunk' | 'embedding' | 'ocr_result' | 'image' | 'provenance';
 
 /**
  * Find provenance ID from an item of any type.
@@ -50,6 +54,18 @@ function findProvenanceId(
 
   const embedding = db.getEmbedding(itemId);
   if (embedding) return { provenanceId: embedding.provenance_id, itemType: 'embedding' };
+
+  const dbConn = db.getConnection();
+
+  const image = getImage(dbConn, itemId);
+  if (image && image.provenance_id) {
+    return { provenanceId: image.provenance_id, itemType: 'image' };
+  }
+
+  const ocrResult = getOCRResult(dbConn, itemId);
+  if (ocrResult && ocrResult.provenance_id) {
+    return { provenanceId: ocrResult.provenance_id, itemType: 'ocr_result' };
+  }
 
   const prov = db.getProvenance(itemId);
   if (prov) return { provenanceId: prov.id, itemType: 'provenance' };
@@ -83,6 +99,12 @@ export async function handleProvenanceGet(
       provenanceId = db.getChunk(input.item_id)?.provenance_id ?? null;
     } else if (itemType === 'embedding') {
       provenanceId = db.getEmbedding(input.item_id)?.provenance_id ?? null;
+    } else if (itemType === 'image') {
+      const img = getImage(db.getConnection(), input.item_id);
+      provenanceId = img?.provenance_id ?? null;
+    } else if (itemType === 'ocr_result') {
+      const ocr = getOCRResult(db.getConnection(), input.item_id);
+      provenanceId = ocr?.provenance_id ?? null;
     } else {
       provenanceId = input.item_id;
     }
@@ -118,6 +140,9 @@ export async function handleProvenanceGet(
 
 /**
  * Handle ocr_provenance_verify - Verify the integrity of an item through its provenance chain
+ *
+ * Uses real ProvenanceVerifier to re-hash content and compare against stored hashes.
+ * Constitution CP-003: SHA-256 hashes at every processing step enable tamper detection.
  */
 export async function handleProvenanceVerify(
   params: Record<string, unknown>
@@ -132,15 +157,18 @@ export async function handleProvenanceVerify(
     }
     const provenanceId = found.provenanceId;
 
-    const chain = db.getProvenanceChain(provenanceId);
-    if (chain.length === 0) {
-      throw provenanceNotFoundError(input.item_id);
-    }
+    // Use real ProvenanceVerifier for content integrity verification
+    const tracker = new ProvenanceTracker(db);
+    const verifier = new ProvenanceVerifier(db, tracker);
 
+    // Verify the full chain (re-hashes content at each step)
+    const chainResult = await verifier.verifyChain(provenanceId);
+
+    // Build per-step details for the response
+    const chain = db.getProvenanceChain(provenanceId);
     const steps: Array<Record<string, unknown>> = [];
     const errors: string[] = [];
-    let contentIntegrity = true;
-    let chainIntegrity = true;
+    let chainIntegrity = chainResult.chain_intact;
 
     for (let i = 0; i < chain.length; i++) {
       const prov = chain[i];
@@ -153,10 +181,18 @@ export async function handleProvenanceVerify(
         expected_hash: prov.content_hash,
       };
 
-      // Verify chain integrity
+      // Check if this item failed content verification
+      if (input.verify_content) {
+        const failedItem = chainResult.failed_items.find(f => f.id === prov.id);
+        if (failedItem) {
+          step.content_verified = false;
+          step.computed_hash = failedItem.computed_hash;
+          errors.push(`Content hash mismatch at ${prov.id}: expected ${failedItem.expected_hash}, got ${failedItem.computed_hash}`);
+        }
+      }
+
+      // Verify chain structure (depth and parent links)
       if (input.verify_chain) {
-        // Check chain depth is correct
-        // chain[0] is the deepest (queried item), chain[last] is the root (depth 0)
         const expectedDepth = chain.length - 1 - i;
         if (prov.chain_depth !== expectedDepth) {
           step.chain_verified = false;
@@ -164,9 +200,6 @@ export async function handleProvenanceVerify(
           errors.push(`Chain depth mismatch at ${prov.id}: expected ${expectedDepth}, got ${prov.chain_depth}`);
         }
 
-        // Check parent link (except for root, which is the last item)
-        // Each preceding item's parent_id should point to the current item
-        // since we walk from deepest to shallowest
         if (i > 0 && chain[i - 1].parent_id !== prov.id) {
           step.chain_verified = false;
           chainIntegrity = false;
@@ -174,23 +207,18 @@ export async function handleProvenanceVerify(
         }
       }
 
-      // Content verification - validate hash format
-      if (input.verify_content) {
-        if (!prov.content_hash.startsWith('sha256:')) {
-          step.content_verified = false;
-          contentIntegrity = false;
-          errors.push(`Invalid hash format at ${prov.id}`);
-        }
-      }
-
       steps.push(step);
     }
+
+    const contentIntegrity = chainResult.hashes_failed === 0;
 
     return formatResponse(successResult({
       item_id: input.item_id,
       verified: contentIntegrity && chainIntegrity,
       content_integrity: contentIntegrity,
       chain_integrity: chainIntegrity,
+      hashes_verified: chainResult.hashes_verified,
+      hashes_failed: chainResult.hashes_failed,
       steps,
       errors: errors.length > 0 ? errors : undefined,
     }));
@@ -246,34 +274,65 @@ export async function handleProvenanceExport(
         created_at: r.created_at,
       }));
     } else if (input.format === 'w3c-prov') {
-      const entities: Record<string, unknown> = {};
-      const activities: Record<string, unknown> = {};
-      const derivations: unknown[] = [];
+      // W3C PROV-JSON compliant export matching W3CProvDocument interface
+      const prefix: Record<string, string> = {
+        'prov': 'http://www.w3.org/ns/prov#',
+        'ocr': 'http://ocr-provenance.local/ns#',
+        'xsd': 'http://www.w3.org/2001/XMLSchema#',
+      };
+
+      const entity: Record<string, Record<string, unknown>> = {};
+      const activity: Record<string, Record<string, unknown>> = {};
+      const wasGeneratedBy: Record<string, Record<string, unknown>> = {};
+      const wasDerivedFrom: Record<string, Record<string, unknown>> = {};
+      const used: Record<string, Record<string, unknown>> = {};
 
       for (const r of records) {
-        entities[`entity:${r.id}`] = {
-          'prov:type': r.type,
+        // Each provenance record is an entity
+        entity[`ocr:${r.id}`] = {
+          'prov:type': { '$': r.type, 'type': 'xsd:string' },
           'ocr:contentHash': r.content_hash,
           'ocr:chainDepth': r.chain_depth,
+          'prov:generatedAtTime': r.created_at,
         };
-        activities[`activity:${r.id}`] = {
-          'prov:type': r.processor,
+
+        // Each processing step is an activity
+        const activityId = `ocr:activity-${r.id}`;
+        activity[activityId] = {
+          'prov:type': { '$': r.processor, 'type': 'xsd:string' },
           'ocr:processorVersion': r.processor_version,
+          'prov:startedAtTime': r.created_at,
         };
+
+        // wasGeneratedBy: entity was generated by activity
+        wasGeneratedBy[`ocr:wgb-${r.id}`] = {
+          'prov:entity': `ocr:${r.id}`,
+          'prov:activity': activityId,
+        };
+
         if (r.parent_id) {
-          derivations.push({
-            'prov:generatedEntity': `entity:${r.id}`,
-            'prov:usedEntity': `entity:${r.parent_id}`,
-            'prov:activity': `activity:${r.id}`,
-          });
+          // wasDerivedFrom: child entity derived from parent entity
+          wasDerivedFrom[`ocr:wdf-${r.id}`] = {
+            'prov:generatedEntity': `ocr:${r.id}`,
+            'prov:usedEntity': `ocr:${r.parent_id}`,
+            'prov:activity': activityId,
+          };
+
+          // used: activity used parent entity as input
+          used[`ocr:used-${r.id}`] = {
+            'prov:activity': activityId,
+            'prov:entity': `ocr:${r.parent_id}`,
+          };
         }
       }
 
       data = {
-        '@context': 'https://www.w3.org/ns/prov',
-        entity: entities,
-        activity: activities,
-        wasDerivedFrom: derivations,
+        prefix,
+        entity,
+        activity,
+        wasGeneratedBy,
+        wasDerivedFrom,
+        used,
       };
     } else {
       // CSV format
@@ -308,8 +367,8 @@ export const provenanceTools: Record<string, ToolDefinition> = {
   'ocr_provenance_get': {
     description: 'Get the complete provenance chain for an item',
     inputSchema: {
-      item_id: z.string().min(1).describe('ID of the item (document, chunk, embedding, or provenance)'),
-      item_type: z.enum(['document', 'ocr_result', 'chunk', 'embedding', 'auto']).default('auto').describe('Type of item'),
+      item_id: z.string().min(1).describe('ID of the item (document, ocr_result, chunk, embedding, image, or provenance)'),
+      item_type: z.enum(['document', 'ocr_result', 'chunk', 'embedding', 'image', 'auto']).default('auto').describe('Type of item'),
     },
     handler: handleProvenanceGet,
   },

@@ -337,7 +337,7 @@ function saveAndStoreImages(
     // Parse page number from filename (e.g., "page_1_image_0.png" or "p001_i000.png")
     const pageMatch = filename.match(/page_(\d+)|p(\d+)/i);
     const pageNumber = pageMatch
-      ? parseInt(pageMatch[1] || pageMatch[2], 10)
+      ? parseInt(pageMatch[1] || pageMatch[2], 10) + 1
       : 1;
 
     // Compute content hash for deduplication

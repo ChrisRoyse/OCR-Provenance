@@ -76,7 +76,7 @@ export class BM25SearchService {
     let sql = `
       SELECT
         c.id AS chunk_id,
-        e.id AS embedding_id,
+        (SELECT MIN(e.id) FROM embeddings e WHERE e.chunk_id = c.id) AS embedding_id,
         c.document_id,
         c.text AS original_text,
         bm25(chunks_fts) AS bm25_score,
@@ -93,7 +93,6 @@ export class BM25SearchService {
       FROM chunks_fts
       JOIN chunks c ON chunks_fts.rowid = c.rowid
       JOIN documents d ON c.document_id = d.id
-      LEFT JOIN embeddings e ON e.chunk_id = c.id
       WHERE chunks_fts MATCH ?
     `;
 

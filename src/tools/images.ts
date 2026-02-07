@@ -182,6 +182,7 @@ export async function handleImageExtract(
           img.provenance_id = provenanceId;
         } catch (error) {
           console.error(`[WARN] Failed to create IMAGE provenance for ${img.id}: ${error instanceof Error ? error.message : String(error)}`);
+          throw error;
         }
       }
     }
@@ -230,12 +231,11 @@ export async function handleImageList(
       );
     }
 
-    let images = getImagesByDocument(db.getConnection(), documentId);
-
-    // Filter by VLM status if specified
-    if (vlmStatusFilter) {
-      images = images.filter(img => img.vlm_status === vlmStatusFilter);
-    }
+    const images = getImagesByDocument(
+      db.getConnection(),
+      documentId,
+      vlmStatusFilter ? { vlmStatus: vlmStatusFilter } : undefined
+    );
 
     return formatResponse(successResult({
       document_id: documentId,
@@ -373,7 +373,7 @@ export async function handleImageDelete(
     return formatResponse(successResult({
       image_id: imageId,
       deleted: true,
-      file_deleted: deleteFile && img.extracted_path ? true : false,
+      file_deleted: !!(deleteFile && img.extracted_path),
     }));
   } catch (error) {
     return handleError(error);

@@ -297,6 +297,39 @@ export function updateImageVLMResult(
 }
 
 /**
+ * Mark image as complete but intentionally skipped by relevance filtering.
+ * Sets vlm_status='complete' with vlm_description='[SKIPPED]' so the image
+ * is not reprocessed by retry_failed, and does not inflate failure counts.
+ *
+ * @param db - Database connection
+ * @param id - Image ID
+ * @param skipReason - Reason the image was skipped (stored in error_message for diagnostics)
+ */
+export function setImageVLMSkipped(
+  db: Database.Database,
+  id: string,
+  skipReason: string
+): void {
+  const stmt = db.prepare(`
+    UPDATE images SET
+      vlm_status = 'complete',
+      vlm_description = '[SKIPPED]',
+      vlm_tokens_used = 0,
+      vlm_processed_at = ?,
+      error_message = ?
+    WHERE id = ?
+  `);
+
+  const result = stmt.run(new Date().toISOString(), skipReason, id);
+  if (result.changes === 0) {
+    throw new DatabaseError(
+      `Image "${id}" not found`,
+      DatabaseErrorCode.IMAGE_NOT_FOUND
+    );
+  }
+}
+
+/**
  * Mark image VLM processing as failed
  *
  * @param db - Database connection
