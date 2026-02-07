@@ -57,7 +57,6 @@ const EvaluateSingleInput = z.object({
 const EvaluateDocumentInput = z.object({
   document_id: z.string().min(1),
   batch_size: z.number().int().min(1).max(20).default(5),
-  concurrency: z.number().int().min(1).max(10).default(3),
 });
 
 const EvaluatePendingInput = z.object({
@@ -215,7 +214,6 @@ export async function handleEvaluateDocument(
     const input = validateInput(EvaluateDocumentInput, params);
     const documentId = input.document_id;
     const batchSize = input.batch_size ?? 5;
-    // Note: concurrency param available for future parallel processing
 
     const { db } = requireDatabase();
 
@@ -640,7 +638,6 @@ export const evaluationTools: Record<string, ToolDefinition> = {
     inputSchema: {
       document_id: z.string().min(1).describe('Document ID'),
       batch_size: z.number().int().min(1).max(20).default(5).describe('Images per batch'),
-      concurrency: z.number().int().min(1).max(10).default(3).describe('Concurrent requests'),
     },
     handler: handleEvaluateDocument,
   },

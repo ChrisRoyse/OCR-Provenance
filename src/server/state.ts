@@ -63,6 +63,8 @@ export const state: ServerState = {
 export interface DatabaseServices {
   db: DatabaseService;
   vector: VectorService;
+  /** Generation counter - compare with getDatabaseGeneration() to detect stale refs */
+  generation: number;
 }
 
 /**
@@ -71,9 +73,24 @@ export interface DatabaseServices {
 let _cachedVectorService: VectorService | null = null;
 
 /**
+ * Generation counter - incremented on every database switch/clear.
+ * Callers can snapshot this value and compare later to detect stale references.
+ */
+let _dbGeneration = 0;
+
+/**
+ * Get the current database generation counter.
+ * Useful for callers that hold long-lived references from requireDatabase()
+ * and need to verify the database has not been switched underneath them.
+ */
+export function getDatabaseGeneration(): number {
+  return _dbGeneration;
+}
+
+/**
  * Require database to be selected - FAIL FAST if not
  *
- * @returns Database service and vector service instances (VectorService is cached)
+ * @returns Database service, vector service, and generation counter
  * @throws MCPError with DATABASE_NOT_SELECTED if no database is selected
  */
 export function requireDatabase(): DatabaseServices {
@@ -84,7 +101,7 @@ export function requireDatabase(): DatabaseServices {
   if (!_cachedVectorService) {
     _cachedVectorService = new VectorService(state.currentDatabase.getConnection());
   }
-  return { db: state.currentDatabase, vector: _cachedVectorService };
+  return { db: state.currentDatabase, vector: _cachedVectorService, generation: _dbGeneration };
 }
 
 /**
@@ -124,6 +141,7 @@ export function selectDatabase(name: string, storagePath?: string): void {
     state.currentDatabaseName = null;
     _cachedVectorService = null;
   }
+  _dbGeneration++;
 
   // Verify database exists - FAIL FAST
   if (!DatabaseService.exists(name, path)) {
@@ -171,10 +189,9 @@ export function createDatabase(
     _cachedVectorService = null;
     state.currentDatabase = db;
     state.currentDatabaseName = name;
-  } else {
-    // If not auto-selecting, close the created connection
-    db.close();
   }
+  // When autoSelect=false, return the open DB -- caller manages lifecycle.
+  // Previously the DB was closed here making the returned service dead.
 
   return db;
 }
@@ -214,6 +231,7 @@ export function clearDatabase(): void {
     state.currentDatabase = null;
     state.currentDatabaseName = null;
     _cachedVectorService = null;
+    _dbGeneration++;
   }
 }
 
@@ -229,9 +247,19 @@ export function getConfig(): ServerConfig {
 }
 
 /**
- * Update server configuration
+ * Update server configuration (deep merges nested objects like imageOptimization)
  */
 export function updateConfig(updates: Partial<ServerConfig>): void {
+  // Deep merge imageOptimization if both existing and update have it
+  if (updates.imageOptimization && state.config.imageOptimization) {
+    updates = {
+      ...updates,
+      imageOptimization: {
+        ...state.config.imageOptimization,
+        ...updates.imageOptimization,
+      },
+    };
+  }
   state.config = { ...state.config, ...updates };
 }
 
@@ -259,5 +287,6 @@ export function getDefaultStoragePath(): string {
 export function resetState(): void {
   clearDatabase();
   _cachedVectorService = null;
+  _dbGeneration = 0;
   state.config = { ...defaultConfig };
 }

@@ -181,7 +181,8 @@ export class VLMPipeline {
    * @returns BatchResult with processing summary
    */
   async processPending(limit?: number): Promise<BatchResult> {
-    const images = getPendingImages(this.db, limit ?? this.config.batchSize * 10);
+    const images = getPendingImages(this.db, limit ?? this.config.batchSize * 10)
+      .filter(img => !img.is_header_footer);
     return this.processImages(images);
   }
 
@@ -413,8 +414,8 @@ export class VLMPipeline {
       // Mark as failed in database
       try {
         setImageVLMFailed(this.db, image.id, errorMessage);
-      } catch {
-        // Ignore secondary errors
+      } catch (secondaryError) {
+        console.error('[ERROR] VLM pipeline: failed to mark image as failed:', image.id, secondaryError);
       }
 
       return {
@@ -587,8 +588,12 @@ export class VLMPipeline {
     const vector = vectors[0];
     const embeddingId = uuidv4();
 
-    // Store in database and vector storage if database service available
-    if (this.dbService) {
+    // Store in database and vector storage - database service is REQUIRED
+    if (!this.dbService) {
+      throw new Error('VLM embedding storage requires dbService - pipeline was created without database service');
+    }
+
+    {
       // Create EMBEDDING provenance if we have VLM_DESCRIPTION provenance
       let embeddingProvId = embeddingId; // Default: use embedding ID as provenance ID
 
