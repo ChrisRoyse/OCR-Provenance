@@ -120,22 +120,35 @@ export function getImage(db: Database.Database, id: string): ImageReference | nu
 }
 
 /**
- * Get all images for a document
+ * Get images for a document with optional filtering
  *
  * @param db - Database connection
  * @param documentId - Document ID
+ * @param options - Optional filters: vlmStatus, limit
  * @returns ImageReference[] - Array of images ordered by page and index
  */
 export function getImagesByDocument(
   db: Database.Database,
-  documentId: string
+  documentId: string,
+  options?: { vlmStatus?: string; limit?: number }
 ): ImageReference[] {
-  const stmt = db.prepare(`
-    SELECT * FROM images
-    WHERE document_id = ?
-    ORDER BY page_number, image_index
-  `);
-  const rows = stmt.all(documentId) as ImageRow[];
+  const params: unknown[] = [documentId];
+  let sql = 'SELECT * FROM images WHERE document_id = ?';
+
+  if (options?.vlmStatus) {
+    sql += ' AND vlm_status = ?';
+    params.push(options.vlmStatus);
+  }
+
+  sql += ' ORDER BY page_number, image_index';
+
+  if (options?.limit && options.limit > 0) {
+    sql += ' LIMIT ?';
+    params.push(options.limit);
+  }
+
+  const stmt = db.prepare(sql);
+  const rows = stmt.all(...params) as ImageRow[];
   return rows.map(rowToImage);
 }
 

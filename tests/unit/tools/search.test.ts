@@ -497,6 +497,7 @@ describe('handleSearch', () => {
     const result = parseResponse(response);
 
     expect(result.success).toBe(false);
+    expect(result.error?.category).toBe('INTERNAL_ERROR');
   });
 
   it.skipIf(!sqliteVecAvailable)('returns no matches for non-existent text', async () => {
@@ -635,6 +636,7 @@ describe('handleSearchSemantic', () => {
     const result = parseResponse(response);
 
     expect(result.success).toBe(false);
+    expect(result.error?.category).toBe('INTERNAL_ERROR');
   });
 
   it('returns error for query over max length', async () => {
@@ -643,6 +645,7 @@ describe('handleSearchSemantic', () => {
     const result = parseResponse(response);
 
     expect(result.success).toBe(false);
+    expect(result.error?.category).toBe('INTERNAL_ERROR');
   });
 
   it.skipIf(!sqliteVecAvailable)('finds semantically similar chunks with real embeddings', async () => {
@@ -738,6 +741,7 @@ describe('handleSearchHybrid', () => {
     const result = parseResponse(response);
 
     expect(result.success).toBe(false);
+    expect(result.error?.category).toBe('INTERNAL_ERROR');
   });
 
   it('returns error for query over max length', async () => {
@@ -750,6 +754,7 @@ describe('handleSearchHybrid', () => {
     const result = parseResponse(response);
 
     expect(result.success).toBe(false);
+    expect(result.error?.category).toBe('INTERNAL_ERROR');
   });
 
   it.skipIf(!sqliteVecAvailable)('combines BM25 and semantic results with real embeddings', async () => {
@@ -847,6 +852,7 @@ describe('handleFTSManage', () => {
     const result = parseResponse(response);
 
     expect(result.success).toBe(false);
+    expect(result.error?.category).toBe('INTERNAL_ERROR');
   });
 
   it('returns error for invalid action', async () => {
@@ -854,6 +860,7 @@ describe('handleFTSManage', () => {
     const result = parseResponse(response);
 
     expect(result.success).toBe(false);
+    expect(result.error?.category).toBe('INTERNAL_ERROR');
   });
 });
 
@@ -874,12 +881,14 @@ describe('Input Validation', () => {
     const response = await handleSearch({ query: '' });
     const result = parseResponse(response);
     expect(result.success).toBe(false);
+    expect(result.error?.category).toBe('INTERNAL_ERROR');
   });
 
   it('semantic search rejects empty query', async () => {
     const response = await handleSearchSemantic({ query: '' });
     const result = parseResponse(response);
     expect(result.success).toBe(false);
+    expect(result.error?.category).toBe('INTERNAL_ERROR');
   });
 
   it('hybrid search rejects empty query', async () => {
@@ -890,6 +899,7 @@ describe('Input Validation', () => {
     });
     const result = parseResponse(response);
     expect(result.success).toBe(false);
+    expect(result.error?.category).toBe('INTERNAL_ERROR');
   });
 
   it('BM25 search accepts max length query', async () => {
@@ -905,6 +915,7 @@ describe('Input Validation', () => {
     const response = await handleSearch({ query: overMaxQuery });
     const result = parseResponse(response);
     expect(result.success).toBe(false);
+    expect(result.error?.category).toBe('INTERNAL_ERROR');
   });
 
   it('semantic search accepts max length query', async () => {
@@ -920,6 +931,7 @@ describe('Input Validation', () => {
     const response = await handleSearchSemantic({ query: overMaxQuery });
     const result = parseResponse(response);
     expect(result.success).toBe(false);
+    expect(result.error?.category).toBe('INTERNAL_ERROR');
   });
 
   it('hybrid search accepts max length query', async () => {
@@ -943,6 +955,7 @@ describe('Input Validation', () => {
     });
     const result = parseResponse(response);
     expect(result.success).toBe(false);
+    expect(result.error?.category).toBe('INTERNAL_ERROR');
   });
 });
 
@@ -972,6 +985,7 @@ describe('Edge Cases', () => {
       const response = await handleSearch({ query: '' });
       const result = parseResponse(response);
       expect(result.success).toBe(false);
+      expect(result.error?.category).toBe('INTERNAL_ERROR');
     });
   });
 

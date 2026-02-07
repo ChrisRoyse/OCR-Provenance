@@ -910,6 +910,7 @@ describe('Edge Cases', () => {
       const response = await handleProvenanceGet({ item_id: '' });
       const result = parseResponse(response);
       expect(result.success).toBe(false);
+      expect(result.error?.category).toBe('INTERNAL_ERROR');
     });
   });
 
@@ -1126,24 +1127,28 @@ describe('Input Validation', () => {
     const response = await handleProvenanceGet({ item_id: '' });
     const result = parseResponse(response);
     expect(result.success).toBe(false);
+    expect(result.error?.category).toBe('INTERNAL_ERROR');
   });
 
   it('handleProvenanceVerify rejects empty item_id', async () => {
     const response = await handleProvenanceVerify({ item_id: '' });
     const result = parseResponse(response);
     expect(result.success).toBe(false);
+    expect(result.error?.category).toBe('INTERNAL_ERROR');
   });
 
   it('handleProvenanceExport rejects invalid scope', async () => {
     const response = await handleProvenanceExport({ scope: 'invalid' as never, format: 'json' });
     const result = parseResponse(response);
     expect(result.success).toBe(false);
+    expect(result.error?.category).toBe('INTERNAL_ERROR');
   });
 
   it('handleProvenanceExport rejects invalid format', async () => {
     const response = await handleProvenanceExport({ scope: 'database', format: 'xml' as never });
     const result = parseResponse(response);
     expect(result.success).toBe(false);
+    expect(result.error?.category).toBe('INTERNAL_ERROR');
   });
 
   it('handleProvenanceGet accepts all valid item_types', async () => {

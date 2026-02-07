@@ -118,6 +118,32 @@ export async function hashFile(filePath: string): Promise<string> {
 }
 
 /**
+ * Compute SHA-256 hash of a file synchronously using chunked reads.
+ *
+ * Reads the file in 64KB chunks to avoid loading the entire file into memory.
+ * Suitable for hashing large image files during batch processing.
+ *
+ * @param filePath - Path to the file to hash
+ * @returns Hash in format 'sha256:' + 64-char lowercase hex string
+ * @throws Error if file cannot be read
+ */
+export function computeFileHashSync(filePath: string): string {
+  const CHUNK_SIZE = 65536; // 64KB chunks
+  const hash = crypto.createHash('sha256');
+  const fd = fs.openSync(filePath, 'r');
+  try {
+    const buffer = Buffer.allocUnsafe(CHUNK_SIZE);
+    let bytesRead: number;
+    while ((bytesRead = fs.readSync(fd, buffer, 0, CHUNK_SIZE, null)) > 0) {
+      hash.update(bytesRead === CHUNK_SIZE ? buffer : buffer.subarray(0, bytesRead));
+    }
+  } finally {
+    fs.closeSync(fd);
+  }
+  return HASH_PREFIX + hash.digest('hex');
+}
+
+/**
  * Verify content matches expected hash
  *
  * @param content - Content to verify

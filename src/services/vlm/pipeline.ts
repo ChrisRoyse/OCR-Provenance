@@ -155,8 +155,8 @@ export class VLMPipeline {
    * @returns BatchResult with processing summary
    */
   async processDocument(documentId: string): Promise<BatchResult> {
-    const images = getImagesByDocument(this.db, documentId);
-    const pending = images.filter((img) => img.vlm_status === 'pending');
+    const pending = getImagesByDocument(this.db, documentId, { vlmStatus: 'pending' })
+      .filter(img => !img.is_header_footer);
 
     if (pending.length === 0) {
       return {
