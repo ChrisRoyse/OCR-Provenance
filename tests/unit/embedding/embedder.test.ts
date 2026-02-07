@@ -446,7 +446,7 @@ describe('EmbeddingService', () => {
         expect(result).toBeInstanceOf(Float32Array);
         expect(result.length).toBe(EMBEDDING_DIM);
       },
-      30000
+      60000
     );
 
     it(

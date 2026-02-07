@@ -40,7 +40,7 @@ const MAX_STDERR_LENGTH = 10_240;
 const SUPPORTED_EXTRACTION_TYPES = new Set(['.pdf', '.docx']);
 
 const DEFAULT_CONFIG: ExtractorConfig = {
-  pythonPath: 'python',
+  pythonPath: 'python3',
   timeout: 120000,
 };
 

@@ -348,11 +348,13 @@ export class VLMService {
         numbers: parsed.numbers || [],
         confidence: parsed.confidence ?? 0.5,
       };
-    } catch {
-      // Fallback: use raw text as description
+    } catch (err) {
+      // Log the parse failure so operators can detect Gemini returning malformed JSON.
+      // Use raw text as description but flag it clearly via primarySubject.
+      console.error(`[VLMService] Failed to parse analysis JSON: ${err instanceof Error ? err.message : err}`);
       return {
         imageType: 'unknown',
-        primarySubject: 'Parse error - raw response',
+        primarySubject: '[PARSE_ERROR] Raw Gemini response used as fallback',
         paragraph1: text.slice(0, 500),
         paragraph2: text.slice(500, 1000),
         paragraph3: text.slice(1000, 1500),
@@ -360,7 +362,7 @@ export class VLMService {
         dates: [],
         names: [],
         numbers: [],
-        confidence: 0.3,
+        confidence: 0,
       };
     }
   }
@@ -380,13 +382,14 @@ export class VLMService {
         complexity: parsed.complexity || 'medium',
         confidence: parsed.confidence ?? 0.5,
       };
-    } catch {
+    } catch (err) {
+      console.error(`[VLMService] Failed to parse classification JSON: ${err instanceof Error ? err.message : err}`);
       return {
         type: 'other',
         hasText: false,
         textDensity: 'unknown',
         complexity: 'medium',
-        confidence: 0.3,
+        confidence: 0,
       };
     }
   }
@@ -415,7 +418,8 @@ export class VLMService {
         uncertainties: parsed.uncertainties || [],
         confidence: parsed.confidence ?? 0.5,
       };
-    } catch {
+    } catch (err) {
+      console.error(`[VLMService] Failed to parse deep analysis JSON: ${err instanceof Error ? err.message : err}`);
       return {
         thinkingSteps: [],
         imageType: 'unknown',
@@ -429,7 +433,7 @@ export class VLMService {
         },
         legalSignificance: '',
         uncertainties: ['Failed to parse structured response'],
-        confidence: 0.3,
+        confidence: 0,
       };
     }
   }

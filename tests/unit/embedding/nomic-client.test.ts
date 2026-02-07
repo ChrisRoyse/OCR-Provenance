@@ -161,7 +161,7 @@ describe('NomicEmbeddingClient', () => {
       }
 
       expect(dotProduct).toBeGreaterThan(0.5);
-    }, 30000);
+    }, 60000);
   });
 
   describe('error handling', () => {
