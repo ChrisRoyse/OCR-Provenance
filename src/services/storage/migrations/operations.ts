@@ -225,6 +225,15 @@ function migrateV1ToV2(db: Database.Database): void {
 
     db.exec('COMMIT');
     db.exec('PRAGMA foreign_keys = ON');
+
+    // L-15: Verify FK integrity after table recreation
+    const fkViolations = db.pragma('foreign_key_check') as unknown[];
+    if (fkViolations.length > 0) {
+      throw new Error(
+        `Foreign key integrity check failed after v1->v2 migration: ${fkViolations.length} violation(s). ` +
+        `First: ${JSON.stringify(fkViolations[0])}`
+      );
+    }
   } catch (error) {
     // Rollback on error
     try {
@@ -362,6 +371,8 @@ function migrateV2ToV3(db: Database.Database): void {
  */
 function migrateV3ToV4(db: Database.Database): void {
   try {
+    db.exec('BEGIN TRANSACTION');
+
     // 1. Create FTS5 virtual table
     db.exec(CREATE_CHUNKS_FTS_TABLE);
 
@@ -384,7 +395,14 @@ function migrateV3ToV4(db: Database.Database): void {
       INSERT OR REPLACE INTO fts_index_metadata (id, last_rebuild_at, chunks_indexed, tokenizer, schema_version, content_hash)
       VALUES (1, ?, ?, 'porter unicode61', 4, ?)
     `).run(new Date().toISOString(), count.cnt, contentHash);
+
+    db.exec('COMMIT');
   } catch (error) {
+    try {
+      db.exec('ROLLBACK');
+    } catch {
+      // Ignore rollback errors
+    }
     const cause = error instanceof Error ? error.message : String(error);
     throw new MigrationError(
       `Failed to migrate from v3 to v4 (FTS5 setup): ${cause}`,
@@ -637,6 +655,15 @@ function migrateV6ToV7(db: Database.Database): void {
 
     db.exec('COMMIT');
     db.exec('PRAGMA foreign_keys = ON');
+
+    // L-15: Verify FK integrity after table recreation
+    const fkViolations = db.pragma('foreign_key_check') as unknown[];
+    if (fkViolations.length > 0) {
+      throw new Error(
+        `Foreign key integrity check failed after v6->v7 migration: ${fkViolations.length} violation(s). ` +
+        `First: ${JSON.stringify(fkViolations[0])}`
+      );
+    }
   } catch (error) {
     try {
       db.exec('ROLLBACK');

@@ -40,6 +40,34 @@ function parseProcessingParams(id: string, raw: string): Record<string, unknown>
 }
 
 /**
+ * Safely parse JSON location, returning a fallback on corrupt data.
+ * On parse failure, returns { _parse_error, _raw } cast to ProvenanceLocation
+ * so the caller can inspect the object at runtime without crashing.
+ */
+function parseLocation(id: string, raw: string): ProvenanceLocation {
+  try {
+    return JSON.parse(raw) as ProvenanceLocation;
+  } catch {
+    console.error(`[ERROR] Corrupt location in provenance ${id}: ${raw}`);
+    return { _parse_error: true, _raw: raw } as unknown as ProvenanceLocation;
+  }
+}
+
+/**
+ * Safely parse JSON vlm_structured_data, returning a fallback on corrupt data.
+ * On parse failure, returns { _parse_error, _raw } cast to VLMStructuredData
+ * so the caller can inspect the object at runtime without crashing.
+ */
+function parseVLMStructuredData(id: string, raw: string): VLMStructuredData {
+  try {
+    return JSON.parse(raw) as VLMStructuredData;
+  } catch {
+    console.error(`[ERROR] Corrupt vlm_structured_data in image ${id}: ${raw}`);
+    return { _parse_error: true, _raw: raw } as unknown as VLMStructuredData;
+  }
+}
+
+/**
  * Convert document row to Document interface
  */
 export function rowToDocument(row: DocumentRow): Document {
@@ -154,7 +182,7 @@ export function rowToProvenance(row: ProvenanceRow): ProvenanceRecord {
     source_id: row.source_id,
     root_document_id: row.root_document_id,
     location: row.location
-      ? (JSON.parse(row.location) as ProvenanceLocation)
+      ? parseLocation(row.id, row.location)
       : null,
     content_hash: row.content_hash,
     input_hash: row.input_hash,
@@ -197,7 +225,7 @@ export function rowToImage(row: ImageRow): ImageReference {
     vlm_status: row.vlm_status as VLMStatus,
     vlm_description: row.vlm_description,
     vlm_structured_data: row.vlm_structured_data
-      ? (JSON.parse(row.vlm_structured_data) as VLMStructuredData)
+      ? parseVLMStructuredData(row.id, row.vlm_structured_data)
       : null,
     vlm_embedding_id: row.vlm_embedding_id,
     vlm_model: row.vlm_model,

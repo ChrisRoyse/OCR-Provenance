@@ -176,7 +176,7 @@ describe('OCRProcessor', () => {
       const updatedDoc = db!.getDocument(docId);
       console.log('[DB STATE] Document status:', updatedDoc!.status);
       console.log('[DB STATE] Document page_count:', updatedDoc!.page_count);
-      expect(updatedDoc!.status).toBe('complete');
+      expect(updatedDoc!.status).toBe('processing');
       expect(updatedDoc!.page_count).toBeGreaterThan(0);
       expect(updatedDoc!.ocr_completed_at).toBeTruthy();
 

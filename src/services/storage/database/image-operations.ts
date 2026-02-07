@@ -534,8 +534,8 @@ export function findByContentHash(
   excludeId?: string
 ): ImageReference | null {
   const query = excludeId
-    ? `SELECT * FROM images WHERE content_hash = ? AND vlm_status = 'complete' AND id != ? LIMIT 1`
-    : `SELECT * FROM images WHERE content_hash = ? AND vlm_status = 'complete' LIMIT 1`;
+    ? `SELECT * FROM images WHERE content_hash = ? AND vlm_status = 'complete' AND vlm_description != '[SKIPPED]' AND id != ? LIMIT 1`
+    : `SELECT * FROM images WHERE content_hash = ? AND vlm_status = 'complete' AND vlm_description != '[SKIPPED]' LIMIT 1`;
 
   const row = excludeId
     ? (db.prepare(query).get(contentHash, excludeId) as ImageRow | undefined)

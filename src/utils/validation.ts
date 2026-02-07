@@ -105,7 +105,7 @@ export const ExportFormat = z.enum(['json', 'w3c-prov', 'csv']);
 /**
  * Export scope for provenance exports
  */
-export const ExportScope = z.enum(['document', 'database', 'all']);
+export const ExportScope = z.enum(['document', 'database']);
 
 /**
  * Configuration keys that can be set
@@ -197,7 +197,6 @@ export const IngestDirectoryInput = z.object({
   directory_path: z.string().min(1, 'Directory path is required'),
   recursive: z.boolean().default(true),
   file_types: z.array(z.string()).optional().default(DEFAULT_FILE_TYPES),
-  ocr_mode: OCRMode.default('balanced'),
 });
 
 /**
@@ -207,7 +206,6 @@ export const IngestFilesInput = z.object({
   file_paths: z
     .array(z.string().min(1, 'File path cannot be empty'))
     .min(1, 'At least one file path is required'),
-  ocr_mode: OCRMode.default('balanced'),
 });
 
 /**
@@ -290,7 +288,7 @@ export const DocumentListInput = z.object({
  * Schema for getting a specific document
  */
 export const DocumentGetInput = z.object({
-  document_id: z.string().uuid('Invalid document ID format'),
+  document_id: z.string().min(1, 'Document ID is required'),
   include_text: z.boolean().default(false),
   include_chunks: z.boolean().default(false),
   include_full_provenance: z.boolean().default(false),
@@ -300,10 +298,17 @@ export const DocumentGetInput = z.object({
  * Schema for deleting a document
  */
 export const DocumentDeleteInput = z.object({
-  document_id: z.string().uuid('Invalid document ID format'),
+  document_id: z.string().min(1, 'Document ID is required'),
   confirm: z.literal(true, {
     errorMap: () => ({ message: 'Confirm must be true to delete document' }),
   }),
+});
+
+/**
+ * Schema for retrying failed documents
+ */
+export const RetryFailedInput = z.object({
+  document_id: z.string().min(1).optional(),
 });
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -387,6 +392,7 @@ export type IngestDirectoryInput = z.infer<typeof IngestDirectoryInput>;
 export type IngestFilesInput = z.infer<typeof IngestFilesInput>;
 export type ProcessPendingInput = z.infer<typeof ProcessPendingInput>;
 export type OCRStatusInput = z.infer<typeof OCRStatusInput>;
+export type RetryFailedInput = z.infer<typeof RetryFailedInput>;
 
 // Search types
 export type SearchSemanticInput = z.infer<typeof SearchSemanticInput>;

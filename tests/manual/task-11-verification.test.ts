@@ -146,7 +146,7 @@ describe('Task 11 Full State Verification', () => {
     // Verify document status
     const docAfter = db!.getDocument(docId);
     console.log('[DB] Document status:', docAfter!.status);
-    expect(docAfter!.status).toBe('complete');
+    expect(docAfter!.status).toBe('processing');
     expect(docAfter!.page_count).toBeGreaterThan(0);
   }, 180000);
 

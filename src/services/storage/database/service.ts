@@ -126,6 +126,12 @@ export class DatabaseService {
     });
   }
 
+  cleanDocumentDerivedData(id: string): void {
+    this.transaction(() => {
+      docOps.cleanDocumentDerivedData(this.db, id);
+    });
+  }
+
   // ==================== OCR RESULT OPERATIONS ====================
 
   insertOCRResult(result: OCRResult): string {

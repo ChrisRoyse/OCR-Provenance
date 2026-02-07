@@ -33,6 +33,7 @@ import {
   IngestFilesInput,
   ProcessPendingInput,
   OCRStatusInput,
+  RetryFailedInput,
 } from '../utils/validation.js';
 import {
   pathNotFoundError,
@@ -324,7 +325,7 @@ function saveAndStoreImages(
     : new Map<number, PageImageClassification>();
 
   const imageRefs: CreateImageReference[] = [];
-  let imageIndex = 0;
+  const pageImageCounts = new Map<number, number>();
 
   for (const [filename, base64Data] of Object.entries(images)) {
     // Decode base64 to buffer
@@ -339,6 +340,11 @@ function saveAndStoreImages(
     const pageNumber = pageMatch
       ? parseInt(pageMatch[1] || pageMatch[2], 10) + 1
       : 1;
+
+    // Per-page image index (L-2: use per-page counter, not global)
+    const currentPageCount = pageImageCounts.get(pageNumber) ?? 0;
+    pageImageCounts.set(pageNumber, currentPageCount + 1);
+    const imageIndex = currentPageCount;
 
     // Compute content hash for deduplication
     const contentHash = computeContentHash(buffer);
@@ -383,8 +389,6 @@ function saveAndStoreImages(
       is_header_footer: isHeaderFooter,
       content_hash: contentHash,
     });
-
-    imageIndex++;
   }
 
   // Batch insert all images
@@ -1101,33 +1105,39 @@ export async function handleChunkComplete(
 
 /**
  * Handle ocr_retry_failed - Reset failed documents back to pending for reprocessing
+ *
+ * Cleans all derived data (OCR results, chunks, embeddings, images, non-root provenance)
+ * before resetting status to 'pending' to avoid duplicate data on reprocessing.
  */
 export async function handleRetryFailed(
   params: Record<string, unknown>
 ): Promise<{ content: Array<{ type: 'text'; text: string }> }> {
   try {
+    const input = validateInput(RetryFailedInput, params);
     const { db } = requireDatabase();
-
-    const documentId = typeof params.document_id === 'string' ? params.document_id : undefined;
 
     let resetCount = 0;
 
-    if (documentId) {
-      const doc = db.getDocument(documentId);
+    if (input.document_id) {
+      const doc = db.getDocument(input.document_id);
       if (!doc) {
-        throw documentNotFoundError(documentId);
+        throw documentNotFoundError(input.document_id);
       }
       if (doc.status !== 'failed') {
         return formatResponse(successResult({
           reset: 0,
-          message: `Document ${documentId} is not in failed state (current: ${doc.status})`,
+          message: `Document ${input.document_id} is not in failed state (current: ${doc.status})`,
         }));
       }
-      db.updateDocumentStatus(documentId, 'pending');
+      // Clean all derived data before resetting to pending
+      db.cleanDocumentDerivedData(input.document_id);
+      db.updateDocumentStatus(input.document_id, 'pending');
       resetCount = 1;
     } else {
       const failedDocs = db.listDocuments({ status: 'failed', limit: 1000 });
       for (const doc of failedDocs) {
+        // Clean all derived data before resetting to pending
+        db.cleanDocumentDerivedData(doc.id);
         db.updateDocumentStatus(doc.id, 'pending');
         resetCount++;
       }
@@ -1135,7 +1145,7 @@ export async function handleRetryFailed(
 
     return formatResponse(successResult({
       reset: resetCount,
-      message: `Reset ${resetCount} failed document(s) to pending`,
+      message: `Reset ${resetCount} failed document(s) to pending (derived data cleaned)`,
     }));
   } catch (error) {
     return handleError(error);
@@ -1156,7 +1166,6 @@ export const ingestionTools: Record<string, ToolDefinition> = {
       directory_path: z.string().min(1).describe('Path to directory to scan'),
       recursive: z.boolean().default(true).describe('Scan subdirectories'),
       file_types: z.array(z.string()).optional().describe('File types to include (default: pdf, png, jpg, docx, etc.)'),
-      ocr_mode: z.enum(['fast', 'balanced', 'accurate']).default('balanced').describe('OCR processing mode'),
     },
     handler: handleIngestDirectory,
   },
@@ -1164,7 +1173,6 @@ export const ingestionTools: Record<string, ToolDefinition> = {
     description: 'Ingest specific files into the current database',
     inputSchema: {
       file_paths: z.array(z.string().min(1)).min(1).describe('Array of file paths to ingest'),
-      ocr_mode: z.enum(['fast', 'balanced', 'accurate']).default('balanced').describe('OCR processing mode'),
     },
     handler: handleIngestFiles,
   },

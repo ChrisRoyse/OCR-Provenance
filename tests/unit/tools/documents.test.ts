@@ -808,13 +808,13 @@ describe('Edge Cases', () => {
       state.currentDatabase = db;
       state.currentDatabaseName = dbName;
 
-      // Special characters fail UUID validation, so expect INTERNAL_ERROR
+      // Special characters are accepted by min(1) validation, so lookup proceeds to DB
       const response = await handleDocumentGet({ document_id: 'special-!@#$%' });
       const result = parseResponse(response);
 
       expect(result.success).toBe(false);
-      // Validation rejects non-UUID format before database lookup
-      expect(result.error?.category).toBe('INTERNAL_ERROR');
+      // Non-UUID IDs pass validation but are not found in DB
+      expect(result.error?.category).toBe('DOCUMENT_NOT_FOUND');
     });
   });
 

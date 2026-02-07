@@ -83,6 +83,8 @@ export async function handleSearchSemantic(
 
     // Format results with optional provenance
     const formattedResults = results.map(r => {
+      // L-7 fix: Include source_file_hash, content_hash, provenance_id from VectorSearchResult.
+      // Constitution requires SHA-256 hashes on all content and provenance traceability.
       const result: Record<string, unknown> = {
         embedding_id: r.embedding_id,
         chunk_id: r.chunk_id,
@@ -93,11 +95,14 @@ export async function handleSearchSemantic(
         original_text: r.original_text,
         source_file_path: r.source_file_path,
         source_file_name: r.source_file_name,
+        source_file_hash: r.source_file_hash,
         page_number: r.page_number,
         character_start: r.character_start,
         character_end: r.character_end,
         chunk_index: r.chunk_index,
         total_chunks: r.total_chunks,
+        content_hash: r.content_hash,
+        provenance_id: r.provenance_id,
       };
 
       if (input.include_provenance) {
@@ -132,10 +137,14 @@ export async function handleSearch(
     const bm25 = new BM25SearchService(db.getConnection());
     const limit = input.limit ?? 10;
 
+    // M-3 fix: Over-fetch from both sources (limit * 2) since we merge and truncate.
+    // Without this, requesting limit=10 from each source may yield <10 after merge.
+    const fetchLimit = limit * 2;
+
     // Search chunks FTS
     const chunkResults = bm25.search({
       query: input.query,
-      limit,
+      limit: fetchLimit,
       phraseSearch: input.phrase_search,
       documentFilter: input.document_filter,
       includeHighlight: input.include_highlight,
@@ -144,7 +153,7 @@ export async function handleSearch(
     // Search VLM FTS
     const vlmResults = bm25.searchVLM({
       query: input.query,
-      limit,
+      limit: fetchLimit,
       phraseSearch: input.phrase_search,
       documentFilter: input.document_filter,
       includeHighlight: input.include_highlight,
@@ -192,15 +201,19 @@ export async function handleSearchHybrid(
 
     // Get BM25 results (chunks + VLM)
     const bm25 = new BM25SearchService(db.getConnection());
+    // L-6 fix: Pass includeHighlight: false -- hybrid search discards BM25 highlights
+    // since RRF results don't surface snippet() output. Avoids wasted FTS5 computation.
     const bm25ChunkResults = bm25.search({
       query: input.query,
       limit: limit * 2,
       documentFilter: input.document_filter,
+      includeHighlight: false,
     });
     const bm25VlmResults = bm25.searchVLM({
       query: input.query,
       limit: limit * 2,
       documentFilter: input.document_filter,
+      includeHighlight: false,
     });
 
     // Merge BM25 results by score
@@ -214,7 +227,11 @@ export async function handleSearchHybrid(
     const queryVector = await embedder.embedSearchQuery(input.query);
     const semanticResults = vector.searchSimilar(queryVector, {
       limit: limit * 2,
-      threshold: 0.3, // Minimum quality floor for hybrid results
+      // L-9: Intentionally lower than standalone semantic search (0.7).
+      // Hybrid uses 0.3 because RRF fusion will de-rank low-quality results anyway.
+      // The 0.3 floor ensures we don't miss results that are mediocre semantically
+      // but strong in BM25 keyword matching.
+      threshold: 0.3,
       documentFilter: input.document_filter,
     });
 

@@ -44,7 +44,17 @@ export async function handleDocumentList(
       offset: input.offset,
     });
 
-    const stats = db.getStats();
+    // When a status filter is active, total must reflect the filtered count,
+    // not the global total_documents from stats.
+    let total: number;
+    if (input.status_filter) {
+      const stats = db.getStats();
+      const statusKey = input.status_filter as keyof typeof stats.documents_by_status;
+      total = stats.documents_by_status[statusKey] ?? 0;
+    } else {
+      const stats = db.getStats();
+      total = stats.total_documents;
+    }
 
     return formatResponse(successResult({
       documents: documents.map(d => ({
@@ -57,7 +67,7 @@ export async function handleDocumentList(
         page_count: d.page_count,
         created_at: d.created_at,
       })),
-      total: stats.total_documents,
+      total,
       limit: input.limit,
       offset: input.offset,
     }));

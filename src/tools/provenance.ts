@@ -35,6 +35,20 @@ import { ProvenanceTracker } from '../services/provenance/tracker.js';
 // HELPER FUNCTIONS
 // ═══════════════════════════════════════════════════════════════════════════════
 
+/**
+ * Escape a field for CSV output.
+ * If the field contains a comma, double-quote, or newline, wrap it in double quotes
+ * and escape internal double-quotes by doubling them.
+ */
+function csvEscape(field: string | number | null | undefined): string {
+  if (field === null || field === undefined) return '';
+  const str = String(field);
+  if (str.includes(',') || str.includes('"') || str.includes('\n') || str.includes('\r')) {
+    return `"${str.replace(/"/g, '""')}"`;
+  }
+  return str;
+}
+
 /** Detected item types from findProvenanceId - includes 'provenance' for direct provenance ID lookups */
 type DetectedItemType = 'document' | 'chunk' | 'embedding' | 'ocr_result' | 'image' | 'provenance';
 
@@ -192,36 +206,53 @@ export async function handleProvenanceVerify(
       }
 
       // Verify chain structure (depth and parent links)
+      // H-5: Only verify depths when chain is intact; incomplete chains produce wrong expected depths
       if (input.verify_chain) {
-        const expectedDepth = chain.length - 1 - i;
-        if (prov.chain_depth !== expectedDepth) {
-          step.chain_verified = false;
-          chainIntegrity = false;
-          errors.push(`Chain depth mismatch at ${prov.id}: expected ${expectedDepth}, got ${prov.chain_depth}`);
-        }
+        if (chainResult.chain_intact) {
+          const expectedDepth = chain.length - 1 - i;
+          if (prov.chain_depth !== expectedDepth) {
+            step.chain_verified = false;
+            chainIntegrity = false;
+            errors.push(`Chain depth mismatch at ${prov.id}: expected ${expectedDepth}, got ${prov.chain_depth}`);
+          }
 
-        if (i > 0 && chain[i - 1].parent_id !== prov.id) {
+          if (i > 0 && chain[i - 1].parent_id !== prov.id) {
+            step.chain_verified = false;
+            chainIntegrity = false;
+            errors.push(`Parent link broken at ${chain[i - 1].id}`);
+          }
+        } else {
           step.chain_verified = false;
-          chainIntegrity = false;
-          errors.push(`Parent link broken at ${chain[i - 1].id}`);
         }
       }
 
       steps.push(step);
     }
 
-    const contentIntegrity = chainResult.hashes_failed === 0;
+    // H-5: When chain is not intact, add a note instead of false-positive depth errors
+    if (input.verify_chain && !chainResult.chain_intact) {
+      errors.push('Depth verification skipped: chain is incomplete');
+    }
 
-    return formatResponse(successResult({
+    // M-9: When verify_content is false, skip content hash result entirely
+    const contentIntegrity = input.verify_content ? chainResult.hashes_failed === 0 : true;
+
+    const result: Record<string, unknown> = {
       item_id: input.item_id,
       verified: contentIntegrity && chainIntegrity,
       content_integrity: contentIntegrity,
       chain_integrity: chainIntegrity,
-      hashes_verified: chainResult.hashes_verified,
-      hashes_failed: chainResult.hashes_failed,
       steps,
       errors: errors.length > 0 ? errors : undefined,
-    }));
+    };
+
+    // M-9: Only include hash counts when content verification was requested
+    if (input.verify_content) {
+      result.hashes_verified = chainResult.hashes_verified;
+      result.hashes_failed = chainResult.hashes_failed;
+    }
+
+    return formatResponse(successResult(result));
   } catch (error) {
     return handleError(error);
   }
@@ -256,8 +287,9 @@ export async function handleProvenanceExport(
       }
     }
 
-    // Filter null records once
-    const records = rawRecords.filter((r): r is NonNullable<typeof r> => r !== null);
+    // Filter null records and deduplicate by provenance ID (L-17: cross-document VLM dedup can overlap)
+    const nonNullRecords = rawRecords.filter((r): r is NonNullable<typeof r> => r !== null);
+    const records = [...new Map(nonNullRecords.map(r => [r.id, r])).values()];
 
     let data: unknown;
 
@@ -335,11 +367,11 @@ export async function handleProvenanceExport(
         used,
       };
     } else {
-      // CSV format
+      // CSV format with proper escaping (M-10)
       const headers = ['id', 'type', 'chain_depth', 'processor', 'processor_version', 'content_hash', 'parent_id', 'root_document_id', 'created_at'];
       const rows = records.map(r => [
-        r.id, r.type, r.chain_depth, r.processor, r.processor_version,
-        r.content_hash, r.parent_id ?? '', r.root_document_id, r.created_at,
+        csvEscape(r.id), csvEscape(r.type), csvEscape(r.chain_depth), csvEscape(r.processor), csvEscape(r.processor_version),
+        csvEscape(r.content_hash), csvEscape(r.parent_id ?? ''), csvEscape(r.root_document_id), csvEscape(r.created_at),
       ].join(','));
       data = [headers.join(','), ...rows].join('\n');
     }
@@ -384,7 +416,7 @@ export const provenanceTools: Record<string, ToolDefinition> = {
   'ocr_provenance_export': {
     description: 'Export provenance data in various formats',
     inputSchema: {
-      scope: z.enum(['document', 'database', 'all']).describe('Export scope'),
+      scope: z.enum(['document', 'database']).describe('Export scope'),
       document_id: z.string().optional().describe('Document ID (required when scope is document)'),
       format: z.enum(['json', 'w3c-prov', 'csv']).default('json').describe('Export format'),
     },

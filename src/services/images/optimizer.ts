@@ -163,53 +163,6 @@ export class ImageOptimizer {
   }
 
   /**
-   * Quick check if an image should be processed by VLM.
-   * Wrapper around analyzeImage that returns just the boolean.
-   *
-   * @param imagePath - Path to the image file
-   * @returns true if image should be VLM processed
-   */
-  async shouldProcessVLM(imagePath: string): Promise<boolean> {
-    const result = await this.analyzeImage(imagePath);
-    if (!result.success) {
-      console.warn(`[ImageOptimizer] Analysis failed: ${result.error}`);
-      return false;
-    }
-    return result.should_vlm;
-  }
-
-  /**
-   * Quick check using only dimensions (no file read).
-   * Faster but less accurate than full analysis.
-   *
-   * @param width - Image width in pixels
-   * @param height - Image height in pixels
-   * @returns true if dimensions suggest VLM processing worthwhile
-   */
-  shouldProcessVLMByDimensions(width: number, height: number): boolean {
-    const minDim = Math.min(width, height);
-    const maxDim = Math.max(width, height);
-    const aspectRatio = maxDim / minDim;
-
-    // Skip if too small
-    if (maxDim < this.config.vlmSkipBelowSize) {
-      return false;
-    }
-
-    // Skip if likely icon (both dimensions small)
-    if (maxDim < 100 && minDim < 100) {
-      return false;
-    }
-
-    // Skip if extreme aspect ratio (likely banner/separator)
-    if (aspectRatio > 6) {
-      return false;
-    }
-
-    return true;
-  }
-
-  /**
    * Resize an image for OCR processing (Datalab API).
    *
    * @param inputPath - Path to input image
@@ -289,6 +242,7 @@ export class ImageOptimizer {
 
   /**
    * Run the Python optimizer script.
+   * M-14: Sends SIGKILL after 5s if SIGTERM from Node.js timeout didn't terminate the process.
    */
   private runPython<T>(args: string[]): Promise<T> {
     return new Promise((resolve) => {
@@ -307,6 +261,15 @@ export class ImageOptimizer {
 
       let stdout = '';
       let stderr = '';
+      let settled = false;
+      let sigkillTimer: ReturnType<typeof setTimeout> | null = null;
+
+      const cleanup = () => {
+        if (sigkillTimer) {
+          clearTimeout(sigkillTimer);
+          sigkillTimer = null;
+        }
+      };
 
       proc.stdout.on('data', (data) => {
         stdout += data.toString();
@@ -317,15 +280,48 @@ export class ImageOptimizer {
       });
 
       proc.on('error', (err) => {
+        cleanup();
+        if (settled) return;
+        settled = true;
+
+        // If process got SIGTERM from timeout but is stuck in C extension, send SIGKILL
+        if (err.message.includes('ETIMEDOUT') || err.message.includes('killed')) {
+          try {
+            if (proc.pid && !proc.killed) {
+              sigkillTimer = setTimeout(() => {
+                try {
+                  proc.kill('SIGKILL');
+                } catch {
+                  // Process may already be gone
+                }
+              }, 5000);
+            }
+          } catch {
+            // Ignore kill errors
+          }
+        }
+
         resolve({
           success: false,
           error: `Failed to start Python process: ${err.message}`,
         } as T);
       });
 
-      proc.on('close', (code) => {
+      proc.on('close', (code, signal) => {
+        cleanup();
+        if (settled) return;
+        settled = true;
+
         if (stderr) {
           console.warn(`[ImageOptimizer] stderr: ${stderr}`);
+        }
+
+        if (signal === 'SIGTERM' || signal === 'SIGKILL') {
+          resolve({
+            success: false,
+            error: `Python process killed by ${signal} (timeout: ${this.config.timeout}ms)`,
+          } as T);
+          return;
         }
 
         try {
@@ -345,23 +341,44 @@ export class ImageOptimizer {
           }
         }
       });
+
+      // SIGKILL fallback: if Node.js timeout sends SIGTERM and process doesn't exit within 5s, SIGKILL it
+      // The spawn timeout option sends SIGTERM. We set a timer to escalate to SIGKILL.
+      if (this.config.timeout > 0) {
+        sigkillTimer = setTimeout(() => {
+          if (!settled && !proc.killed) {
+            console.error(`[ImageOptimizer] Process did not exit after SIGTERM, sending SIGKILL (pid: ${proc.pid})`);
+            try {
+              proc.kill('SIGKILL');
+            } catch {
+              // Process may already be gone
+            }
+          }
+        }, this.config.timeout + 5000);
+      }
     });
   }
 }
 
 /**
- * Default global optimizer instance
+ * Cached default optimizer instance (used when no config is provided)
  */
-let defaultOptimizer: ImageOptimizer | null = null;
+let cachedOptimizer: ImageOptimizer | null = null;
 
 /**
- * Get or create the default optimizer instance.
+ * Get an optimizer instance.
+ * When config is provided, always creates a new instance and updates the cache.
+ * When no config is provided, returns the cached instance (creating one if needed).
  */
 export function getImageOptimizer(
   config?: Partial<ImageOptimizerConfig>
 ): ImageOptimizer {
-  if (!defaultOptimizer) {
-    defaultOptimizer = new ImageOptimizer(config);
+  if (config) {
+    cachedOptimizer = new ImageOptimizer(config);
+    return cachedOptimizer;
   }
-  return defaultOptimizer;
+  if (!cachedOptimizer) {
+    cachedOptimizer = new ImageOptimizer();
+  }
+  return cachedOptimizer;
 }

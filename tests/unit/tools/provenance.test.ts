@@ -1013,14 +1013,11 @@ describe('Edge Cases', () => {
     });
   });
 
-  describe('Edge Case 6: Export scope "all" is treated like "database"', () => {
-    it.skipIf(!sqliteVecAvailable)('exports all records for scope "all"', async () => {
+  describe('Edge Case 6: Export scope "all" is no longer valid', () => {
+    it.skipIf(!sqliteVecAvailable)('rejects scope "all" with validation error', async () => {
       const db = DatabaseService.create(dbName, undefined, tempDir);
       state.currentDatabase = db;
       state.currentDatabaseName = dbName;
-
-      const docId = uuidv4();
-      insertTestDocument(db, docId, 'test.txt', tempDir);
 
       const response = await handleProvenanceExport({
         scope: 'all',
@@ -1028,8 +1025,7 @@ describe('Edge Cases', () => {
       });
       const result = parseResponse(response);
 
-      expect(result.success).toBe(true);
-      expect(result.data?.scope).toBe('all');
+      expect(result.success).toBe(false);
     });
   });
 
@@ -1181,7 +1177,7 @@ describe('Input Validation', () => {
   });
 
   it('handleProvenanceExport accepts all valid scopes', async () => {
-    const validScopes = ['document', 'database', 'all'];
+    const validScopes = ['document', 'database'];
     for (const scope of validScopes) {
       const response = await handleProvenanceExport({
         scope,

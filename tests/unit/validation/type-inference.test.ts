@@ -25,9 +25,9 @@ describe('Type Inference', () => {
     });
     expect(search.limit).toBe(10);
 
-    const provExport: { scope: 'document' | 'database' | 'all' } = ProvenanceExportInput.parse({
-      scope: 'all',
+    const provExport: { scope: 'document' | 'database' } = ProvenanceExportInput.parse({
+      scope: 'database',
     });
-    expect(provExport.scope).toBe('all');
+    expect(provExport.scope).toBe('database');
   });
 });
