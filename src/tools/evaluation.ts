@@ -17,6 +17,7 @@ import { requireDatabase } from '../server/state.js';
 import { successResult } from '../server/types.js';
 import { MCPError } from '../server/errors.js';
 import { formatResponse, handleError, type ToolResponse, type ToolDefinition } from './shared.js';
+import { validateInput } from '../utils/validation.js';
 import { GeminiClient } from '../services/gemini/client.js';
 import { UNIVERSAL_EVALUATION_PROMPT, UNIVERSAL_EVALUATION_SCHEMA } from '../services/vlm/prompts.js';
 import {
@@ -34,6 +35,27 @@ import type { VLMResult } from '../models/image.js';
 import { ProvenanceType } from '../models/provenance.js';
 import type { ProvenanceRecord } from '../models/provenance.js';
 
+
+// ===============================================================================
+// VALIDATION SCHEMAS
+// ===============================================================================
+
+const EvaluateSingleInput = z.object({
+  image_id: z.string().min(1),
+  save_to_db: z.boolean().default(true),
+});
+
+const EvaluateDocumentInput = z.object({
+  document_id: z.string().min(1),
+  batch_size: z.number().int().min(1).max(20).default(5),
+  concurrency: z.number().int().min(1).max(10).default(3),
+});
+
+const EvaluatePendingInput = z.object({
+  limit: z.number().int().min(1).max(500).default(100),
+  batch_size: z.number().int().min(1).max(50).default(10),
+});
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // EVALUATION TOOL HANDLERS
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -45,8 +67,9 @@ export async function handleEvaluateSingle(
   params: Record<string, unknown>
 ): Promise<ToolResponse> {
   try {
-    const imageId = params.image_id as string;
-    const saveToDb = params.save_to_db as boolean ?? true;
+    const input = validateInput(EvaluateSingleInput, params);
+    const imageId = input.image_id;
+    const saveToDb = input.save_to_db ?? true;
 
     const { db, vector } = requireDatabase();
 
@@ -180,8 +203,9 @@ export async function handleEvaluateDocument(
   params: Record<string, unknown>
 ): Promise<ToolResponse> {
   try {
-    const documentId = params.document_id as string;
-    const batchSize = (params.batch_size as number) || 5;
+    const input = validateInput(EvaluateDocumentInput, params);
+    const documentId = input.document_id;
+    const batchSize = input.batch_size ?? 5;
     // Note: concurrency param available for future parallel processing
 
     const { db } = requireDatabase();
@@ -305,8 +329,9 @@ export async function handleEvaluatePending(
   params: Record<string, unknown>
 ): Promise<ToolResponse> {
   try {
-    const limit = (params.limit as number) || 100;
-    const batchSize = (params.batch_size as number) || 10;
+    const input = validateInput(EvaluatePendingInput, params);
+    const limit = input.limit ?? 100;
+    const batchSize = input.batch_size ?? 10;
 
     const { db } = requireDatabase();
 

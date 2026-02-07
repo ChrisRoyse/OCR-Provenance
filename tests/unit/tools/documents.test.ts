@@ -387,7 +387,7 @@ describe('handleDocumentList', () => {
     }
   });
 
-  it.skipIf(!sqliteVecAvailable)('applies sort_by and sort_order', async () => {
+  it.skipIf(!sqliteVecAvailable)('returns all documents with default sort', async () => {
     const db = DatabaseService.create(dbName, undefined, tempDir);
     state.currentDatabase = db;
     state.currentDatabaseName = dbName;
@@ -397,13 +397,12 @@ describe('handleDocumentList', () => {
     insertTestDocument(db, uuidv4(), 'zzz.txt', '/test/zzz.txt');
     insertTestDocument(db, uuidv4(), 'mmm.txt', '/test/mmm.txt');
 
-    const response = await handleDocumentList({ sort_by: 'file_name', sort_order: 'asc' });
+    const response = await handleDocumentList({});
     const result = parseResponse(response);
 
     expect(result.success).toBe(true);
     const documents = result.data?.documents as Array<Record<string, unknown>>;
     expect(documents).toHaveLength(3);
-    // Verify all documents returned, sorted order depends on implementation
     const fileNames = documents.map(d => d.file_name);
     expect(fileNames).toContain('aaa.txt');
     expect(fileNames).toContain('mmm.txt');
@@ -951,7 +950,7 @@ describe('Edge Cases', () => {
       insertTestDocument(db, uuidv4(), 'doc1.txt', '/test/doc1.txt');
       insertTestDocument(db, uuidv4(), 'doc2.txt', '/test/doc2.txt');
 
-      const response = await handleDocumentList({ sort_by: 'file_size', sort_order: 'asc' });
+      const response = await handleDocumentList({});
       const result = parseResponse(response);
 
       expect(result.success).toBe(true);
@@ -969,7 +968,7 @@ describe('Edge Cases', () => {
       await new Promise(resolve => setTimeout(resolve, 10));
       insertTestDocument(db, uuidv4(), 'second.txt', '/test/second.txt');
 
-      const response = await handleDocumentList({ sort_by: 'created_at', sort_order: 'desc' });
+      const response = await handleDocumentList({});
       const result = parseResponse(response);
 
       expect(result.success).toBe(true);
@@ -1055,14 +1054,10 @@ describe('Input Validation', () => {
     expect(result.success).toBe(false);
   });
 
-  it('document_list rejects invalid sort_by', async () => {
+  it('document_list strips unknown params like sort_by', async () => {
+    // sort_by was removed as a dead param; Zod strips unknown fields
+    // The handler proceeds past validation but fails on "no database selected"
     const response = await handleDocumentList({ sort_by: 'invalid_field' });
-    const result = parseResponse(response);
-    expect(result.success).toBe(false);
-  });
-
-  it('document_list rejects invalid sort_order', async () => {
-    const response = await handleDocumentList({ sort_order: 'invalid' });
     const result = parseResponse(response);
     expect(result.success).toBe(false);
   });

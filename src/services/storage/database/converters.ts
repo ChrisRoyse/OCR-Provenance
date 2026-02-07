@@ -11,6 +11,7 @@ import {
   ProvenanceRecord,
   ProvenanceType,
   ProvenanceLocation,
+  type SourceType,
 } from '../../../models/provenance.js';
 import {
   ImageReference,
@@ -136,7 +137,7 @@ export function rowToProvenance(row: ProvenanceRow): ProvenanceRecord {
     processed_at: row.processed_at,
     source_file_created_at: row.source_file_created_at,
     source_file_modified_at: row.source_file_modified_at,
-    source_type: row.source_type as 'FILE' | 'OCR' | 'CHUNKING' | 'EMBEDDING',
+    source_type: row.source_type as SourceType,
     source_path: row.source_path,
     source_id: row.source_id,
     root_document_id: row.root_document_id,

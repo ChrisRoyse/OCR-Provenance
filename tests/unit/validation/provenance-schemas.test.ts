@@ -21,16 +21,15 @@ describe('Provenance Schemas', () => {
     it('should provide defaults', () => {
       const result = ProvenanceGetInput.parse({ item_id: 'prov_abc123' });
       expect(result.item_type).toBe('auto');
-      expect(result.format).toBe('chain');
     });
 
     it('should reject empty item_id', () => {
       expect(() => ProvenanceGetInput.parse({ item_id: '' })).toThrow('required');
     });
 
-    it('should accept different formats', () => {
-      expect(ProvenanceGetInput.parse({ item_id: 'test', format: 'tree' }).format).toBe('tree');
-      expect(ProvenanceGetInput.parse({ item_id: 'test', format: 'flat' }).format).toBe('flat');
+    it('should strip removed format field', () => {
+      const result = ProvenanceGetInput.parse({ item_id: 'test', format: 'tree' });
+      expect((result as Record<string, unknown>).format).toBeUndefined();
     });
   });
 

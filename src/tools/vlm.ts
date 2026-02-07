@@ -16,9 +16,44 @@ import { requireDatabase } from '../server/state.js';
 import { successResult } from '../server/types.js';
 import { MCPError } from '../server/errors.js';
 import { formatResponse, handleError, type ToolResponse, type ToolDefinition } from './shared.js';
+import { validateInput } from '../utils/validation.js';
 import { getVLMService } from '../services/vlm/service.js';
 import { VLMPipeline } from '../services/vlm/pipeline.js';
 import { GeminiClient } from '../services/gemini/client.js';
+
+
+// ===============================================================================
+// VALIDATION SCHEMAS
+// ===============================================================================
+
+const VLMDescribeInput = z.object({
+  image_path: z.string().min(1),
+  context_text: z.string().optional(),
+  use_medical_prompt: z.boolean().default(false),
+  use_thinking: z.boolean().default(false),
+});
+
+const VLMClassifyInput = z.object({
+  image_path: z.string().min(1),
+});
+
+const VLMProcessDocumentInput = z.object({
+  document_id: z.string().min(1),
+  batch_size: z.number().int().min(1).max(20).default(5),
+  use_medical_prompts: z.boolean().default(false),
+});
+
+const VLMProcessPendingInput = z.object({
+  limit: z.number().int().min(1).max(500).default(50),
+  use_medical_prompts: z.boolean().default(false),
+});
+
+const VLMAnalyzePDFInput = z.object({
+  pdf_path: z.string().min(1),
+  prompt: z.string().optional(),
+});
+
+const VLMStatusInput = z.object({});
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // VLM TOOL HANDLERS
@@ -31,10 +66,11 @@ export async function handleVLMDescribe(
   params: Record<string, unknown>
 ): Promise<ToolResponse> {
   try {
-    const imagePath = params.image_path as string;
-    const contextText = params.context_text as string | undefined;
-    const useMedicalPrompt = params.use_medical_prompt as boolean | undefined;
-    const useThinking = params.use_thinking as boolean | undefined;
+    const input = validateInput(VLMDescribeInput, params);
+    const imagePath = input.image_path;
+    const contextText = input.context_text;
+    const useMedicalPrompt = input.use_medical_prompt ?? false;
+    const useThinking = input.use_thinking ?? false;
 
     // Validate image path exists
     if (!fs.existsSync(imagePath)) {
@@ -79,7 +115,8 @@ export async function handleVLMClassify(
   params: Record<string, unknown>
 ): Promise<ToolResponse> {
   try {
-    const imagePath = params.image_path as string;
+    const input = validateInput(VLMClassifyInput, params);
+    const imagePath = input.image_path;
 
     // Validate image path exists
     if (!fs.existsSync(imagePath)) {
@@ -114,9 +151,10 @@ export async function handleVLMProcessDocument(
   params: Record<string, unknown>
 ): Promise<ToolResponse> {
   try {
-    const documentId = params.document_id as string;
-    const batchSize = (params.batch_size as number) || 5;
-    const useMedicalPrompts = params.use_medical_prompts as boolean | undefined;
+    const input = validateInput(VLMProcessDocumentInput, params);
+    const documentId = input.document_id;
+    const batchSize = input.batch_size ?? 5;
+    const useMedicalPrompts = input.use_medical_prompts ?? false;
 
     const { db, vector } = requireDatabase();
 
@@ -172,8 +210,9 @@ export async function handleVLMProcessPending(
   params: Record<string, unknown>
 ): Promise<ToolResponse> {
   try {
-    const limit = (params.limit as number) || 50;
-    const useMedicalPrompts = params.use_medical_prompts as boolean | undefined;
+    const input = validateInput(VLMProcessPendingInput, params);
+    const limit = input.limit ?? 50;
+    const useMedicalPrompts = input.use_medical_prompts ?? false;
 
     const { db, vector } = requireDatabase();
 
@@ -211,8 +250,9 @@ export async function handleVLMAnalyzePDF(
   params: Record<string, unknown>
 ): Promise<ToolResponse> {
   try {
-    const pdfPath = params.pdf_path as string;
-    const prompt = params.prompt as string | undefined;
+    const input = validateInput(VLMAnalyzePDFInput, params);
+    const pdfPath = input.pdf_path;
+    const prompt = input.prompt;
 
     // Validate PDF path exists
     if (!fs.existsSync(pdfPath)) {
@@ -264,9 +304,10 @@ Return as JSON with fields: documentType, summary, keyDates, keyNames, findings`
  * Handle ocr_vlm_status - Get VLM service status and statistics
  */
 export async function handleVLMStatus(
-  _params: Record<string, unknown>
+  params: Record<string, unknown>
 ): Promise<ToolResponse> {
   try {
+    validateInput(VLMStatusInput, params);
     const vlm = getVLMService();
     const status = vlm.getStatus();
 

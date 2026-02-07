@@ -248,8 +248,19 @@ describe('Image Operations', () => {
       expect(retrieved?.vlm_status).toBe('processing');
     });
 
-    it('should throw for non-existent image', () => {
-      expect(() => setImageProcessing(db, 'non-existent')).toThrow();
+    it('should return false for non-existent image', () => {
+      expect(setImageProcessing(db, 'non-existent')).toBe(false);
+    });
+
+    it('should only transition from pending to processing', () => {
+      const img = insertImage(db, createTestImage());
+      // First call: pending -> processing (returns true)
+      expect(setImageProcessing(db, img.id)).toBe(true);
+      // Second call: already processing, not pending (returns false)
+      expect(setImageProcessing(db, img.id)).toBe(false);
+      // Status should still be processing
+      const retrieved = getImage(db, img.id);
+      expect(retrieved?.vlm_status).toBe('processing');
     });
   });
 

@@ -207,6 +207,9 @@ export function listImages(
   }
 
   if (options?.offset !== undefined) {
+    if (options?.limit === undefined) {
+      query += ' LIMIT -1';
+    }
     query += ' OFFSET ?';
     params.push(options.offset);
   }
@@ -222,19 +225,15 @@ export function listImages(
  * @param db - Database connection
  * @param id - Image ID
  */
-export function setImageProcessing(db: Database.Database, id: string): void {
+export function setImageProcessing(db: Database.Database, id: string): boolean {
   const stmt = db.prepare(`
     UPDATE images SET vlm_status = 'processing'
-    WHERE id = ?
+    WHERE id = ? AND vlm_status = 'pending'
   `);
 
   const result = stmt.run(id);
-  if (result.changes === 0) {
-    throw new DatabaseError(
-      `Image "${id}" not found`,
-      DatabaseErrorCode.EMBEDDING_NOT_FOUND // Using closest error code
-    );
-  }
+  // Returns false if image not found or already processing/complete/failed
+  return result.changes > 0;
 }
 
 /**
@@ -279,7 +278,7 @@ export function updateImageVLMResult(
   if (changes === 0) {
     throw new DatabaseError(
       `Image "${id}" not found`,
-      DatabaseErrorCode.EMBEDDING_NOT_FOUND
+      DatabaseErrorCode.IMAGE_NOT_FOUND
     );
   }
 }
@@ -307,7 +306,7 @@ export function setImageVLMFailed(
   if (result.changes === 0) {
     throw new DatabaseError(
       `Image "${id}" not found`,
-      DatabaseErrorCode.EMBEDDING_NOT_FOUND
+      DatabaseErrorCode.IMAGE_NOT_FOUND
     );
   }
 }
@@ -333,7 +332,7 @@ export function updateImageContext(
   if (result.changes === 0) {
     throw new DatabaseError(
       `Image "${id}" not found`,
-      DatabaseErrorCode.EMBEDDING_NOT_FOUND
+      DatabaseErrorCode.IMAGE_NOT_FOUND
     );
   }
 }
@@ -443,6 +442,32 @@ export function resetFailedImages(
 }
 
 /**
+ * Reset VLM status to pending for images stuck in 'processing' state
+ *
+ * @param db - Database connection
+ * @param documentId - Optional document ID to filter
+ * @returns number - Number of images reset
+ */
+export function resetProcessingImages(
+  db: Database.Database,
+  documentId?: string
+): number {
+  let query = `
+    UPDATE images SET
+      vlm_status = 'pending',
+      error_message = 'Reset from stuck processing state'
+    WHERE vlm_status = 'processing'
+  `;
+
+  if (documentId) {
+    query += ' AND document_id = ?';
+    return db.prepare(query).run(documentId).changes;
+  }
+
+  return db.prepare(query).run().changes;
+}
+
+/**
  * Find a VLM-complete image with the same content hash (for deduplication).
  * Returns the first matching image or null.
  *
@@ -507,7 +532,7 @@ export function copyVLMResult(
   if (changes === 0) {
     throw new DatabaseError(
       `Image "${targetId}" not found`,
-      DatabaseErrorCode.EMBEDDING_NOT_FOUND
+      DatabaseErrorCode.IMAGE_NOT_FOUND
     );
   }
 }

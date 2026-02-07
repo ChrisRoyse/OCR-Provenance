@@ -131,11 +131,13 @@ export class BM25SearchService {
   }
 
   private buildFTSQuery(query: string): string {
+    const FTS5_KEYWORDS = new Set(['AND', 'OR', 'NOT', 'NEAR']);
     const tokens = query
       .trim()
       .split(/\s+/)
       .filter(t => t.length > 0)
-      .map(t => t.replace(/['"]/g, ''));
+      .map(t => t.replace(/['"()*:^~\-+{}\[\]\\]/g, ''))
+      .filter(t => t.length > 0 && !FTS5_KEYWORDS.has(t.toUpperCase()));
 
     if (tokens.length === 0) {
       throw new Error('Query contains no valid search tokens after sanitization');

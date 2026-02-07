@@ -28,7 +28,6 @@ describe('Document Ingestion Schemas', () => {
       });
       expect(result.recursive).toBe(true);
       expect(result.ocr_mode).toBe('balanced');
-      expect(result.auto_process).toBe(false);
       expect(result.file_types).toEqual(DEFAULT_FILE_TYPES);
     });
 
