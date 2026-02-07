@@ -139,6 +139,18 @@ export function getChunk(db: Database.Database, id: string): Chunk | null {
 }
 
 /**
+ * Check if a document has any chunks (M-9: avoids loading all chunk rows)
+ *
+ * @param db - Database connection
+ * @param documentId - Document ID
+ * @returns boolean - true if document has at least one chunk
+ */
+export function hasChunksByDocumentId(db: Database.Database, documentId: string): boolean {
+  const stmt = db.prepare('SELECT 1 FROM chunks WHERE document_id = ? LIMIT 1');
+  return stmt.get(documentId) !== undefined;
+}
+
+/**
  * Get all chunks for a document
  *
  * @param db - Database connection
@@ -176,10 +188,11 @@ export function getChunksByOCRResultId(db: Database.Database, ocrResultId: strin
  * @returns Chunk[] - Array of pending chunks
  */
 export function getPendingEmbeddingChunks(db: Database.Database, limit?: number): Chunk[] {
-  const baseQuery = "SELECT * FROM chunks WHERE embedding_status = 'pending' ORDER BY created_at";
-  const query = limit !== undefined ? `${baseQuery} LIMIT ?` : baseQuery;
+  // M-15: Default limit prevents unbounded loading of all pending chunks
+  const effectiveLimit = limit ?? 1000;
+  const query = "SELECT * FROM chunks WHERE embedding_status = 'pending' ORDER BY created_at LIMIT ?";
   const stmt = db.prepare(query);
-  const rows = (limit !== undefined ? stmt.all(limit) : stmt.all()) as ChunkRow[];
+  const rows = stmt.all(effectiveLimit) as ChunkRow[];
   return rows.map(rowToChunk);
 }
 

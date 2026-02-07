@@ -123,6 +123,9 @@ export interface ImageOptimizerConfig {
   minRelevanceScore: number;
 }
 
+/** Max stderr accumulation: 10KB (matches nomic.ts pattern) */
+const MAX_STDERR_LENGTH = 10_240;
+
 const DEFAULT_CONFIG: ImageOptimizerConfig = {
   pythonPath: 'python3',
   timeout: 60000, // 1 minute
@@ -275,8 +278,11 @@ export class ImageOptimizer {
         stdout += data.toString();
       });
 
+      // H-9: Cap stderr accumulation to prevent unbounded memory growth
       proc.stderr.on('data', (data) => {
-        stderr += data.toString();
+        if (stderr.length < MAX_STDERR_LENGTH) {
+          stderr += data.toString();
+        }
       });
 
       proc.on('error', (err) => {

@@ -122,23 +122,22 @@ export function getStats(
  */
 export function updateMetadataCounts(db: Database.Database): void {
   const now = new Date().toISOString();
-  const getCount = (table: string): number =>
-    (db.prepare(`SELECT COUNT(*) as count FROM ${table}`).get() as { count: number }).count;
 
-  const stmt = db.prepare(`
+  // M-2: Single query for all counts instead of 4 separate COUNT(*) scans
+  const counts = db.prepare(`
+    SELECT
+      (SELECT COUNT(*) FROM documents) as doc_count,
+      (SELECT COUNT(*) FROM ocr_results) as ocr_count,
+      (SELECT COUNT(*) FROM chunks) as chunk_count,
+      (SELECT COUNT(*) FROM embeddings) as emb_count
+  `).get() as { doc_count: number; ocr_count: number; chunk_count: number; emb_count: number };
+
+  db.prepare(`
     UPDATE database_metadata
     SET total_documents = ?, total_ocr_results = ?, total_chunks = ?,
         total_embeddings = ?, last_modified_at = ?
     WHERE id = 1
-  `);
-
-  stmt.run(
-    getCount('documents'),
-    getCount('ocr_results'),
-    getCount('chunks'),
-    getCount('embeddings'),
-    now
-  );
+  `).run(counts.doc_count, counts.ocr_count, counts.chunk_count, counts.emb_count, now);
 }
 
 /**

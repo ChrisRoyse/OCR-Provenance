@@ -13,6 +13,9 @@ import { OCRError, mapPythonError } from './errors.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
+/** Max stderr accumulation: 10KB (matches nomic.ts pattern) */
+const MAX_STDERR_LENGTH = 10_240;
+
 /**
  * Python worker JSON response structure
  * Matches python/ocr_worker.py OCRResult dataclass
@@ -97,7 +100,7 @@ export class DatalabClient {
     return new Promise((resolve, reject) => {
       let settled = false;
       const shell = new PythonShell(this.workerPath, options);
-      let output = '';
+      const outputChunks: string[] = [];
       let stderr = '';
 
       const timer = setTimeout(() => {
@@ -109,17 +112,24 @@ export class DatalabClient {
       }, this.timeout);
 
       shell.on('message', (msg: string) => {
-        output += msg + '\n';
+        outputChunks.push(msg);
       });
 
       shell.on('stderr', (err: string) => {
-        stderr += err + '\n';
+        if (stderr.length < MAX_STDERR_LENGTH) {
+          stderr += err + '\n';
+        }
       });
 
       shell.end((err?: Error) => {
         clearTimeout(timer);
         if (settled) return;
         settled = true;
+
+        // H-3: Join chunks once instead of repeated string concatenation
+        const output = outputChunks.join('\n');
+        // M-12: Allow early GC of chunk array
+        outputChunks.length = 0;
 
         if (err) {
           // Try to parse JSON from output for structured error

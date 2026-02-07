@@ -99,44 +99,57 @@ def get_color_diversity(img: Image.Image, sample_size: int = 10000) -> tuple[int
         - unique_colors: Number of distinct colors in sample
         - diversity_score: 0-1 normalized score (1 = very diverse)
     """
-    # Convert to RGB if needed
-    if img.mode != 'RGB':
-        img = img.convert('RGB')
+    # M-8: track intermediates for cleanup
+    rgb_img = None
+    sample_img = None
+    try:
+        # Convert to RGB if needed
+        if img.mode != 'RGB':
+            rgb_img = img.convert('RGB')
+            work_img = rgb_img
+        else:
+            work_img = img
 
-    # Sample pixels for large images
-    width, height = img.size
-    total_pixels = width * height
+        # Sample pixels for large images
+        width, height = work_img.size
+        total_pixels = width * height
 
-    if total_pixels > sample_size:
-        # Resize to get a representative sample
-        scale = (sample_size / total_pixels) ** 0.5
-        sample_img = img.resize(
-            (max(1, int(width * scale)), max(1, int(height * scale))),
-            Image.Resampling.NEAREST
-        )
-    else:
-        sample_img = img
+        if total_pixels > sample_size:
+            # Resize to get a representative sample
+            scale = (sample_size / total_pixels) ** 0.5
+            sample_img = work_img.resize(
+                (max(1, int(width * scale)), max(1, int(height * scale))),
+                Image.Resampling.NEAREST
+            )
+        else:
+            sample_img = work_img
 
-    # Count unique colors
-    colors = sample_img.getcolors(maxcolors=65536)
-    if colors is None:
-        # More than 65536 colors = very diverse
-        return 65536, 1.0
+        # Count unique colors
+        colors = sample_img.getcolors(maxcolors=65536)
+        if colors is None:
+            # More than 65536 colors = very diverse
+            return 65536, 1.0
 
-    unique_colors = len(colors)
+        unique_colors = len(colors)
 
-    # Normalize to 0-1 score
-    # Scale: 1 color = 0, 256+ colors = 1.0
-    if unique_colors <= 1:
-        diversity_score = 0.0
-    elif unique_colors >= 256:
-        diversity_score = 1.0
-    else:
-        # Log scale for smooth transition
-        import math
-        diversity_score = math.log2(unique_colors) / 8.0  # log2(256) = 8
+        # Normalize to 0-1 score
+        # Scale: 1 color = 0, 256+ colors = 1.0
+        if unique_colors <= 1:
+            diversity_score = 0.0
+        elif unique_colors >= 256:
+            diversity_score = 1.0
+        else:
+            # Log scale for smooth transition
+            import math
+            diversity_score = math.log2(unique_colors) / 8.0  # log2(256) = 8
 
-    return unique_colors, diversity_score
+        return unique_colors, diversity_score
+    finally:
+        # M-8: close intermediate images (only if they are distinct objects)
+        if sample_img is not None and sample_img is not work_img:
+            sample_img.close()
+        if rgb_img is not None:
+            rgb_img.close()
 
 
 def calculate_aspect_score(width: int, height: int) -> float:
@@ -345,9 +358,12 @@ def resize_for_ocr(
         new_width = max_width
         new_height = int(original_height * scale)
 
-        # Resize with high quality
+        # Resize with high quality (L-10: close resized image after save)
         resized = img.resize((new_width, new_height), Image.Resampling.LANCZOS)
-        resized.save(output_path, quality=95)
+        try:
+            resized.save(output_path, quality=95)
+        finally:
+            resized.close()
 
     return {
         "success": True,
@@ -412,9 +428,12 @@ def resize_for_vlm(
         new_width = int(original_width * scale)
         new_height = int(original_height * scale)
 
-        # Resize with high quality
+        # Resize with high quality (L-10: close resized image after save)
         resized = img.resize((new_width, new_height), Image.Resampling.LANCZOS)
-        resized.save(output_path, quality=95)
+        try:
+            resized.save(output_path, quality=95)
+        finally:
+            resized.close()
 
     return {
         "success": True,

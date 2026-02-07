@@ -130,7 +130,7 @@ export function listDocuments(
 
   if (options?.offset !== undefined) {
     if (options?.limit === undefined) {
-      query += ' LIMIT -1';
+      query += ' LIMIT 10000';  // L-1: bounded default instead of LIMIT -1
     }
     query += ' OFFSET ?';
     params.push(options.offset);
@@ -222,18 +222,13 @@ export function updateDocumentOCRComplete(
  * @returns The number of embedding IDs deleted (for logging)
  */
 function deleteDerivedRecords(db: Database.Database, documentId: string, caller: string): number {
-  // Get all embedding IDs for this document
-  const embeddingIds = db
-    .prepare('SELECT id FROM embeddings WHERE document_id = ?')
-    .all(documentId) as { id: string }[];
+  // M-3: Count embeddings first, then use subquery DELETE instead of loading all IDs
+  const embeddingCount = (db.prepare('SELECT COUNT(*) as cnt FROM embeddings WHERE document_id = ?').get(documentId) as { cnt: number }).cnt;
 
-  // Delete from vec_embeddings for each embedding
-  const deleteVecStmt = db.prepare(
-    'DELETE FROM vec_embeddings WHERE embedding_id = ?'
-  );
-  for (const { id: embeddingId } of embeddingIds) {
-    deleteVecStmt.run(embeddingId);
-  }
+  // Delete from vec_embeddings using a single subquery
+  db.prepare(
+    'DELETE FROM vec_embeddings WHERE embedding_id IN (SELECT id FROM embeddings WHERE document_id = ?)'
+  ).run(documentId);
 
   // Delete from images (before embeddings due to vlm_embedding_id FK)
   db.prepare('DELETE FROM images WHERE document_id = ?').run(documentId);
@@ -286,7 +281,7 @@ function deleteDerivedRecords(db: Database.Database, documentId: string, caller:
     // fts_index_metadata may not exist in older schemas - ignore
   }
 
-  return embeddingIds.length;
+  return embeddingCount;
 }
 
 /**

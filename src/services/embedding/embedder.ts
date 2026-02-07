@@ -79,7 +79,9 @@ export class EmbeddingService {
     const result = db.transaction(() => {
       const embeddingIds: string[] = [];
       const provenanceIds: string[] = [];
-      const vectorBatch: Array<{ embeddingId: string; vector: Float32Array }> = [];
+      // H-7/M-16: Sub-batch vector storage to avoid accumulating all Float32Array vectors in memory
+      const VECTOR_SUB_BATCH = 50;
+      let vectorBatch: Array<{ embeddingId: string; vector: Float32Array }> = [];
 
       for (let i = 0; i < chunks.length; i++) {
         const chunk = chunks[i];
@@ -119,10 +121,20 @@ export class EmbeddingService {
         db.insertEmbedding(embedding);
         embeddingIds.push(embeddingId);
         vectorBatch.push({ embeddingId, vector });
+
+        // H-7/M-16: Flush vector sub-batch to avoid accumulating all vectors in memory
+        if (vectorBatch.length >= VECTOR_SUB_BATCH) {
+          vectorService.batchStoreVectors(vectorBatch);
+          vectorBatch = [];
+        }
+
         db.updateChunkEmbeddingStatus(chunk.id, 'complete', now);
       }
 
-      vectorService.batchStoreVectors(vectorBatch);
+      // Flush remaining vectors
+      if (vectorBatch.length > 0) {
+        vectorService.batchStoreVectors(vectorBatch);
+      }
       return { embeddingIds, provenanceIds };
     });
 

@@ -33,6 +33,9 @@ export interface ExtractorConfig {
   timeout?: number;
 }
 
+/** Max stderr accumulation: 10KB (matches nomic.ts pattern) */
+const MAX_STDERR_LENGTH = 10_240;
+
 /** Supported file types for image extraction */
 const SUPPORTED_EXTRACTION_TYPES = new Set(['.pdf', '.docx']);
 
@@ -262,28 +265,55 @@ export class ImageExtractor {
         String(options.maxImages ?? 100),
       ];
 
+      const timeout = this.config.timeout ?? 120000;
       const proc = spawn(this.config.pythonPath, args, {
-        timeout: this.config.timeout,
+        timeout,
       });
 
       let stdout = '';
       let stderr = '';
+      let settled = false;
+      let sigkillTimer: ReturnType<typeof setTimeout> | null = null;
+
+      const cleanup = () => {
+        if (sigkillTimer) {
+          clearTimeout(sigkillTimer);
+          sigkillTimer = null;
+        }
+      };
 
       proc.stdout.on('data', (data) => {
         stdout += data.toString();
       });
 
+      // H-9: Cap stderr accumulation to prevent unbounded memory growth
       proc.stderr.on('data', (data) => {
-        stderr += data.toString();
+        if (stderr.length < MAX_STDERR_LENGTH) {
+          stderr += data.toString();
+        }
       });
 
       proc.on('error', (err) => {
+        cleanup();
+        if (settled) return;
+        settled = true;
         reject(new Error(`Failed to start Python process: ${err.message}`));
       });
 
-      proc.on('close', (code) => {
+      proc.on('close', (code, signal) => {
+        cleanup();
+        if (settled) return;
+        settled = true;
+
         if (stderr) {
-          console.warn(`[ImageExtractor] stderr: ${stderr}`);
+          console.warn(`[ImageExtractor] stderr: ${stderr.substring(0, 2000)}`);
+        }
+
+        if (signal === 'SIGTERM' || signal === 'SIGKILL') {
+          reject(
+            new Error(`Python process killed by ${signal} (timeout: ${timeout}ms)`)
+          );
+          return;
         }
 
         try {
@@ -291,9 +321,10 @@ export class ImageExtractor {
           resolve(result as ExtractionResult);
         } catch (parseError) {
           if (code !== 0) {
+            // M-14: Truncate stderr/stdout in error messages to prevent holding megabytes
             reject(
               new Error(
-                `Python script exited with code ${code}: ${stderr || stdout}`
+                `Python script exited with code ${code}: ${(stderr || stdout).substring(0, 2000)}`
               )
             );
           } else {
@@ -303,6 +334,21 @@ export class ImageExtractor {
           }
         }
       });
+
+      // H-4: SIGKILL escalation - if Node.js timeout sends SIGTERM and process
+      // doesn't exit within 5s, escalate to SIGKILL (matches optimizer.ts pattern)
+      if (timeout > 0) {
+        sigkillTimer = setTimeout(() => {
+          if (!settled && !proc.killed) {
+            console.error(`[ImageExtractor] Process did not exit after SIGTERM, sending SIGKILL (pid: ${proc.pid})`);
+            try {
+              proc.kill('SIGKILL');
+            } catch {
+              // Process may already be gone
+            }
+          }
+        }, timeout + 5000);
+      }
     });
   }
 
