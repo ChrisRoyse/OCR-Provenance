@@ -232,6 +232,7 @@ export async function handleDocumentReport(
     const ocrResult = db.getOCRResultByDocumentId(documentId);
     const images = getImagesByDocument(db.getConnection(), documentId);
     const chunks = db.getChunksByDocumentId(documentId);
+    const extractions = db.getExtractionsByDocument(documentId);
 
     // Calculate image stats
     const completeImages = images.filter(i => i.vlm_status === 'complete');
@@ -272,6 +273,9 @@ export async function handleDocumentReport(
         file_size: doc.file_size,
         status: doc.status,
         page_count: doc.page_count,
+        doc_title: doc.doc_title ?? null,
+        doc_author: doc.doc_author ?? null,
+        doc_subject: doc.doc_subject ?? null,
       },
       ocr: ocrResult ? {
         text_length: ocrResult.text_length,
@@ -294,6 +298,16 @@ export async function handleDocumentReport(
         max_confidence: confidences.length > 0 ? Math.max(...confidences) : null,
         type_distribution: imageTypes,
         details: imageDetails,
+      },
+      extractions: {
+        total: extractions.length,
+        items: extractions.map(e => ({
+          id: e.id,
+          schema: e.schema_json ? JSON.parse(e.schema_json) : null,
+          result: e.extraction_json ? JSON.parse(e.extraction_json) : null,
+          created_at: e.created_at,
+          provenance_id: e.provenance_id,
+        })),
       },
     }));
 
@@ -364,6 +378,15 @@ export async function handleQualitySummary(
           low: confStats.low || 0,
           very_low: confStats.very_low || 0,
         },
+      },
+      extractions: {
+        total: dbStats.total_extractions,
+        extraction_rate: dbStats.total_documents > 0
+          ? `${((dbStats.total_extractions / dbStats.total_documents) * 100).toFixed(1)}%`
+          : '0%',
+      },
+      form_fills: {
+        total: dbStats.total_form_fills,
       },
     }));
 
@@ -488,6 +511,8 @@ These images may need manual review or reprocessing.
 - **OCR Results**: ${dbStats.total_documents} documents processed
 - **Text Chunks**: ${dbStats.total_chunks} chunks created
 - **Text Embeddings**: ${dbStats.total_embeddings} embeddings stored
+- **Structured Extractions**: ${dbStats.total_extractions} extractions
+- **Form Fills**: ${dbStats.total_form_fills} form fills
 
 ### VLM Processing Rate
 

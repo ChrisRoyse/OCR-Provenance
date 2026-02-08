@@ -19,6 +19,8 @@ import {
   CREATE_FTS_INDEX_METADATA,
   CREATE_VLM_FTS_TABLE,
   CREATE_VLM_FTS_TRIGGERS,
+  CREATE_EXTRACTIONS_FTS_TABLE,
+  CREATE_EXTRACTIONS_FTS_TRIGGERS,
   CREATE_INDEXES,
   TABLE_DEFINITIONS,
   SCHEMA_VERSION,
@@ -159,6 +161,18 @@ export function createFTSTables(db: Database.Database): void {
     db.prepare(`
       INSERT OR IGNORE INTO fts_index_metadata (id, last_rebuild_at, chunks_indexed, tokenizer, schema_version, content_hash)
       VALUES (2, ?, 0, 'porter unicode61', ${SCHEMA_VERSION}, NULL)
+    `).run(now);
+
+    // Extractions FTS5
+    db.exec(CREATE_EXTRACTIONS_FTS_TABLE);
+    for (const trigger of CREATE_EXTRACTIONS_FTS_TRIGGERS) {
+      db.exec(trigger);
+    }
+
+    // Initialize metadata row for extractions FTS (id=3)
+    db.prepare(`
+      INSERT OR IGNORE INTO fts_index_metadata (id, last_rebuild_at, chunks_indexed, tokenizer, schema_version, content_hash)
+      VALUES (3, ?, 0, 'porter unicode61', ${SCHEMA_VERSION}, NULL)
     `).run(now);
   } catch (error) {
     throw new MigrationError(

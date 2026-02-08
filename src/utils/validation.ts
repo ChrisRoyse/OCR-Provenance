@@ -256,12 +256,25 @@ export const OCRStatusInput = z.object({
 /**
  * Schema for semantic search
  */
+/**
+ * Metadata filter for filtering search results by document metadata
+ */
+export const MetadataFilter = z.object({
+  doc_title: z.string().optional(),
+  doc_author: z.string().optional(),
+  doc_subject: z.string().optional(),
+}).optional();
+
+/**
+ * Schema for semantic search
+ */
 export const SearchSemanticInput = z.object({
   query: z.string().min(1, 'Query is required').max(1000, 'Query must be 1000 characters or less'),
   limit: z.number().int().min(1).max(100).default(10),
   similarity_threshold: z.number().min(0).max(1).default(0.7),
   include_provenance: z.boolean().default(false),
   document_filter: z.array(z.string()).optional(),
+  metadata_filter: MetadataFilter,
 });
 
 /**
@@ -274,6 +287,7 @@ export const SearchInput = z.object({
   include_highlight: z.boolean().default(true),
   include_provenance: z.boolean().default(false),
   document_filter: z.array(z.string()).optional(),
+  metadata_filter: MetadataFilter,
 });
 
 /**
@@ -287,6 +301,7 @@ export const SearchHybridInput = z.object({
   rrf_k: z.number().int().min(1).max(100).default(60),
   include_provenance: z.boolean().default(false),
   document_filter: z.array(z.string()).optional(),
+  metadata_filter: MetadataFilter,
 });
 
 /**

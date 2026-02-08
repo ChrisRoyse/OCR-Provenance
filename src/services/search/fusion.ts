@@ -17,7 +17,7 @@ export interface RRFSearchResult {
   embedding_id: string;
   document_id: string;
   original_text: string;
-  result_type: 'chunk' | 'vlm';
+  result_type: 'chunk' | 'vlm' | 'extraction';
   rrf_score: number;
   bm25_rank: number | null;
   bm25_score: number | null;
@@ -39,10 +39,11 @@ export interface RRFSearchResult {
 export interface RankedResult {
   chunk_id: string | null;
   image_id: string | null;
+  extraction_id?: string | null;
   embedding_id: string;
   rank: number;
   score: number;
-  result_type: 'chunk' | 'vlm';
+  result_type: 'chunk' | 'vlm' | 'extraction';
   document_id: string;
   original_text: string;
   source_file_path: string;
@@ -104,6 +105,7 @@ function buildFusedResult(
 function getDedupKey(result: RankedResult): string {
   if (result.chunk_id) return `chunk-${result.chunk_id}`;
   if (result.image_id) return `image-${result.image_id}`;
+  if (result.extraction_id) return `ext-${result.extraction_id}`;
   return `emb-${result.embedding_id}`;
 }
 

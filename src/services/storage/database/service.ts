@@ -252,6 +252,10 @@ export class DatabaseService {
     return ffOps.listFormFills(this.db, options);
   }
 
+  searchFormFills(query: string, options?: { limit?: number; offset?: number }): FormFill[] {
+    return ffOps.searchFormFills(this.db, query, options);
+  }
+
   deleteFormFill(id: string): boolean {
     return ffOps.deleteFormFill(this.db, id);
   }

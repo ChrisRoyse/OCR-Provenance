@@ -33,7 +33,9 @@ const FormFillInput = z.object({
 const FormFillStatusInput = z.object({
   form_fill_id: z.string().optional().describe('Specific form fill ID to retrieve'),
   status_filter: z.enum(['pending', 'processing', 'complete', 'failed', 'all']).default('all'),
+  search_query: z.string().optional().describe('Search form fills by field values, file path (LIKE match)'),
   limit: z.number().int().min(1).max(100).default(50),
+  offset: z.number().int().min(0).default(0).describe('Offset for pagination'),
 });
 
 async function handleFormFill(params: Record<string, unknown>) {
@@ -156,8 +158,27 @@ async function handleFormFillStatus(params: Record<string, unknown>) {
       });
     }
 
+    // If search_query is provided, use search instead of list
+    if (input.search_query) {
+      const searchResults = db.searchFormFills(input.search_query, { limit: input.limit, offset: input.offset });
+      return formatResponse({
+        total: searchResults.length,
+        search_query: input.search_query,
+        form_fills: searchResults.map(ff => ({
+          id: ff.id,
+          source_file_path: ff.source_file_path,
+          status: ff.status,
+          fields_filled: JSON.parse(ff.fields_filled || '[]').length,
+          fields_not_found: JSON.parse(ff.fields_not_found || '[]').length,
+          cost_cents: ff.cost_cents,
+          created_at: ff.created_at,
+          error_message: ff.error_message,
+        })),
+      });
+    }
+
     const statusFilter = input.status_filter === 'all' ? undefined : input.status_filter;
-    const formFills = db.listFormFills({ status: statusFilter, limit: input.limit });
+    const formFills = db.listFormFills({ status: statusFilter, limit: input.limit, offset: input.offset });
 
     return formatResponse({
       total: formFills.length,

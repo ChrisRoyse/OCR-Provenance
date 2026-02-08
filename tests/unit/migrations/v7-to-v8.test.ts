@@ -392,11 +392,11 @@ describe('Migration v7 to v8', () => {
     expect(indexNames).toContain('idx_documents_doc_title');
   });
 
-  it.skipIf(!sqliteVecAvailable)('updates schema version to 8', () => {
+  it.skipIf(!sqliteVecAvailable)('updates schema version to latest (9)', () => {
     createV7Schema();
     migrateToLatest(db);
     const version = (db.prepare('SELECT version FROM schema_version').get() as { version: number }).version;
-    expect(version).toBe(8);
+    expect(version).toBe(9);
   });
 
   it.skipIf(!sqliteVecAvailable)('preserves existing provenance records after migration', () => {
@@ -480,9 +480,9 @@ describe('Migration v7 to v8', () => {
   it.skipIf(!sqliteVecAvailable)('is idempotent - running migration twice does not error', () => {
     createV7Schema();
     migrateToLatest(db);
-    // Running again should be a no-op (already at v8)
+    // Running again should be a no-op (already at v9)
     expect(() => migrateToLatest(db)).not.toThrow();
     const version = (db.prepare('SELECT version FROM schema_version').get() as { version: number }).version;
-    expect(version).toBe(8);
+    expect(version).toBe(9);
   });
 });

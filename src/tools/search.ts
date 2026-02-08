@@ -43,6 +43,36 @@ interface ProvenanceSummary {
 }
 
 /**
+ * Resolve metadata_filter to document IDs.
+ * Returns undefined if no metadata filter or no matches, allowing all documents.
+ * Returns empty array if filter specified but no matches (blocks all results).
+ */
+function resolveMetadataFilter(
+  db: ReturnType<typeof requireDatabase>['db'],
+  metadataFilter?: { doc_title?: string; doc_author?: string; doc_subject?: string },
+  existingDocFilter?: string[],
+): string[] | undefined {
+  if (!metadataFilter) return existingDocFilter;
+  const { doc_title, doc_author, doc_subject } = metadataFilter;
+  if (!doc_title && !doc_author && !doc_subject) return existingDocFilter;
+
+  let sql = 'SELECT id FROM documents WHERE 1=1';
+  const params: string[] = [];
+  if (doc_title) { sql += ' AND doc_title LIKE ?'; params.push(`%${doc_title}%`); }
+  if (doc_author) { sql += ' AND doc_author LIKE ?'; params.push(`%${doc_author}%`); }
+  if (doc_subject) { sql += ' AND doc_subject LIKE ?'; params.push(`%${doc_subject}%`); }
+
+  // If existing doc filter, intersect with it
+  if (existingDocFilter && existingDocFilter.length > 0) {
+    sql += ` AND id IN (${existingDocFilter.map(() => '?').join(',')})`;
+    params.push(...existingDocFilter);
+  }
+
+  const rows = db.getConnection().prepare(sql).all(...params) as { id: string }[];
+  return rows.map(r => r.id);
+}
+
+/**
  * Format provenance chain as summary array
  */
 function formatProvenanceChain(db: ReturnType<typeof requireDatabase>['db'], provenanceId: string): ProvenanceSummary[] {
@@ -70,6 +100,9 @@ export async function handleSearchSemantic(
     const input = validateInput(SearchSemanticInput, params);
     const { db, vector } = requireDatabase();
 
+    // Resolve metadata filter to document IDs
+    const documentFilter = resolveMetadataFilter(db, input.metadata_filter, input.document_filter);
+
     // Generate query embedding
     const embedder = getEmbeddingService();
     const queryVector = await embedder.embedSearchQuery(input.query);
@@ -78,7 +111,7 @@ export async function handleSearchSemantic(
     const results = vector.searchSimilar(queryVector, {
       limit: input.limit,
       threshold: input.similarity_threshold,
-      documentFilter: input.document_filter,
+      documentFilter,
     });
 
     // Format results with optional provenance
@@ -134,6 +167,9 @@ export async function handleSearch(
     const input = validateInput(SearchInput, params);
     const { db } = requireDatabase();
 
+    // Resolve metadata filter to document IDs
+    const documentFilter = resolveMetadataFilter(db, input.metadata_filter, input.document_filter);
+
     const bm25 = new BM25SearchService(db.getConnection());
     const limit = input.limit ?? 10;
 
@@ -146,7 +182,7 @@ export async function handleSearch(
       query: input.query,
       limit: fetchLimit,
       phraseSearch: input.phrase_search,
-      documentFilter: input.document_filter,
+      documentFilter,
       includeHighlight: input.include_highlight,
     });
 
@@ -155,12 +191,21 @@ export async function handleSearch(
       query: input.query,
       limit: fetchLimit,
       phraseSearch: input.phrase_search,
-      documentFilter: input.document_filter,
+      documentFilter,
+      includeHighlight: input.include_highlight,
+    });
+
+    // Search extractions FTS (F-12)
+    const extractionResults = bm25.searchExtractions({
+      query: input.query,
+      limit: fetchLimit,
+      phraseSearch: input.phrase_search,
+      documentFilter,
       includeHighlight: input.include_highlight,
     });
 
     // Merge by score (higher is better), apply combined limit
-    const allResults = [...chunkResults, ...vlmResults]
+    const allResults = [...chunkResults, ...vlmResults, ...extractionResults]
       .sort((a, b) => b.bm25_score - a.bm25_score)
       .slice(0, limit);
 
@@ -175,9 +220,11 @@ export async function handleSearch(
     // Compute source counts from final merged results (not pre-merge candidates)
     let finalChunkCount = 0;
     let finalVlmCount = 0;
+    let finalExtractionCount = 0;
     for (const r of results) {
       if (r.result_type === 'chunk') finalChunkCount++;
-      else finalVlmCount++;
+      else if (r.result_type === 'vlm') finalVlmCount++;
+      else finalExtractionCount++;
     }
 
     return formatResponse(successResult({
@@ -188,6 +235,7 @@ export async function handleSearch(
       sources: {
         chunk_count: finalChunkCount,
         vlm_count: finalVlmCount,
+        extraction_count: finalExtractionCount,
       },
     }));
   } catch (error) {
@@ -207,25 +255,34 @@ export async function handleSearchHybrid(
     const { db, vector } = requireDatabase();
     const limit = input.limit ?? 10;
 
-    // Get BM25 results (chunks + VLM)
+    // Resolve metadata filter to document IDs
+    const documentFilter = resolveMetadataFilter(db, input.metadata_filter, input.document_filter);
+
+    // Get BM25 results (chunks + VLM + extractions)
     const bm25 = new BM25SearchService(db.getConnection());
     // L-6 fix: Pass includeHighlight: false -- hybrid search discards BM25 highlights
     // since RRF results don't surface snippet() output. Avoids wasted FTS5 computation.
     const bm25ChunkResults = bm25.search({
       query: input.query,
       limit: limit * 2,
-      documentFilter: input.document_filter,
+      documentFilter,
       includeHighlight: false,
     });
     const bm25VlmResults = bm25.searchVLM({
       query: input.query,
       limit: limit * 2,
-      documentFilter: input.document_filter,
+      documentFilter,
+      includeHighlight: false,
+    });
+    const bm25ExtractionResults = bm25.searchExtractions({
+      query: input.query,
+      limit: limit * 2,
+      documentFilter,
       includeHighlight: false,
     });
 
     // Merge BM25 results by score
-    const allBm25 = [...bm25ChunkResults, ...bm25VlmResults]
+    const allBm25 = [...bm25ChunkResults, ...bm25VlmResults, ...bm25ExtractionResults]
       .sort((a, b) => b.bm25_score - a.bm25_score)
       .slice(0, limit * 2)
       .map((r, i) => ({ ...r, rank: i + 1 }));
@@ -240,13 +297,14 @@ export async function handleSearchHybrid(
       // The 0.3 floor ensures we don't miss results that are mediocre semantically
       // but strong in BM25 keyword matching.
       threshold: 0.3,
-      documentFilter: input.document_filter,
+      documentFilter,
     });
 
     // Convert to ranked format for RRF
     const bm25Ranked = allBm25.map(r => ({
       chunk_id: r.chunk_id,
       image_id: r.image_id,
+      extraction_id: r.extraction_id,
       embedding_id: r.embedding_id ?? '',
       document_id: r.document_id,
       original_text: r.original_text,
@@ -311,6 +369,7 @@ export async function handleSearchHybrid(
       sources: {
         bm25_chunk_count: bm25ChunkResults.length,
         bm25_vlm_count: bm25VlmResults.length,
+        bm25_extraction_count: bm25ExtractionResults.length,
         semantic_count: semanticResults.length,
       },
     }));
@@ -360,6 +419,11 @@ export const searchTools: Record<string, ToolDefinition> = {
       include_highlight: z.boolean().default(true).describe('Include highlighted snippets'),
       include_provenance: z.boolean().default(false).describe('Include provenance chain'),
       document_filter: z.array(z.string()).optional().describe('Filter by document IDs'),
+      metadata_filter: z.object({
+        doc_title: z.string().optional(),
+        doc_author: z.string().optional(),
+        doc_subject: z.string().optional(),
+      }).optional().describe('Filter by document metadata (LIKE match)'),
     },
     handler: handleSearch,
   },
@@ -371,6 +435,11 @@ export const searchTools: Record<string, ToolDefinition> = {
       similarity_threshold: z.number().min(0).max(1).default(0.7).describe('Minimum similarity score (0-1)'),
       include_provenance: z.boolean().default(false).describe('Include provenance chain in results'),
       document_filter: z.array(z.string()).optional().describe('Filter by document IDs'),
+      metadata_filter: z.object({
+        doc_title: z.string().optional(),
+        doc_author: z.string().optional(),
+        doc_subject: z.string().optional(),
+      }).optional().describe('Filter by document metadata (LIKE match)'),
     },
     handler: handleSearchSemantic,
   },
@@ -384,6 +453,11 @@ export const searchTools: Record<string, ToolDefinition> = {
       rrf_k: z.number().int().min(1).max(100).default(60).describe('RRF smoothing constant'),
       include_provenance: z.boolean().default(false).describe('Include provenance chain'),
       document_filter: z.array(z.string()).optional().describe('Filter by document IDs'),
+      metadata_filter: z.object({
+        doc_title: z.string().optional(),
+        doc_author: z.string().optional(),
+        doc_subject: z.string().optional(),
+      }).optional().describe('Filter by document metadata (LIKE match)'),
     },
     handler: handleSearchHybrid,
   },

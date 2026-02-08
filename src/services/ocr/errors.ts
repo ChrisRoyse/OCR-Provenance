@@ -91,6 +91,13 @@ export function mapPythonError(
       return new OCRFileError(message, (details.file_path as string) ?? 'unknown');
     case 'OCR_AUTHENTICATION_ERROR':
       return new OCRAuthenticationError(message, (details.status_code as number) ?? 401);
+    case 'FORM_FILL_API_ERROR':
+    case 'FORM_FILL_SERVER_ERROR':
+      return new OCRAPIError(message, (details.status_code as number) ?? 500, details.request_id as string);
+    case 'FORM_FILL_FILE_ERROR':
+      return new OCRFileError(message, (details.file_path as string) ?? 'unknown');
+    case 'FORM_FILL_TIMEOUT':
+      return new OCRTimeoutError(message, details.request_id as string);
     default:
       throw new OCRError(`Unknown error category: ${category}. Message: ${message}`, 'OCR_API_ERROR');
   }

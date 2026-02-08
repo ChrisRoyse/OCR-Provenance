@@ -8,7 +8,7 @@
  */
 
 /** Current schema version */
-export const SCHEMA_VERSION = 8;
+export const SCHEMA_VERSION = 9;
 
 /**
  * Database configuration pragmas for optimal performance and safety
@@ -372,13 +372,43 @@ CREATE TABLE IF NOT EXISTS form_fills (
   fields_filled TEXT NOT NULL DEFAULT '[]',
   fields_not_found TEXT NOT NULL DEFAULT '[]',
   page_count INTEGER,
-  cost_cents INTEGER,
+  cost_cents REAL,
   status TEXT NOT NULL CHECK(status IN ('pending', 'processing', 'complete', 'failed')),
   error_message TEXT,
   provenance_id TEXT NOT NULL REFERENCES provenance(id),
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 )
 `;
+
+/**
+ * FTS5 full-text search index over extraction JSON content
+ * Uses external content mode - reads extraction_json from extractions table
+ * Tokenizer: porter stemmer + unicode support
+ */
+export const CREATE_EXTRACTIONS_FTS_TABLE = `
+CREATE VIRTUAL TABLE IF NOT EXISTS extractions_fts USING fts5(
+  extraction_json,
+  content='extractions',
+  content_rowid='rowid',
+  tokenize='porter unicode61'
+)
+`;
+
+/**
+ * Triggers to keep extractions FTS5 in sync with extractions table
+ */
+export const CREATE_EXTRACTIONS_FTS_TRIGGERS = [
+  `CREATE TRIGGER IF NOT EXISTS extractions_fts_ai AFTER INSERT ON extractions BEGIN
+    INSERT INTO extractions_fts(rowid, extraction_json) VALUES (new.rowid, new.extraction_json);
+  END`,
+  `CREATE TRIGGER IF NOT EXISTS extractions_fts_ad AFTER DELETE ON extractions BEGIN
+    INSERT INTO extractions_fts(extractions_fts, rowid, extraction_json) VALUES('delete', old.rowid, old.extraction_json);
+  END`,
+  `CREATE TRIGGER IF NOT EXISTS extractions_fts_au AFTER UPDATE OF extraction_json ON extractions BEGIN
+    INSERT INTO extractions_fts(extractions_fts, rowid, extraction_json) VALUES('delete', old.rowid, old.extraction_json);
+    INSERT INTO extractions_fts(rowid, extraction_json) VALUES (new.rowid, new.extraction_json);
+  END`,
+] as const;
 
 /**
  * All required indexes for query performance
@@ -462,6 +492,7 @@ export const REQUIRED_TABLES = [
   'vlm_fts',
   'extractions',
   'form_fills',
+  'extractions_fts',
 ] as const;
 
 /**
