@@ -476,7 +476,7 @@ export async function handleIngestDirectory(
       throw pathNotDirectoryError(input.directory_path);
     }
 
-    const fileTypes = input.file_types ?? ['pdf', 'png', 'jpg', 'jpeg', 'tiff', 'docx', 'doc'];
+    const fileTypes = input.file_types ?? [...DEFAULT_FILE_TYPES];
     const items: IngestionItem[] = [];
 
     // Collect files recursively
