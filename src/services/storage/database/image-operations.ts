@@ -411,16 +411,15 @@ export function updateImageProvenance(
  * @returns ImageStats - Statistics about images in database
  */
 export function getImageStats(db: Database.Database): ImageStats {
-  const row = db.prepare(`
+  return db.prepare(`
     SELECT
       COUNT(*) as total,
       COUNT(CASE WHEN vlm_status = 'complete' THEN 1 END) as processed,
       COUNT(CASE WHEN vlm_status = 'pending' THEN 1 END) as pending,
+      COUNT(CASE WHEN vlm_status = 'processing' THEN 1 END) as processing,
       COUNT(CASE WHEN vlm_status = 'failed' THEN 1 END) as failed
     FROM images
-  `).get() as { total: number; processed: number; pending: number; failed: number };
-
-  return row;
+  `).get() as ImageStats;
 }
 
 /**
@@ -433,6 +432,84 @@ export function getImageStats(db: Database.Database): ImageStats {
 export function deleteImage(db: Database.Database, id: string): boolean {
   const stmt = db.prepare('DELETE FROM images WHERE id = ?');
   return stmt.run(id).changes > 0;
+}
+
+/**
+ * Delete an image and all its derived data (embeddings, vectors, provenance).
+ * Performs a full cascade deletion to prevent orphaned records.
+ *
+ * @param db - Database connection
+ * @param imageId - Image ID to delete
+ */
+export function deleteImageCascade(db: Database.Database, imageId: string): void {
+  // 1. Delete vec_embeddings for this image's embeddings
+  db.prepare(
+    'DELETE FROM vec_embeddings WHERE embedding_id IN (SELECT id FROM embeddings WHERE image_id = ?)'
+  ).run(imageId);
+
+  // 2. Delete provenance records for embeddings derived from this image
+  db.prepare(
+    `DELETE FROM provenance WHERE id IN (
+      SELECT provenance_id FROM embeddings WHERE image_id = ?
+    )`
+  ).run(imageId);
+
+  // 3. Delete embeddings for this image
+  db.prepare('DELETE FROM embeddings WHERE image_id = ?').run(imageId);
+
+  // 4. Delete provenance for the image itself (if it has one)
+  const img = db.prepare('SELECT provenance_id FROM images WHERE id = ?').get(imageId) as { provenance_id: string | null } | undefined;
+  if (img?.provenance_id) {
+    db.prepare('DELETE FROM provenance WHERE id = ?').run(img.provenance_id);
+  }
+
+  // 5. Delete the image
+  db.prepare('DELETE FROM images WHERE id = ?').run(imageId);
+}
+
+/**
+ * Delete all images for a document and all their derived data (embeddings, vectors, provenance).
+ * Performs a full cascade deletion to prevent orphaned records.
+ *
+ * @param db - Database connection
+ * @param documentId - Document ID
+ * @returns number - Number of images deleted
+ */
+export function deleteImagesByDocumentCascade(
+  db: Database.Database,
+  documentId: string
+): number {
+  // 1. Delete vec_embeddings for these images' embeddings
+  db.prepare(
+    `DELETE FROM vec_embeddings WHERE embedding_id IN (
+      SELECT e.id FROM embeddings e
+      JOIN images i ON e.image_id = i.id
+      WHERE i.document_id = ?
+    )`
+  ).run(documentId);
+
+  // 2. Delete provenance records for embeddings derived from these images
+  db.prepare(
+    `DELETE FROM provenance WHERE id IN (
+      SELECT e.provenance_id FROM embeddings e
+      JOIN images i ON e.image_id = i.id
+      WHERE i.document_id = ?
+    )`
+  ).run(documentId);
+
+  // 3. Delete embeddings for these images
+  db.prepare(
+    'DELETE FROM embeddings WHERE image_id IN (SELECT id FROM images WHERE document_id = ?)'
+  ).run(documentId);
+
+  // 4. Delete provenance for the images themselves
+  db.prepare(
+    'DELETE FROM provenance WHERE id IN (SELECT provenance_id FROM images WHERE document_id = ? AND provenance_id IS NOT NULL)'
+  ).run(documentId);
+
+  // 5. Delete images and return count
+  const result = db.prepare('DELETE FROM images WHERE document_id = ?').run(documentId);
+  return result.changes;
 }
 
 /**

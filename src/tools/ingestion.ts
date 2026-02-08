@@ -12,13 +12,13 @@
 
 import { z } from 'zod';
 import { v4 as uuidv4 } from 'uuid';
-import { createHash } from 'crypto';
 import { existsSync, statSync, readdirSync, mkdirSync, writeFileSync } from 'fs';
 import { resolve, extname, basename } from 'path';
 
 import { DatabaseService } from '../services/storage/database/index.js';
 import { OCRProcessor } from '../services/ocr/processor.js';
-import { chunkText, ChunkResult, DEFAULT_CHUNKING_CONFIG } from '../services/chunking/chunker.js';
+import { chunkText, chunkWithPageTracking, ChunkResult, DEFAULT_CHUNKING_CONFIG } from '../services/chunking/chunker.js';
+import type { ChunkingConfig } from '../models/chunk.js';
 import { EmbeddingService } from '../services/embedding/embedder.js';
 import { ProvenanceTracker } from '../services/provenance/tracker.js';
 import { computeHash, hashFile, computeFileHashSync } from '../utils/hash.js';
@@ -34,6 +34,7 @@ import {
   ProcessPendingInput,
   OCRStatusInput,
   RetryFailedInput,
+  DEFAULT_FILE_TYPES,
 } from '../utils/validation.js';
 import {
   pathNotFoundError,
@@ -79,7 +80,8 @@ function storeChunks(
   db: DatabaseService,
   doc: Document,
   ocrResult: OCRResult,
-  chunkResults: ChunkResult[]
+  chunkResults: ChunkResult[],
+  config: ChunkingConfig = DEFAULT_CHUNKING_CONFIG,
 ): Chunk[] {
   const provenanceTracker = new ProvenanceTracker(db);
   const chunks: Chunk[] = [];
@@ -102,8 +104,8 @@ function storeChunks(
       processor: 'chunker',
       processor_version: '1.0.0',
       processing_params: {
-        chunk_size: DEFAULT_CHUNKING_CONFIG.chunkSize,
-        overlap_percent: DEFAULT_CHUNKING_CONFIG.overlapPercent,
+        chunk_size: config.chunkSize,
+        overlap_percent: config.overlapPercent,
         chunk_index: i,
         total_chunks: chunkResults.length,
       },
@@ -300,13 +302,6 @@ export function buildPageBlockClassification(
 }
 
 /**
- * Compute SHA-256 content hash of a buffer in the project's standard format.
- */
-function computeContentHash(buffer: Buffer): string {
-  return `sha256:${createHash('sha256').update(buffer).digest('hex')}`;
-}
-
-/**
  * Save images from Datalab to disk and store references in database.
  *
  * Images come from Datalab as {filename: base64_data}.
@@ -369,7 +364,7 @@ function saveAndStoreImages(
     const imageIndex = currentPageCount;
 
     // Compute content hash for deduplication
-    const contentHash = computeContentHash(buffer);
+    const contentHash = computeHash(buffer);
 
     // Parse block type from Datalab filename
     const blockType = parseBlockTypeFromFilename(filename);
@@ -526,6 +521,19 @@ export async function handleIngestDirectory(
         const stats = statSync(filePath);
         const fileHash = await hashFile(filePath);
 
+        // Check for duplicate by file hash (same content, different path)
+        const existingByHash = db.getDocumentByHash(fileHash);
+        if (existingByHash) {
+          items.push({
+            file_path: filePath,
+            file_name: basename(filePath),
+            document_id: existingByHash.id,
+            status: 'skipped',
+            error_message: `Duplicate file (same hash as ${existingByHash.file_path})`,
+          });
+          continue;
+        }
+
         // Create document record
         const documentId = uuidv4();
         const provenanceId = uuidv4();
@@ -665,7 +673,33 @@ export async function handleIngestFiles(
         const provenanceId = uuidv4();
         const now = new Date().toISOString();
         const ext = extname(filePath).slice(1).toLowerCase();
+
+        // Validate file type is supported
+        if (!DEFAULT_FILE_TYPES.includes(ext)) {
+          items.push({
+            file_path: filePath,
+            file_name: basename(filePath),
+            document_id: '',
+            status: 'error',
+            error_message: `Unsupported file type: .${ext}. Supported: ${DEFAULT_FILE_TYPES.join(', ')}`,
+          });
+          continue;
+        }
+
         const fileHash = await hashFile(filePath);
+
+        // Check for duplicate by file hash (same content, different path)
+        const existingByHash = db.getDocumentByHash(fileHash);
+        if (existingByHash) {
+          items.push({
+            file_path: filePath,
+            file_name: basename(filePath),
+            document_id: existingByHash.id,
+            status: 'skipped',
+            error_message: `Duplicate file (same hash as ${existingByHash.file_path})`,
+          });
+          continue;
+        }
 
         // Create document provenance
         db.insertProvenance({
@@ -903,14 +937,20 @@ export async function handleProcessPending(
           }
         }
 
-        // Step 2: Chunk the OCR text
-        // NOTE: pageOffsets not available from OCRProcessor, use chunkText not chunkWithPageTracking
-        const chunkResults = chunkText(ocrResult.extracted_text, DEFAULT_CHUNKING_CONFIG);
+        // Step 2: Chunk the OCR text using config from state
+        const chunkConfig: ChunkingConfig = {
+          chunkSize: state.config.chunkSize,
+          overlapPercent: state.config.chunkOverlapPercent,
+        };
+        const pageOffsets = processResult.pageOffsets;
+        const chunkResults = pageOffsets && pageOffsets.length > 0
+          ? chunkWithPageTracking(ocrResult.extracted_text, pageOffsets, chunkConfig)
+          : chunkText(ocrResult.extracted_text, chunkConfig);
 
         console.error(`[INFO] Chunking complete: ${chunkResults.length} chunks`);
 
         // Step 3: Store chunks in database with provenance
-        const chunks = storeChunks(db, doc, ocrResult, chunkResults);
+        const chunks = storeChunks(db, doc, ocrResult, chunkResults, chunkConfig);
 
         console.error(`[INFO] Chunks stored: ${chunks.length}`);
 
@@ -946,6 +986,12 @@ export async function handleProcessPending(
             `[INFO] VLM complete: ${vlmResult.successful}/${vlmResult.total} images processed, ` +
             `${vlmResult.totalTokens} tokens used`
           );
+
+          if (vlmResult.failed > 0) {
+            console.error(
+              `[WARN] Document ${doc.id}: ${vlmResult.failed}/${vlmResult.total} VLM image processing failures`
+            );
+          }
         }
 
         // Step 6: Mark document complete

@@ -23,8 +23,8 @@ import {
   getImagesByDocument,
   getPendingImages,
   getImageStats,
-  deleteImage,
-  deleteImagesByDocument,
+  deleteImageCascade,
+  deleteImagesByDocumentCascade,
   resetFailedImages,
   resetProcessingImages,
   insertImageBatch,
@@ -34,7 +34,6 @@ import { getProvenanceTracker } from '../services/provenance/index.js';
 import { ProvenanceType } from '../models/provenance.js';
 import { computeHash, computeFileHashSync } from '../utils/hash.js';
 import type { CreateImageReference } from '../models/image.js';
-
 
 // ===============================================================================
 // VALIDATION SCHEMAS
@@ -329,6 +328,7 @@ export async function handleImageStats(
         total: stats.total,
         processed: stats.processed,
         pending: stats.pending,
+        processing: stats.processing,
         failed: stats.failed,
         processing_rate: stats.total > 0
           ? ((stats.processed / stats.total) * 100).toFixed(1) + '%'
@@ -367,8 +367,8 @@ export async function handleImageDelete(
       fs.unlinkSync(img.extracted_path);
     }
 
-    // Delete from database
-    deleteImage(db.getConnection(), imageId);
+    // Delete from database with full cascade (embeddings, vectors, provenance)
+    deleteImageCascade(db.getConnection(), imageId);
 
     return formatResponse(successResult({
       image_id: imageId,
@@ -405,8 +405,8 @@ export async function handleImageDeleteByDocument(
       }
     }
 
-    // Delete from database
-    const count = deleteImagesByDocument(db.getConnection(), documentId);
+    // Delete from database with full cascade (embeddings, vectors, provenance)
+    const count = deleteImagesByDocumentCascade(db.getConnection(), documentId);
 
     return formatResponse(successResult({
       document_id: documentId,
