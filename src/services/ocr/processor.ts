@@ -9,7 +9,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { DatalabClient, type DatalabClientConfig } from './datalab.js';
 import { OCRError } from './errors.js';
 import { DatabaseService } from '../storage/database/index.js';
-import type { Document, OCRResult } from '../../models/document.js';
+import type { Document, OCRResult, PageOffset } from '../../models/document.js';
 import { ProvenanceType, type ProvenanceRecord } from '../../models/provenance.js';
 
 export interface ProcessorConfig extends DatalabClientConfig {
@@ -32,6 +32,8 @@ export interface ProcessResult {
   jsonBlocks?: Record<string, unknown> | null;
   /** Datalab metadata (page_stats, block_counts, etc.) */
   metadata?: Record<string, unknown> | null;
+  /** Page character offsets from Datalab for page-aware chunking */
+  pageOffsets?: PageOffset[];
 }
 
 export interface BatchResult {
@@ -101,6 +103,7 @@ export class OCRProcessor {
       let images: Record<string, string>;
       let jsonBlocks: Record<string, unknown> | null = null;
       let metadata: Record<string, unknown> | null = null;
+      let pageOffsets: PageOffset[] = [];
 
       for (let attempt = 1; attempt <= 2; attempt++) {
         try {
@@ -114,6 +117,7 @@ export class OCRProcessor {
           images = response.images;
           jsonBlocks = response.jsonBlocks;
           metadata = response.metadata;
+          pageOffsets = response.pageOffsets;
           break;
         } catch (error) {
           if (attempt === 1 && error instanceof OCRError && error.category === 'OCR_TIMEOUT') {
@@ -164,6 +168,7 @@ export class OCRProcessor {
         images: imageCount > 0 ? images : undefined,
         jsonBlocks,
         metadata,
+        pageOffsets: pageOffsets.length > 0 ? pageOffsets : undefined,
       };
 
     } catch (error) {
