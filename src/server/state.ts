@@ -63,7 +63,7 @@ export const state: ServerState = {
 export interface DatabaseServices {
   db: DatabaseService;
   vector: VectorService;
-  /** Generation counter - compare with getDatabaseGeneration() to detect stale refs */
+  /** Generation counter for detecting stale references */
   generation: number;
 }
 
@@ -74,18 +74,8 @@ let _cachedVectorService: VectorService | null = null;
 
 /**
  * Generation counter - incremented on every database switch/clear.
- * Callers can snapshot this value and compare later to detect stale references.
  */
 let _dbGeneration = 0;
-
-/**
- * Get the current database generation counter.
- * Useful for callers that hold long-lived references from requireDatabase()
- * and need to verify the database has not been switched underneath them.
- */
-export function getDatabaseGeneration(): number {
-  return _dbGeneration;
-}
 
 /**
  * Require database to be selected - FAIL FAST if not

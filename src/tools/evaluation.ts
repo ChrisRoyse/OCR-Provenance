@@ -464,10 +464,10 @@ function parseEvaluationResponse(text: string): EvaluationAnalysis {
       confidence: parsed.confidence ?? 0.5,
     };
   } catch {
-    // Fallback: use raw text
+    // Fallback: use raw text with zero confidence to indicate parse failure
     return {
       imageType: 'other',
-      primarySubject: 'Parse error',
+      primarySubject: '[PARSE_ERROR] Raw Gemini response used as fallback',
       paragraph1: text.slice(0, 500),
       paragraph2: text.slice(500, 1000),
       paragraph3: text.slice(1000, 1500),
@@ -475,7 +475,7 @@ function parseEvaluationResponse(text: string): EvaluationAnalysis {
       dates: [],
       names: [],
       numbers: [],
-      confidence: 0.3,
+      confidence: 0,
     };
   }
 }
