@@ -331,6 +331,7 @@ export const DocumentGetInput = z.object({
   document_id: z.string().min(1, 'Document ID is required'),
   include_text: z.boolean().default(false),
   include_chunks: z.boolean().default(false),
+  include_blocks: z.boolean().default(false),
   include_full_provenance: z.boolean().default(false),
 });
 

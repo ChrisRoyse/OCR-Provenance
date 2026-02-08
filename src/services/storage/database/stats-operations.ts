@@ -85,6 +85,25 @@ export function getStats(
   const extractionCount = otherCounts.extraction_count;
   const formFillCount = otherCounts.form_fill_count;
 
+  const qualityCosts = db
+    .prepare(`
+    SELECT
+      (SELECT AVG(parse_quality_score) FROM ocr_results WHERE parse_quality_score IS NOT NULL) as avg_quality,
+      (SELECT MIN(parse_quality_score) FROM ocr_results WHERE parse_quality_score IS NOT NULL) as min_quality,
+      (SELECT MAX(parse_quality_score) FROM ocr_results WHERE parse_quality_score IS NOT NULL) as max_quality,
+      (SELECT COUNT(parse_quality_score) FROM ocr_results WHERE parse_quality_score IS NOT NULL) as quality_count,
+      (SELECT COALESCE(SUM(cost_cents), 0) FROM ocr_results) as total_ocr_cost,
+      (SELECT COALESCE(SUM(cost_cents), 0) FROM form_fills) as total_form_fill_cost
+  `)
+    .get() as {
+    avg_quality: number | null;
+    min_quality: number | null;
+    max_quality: number | null;
+    quality_count: number;
+    total_ocr_cost: number;
+    total_form_fill_cost: number;
+  };
+
   const stats = statSync(path);
 
   const avgChunksPerDocument =
@@ -116,6 +135,17 @@ export function getStats(
     storage_size_bytes: stats.size,
     avg_chunks_per_document: avgChunksPerDocument,
     avg_embeddings_per_chunk: avgEmbeddingsPerChunk,
+    ocr_quality: {
+      avg: qualityCosts.avg_quality,
+      min: qualityCosts.min_quality,
+      max: qualityCosts.max_quality,
+      scored_count: qualityCosts.quality_count,
+    },
+    costs: {
+      total_ocr_cost_cents: qualityCosts.total_ocr_cost,
+      total_form_fill_cost_cents: qualityCosts.total_form_fill_cost,
+      total_cost_cents: qualityCosts.total_ocr_cost + qualityCosts.total_form_fill_cost,
+    },
   };
 }
 

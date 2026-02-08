@@ -282,6 +282,9 @@ export async function handleDocumentReport(
         quality_score: ocrResult.parse_quality_score,
         processing_duration_ms: ocrResult.processing_duration_ms,
         mode: ocrResult.datalab_mode,
+        cost_cents: ocrResult.cost_cents,
+        datalab_request_id: ocrResult.datalab_request_id,
+        content_hash: ocrResult.content_hash,
       } : null,
       chunks: {
         total: chunks.length,
@@ -348,6 +351,28 @@ export async function handleQualitySummary(
       high: number; medium: number; low: number; very_low: number;
     };
 
+    // OCR quality distribution
+    const ocrQualityStats = db.getConnection().prepare(`
+      SELECT
+        COUNT(parse_quality_score) as scored_count,
+        AVG(parse_quality_score) as avg_quality,
+        MIN(parse_quality_score) as min_quality,
+        MAX(parse_quality_score) as max_quality,
+        SUM(CASE WHEN parse_quality_score >= 4 THEN 1 ELSE 0 END) as excellent,
+        SUM(CASE WHEN parse_quality_score >= 3 AND parse_quality_score < 4 THEN 1 ELSE 0 END) as good,
+        SUM(CASE WHEN parse_quality_score >= 2 AND parse_quality_score < 3 THEN 1 ELSE 0 END) as fair,
+        SUM(CASE WHEN parse_quality_score < 2 THEN 1 ELSE 0 END) as poor,
+        COALESCE(SUM(cost_cents), 0) as total_ocr_cost
+      FROM ocr_results
+    `).get() as {
+      scored_count: number; avg_quality: number | null; min_quality: number | null; max_quality: number | null;
+      excellent: number; good: number; fair: number; poor: number; total_ocr_cost: number;
+    };
+
+    const formFillCost = (db.getConnection().prepare(
+      'SELECT COALESCE(SUM(cost_cents), 0) as total FROM form_fills'
+    ).get() as { total: number }).total;
+
     return formatResponse(successResult({
       documents: {
         total: dbStats.total_documents,
@@ -358,6 +383,23 @@ export async function handleQualitySummary(
       ocr: {
         total_chunks: dbStats.total_chunks,
         total_embeddings: dbStats.total_embeddings,
+      },
+      ocr_quality: {
+        average: ocrQualityStats.scored_count > 0 ? ocrQualityStats.avg_quality : null,
+        min: ocrQualityStats.scored_count > 0 ? ocrQualityStats.min_quality : null,
+        max: ocrQualityStats.scored_count > 0 ? ocrQualityStats.max_quality : null,
+        scored_count: ocrQualityStats.scored_count,
+        distribution: {
+          excellent_gte4: ocrQualityStats.excellent || 0,
+          good_3to4: ocrQualityStats.good || 0,
+          fair_2to3: ocrQualityStats.fair || 0,
+          poor_lt2: ocrQualityStats.poor || 0,
+        },
+      },
+      costs: {
+        total_ocr_cost_cents: ocrQualityStats.total_ocr_cost,
+        total_form_fill_cost_cents: formFillCost,
+        total_cost_cents: ocrQualityStats.total_ocr_cost + formFillCost,
       },
       images: {
         total: imageStats.total,

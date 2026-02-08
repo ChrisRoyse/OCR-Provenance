@@ -110,6 +110,8 @@ export function rowToOCRResult(row: OCRResultRow): OCRResult {
     processing_started_at: row.processing_started_at,
     processing_completed_at: row.processing_completed_at,
     processing_duration_ms: row.processing_duration_ms,
+    json_blocks: row.json_blocks ?? null,
+    extras_json: row.extras_json ?? null,
   };
 }
 

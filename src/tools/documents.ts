@@ -94,6 +94,9 @@ export async function handleDocumentGet(
       throw documentNotFoundError(input.document_id);
     }
 
+    // Always fetch OCR result for metadata (lightweight - excludes extracted_text in response unless include_text)
+    const ocrResult = db.getOCRResultByDocumentId(doc.id);
+
     const result: Record<string, unknown> = {
       id: doc.id,
       file_name: doc.file_name,
@@ -108,10 +111,20 @@ export async function handleDocumentGet(
       doc_subject: doc.doc_subject ?? null,
       created_at: doc.created_at,
       provenance_id: doc.provenance_id,
+      ocr_info: ocrResult ? {
+        ocr_result_id: ocrResult.id,
+        datalab_request_id: ocrResult.datalab_request_id,
+        datalab_mode: ocrResult.datalab_mode,
+        parse_quality_score: ocrResult.parse_quality_score,
+        cost_cents: ocrResult.cost_cents,
+        page_count: ocrResult.page_count,
+        text_length: ocrResult.text_length,
+        processing_duration_ms: ocrResult.processing_duration_ms,
+        content_hash: ocrResult.content_hash,
+      } : null,
     };
 
     if (input.include_text) {
-      const ocrResult = db.getOCRResultByDocumentId(doc.id);
       result.ocr_text = ocrResult?.extracted_text ?? null;
     }
 
@@ -126,6 +139,11 @@ export async function handleDocumentGet(
         character_end: c.character_end,
         embedding_status: c.embedding_status,
       }));
+    }
+
+    if (input.include_blocks && ocrResult) {
+      result.json_blocks = ocrResult.json_blocks ? JSON.parse(ocrResult.json_blocks) : null;
+      result.extras = ocrResult.extras_json ? JSON.parse(ocrResult.extras_json) : null;
     }
 
     if (input.include_full_provenance) {
@@ -218,6 +236,7 @@ export const documentTools: Record<string, ToolDefinition> = {
       document_id: z.string().min(1).describe('Document ID'),
       include_text: z.boolean().default(false).describe('Include OCR extracted text'),
       include_chunks: z.boolean().default(false).describe('Include chunk information'),
+      include_blocks: z.boolean().default(false).describe('Include JSON blocks and extras metadata'),
       include_full_provenance: z.boolean().default(false).describe('Include full provenance chain'),
     },
     handler: handleDocumentGet,
