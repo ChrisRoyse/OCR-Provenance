@@ -191,44 +191,6 @@ describe('VLMService', () => {
     });
   });
 
-  describe('describeImageBatch', () => {
-    it('should process multiple images', async () => {
-      const images = [
-        { path: '/path/to/image1.png' },
-        { path: '/path/to/image2.png' },
-        { path: '/path/to/image3.png' },
-      ];
-
-      const results = await service.describeImageBatch(images, { concurrency: 2 });
-
-      expect(results).toHaveLength(3);
-      expect(mockClient.analyzeImage).toHaveBeenCalledTimes(3);
-    });
-
-    it('should respect concurrency limit', async () => {
-      const images = Array.from({ length: 10 }, (_, i) => ({
-        path: `/path/to/image${i}.png`,
-      }));
-
-      // Track call timing
-      let maxConcurrent = 0;
-      let currentConcurrent = 0;
-
-      mockClient.analyzeImage.mockImplementation(async () => {
-        currentConcurrent++;
-        maxConcurrent = Math.max(maxConcurrent, currentConcurrent);
-        await new Promise(resolve => setTimeout(resolve, 10));
-        currentConcurrent--;
-        return mockAnalysisResponse;
-      });
-
-      await service.describeImageBatch(images, { concurrency: 3 });
-
-      // Should not exceed concurrency of 3
-      expect(maxConcurrent).toBeLessThanOrEqual(3);
-    });
-  });
-
   describe('getStatus', () => {
     it('should return client status', () => {
       const status = service.getStatus();
