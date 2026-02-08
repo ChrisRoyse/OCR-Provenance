@@ -126,6 +126,7 @@ describe('Column Verification', () => {
       'id',
       'chunk_id',
       'image_id',
+      'extraction_id',
       'document_id',
       'original_text',
       'original_text_length',

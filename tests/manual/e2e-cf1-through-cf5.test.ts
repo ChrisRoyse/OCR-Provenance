@@ -171,19 +171,19 @@ afterAll(() => {
 // E2E-1: SCHEMA V8 VERIFICATION
 // ═════════════════════════════════════════════════════════════════════════════════
 
-describe('E2E-1: Schema v9 Physical Verification', () => {
-  it('SCHEMA_VERSION is 9', () => {
+describe('E2E-1: Schema v10 Physical Verification', () => {
+  it('SCHEMA_VERSION is 10', () => {
     // WHAT: Verify schema version constant
     // INPUT: SCHEMA_VERSION export
-    // EXPECTED: 9
-    expect(SCHEMA_VERSION).toBe(9);
+    // EXPECTED: 10
+    expect(SCHEMA_VERSION).toBe(10);
 
     // SOURCE OF TRUTH: schema_version table
     const row = db.prepare('SELECT version FROM schema_version WHERE id = 1').get() as { version: number };
-    expect(row.version).toBe(9);
+    expect(row.version).toBe(10);
   });
 
-  it('All 14 required tables exist (minus vec_embeddings without extension)', () => {
+  it('All 15 required tables exist (minus vec_embeddings without extension)', () => {
     // WHAT: Verify all tables including new extractions + form_fills
     // INPUT: REQUIRED_TABLES constant
     // EXPECTED: All tables present except vec_embeddings (requires sqlite-vec extension)
@@ -197,10 +197,10 @@ describe('E2E-1: Schema v9 Physical Verification', () => {
     }
   });
 
-  it('All 26 required indexes exist', () => {
-    // WHAT: Verify all indexes including 3 new (extractions, form_fills, doc_title)
+  it('All 27 required indexes exist', () => {
+    // WHAT: Verify all indexes including extraction_id, extractions, form_fills, doc_title
     // INPUT: REQUIRED_INDEXES constant
-    // EXPECTED: All 26 indexes present
+    // EXPECTED: All 27 indexes present
     const indexes = db.prepare(
       "SELECT name FROM sqlite_master WHERE type = 'index'"
     ).all().map((r: Record<string, unknown>) => r.name as string);
@@ -208,7 +208,7 @@ describe('E2E-1: Schema v9 Physical Verification', () => {
     for (const required of REQUIRED_INDEXES) {
       expect(indexes).toContain(required);
     }
-    expect(REQUIRED_INDEXES.length).toBe(26);
+    expect(REQUIRED_INDEXES.length).toBe(27);
   });
 
   it('documents table has metadata columns', () => {

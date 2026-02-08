@@ -249,8 +249,16 @@ export function updateDocumentMetadata(
 /**
  * Shared cleanup: delete all derived records for a document.
  *
- * Handles: vec_embeddings, orphaned image re-queuing, images, embeddings,
- * chunks, ocr_results, and FTS metadata count updates.
+ * Deletion order (FK-safe):
+ *   1. vec_embeddings (no inbound FKs)
+ *   2. NULL images.vlm_embedding_id (break circular FK with embeddings)
+ *   3. Re-queue orphaned images from other documents (VLM dedup)
+ *   4. embeddings (covers chunk, VLM, and extraction types in one pass)
+ *   5. images (safe after embeddings.image_id references gone)
+ *   6. chunks
+ *   7. extractions (before ocr_results: extractions.ocr_result_id -> ocr_results)
+ *   8. ocr_results
+ *   9. FTS metadata count updates (ids 1, 2, 3)
  *
  * @returns The number of embedding IDs deleted (for logging)
  */
@@ -263,8 +271,9 @@ function deleteDerivedRecords(db: Database.Database, documentId: string, caller:
     'DELETE FROM vec_embeddings WHERE embedding_id IN (SELECT id FROM embeddings WHERE document_id = ?)'
   ).run(documentId);
 
-  // Delete from images (before embeddings due to vlm_embedding_id FK)
-  db.prepare('DELETE FROM images WHERE document_id = ?').run(documentId);
+  // Break circular FK: images.vlm_embedding_id → embeddings ↔ embeddings.image_id → images
+  // NULL out vlm_embedding_id on THIS document's images so embeddings can be deleted
+  db.prepare('UPDATE images SET vlm_embedding_id = NULL WHERE document_id = ?').run(documentId);
 
   // Re-queue OTHER documents' images that shared embeddings via VLM dedup.
   // Setting vlm_status='pending' ensures they get re-processed instead of
@@ -287,17 +296,20 @@ function deleteDerivedRecords(db: Database.Database, documentId: string, caller:
     `).run(documentId, documentId);
   }
 
-  // Delete from embeddings
+  // Delete from embeddings (safe: images.vlm_embedding_id already NULLed)
   db.prepare('DELETE FROM embeddings WHERE document_id = ?').run(documentId);
+
+  // Delete from images (safe: embeddings.image_id references gone)
+  db.prepare('DELETE FROM images WHERE document_id = ?').run(documentId);
 
   // Delete from chunks
   db.prepare('DELETE FROM chunks WHERE document_id = ?').run(documentId);
 
-  // Delete from ocr_results
-  db.prepare('DELETE FROM ocr_results WHERE document_id = ?').run(documentId);
-
-  // Delete from extractions
+  // Delete from extractions (BEFORE ocr_results: extractions.ocr_result_id REFERENCES ocr_results(id))
   db.prepare('DELETE FROM extractions WHERE document_id = ?').run(documentId);
+
+  // Delete from ocr_results (safe now that extractions are gone)
+  db.prepare('DELETE FROM ocr_results WHERE document_id = ?').run(documentId);
 
   // Update FTS metadata counts after chunk/embedding deletion
   try {
@@ -313,6 +325,13 @@ function deleteDerivedRecords(db: Database.Database, documentId: string, caller:
       UPDATE fts_index_metadata SET chunks_indexed = ?, last_rebuild_at = ?
       WHERE id = 2
     `).run(vlmCount, new Date().toISOString());
+
+    // Update extractions FTS metadata (id=3)
+    const extCount = (db.prepare('SELECT COUNT(*) as cnt FROM extractions').get() as { cnt: number }).cnt;
+    db.prepare(`
+      UPDATE fts_index_metadata SET chunks_indexed = ?, last_rebuild_at = ?
+      WHERE id = 3
+    `).run(extCount, new Date().toISOString());
   } catch (e: unknown) {
     // Only ignore "no such table" errors from older schemas pre-v4
     const msg = e instanceof Error ? e.message : String(e);

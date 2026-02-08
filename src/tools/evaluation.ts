@@ -586,6 +586,7 @@ async function generateAndStoreEmbedding(
     id: embeddingId,
     chunk_id: null,
     image_id: image.id,
+    extraction_id: null,
     document_id: image.document_id,
     original_text: description,
     original_text_length: description.length,

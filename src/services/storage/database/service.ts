@@ -202,6 +202,10 @@ export class DatabaseService {
     return embOps.getEmbeddingByChunkId(this.db, chunkId);
   }
 
+  getEmbeddingByExtractionId(extractionId: string): Omit<Embedding, 'vector'> | null {
+    return embOps.getEmbeddingByExtractionId(this.db, extractionId);
+  }
+
   getEmbeddingsByDocumentId(documentId: string): Omit<Embedding, 'vector'>[] {
     return embOps.getEmbeddingsByDocumentId(this.db, documentId);
   }
