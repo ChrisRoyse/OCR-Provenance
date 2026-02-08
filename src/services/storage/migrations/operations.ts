@@ -83,29 +83,37 @@ export function getCurrentSchemaVersion(): number {
  * @throws MigrationError if any operation fails
  */
 export function initializeDatabase(db: Database.Database): void {
-  // Step 1: Configure pragmas
+  // Step 1: Configure pragmas (must be outside transaction)
   configurePragmas(db);
 
-  // Step 2: Load sqlite-vec extension (must be before virtual table creation)
+  // Step 2: Load sqlite-vec extension (must be before virtual table creation, outside transaction)
   loadSqliteVecExtension(db);
 
-  // Step 3: Initialize schema version tracking
-  initializeSchemaVersion(db);
+  // Steps 3-8 wrapped in a transaction so that if the process crashes mid-init,
+  // the DB won't have a version stamp with missing tables (MIG-5 fix).
+  // Schema version is stamped LAST so a crash before completion leaves version=0,
+  // causing a clean re-init on restart.
+  const initTransaction = db.transaction(() => {
+    // Step 3: Create tables in dependency order
+    createTables(db);
 
-  // Step 4: Create tables in dependency order
-  createTables(db);
+    // Step 4: Create sqlite-vec virtual table
+    createVecTable(db);
 
-  // Step 5: Create sqlite-vec virtual table
-  createVecTable(db);
+    // Step 5: Create indexes
+    createIndexes(db);
 
-  // Step 6: Create indexes
-  createIndexes(db);
+    // Step 6: Create FTS5 tables and triggers
+    createFTSTables(db);
 
-  // Step 7: Create FTS5 tables and triggers
-  createFTSTables(db);
+    // Step 7: Initialize metadata
+    initializeDatabaseMetadata(db);
 
-  // Step 8: Initialize metadata
-  initializeDatabaseMetadata(db);
+    // Step 8: Initialize schema version tracking (LAST - so crash before here means version=0)
+    initializeSchemaVersion(db);
+  });
+
+  initTransaction();
 }
 
 /**
@@ -222,6 +230,7 @@ function migrateV1ToV2(db: Database.Database): void {
     db.exec('CREATE INDEX IF NOT EXISTS idx_images_page ON images(document_id, page_number)');
     db.exec('CREATE INDEX IF NOT EXISTS idx_images_vlm_status ON images(vlm_status)');
     db.exec(`CREATE INDEX IF NOT EXISTS idx_images_pending ON images(vlm_status) WHERE vlm_status = 'pending'`);
+    db.exec('CREATE INDEX IF NOT EXISTS idx_images_provenance_id ON images(provenance_id)');
 
     db.exec('COMMIT');
     db.exec('PRAGMA foreign_keys = ON');
@@ -341,6 +350,15 @@ function migrateV2ToV3(db: Database.Database): void {
 
     db.exec('COMMIT');
     db.exec('PRAGMA foreign_keys = ON');
+
+    // MIG-4: Verify FK integrity after table recreation
+    const fkViolations = db.pragma('foreign_key_check') as unknown[];
+    if (fkViolations.length > 0) {
+      throw new Error(
+        `Foreign key integrity check failed after v2->v3 migration: ${fkViolations.length} violation(s). ` +
+        `First: ${JSON.stringify(fkViolations[0])}`
+      );
+    }
   } catch (error) {
     try {
       db.exec('ROLLBACK');
@@ -587,7 +605,6 @@ function migrateV5ToV6(db: Database.Database): void {
   }
 }
 
-
 /**
  * Migrate from schema version 6 to version 7
  *
@@ -712,44 +729,51 @@ export function migrateToLatest(db: Database.Database): void {
     );
   }
 
-  // Apply migrations incrementally
+  // Helper to bump schema_version immediately after each successful migration step.
+  // This ensures crash-safety: if the process dies between migrations, only the
+  // remaining migrations re-run on restart (MIG-1 fix).
+  const bumpVersion = (targetVersion: number): void => {
+    try {
+      db.prepare('UPDATE schema_version SET version = ?, updated_at = ? WHERE id = 1')
+        .run(targetVersion, new Date().toISOString());
+    } catch (error) {
+      throw new MigrationError(
+        `Failed to update schema version to ${String(targetVersion)} after migration`,
+        'update',
+        'schema_version',
+        error
+      );
+    }
+  };
+
+  // Apply migrations incrementally, bumping version after each step
   if (currentVersion < 2) {
     migrateV1ToV2(db);
+    bumpVersion(2);
   }
 
   if (currentVersion < 3) {
     migrateV2ToV3(db);
+    bumpVersion(3);
   }
 
   if (currentVersion < 4) {
     migrateV3ToV4(db);
+    bumpVersion(4);
   }
 
   if (currentVersion < 5) {
     migrateV4ToV5(db);
+    bumpVersion(5);
   }
 
   if (currentVersion < 6) {
     migrateV5ToV6(db);
+    bumpVersion(6);
   }
 
   if (currentVersion < 7) {
     migrateV6ToV7(db);
-  }
-
-  // Update schema version after successful migration
-  try {
-    const now = new Date().toISOString();
-    const stmt = db.prepare(`
-      UPDATE schema_version SET version = ?, updated_at = ? WHERE id = 1
-    `);
-    stmt.run(SCHEMA_VERSION, now);
-  } catch (error) {
-    throw new MigrationError(
-      'Failed to update schema version after migration',
-      'update',
-      'schema_version',
-      error
-    );
+    bumpVersion(7);
   }
 }

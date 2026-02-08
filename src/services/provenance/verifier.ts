@@ -96,6 +96,8 @@ export interface DatabaseVerificationResult extends VerificationResult {
   duration_ms: number;
   /** Number of failed items beyond the MAX_FAILED_ITEMS cap (H-6) */
   failed_overflow: number;
+  /** Chain integrity errors (missing parents, depth mismatches) */
+  chain_errors?: string[];
 }
 
 /**
@@ -310,9 +312,38 @@ export class ProvenanceVerifier {
 
     const durationMs = Date.now() - startTime;
 
+    // Chain integrity check: verify all parent_id references exist and depths are correct
+    let chainIntact = true;
+    const chainErrors: string[] = [];
+
+    const parentedRecords = this.rawDb.prepare(
+      `SELECT id, parent_id, type, chain_depth FROM provenance WHERE parent_id IS NOT NULL`
+    ).all() as Array<{ id: string; parent_id: string; type: string; chain_depth: number }>;
+
+    for (const record of parentedRecords) {
+      const parent = this.rawDb.prepare(
+        'SELECT id, chain_depth FROM provenance WHERE id = ?'
+      ).get(record.parent_id) as { id: string; chain_depth: number } | undefined;
+
+      if (!parent) {
+        chainIntact = false;
+        if (chainErrors.length < 10) {
+          chainErrors.push(`${record.id} (${record.type}): parent ${record.parent_id} not found`);
+        }
+      } else if (parent.chain_depth !== record.chain_depth - 1) {
+        chainIntact = false;
+        if (chainErrors.length < 10) {
+          chainErrors.push(
+            `${record.id} (${record.type}): depth ${record.chain_depth} but parent depth ${parent.chain_depth} (expected ${record.chain_depth - 1})`
+          );
+        }
+      }
+    }
+
     return {
-      valid: hashesFailed === 0,
-      chain_intact: true, // Database verification doesn't check chain integrity
+      valid: hashesFailed === 0 && chainIntact,
+      chain_intact: chainIntact,
+      chain_errors: chainErrors.length > 0 ? chainErrors : undefined,
       hashes_verified: hashesVerified,
       hashes_failed: hashesFailed,
       failed_items: failedItems,

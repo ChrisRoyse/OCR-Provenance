@@ -188,7 +188,7 @@ export const DatabaseDeleteInput = z.object({
 /**
  * Default supported file types for ingestion
  */
-export const DEFAULT_FILE_TYPES = ['pdf', 'png', 'jpg', 'jpeg', 'tiff', 'docx', 'doc'];
+export const DEFAULT_FILE_TYPES = ['pdf', 'png', 'jpg', 'jpeg', 'tiff', 'tif', 'docx', 'doc'];
 
 /**
  * Schema for ingesting a directory

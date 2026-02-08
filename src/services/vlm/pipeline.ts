@@ -27,14 +27,14 @@ import {
   getImageStats,
   findByContentHash,
   copyVLMResult,
+  resetProcessingImages,
 } from '../storage/database/image-operations.js';
 import { NomicEmbeddingClient, getEmbeddingClient, MODEL_NAME as EMBEDDING_MODEL } from '../embedding/nomic.js';
 import { DatabaseService } from '../storage/database/index.js';
 import { VectorService } from '../storage/vector.js';
 import { computeHash } from '../../utils/hash.js';
 import type { ImageReference, VLMResult, VLMStructuredData } from '../../models/image.js';
-import { ProvenanceType } from '../../models/provenance.js';
-import type { ProvenanceRecord } from '../../models/provenance.js';
+import { ProvenanceType, type ProvenanceRecord } from '../../models/provenance.js';
 import { ImageOptimizer, getImageOptimizer } from '../images/optimizer.js';
 import type { ImageOptimizationConfig } from '../../server/types.js';
 
@@ -156,6 +156,12 @@ export class VLMPipeline {
    * @returns BatchResult with processing summary
    */
   async processDocument(documentId: string): Promise<BatchResult> {
+    // Reset any stuck 'processing' images back to pending (crash recovery)
+    const stuckCount = resetProcessingImages(this.db, documentId);
+    if (stuckCount > 0) {
+      console.error(`[VLMPipeline] Reset ${stuckCount} stuck processing images for document ${documentId}`);
+    }
+
     const pending = getImagesByDocument(this.db, documentId, { vlmStatus: 'pending' })
       .filter(img => !img.is_header_footer);
 
@@ -644,6 +650,10 @@ export class VLMPipeline {
           };
 
           this.dbService.insertProvenance(embeddingProvRecord);
+        } else {
+          // vlmDescriptionProvId was set but provenance not found - fall back
+          console.error(`[VLMPipeline] VLM description provenance ${vlmDescriptionProvId} not found, using embedding ID as provenance`);
+          embeddingProvId = embeddingId;
         }
       }
 
@@ -794,7 +804,8 @@ export class VLMPipeline {
     parentIds.push(image.provenance_id);
 
     if (!source.vlm_description) {
-      throw new Error(`Cannot create dedup provenance: source image ${source.id} has null vlm_description despite vlm_status=complete`);
+      console.error(`[VLMPipeline] Cannot create dedup provenance: source image ${source.id} has null vlm_description despite vlm_status=complete`);
+      return;
     }
 
     const record: ProvenanceRecord = {
