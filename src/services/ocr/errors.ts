@@ -11,7 +11,11 @@ export type OCRErrorCategory =
   | 'OCR_RATE_LIMIT'
   | 'OCR_TIMEOUT'
   | 'OCR_FILE_ERROR'
-  | 'OCR_AUTHENTICATION_ERROR';
+  | 'OCR_AUTHENTICATION_ERROR'
+  | 'FORM_FILL_API_ERROR'
+  | 'FORM_FILL_SERVER_ERROR'
+  | 'FORM_FILL_FILE_ERROR'
+  | 'FORM_FILL_TIMEOUT';
 
 export class OCRError extends Error {
   constructor(

@@ -28,7 +28,11 @@ import * as ocrOps from './ocr-operations.js';
 import * as chunkOps from './chunk-operations.js';
 import * as embOps from './embedding-operations.js';
 import * as provOps from './provenance-operations.js';
+import * as extOps from './extraction-operations.js';
+import * as ffOps from './form-fill-operations.js';
 import { updateImageProvenance } from './image-operations.js';
+import type { Extraction } from '../../../models/extraction.js';
+import type { FormFill } from '../../../models/form-fill.js';
 
 /**
  * DatabaseService class for all database operations
@@ -222,6 +226,40 @@ export class DatabaseService {
 
   getProvenanceChildren(parentId: string): ProvenanceRecord[] {
     return provOps.getProvenanceChildren(this.db, parentId);
+  }
+
+  // ==================== EXTRACTION OPERATIONS ====================
+
+  insertExtraction(extraction: Extraction): string {
+    return extOps.insertExtraction(this.db, extraction, () => { updateMetadataCounts(this.db); });
+  }
+
+  getExtractionsByDocument(documentId: string): Extraction[] {
+    return extOps.getExtractionsByDocument(this.db, documentId);
+  }
+
+  // ==================== FORM FILL OPERATIONS ====================
+
+  insertFormFill(formFill: FormFill): string {
+    return ffOps.insertFormFill(this.db, formFill, () => { updateMetadataCounts(this.db); });
+  }
+
+  getFormFill(id: string): FormFill | null {
+    return ffOps.getFormFill(this.db, id);
+  }
+
+  listFormFills(options?: { status?: string; limit?: number; offset?: number }): FormFill[] {
+    return ffOps.listFormFills(this.db, options);
+  }
+
+  deleteFormFill(id: string): boolean {
+    return ffOps.deleteFormFill(this.db, id);
+  }
+
+  // ==================== DOCUMENT METADATA ====================
+
+  updateDocumentMetadata(id: string, metadata: { docTitle?: string | null; docAuthor?: string | null; docSubject?: string | null }): void {
+    docOps.updateDocumentMetadata(this.db, id, metadata, () => { updateMetadataModified(this.db); });
   }
 
   // ==================== IMAGE OPERATIONS ====================

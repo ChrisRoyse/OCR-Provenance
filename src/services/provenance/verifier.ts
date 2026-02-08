@@ -542,6 +542,17 @@ export class ProvenanceVerifier {
         return { content: image.vlm_description, expectedHash: record.content_hash, isFile: false };
       }
 
+      case ProvenanceType.EXTRACTION:
+      case ProvenanceType.FORM_FILL: {
+        // EXTRACTION and FORM_FILL content verification not yet implemented
+        // Return null to skip hash verification for these new types
+        throw new VerifierError(
+          `Content verification not yet implemented for provenance type: ${record.type}`,
+          VerifierErrorCode.INVALID_TYPE,
+          { type: record.type }
+        );
+      }
+
       default: {
         const unknownType: never = record.type;
         throw new VerifierError(
@@ -579,6 +590,9 @@ export class ProvenanceVerifier {
       modified_at: row.modified_at,
       ocr_completed_at: row.ocr_completed_at,
       error_message: row.error_message,
+      doc_title: row.doc_title ?? null,
+      doc_author: row.doc_author ?? null,
+      doc_subject: row.doc_subject ?? null,
     };
   }
 

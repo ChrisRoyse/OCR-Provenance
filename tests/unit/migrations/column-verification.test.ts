@@ -58,6 +58,9 @@ describe('Column Verification', () => {
       'modified_at',
       'ocr_completed_at',
       'error_message',
+      'doc_title',
+      'doc_author',
+      'doc_subject',
     ];
 
     it.skipIf(!sqliteVecAvailable)('should have all required columns', () => {

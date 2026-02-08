@@ -188,7 +188,14 @@ export const DatabaseDeleteInput = z.object({
 /**
  * Default supported file types for ingestion
  */
-export const DEFAULT_FILE_TYPES = ['pdf', 'png', 'jpg', 'jpeg', 'tiff', 'tif', 'docx', 'doc'];
+export const DEFAULT_FILE_TYPES = [
+  // Documents
+  'pdf', 'docx', 'doc', 'pptx', 'ppt', 'xlsx', 'xls',
+  // Images
+  'png', 'jpg', 'jpeg', 'tiff', 'tif', 'bmp', 'gif', 'webp',
+  // Text
+  'txt', 'csv', 'md',
+];
 
 /**
  * Schema for ingesting a directory
@@ -214,6 +221,24 @@ export const IngestFilesInput = z.object({
 export const ProcessPendingInput = z.object({
   max_concurrent: z.number().int().min(1).max(10).default(3),
   ocr_mode: OCRMode.optional(),
+  // Datalab API parameters
+  max_pages: z.number().int().min(1).max(7000).optional()
+    .describe('Maximum pages to process per document (Datalab limit: 7000)'),
+  page_range: z.string().regex(/^[0-9,\-\s]+$/).optional()
+    .describe('Specific pages to process, 0-indexed (e.g., "0-5,10")'),
+  skip_cache: z.boolean().optional()
+    .describe('Force reprocessing, skip Datalab cache'),
+  disable_image_extraction: z.boolean().optional()
+    .describe('Skip image extraction for text-only processing'),
+  extras: z.array(z.enum([
+    'track_changes', 'chart_understanding', 'extract_links',
+    'table_row_bboxes', 'infographic', 'new_block_types'
+  ])).optional()
+    .describe('Extra Datalab features to enable'),
+  page_schema: z.string().optional()
+    .describe('JSON schema string for structured data extraction per page'),
+  additional_config: z.record(z.unknown()).optional()
+    .describe('Additional Datalab config: keep_pageheader_in_output, keep_pagefooter_in_output, keep_spreadsheet_formatting'),
 });
 
 /**

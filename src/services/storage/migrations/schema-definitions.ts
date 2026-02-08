@@ -8,7 +8,7 @@
  */
 
 /** Current schema version */
-export const SCHEMA_VERSION = 7;
+export const SCHEMA_VERSION = 8;
 
 /**
  * Database configuration pragmas for optimal performance and safety
@@ -40,12 +40,12 @@ CREATE TABLE IF NOT EXISTS schema_version (
 export const CREATE_PROVENANCE_TABLE = `
 CREATE TABLE IF NOT EXISTS provenance (
   id TEXT PRIMARY KEY,
-  type TEXT NOT NULL CHECK (type IN ('DOCUMENT', 'OCR_RESULT', 'CHUNK', 'IMAGE', 'VLM_DESCRIPTION', 'EMBEDDING')),
+  type TEXT NOT NULL CHECK (type IN ('DOCUMENT', 'OCR_RESULT', 'CHUNK', 'IMAGE', 'VLM_DESCRIPTION', 'EMBEDDING', 'EXTRACTION', 'FORM_FILL')),
   created_at TEXT NOT NULL,
   processed_at TEXT NOT NULL,
   source_file_created_at TEXT,
   source_file_modified_at TEXT,
-  source_type TEXT NOT NULL CHECK (source_type IN ('FILE', 'OCR', 'CHUNKING', 'IMAGE_EXTRACTION', 'VLM', 'VLM_DEDUP', 'EMBEDDING')),
+  source_type TEXT NOT NULL CHECK (source_type IN ('FILE', 'OCR', 'CHUNKING', 'IMAGE_EXTRACTION', 'VLM', 'VLM_DEDUP', 'EMBEDDING', 'EXTRACTION', 'FORM_FILL')),
   source_path TEXT,
   source_id TEXT,
   root_document_id TEXT NOT NULL,
@@ -103,6 +103,9 @@ CREATE TABLE IF NOT EXISTS documents (
   modified_at TEXT,
   ocr_completed_at TEXT,
   error_message TEXT,
+  doc_title TEXT,
+  doc_author TEXT,
+  doc_subject TEXT,
   FOREIGN KEY (provenance_id) REFERENCES provenance(id)
 )
 `;
@@ -253,7 +256,7 @@ CREATE TABLE IF NOT EXISTS fts_index_metadata (
   last_rebuild_at TEXT,
   chunks_indexed INTEGER NOT NULL DEFAULT 0,
   tokenizer TEXT NOT NULL DEFAULT 'porter unicode61',
-  schema_version INTEGER NOT NULL DEFAULT 7,
+  schema_version INTEGER NOT NULL DEFAULT 8,
   content_hash TEXT
 )
 `;
@@ -336,6 +339,48 @@ CREATE TABLE IF NOT EXISTS images (
 `;
 
 /**
+ * Extractions table - structured data extracted via page_schema
+ * Provenance depth: 2 (after OCR_RESULT)
+ */
+export const CREATE_EXTRACTIONS_TABLE = `
+CREATE TABLE IF NOT EXISTS extractions (
+  id TEXT PRIMARY KEY NOT NULL,
+  document_id TEXT NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+  ocr_result_id TEXT NOT NULL REFERENCES ocr_results(id) ON DELETE CASCADE,
+  schema_json TEXT NOT NULL,
+  extraction_json TEXT NOT NULL,
+  content_hash TEXT NOT NULL,
+  provenance_id TEXT NOT NULL REFERENCES provenance(id),
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+)
+`;
+
+/**
+ * Form fills table - results from Datalab /fill API
+ * Provenance depth: 1 (directly from DOCUMENT)
+ */
+export const CREATE_FORM_FILLS_TABLE = `
+CREATE TABLE IF NOT EXISTS form_fills (
+  id TEXT PRIMARY KEY NOT NULL,
+  source_file_path TEXT NOT NULL,
+  source_file_hash TEXT NOT NULL,
+  field_data_json TEXT NOT NULL,
+  context TEXT,
+  confidence_threshold REAL NOT NULL DEFAULT 0.5,
+  output_file_path TEXT,
+  output_base64 TEXT,
+  fields_filled TEXT NOT NULL DEFAULT '[]',
+  fields_not_found TEXT NOT NULL DEFAULT '[]',
+  page_count INTEGER,
+  cost_cents INTEGER,
+  status TEXT NOT NULL CHECK(status IN ('pending', 'processing', 'complete', 'failed')),
+  error_message TEXT,
+  provenance_id TEXT NOT NULL REFERENCES provenance(id),
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+)
+`;
+
+/**
  * All required indexes for query performance
  */
 export const CREATE_INDEXES = [
@@ -368,6 +413,15 @@ export const CREATE_INDEXES = [
   'CREATE INDEX IF NOT EXISTS idx_images_pending ON images(vlm_status) WHERE vlm_status = \'pending\'',
   'CREATE INDEX IF NOT EXISTS idx_images_provenance_id ON images(provenance_id)',
 
+  // Extractions indexes
+  'CREATE INDEX IF NOT EXISTS idx_extractions_document_id ON extractions(document_id)',
+
+  // Form fills indexes
+  'CREATE INDEX IF NOT EXISTS idx_form_fills_status ON form_fills(status)',
+
+  // Documents metadata index
+  'CREATE INDEX IF NOT EXISTS idx_documents_doc_title ON documents(doc_title)',
+
   // Provenance indexes
   'CREATE INDEX IF NOT EXISTS idx_provenance_source_id ON provenance(source_id)',
   'CREATE INDEX IF NOT EXISTS idx_provenance_type ON provenance(type)',
@@ -386,6 +440,8 @@ export const TABLE_DEFINITIONS = [
   { name: 'chunks', sql: CREATE_CHUNKS_TABLE },
   { name: 'embeddings', sql: CREATE_EMBEDDINGS_TABLE },
   { name: 'images', sql: CREATE_IMAGES_TABLE },
+  { name: 'extractions', sql: CREATE_EXTRACTIONS_TABLE },
+  { name: 'form_fills', sql: CREATE_FORM_FILLS_TABLE },
 ] as const;
 
 /**
@@ -404,6 +460,8 @@ export const REQUIRED_TABLES = [
   'chunks_fts',
   'fts_index_metadata',
   'vlm_fts',
+  'extractions',
+  'form_fills',
 ] as const;
 
 /**
@@ -433,4 +491,7 @@ export const REQUIRED_INDEXES = [
   'idx_provenance_type',
   'idx_provenance_root_document_id',
   'idx_provenance_parent_id',
+  'idx_extractions_document_id',
+  'idx_form_fills_status',
+  'idx_documents_doc_title',
 ] as const;

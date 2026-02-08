@@ -2,7 +2,7 @@
  * OCR Provenance MCP Server
  *
  * Entry point for the MCP server using stdio transport.
- * Exposes 46 OCR, search, and provenance tools via JSON-RPC.
+ * Exposes 50 OCR, search, and provenance tools via JSON-RPC.
  *
  * CRITICAL: NEVER use console.log() - stdout is reserved for JSON-RPC protocol.
  * Use console.error() for all logging.
@@ -32,6 +32,8 @@ import { imageTools } from './tools/images.js';
 import { evaluationTools } from './tools/evaluation.js';
 import { extractionTools } from './tools/extraction.js';
 import { reportTools } from './tools/reports.js';
+import { formFillTools } from './tools/form-fill.js';
+import { structuredExtractionTools } from './tools/extraction-structured.js';
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // SERVER INITIALIZATION
@@ -142,6 +144,24 @@ for (const [name, tool] of Object.entries(reportTools)) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
+// FORM FILL TOOLS (2) - Extracted to src/tools/form-fill.ts
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// Register form fill tools from extracted module
+for (const [name, tool] of Object.entries(formFillTools)) {
+  server.tool(name, tool.description, tool.inputSchema as Record<string, unknown>, tool.handler);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// STRUCTURED EXTRACTION TOOLS (2) - Extracted to src/tools/extraction-structured.ts
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// Register structured extraction tools from extracted module
+for (const [name, tool] of Object.entries(structuredExtractionTools)) {
+  server.tool(name, tool.description, tool.inputSchema as Record<string, unknown>, tool.handler);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
 // SERVER STARTUP
 // ═══════════════════════════════════════════════════════════════════════════════
 
@@ -149,7 +169,7 @@ async function main() {
   const transport = new StdioServerTransport();
   await server.connect(transport);
   console.error('OCR Provenance MCP Server running on stdio');
-  console.error('Tools registered: 46');
+  console.error('Tools registered: 50');
 }
 
 main().catch((error) => {

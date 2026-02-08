@@ -16,6 +16,8 @@ import {
   CREATE_FTS_INDEX_METADATA,
   CREATE_VLM_FTS_TABLE,
   CREATE_VLM_FTS_TRIGGERS,
+  CREATE_EXTRACTIONS_TABLE,
+  CREATE_FORM_FILLS_TABLE,
 } from './schema-definitions.js';
 import {
   configurePragmas,
@@ -785,5 +787,129 @@ export function migrateToLatest(db: Database.Database): void {
   if (currentVersion < 7) {
     migrateV6ToV7(db);
     bumpVersion(7);
+  }
+
+  if (currentVersion < 8) {
+    migrateV7ToV8(db);
+    bumpVersion(8);
+  }
+}
+
+/**
+ * Migrate from schema version 7 to version 8
+ *
+ * Changes in v8:
+ * - extractions: New table for structured data extracted via page_schema
+ * - form_fills: New table for Datalab /fill API results
+ * - documents: Added doc_title, doc_author, doc_subject columns
+ * - provenance.type: Added 'EXTRACTION', 'FORM_FILL' to CHECK constraint
+ * - provenance.source_type: Added 'EXTRACTION', 'FORM_FILL' to CHECK constraint
+ * - New indexes: idx_extractions_document_id, idx_form_fills_status, idx_documents_doc_title
+ *
+ * @param db - Database instance from better-sqlite3
+ * @throws MigrationError if migration fails
+ */
+function migrateV7ToV8(db: Database.Database): void {
+  try {
+    db.exec('PRAGMA foreign_keys = OFF');
+    db.exec('BEGIN TRANSACTION');
+
+    // Step 1: Create new tables
+    db.exec(CREATE_EXTRACTIONS_TABLE);
+    db.exec(CREATE_FORM_FILLS_TABLE);
+
+    // Step 2: Add new columns to documents table
+    const columns = db.prepare('PRAGMA table_info(documents)').all() as { name: string }[];
+    const columnNames = new Set(columns.map(c => c.name));
+
+    if (!columnNames.has('doc_title')) {
+      db.exec('ALTER TABLE documents ADD COLUMN doc_title TEXT');
+    }
+    if (!columnNames.has('doc_author')) {
+      db.exec('ALTER TABLE documents ADD COLUMN doc_author TEXT');
+    }
+    if (!columnNames.has('doc_subject')) {
+      db.exec('ALTER TABLE documents ADD COLUMN doc_subject TEXT');
+    }
+
+    // Step 3: Create new indexes
+    db.exec('CREATE INDEX IF NOT EXISTS idx_extractions_document_id ON extractions(document_id)');
+    db.exec('CREATE INDEX IF NOT EXISTS idx_form_fills_status ON form_fills(status)');
+    db.exec('CREATE INDEX IF NOT EXISTS idx_documents_doc_title ON documents(doc_title)');
+
+    // Step 4: Recreate provenance table with EXTRACTION and FORM_FILL in CHECK constraints
+    db.exec(`
+      CREATE TABLE provenance_new (
+        id TEXT PRIMARY KEY,
+        type TEXT NOT NULL CHECK (type IN ('DOCUMENT', 'OCR_RESULT', 'CHUNK', 'IMAGE', 'VLM_DESCRIPTION', 'EMBEDDING', 'EXTRACTION', 'FORM_FILL')),
+        created_at TEXT NOT NULL,
+        processed_at TEXT NOT NULL,
+        source_file_created_at TEXT,
+        source_file_modified_at TEXT,
+        source_type TEXT NOT NULL CHECK (source_type IN ('FILE', 'OCR', 'CHUNKING', 'IMAGE_EXTRACTION', 'VLM', 'VLM_DEDUP', 'EMBEDDING', 'EXTRACTION', 'FORM_FILL')),
+        source_path TEXT,
+        source_id TEXT,
+        root_document_id TEXT NOT NULL,
+        location TEXT,
+        content_hash TEXT NOT NULL,
+        input_hash TEXT,
+        file_hash TEXT,
+        processor TEXT NOT NULL,
+        processor_version TEXT NOT NULL,
+        processing_params TEXT NOT NULL,
+        processing_duration_ms INTEGER,
+        processing_quality_score REAL,
+        parent_id TEXT,
+        parent_ids TEXT NOT NULL,
+        chain_depth INTEGER NOT NULL,
+        chain_path TEXT,
+        FOREIGN KEY (source_id) REFERENCES provenance_new(id),
+        FOREIGN KEY (parent_id) REFERENCES provenance_new(id)
+      )
+    `);
+
+    // Step 5: Copy existing provenance data
+    db.exec(`
+      INSERT INTO provenance_new
+      SELECT * FROM provenance
+    `);
+
+    // Step 6: Drop old provenance table
+    db.exec('DROP TABLE provenance');
+
+    // Step 7: Rename new table
+    db.exec('ALTER TABLE provenance_new RENAME TO provenance');
+
+    // Step 8: Recreate provenance indexes
+    db.exec('CREATE INDEX IF NOT EXISTS idx_provenance_source_id ON provenance(source_id)');
+    db.exec('CREATE INDEX IF NOT EXISTS idx_provenance_type ON provenance(type)');
+    db.exec('CREATE INDEX IF NOT EXISTS idx_provenance_root_document_id ON provenance(root_document_id)');
+    db.exec('CREATE INDEX IF NOT EXISTS idx_provenance_parent_id ON provenance(parent_id)');
+
+    db.exec('COMMIT');
+    db.exec('PRAGMA foreign_keys = ON');
+
+    // FK integrity check after table recreation
+    const fkViolations = db.pragma('foreign_key_check') as unknown[];
+    if (fkViolations.length > 0) {
+      throw new Error(
+        `Foreign key integrity check failed after v7->v8 migration: ${fkViolations.length} violation(s). ` +
+        `First: ${JSON.stringify(fkViolations[0])}`
+      );
+    }
+  } catch (error) {
+    try {
+      db.exec('ROLLBACK');
+      db.exec('PRAGMA foreign_keys = ON');
+    } catch {
+      // Ignore rollback errors
+    }
+    const cause = error instanceof Error ? error.message : String(error);
+    throw new MigrationError(
+      `Failed to migrate from v7 to v8 (extractions, form_fills, doc metadata): ${cause}`,
+      'migrate',
+      'provenance',
+      error
+    );
   }
 }

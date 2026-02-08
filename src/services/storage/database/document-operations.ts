@@ -214,6 +214,39 @@ export function updateDocumentOCRComplete(
 }
 
 /**
+ * Update document metadata (title, author, subject) from OCR extraction
+ *
+ * @param db - Database connection
+ * @param id - Document ID
+ * @param metadata - Metadata fields to update (null values are ignored via COALESCE)
+ * @param updateMetadataModified - Callback to update metadata modified timestamp
+ */
+export function updateDocumentMetadata(
+  db: Database.Database,
+  id: string,
+  metadata: { docTitle?: string | null; docAuthor?: string | null; docSubject?: string | null },
+  updateMetadataModified: () => void
+): void {
+  const modified_at = new Date().toISOString();
+  const stmt = db.prepare(`
+    UPDATE documents
+    SET doc_title = COALESCE(?, doc_title),
+        doc_author = COALESCE(?, doc_author),
+        doc_subject = COALESCE(?, doc_subject),
+        modified_at = ?
+    WHERE id = ?
+  `);
+  const result = stmt.run(
+    metadata.docTitle ?? null,
+    metadata.docAuthor ?? null,
+    metadata.docSubject ?? null,
+    modified_at,
+    id
+  );
+  if (result.changes > 0) updateMetadataModified();
+}
+
+/**
  * Shared cleanup: delete all derived records for a document.
  *
  * Handles: vec_embeddings, orphaned image re-queuing, images, embeddings,
@@ -262,6 +295,9 @@ function deleteDerivedRecords(db: Database.Database, documentId: string, caller:
 
   // Delete from ocr_results
   db.prepare('DELETE FROM ocr_results WHERE document_id = ?').run(documentId);
+
+  // Delete from extractions
+  db.prepare('DELETE FROM extractions WHERE document_id = ?').run(documentId);
 
   // Update FTS metadata counts after chunk/embedding deletion
   try {
