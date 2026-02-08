@@ -18,3 +18,5 @@ export * from './images.js';
 export * from './extraction.js';
 export * from './evaluation.js';
 export * from './reports.js';
+export * from './form-fill.js';
+export * from './extraction-structured.js';

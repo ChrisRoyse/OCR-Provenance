@@ -43,6 +43,14 @@ interface PythonOCRResponse {
   json_blocks: Record<string, unknown> | null;
   /** Datalab metadata (page_stats, block_counts, etc.) */
   metadata: Record<string, unknown> | null;
+  /** Structured extraction result from page_schema */
+  extraction_json: Record<string, unknown> | unknown[] | null;
+  /** Document title from metadata */
+  doc_title: string | null;
+  /** Document author from metadata */
+  doc_author: string | null;
+  /** Document subject from metadata */
+  doc_subject: string | null;
 }
 
 interface PythonErrorResponse {
@@ -77,25 +85,47 @@ export class DatalabClient {
     filePath: string,
     documentId: string,
     provenanceId: string,
-    mode: 'fast' | 'balanced' | 'accurate' = 'accurate'
+    mode: 'fast' | 'balanced' | 'accurate' = 'accurate',
+    ocrOptions?: {
+      maxPages?: number;
+      pageRange?: string;
+      skipCache?: boolean;
+      disableImageExtraction?: boolean;
+      extras?: string[];
+      pageSchema?: string;
+      additionalConfig?: Record<string, unknown>;
+    }
   ): Promise<{
     result: OCRResult;
     pageOffsets: PageOffset[];
     images: Record<string, string>;
     jsonBlocks: Record<string, unknown> | null;
     metadata: Record<string, unknown> | null;
+    extractionJson: Record<string, unknown> | unknown[] | null;
+    docTitle: string | null;
+    docAuthor: string | null;
+    docSubject: string | null;
   }> {
+    const args = [
+      '--file', filePath,
+      '--mode', mode,
+      '--doc-id', documentId,
+      '--prov-id', provenanceId,
+      '--json',
+    ];
+    if (ocrOptions?.maxPages) args.push('--max-pages', String(ocrOptions.maxPages));
+    if (ocrOptions?.pageRange) args.push('--page-range', ocrOptions.pageRange);
+    if (ocrOptions?.skipCache) args.push('--skip-cache');
+    if (ocrOptions?.disableImageExtraction) args.push('--disable-image-extraction');
+    if (ocrOptions?.extras?.length) args.push('--extras', ocrOptions.extras.join(','));
+    if (ocrOptions?.pageSchema) args.push('--page-schema', ocrOptions.pageSchema);
+    if (ocrOptions?.additionalConfig) args.push('--additional-config', JSON.stringify(ocrOptions.additionalConfig));
+
     const options: Options = {
       mode: 'text',
       pythonPath: this.pythonPath,
       pythonOptions: ['-u'],
-      args: [
-        '--file', filePath,
-        '--mode', mode,
-        '--doc-id', documentId,
-        '--prov-id', provenanceId,
-        '--json'
-      ],
+      args,
     };
 
     return new Promise((resolve, reject) => {
@@ -195,6 +225,10 @@ export class DatalabClient {
           images: ocrResponse.images ?? {},
           jsonBlocks: ocrResponse.json_blocks ?? null,
           metadata: ocrResponse.metadata ?? null,
+          extractionJson: ocrResponse.extraction_json ?? null,
+          docTitle: ocrResponse.doc_title ?? null,
+          docAuthor: ocrResponse.doc_author ?? null,
+          docSubject: ocrResponse.doc_subject ?? null,
         });
       });
     });

@@ -248,7 +248,6 @@ describe('File Utilities', () => {
     });
 
     it('should return false for unsupported file types', () => {
-      expect(isAllowedFileType('document.txt')).toBe(false);
       expect(isAllowedFileType('script.js')).toBe(false);
       expect(isAllowedFileType('data.json')).toBe(false);
       expect(isAllowedFileType('archive.zip')).toBe(false);

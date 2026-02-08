@@ -581,6 +581,9 @@ export async function handleIngestDirectory(
           error_message: null,
           modified_at: null,
           ocr_completed_at: null,
+          doc_title: null,
+          doc_author: null,
+          doc_subject: null,
         });
 
         items.push({
@@ -742,6 +745,9 @@ export async function handleIngestFiles(
           error_message: null,
           modified_at: null,
           ocr_completed_at: null,
+          doc_title: null,
+          doc_author: null,
+          doc_subject: null,
         });
 
         items.push({
@@ -800,6 +806,15 @@ export async function handleProcessPending(
     }
 
     const ocrMode = input.ocr_mode ?? state.config.defaultOCRMode;
+    const ocrOptions = {
+      maxPages: input.max_pages,
+      pageRange: input.page_range,
+      skipCache: input.skip_cache,
+      disableImageExtraction: input.disable_image_extraction,
+      extras: input.extras,
+      pageSchema: input.page_schema,
+      additionalConfig: input.additional_config,
+    };
     const results = {
       processed: 0,
       failed: 0,
@@ -816,7 +831,7 @@ export async function handleProcessPending(
         // Step 1: OCR via Datalab
         // OCRProcessor.processDocument() handles status='processing' internally
         const ocrProcessor = new OCRProcessor(db);
-        const processResult = await ocrProcessor.processDocument(doc.id, ocrMode);
+        const processResult = await ocrProcessor.processDocument(doc.id, ocrMode, ocrOptions);
 
         if (!processResult.success) {
           throw new Error(processResult.error ?? 'OCR processing failed');
@@ -992,6 +1007,70 @@ export async function handleProcessPending(
               `[WARN] Document ${doc.id}: ${vlmResult.failed}/${vlmResult.total} VLM image processing failures`
             );
           }
+        }
+
+        // Step 5.5: Store structured extraction if present
+        if (processResult.extractionJson && input.page_schema) {
+          try {
+            const extractionContent = JSON.stringify(processResult.extractionJson);
+            const extractionHash = computeHash(extractionContent);
+
+            // Create EXTRACTION provenance record
+            const extractionProvId = uuidv4();
+            const ocrProvId = processResult.provenanceId!;
+            const docProvId = doc.provenance_id;
+            const now = new Date().toISOString();
+
+            db.insertProvenance({
+              id: extractionProvId,
+              type: ProvenanceType.EXTRACTION,
+              created_at: now,
+              processed_at: now,
+              source_file_created_at: null,
+              source_file_modified_at: null,
+              source_type: 'EXTRACTION',
+              source_path: doc.file_path,
+              source_id: ocrProvId,
+              root_document_id: docProvId,
+              location: null,
+              content_hash: extractionHash,
+              input_hash: ocrResult.content_hash,
+              file_hash: doc.file_hash,
+              processor: 'datalab-extraction',
+              processor_version: '1.0.0',
+              processing_params: { page_schema: input.page_schema },
+              processing_duration_ms: null,
+              processing_quality_score: null,
+              parent_id: ocrProvId,
+              parent_ids: JSON.stringify([docProvId, ocrProvId]),
+              chain_depth: 2,
+              chain_path: JSON.stringify(['DOCUMENT', 'OCR_RESULT', 'EXTRACTION']),
+            });
+
+            db.insertExtraction({
+              id: uuidv4(),
+              document_id: doc.id,
+              ocr_result_id: ocrResult.id,
+              schema_json: input.page_schema,
+              extraction_json: extractionContent,
+              content_hash: extractionHash,
+              provenance_id: extractionProvId,
+              created_at: now,
+            });
+
+            console.error(`[INFO] Stored structured extraction for document ${doc.id}`);
+          } catch (extErr) {
+            console.error(`[WARN] Failed to store extraction for ${doc.id}: ${extErr instanceof Error ? extErr.message : String(extErr)}`);
+          }
+        }
+
+        // Step 5.6: Update document metadata if available
+        if (processResult.docTitle || processResult.docAuthor || processResult.docSubject) {
+          db.updateDocumentMetadata(doc.id, {
+            docTitle: processResult.docTitle ?? null,
+            docAuthor: processResult.docAuthor ?? null,
+            docSubject: processResult.docSubject ?? null,
+          });
         }
 
         // Step 6: Mark document complete
@@ -1249,6 +1328,13 @@ export const ingestionTools: Record<string, ToolDefinition> = {
     inputSchema: {
       max_concurrent: z.number().int().min(1).max(10).default(3).describe('Maximum concurrent OCR operations'),
       ocr_mode: z.enum(['fast', 'balanced', 'accurate']).optional().describe('OCR processing mode override'),
+      max_pages: z.number().int().min(1).max(7000).optional().describe('Maximum pages to process per document (Datalab limit: 7000)'),
+      page_range: z.string().regex(/^[0-9,\-\s]+$/).optional().describe('Specific pages to process, 0-indexed (e.g., "0-5,10")'),
+      skip_cache: z.boolean().optional().describe('Force reprocessing, skip Datalab cache'),
+      disable_image_extraction: z.boolean().optional().describe('Skip image extraction for text-only processing'),
+      extras: z.array(z.enum(['track_changes', 'chart_understanding', 'extract_links', 'table_row_bboxes', 'infographic', 'new_block_types'])).optional().describe('Extra Datalab features to enable'),
+      page_schema: z.string().optional().describe('JSON schema string for structured data extraction per page'),
+      additional_config: z.record(z.unknown()).optional().describe('Additional Datalab config: keep_pageheader_in_output, keep_pagefooter_in_output, keep_spreadsheet_formatting'),
     },
     handler: handleProcessPending,
   },
