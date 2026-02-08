@@ -29,7 +29,6 @@ import { GeminiClient } from '../services/gemini/client.js';
 const VLMDescribeInput = z.object({
   image_path: z.string().min(1),
   context_text: z.string().optional(),
-  use_medical_prompt: z.boolean().default(false),
   use_thinking: z.boolean().default(false),
 });
 
@@ -40,12 +39,10 @@ const VLMClassifyInput = z.object({
 const VLMProcessDocumentInput = z.object({
   document_id: z.string().min(1),
   batch_size: z.number().int().min(1).max(20).default(5),
-  use_medical_prompts: z.boolean().default(false),
 });
 
 const VLMProcessPendingInput = z.object({
   limit: z.number().int().min(1).max(500).default(50),
-  use_medical_prompts: z.boolean().default(false),
 });
 
 const VLMAnalyzePDFInput = z.object({
@@ -69,7 +66,6 @@ export async function handleVLMDescribe(
     const input = validateInput(VLMDescribeInput, params);
     const imagePath = input.image_path;
     const contextText = input.context_text;
-    const useMedicalPrompt = input.use_medical_prompt ?? false;
     const useThinking = input.use_thinking ?? false;
 
     // Validate image path exists
@@ -90,7 +86,6 @@ export async function handleVLMDescribe(
     } else {
       result = await vlm.describeImage(imagePath, {
         contextText,
-        useMedicalPrompt: useMedicalPrompt ?? false,
         highResolution: true,
       });
     }
@@ -154,7 +149,6 @@ export async function handleVLMProcessDocument(
     const input = validateInput(VLMProcessDocumentInput, params);
     const documentId = input.document_id;
     const batchSize = input.batch_size ?? 5;
-    const useMedicalPrompts = input.use_medical_prompts ?? false;
 
     const { db, vector } = requireDatabase();
 
@@ -173,7 +167,6 @@ export async function handleVLMProcessDocument(
         batchSize,
         concurrency: 5,
         minConfidence: 0.5,
-        useMedicalPrompts: useMedicalPrompts ?? false,
         skipEmbeddings: false,
         skipProvenance: false,
       },
@@ -212,7 +205,6 @@ export async function handleVLMProcessPending(
   try {
     const input = validateInput(VLMProcessPendingInput, params);
     const limit = input.limit ?? 50;
-    const useMedicalPrompts = input.use_medical_prompts ?? false;
 
     const { db, vector } = requireDatabase();
 
@@ -221,7 +213,6 @@ export async function handleVLMProcessPending(
         batchSize: 10,
         concurrency: 5,
         minConfidence: 0.5,
-        useMedicalPrompts: useMedicalPrompts ?? false,
         skipEmbeddings: false,
         skipProvenance: false,
       },
@@ -347,7 +338,6 @@ export const vlmTools: Record<string, ToolDefinition> = {
     inputSchema: {
       image_path: z.string().min(1).describe('Path to image file (PNG, JPG, JPEG, GIF, WEBP)'),
       context_text: z.string().optional().describe('Surrounding text context from document'),
-      use_medical_prompt: z.boolean().default(false).describe('Use medical-specific analysis prompt'),
       use_thinking: z.boolean().default(false).describe('Use extended reasoning (thinking mode) for complex analysis'),
     },
     handler: handleVLMDescribe,
@@ -366,7 +356,6 @@ export const vlmTools: Record<string, ToolDefinition> = {
     inputSchema: {
       document_id: z.string().min(1).describe('Document ID'),
       batch_size: z.number().int().min(1).max(20).default(5).describe('Images per batch'),
-      use_medical_prompts: z.boolean().default(false).describe('Use medical-specific analysis prompts'),
     },
     handler: handleVLMProcessDocument,
   },
@@ -375,7 +364,6 @@ export const vlmTools: Record<string, ToolDefinition> = {
     description: 'Process all images pending VLM description across all documents',
     inputSchema: {
       limit: z.number().int().min(1).max(500).default(50).describe('Maximum images to process'),
-      use_medical_prompts: z.boolean().default(false).describe('Use medical-specific analysis prompts'),
     },
     handler: handleVLMProcessPending,
   },

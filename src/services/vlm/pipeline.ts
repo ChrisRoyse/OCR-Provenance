@@ -48,8 +48,6 @@ export interface PipelineConfig {
   concurrency: number;
   /** Minimum confidence threshold */
   minConfidence: number;
-  /** Use medical-specific prompts */
-  useMedicalPrompts: boolean;
   /** Use universal blind-person-detail prompt for all images (default: true) */
   useUniversalPrompt: boolean;
   /** Skip embedding generation */
@@ -64,7 +62,6 @@ const DEFAULT_CONFIG: PipelineConfig = {
   batchSize: 10,
   concurrency: 5,
   minConfidence: 0.5,
-  useMedicalPrompts: false,
   useUniversalPrompt: true,
   skipEmbeddings: false,
   skipProvenance: false,
@@ -358,7 +355,6 @@ export class VLMPipeline {
         // Run VLM analysis
         const vlmResult = await this.vlm.describeImage(imagePath, {
           contextText: image.context_text ?? undefined,
-          useMedicalPrompt: this.config.useMedicalPrompts,
           useUniversalPrompt: this.config.useUniversalPrompt,
         });
 

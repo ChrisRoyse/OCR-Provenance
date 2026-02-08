@@ -221,7 +221,7 @@ export function listImages(
 
   if (options?.offset !== undefined) {
     if (options?.limit === undefined) {
-      query += ' LIMIT -1';
+      query += ' LIMIT 10000';  // Bounded default matching listDocuments pattern
     }
     query += ' OFFSET ?';
     params.push(options.offset);
