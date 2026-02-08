@@ -134,4 +134,54 @@ describe('DatabaseService - OCR Result Operations', () => {
       expect(retrieved!.id).toBe(ocr.id);
     });
   });
+
+  describe('json_blocks and extras_json', () => {
+    it.skipIf(!sqliteVecAvailable)('inserts and retrieves with json_blocks and extras_json', () => {
+      const docProv = createTestProvenance();
+      dbService!.insertProvenance(docProv);
+      const doc = createTestDocument(docProv.id);
+      dbService!.insertDocument(doc);
+
+      const ocrProv = createTestProvenance({
+        type: ProvenanceType.OCR_RESULT,
+        root_document_id: doc.id,
+      });
+      dbService!.insertProvenance(ocrProv);
+
+      const blocksJson = JSON.stringify({ children: [{ type: 'Text' }] });
+      const extrasJson = JSON.stringify({ metadata: { title: 'Test' } });
+
+      const ocr = createTestOCRResult(doc.id, ocrProv.id, {
+        json_blocks: blocksJson,
+        extras_json: extrasJson,
+      });
+      dbService!.insertOCRResult(ocr);
+
+      const retrieved = dbService!.getOCRResult(ocr.id);
+      expect(retrieved).not.toBeNull();
+      expect(retrieved!.json_blocks).toBe(blocksJson);
+      expect(retrieved!.extras_json).toBe(extrasJson);
+    });
+
+    it.skipIf(!sqliteVecAvailable)('defaults to null when not provided', () => {
+      const docProv = createTestProvenance();
+      dbService!.insertProvenance(docProv);
+      const doc = createTestDocument(docProv.id);
+      dbService!.insertDocument(doc);
+
+      const ocrProv = createTestProvenance({
+        type: ProvenanceType.OCR_RESULT,
+        root_document_id: doc.id,
+      });
+      dbService!.insertProvenance(ocrProv);
+
+      const ocr = createTestOCRResult(doc.id, ocrProv.id);
+      dbService!.insertOCRResult(ocr);
+
+      const retrieved = dbService!.getOCRResult(ocr.id);
+      expect(retrieved).not.toBeNull();
+      expect(retrieved!.json_blocks).toBeNull();
+      expect(retrieved!.extras_json).toBeNull();
+    });
+  });
 });

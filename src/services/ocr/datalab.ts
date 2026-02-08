@@ -45,6 +45,8 @@ interface PythonOCRResponse {
   metadata: Record<string, unknown> | null;
   /** Structured extraction result from page_schema */
   extraction_json: Record<string, unknown> | unknown[] | null;
+  /** Full cost_breakdown dict from Datalab */
+  cost_breakdown_full: Record<string, unknown> | null;
   /** Document title from metadata */
   doc_title: string | null;
   /** Document author from metadata */
@@ -240,6 +242,11 @@ export class DatalabClient {
 
   private toOCRResult(r: PythonOCRResponse): OCRResult {
     // Direct field mapping - Python snake_case matches TS interface
+    // Build extras_json from metadata + cost_breakdown
+    const extras: Record<string, unknown> = {};
+    if (r.metadata) extras.metadata = r.metadata;
+    if (r.cost_breakdown_full) extras.cost_breakdown = r.cost_breakdown_full;
+
     return {
       id: r.id,
       provenance_id: r.provenance_id,
@@ -255,6 +262,8 @@ export class DatalabClient {
       processing_started_at: r.processing_started_at,
       processing_completed_at: r.processing_completed_at,
       processing_duration_ms: r.processing_duration_ms,
+      json_blocks: r.json_blocks ? JSON.stringify(r.json_blocks) : null,
+      extras_json: Object.keys(extras).length > 0 ? JSON.stringify(extras) : null,
     };
   }
 

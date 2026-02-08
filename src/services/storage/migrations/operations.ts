@@ -854,6 +854,57 @@ function migrateV9ToV10(db: Database.Database): void {
 }
 
 /**
+ * Migrate from schema version 10 to version 11
+ *
+ * Changes in v11:
+ * - ocr_results.json_blocks: JSON block hierarchy from Datalab
+ * - ocr_results.extras_json: Extra metadata (cost_breakdown, Datalab metadata)
+ *
+ * Uses ALTER TABLE ADD COLUMN (nullable TEXT columns, no table recreation needed).
+ *
+ * @param db - Database instance from better-sqlite3
+ * @throws MigrationError if migration fails
+ */
+function migrateV10ToV11(db: Database.Database): void {
+  try {
+    db.exec('PRAGMA foreign_keys = OFF');
+
+    const columns = db.prepare('PRAGMA table_info(ocr_results)').all() as { name: string }[];
+    const names = new Set(columns.map(c => c.name));
+
+    const transaction = db.transaction(() => {
+      if (!names.has('json_blocks')) {
+        db.exec('ALTER TABLE ocr_results ADD COLUMN json_blocks TEXT');
+      }
+      if (!names.has('extras_json')) {
+        db.exec('ALTER TABLE ocr_results ADD COLUMN extras_json TEXT');
+      }
+    });
+    transaction();
+
+    db.exec('PRAGMA foreign_keys = ON');
+
+    // FK integrity check for consistency with other migrations
+    const fkViolations = db.pragma('foreign_key_check') as unknown[];
+    if (fkViolations.length > 0) {
+      throw new Error(
+        `Foreign key integrity check failed after v10->v11 migration: ${fkViolations.length} violation(s). ` +
+        `First: ${JSON.stringify(fkViolations[0])}`
+      );
+    }
+  } catch (error) {
+    db.exec('PRAGMA foreign_keys = ON');
+    const cause = error instanceof Error ? error.message : String(error);
+    throw new MigrationError(
+      `Failed to migrate from v10 to v11 (json_blocks, extras_json): ${cause}`,
+      'migrate',
+      'ocr_results',
+      error
+    );
+  }
+}
+
+/**
  * Migrate database to the latest schema version
  *
  * Checks current version and applies any necessary migrations.
@@ -945,6 +996,11 @@ export function migrateToLatest(db: Database.Database): void {
   if (currentVersion < 10) {
     migrateV9ToV10(db);
     bumpVersion(10);
+  }
+
+  if (currentVersion < 11) {
+    migrateV10ToV11(db);
+    bumpVersion(11);
   }
 }
 

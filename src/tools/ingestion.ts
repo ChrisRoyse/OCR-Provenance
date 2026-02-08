@@ -1176,6 +1176,8 @@ export async function handleOCRStatus(
         total_embeddings: stats.total_embeddings,
         total_extractions: stats.total_extractions,
         total_form_fills: stats.total_form_fills,
+        ocr_quality: stats.ocr_quality,
+        costs: stats.costs,
       },
     }));
   } catch (error) {

@@ -147,6 +147,9 @@ class OCRResult:
     # Structured extraction result (when page_schema provided)
     extraction_json: dict | list | None = None
 
+    # Full cost breakdown dict from Datalab
+    cost_breakdown_full: dict | None = None
+
     # Document metadata from Datalab
     doc_title: str | None = None
     doc_author: str | None = None
@@ -459,6 +462,7 @@ def process_document(
             json_blocks=json_blocks,
             metadata=metadata_dict,
             extraction_json=extraction_json,
+            cost_breakdown_full=cost_breakdown if cost_breakdown else None,
             doc_title=doc_title,
             doc_author=doc_author,
             doc_subject=doc_subject,
