@@ -122,6 +122,7 @@ export async function handleSearchSemantic(
         embedding_id: r.embedding_id,
         chunk_id: r.chunk_id,
         image_id: r.image_id,
+        extraction_id: r.extraction_id ?? null,
         document_id: r.document_id,
         result_type: r.result_type,
         similarity_score: r.similarity_score,
@@ -325,6 +326,7 @@ export async function handleSearchHybrid(
     const semanticRanked = semanticResults.map((r, i) => ({
       chunk_id: r.chunk_id,
       image_id: r.image_id,
+      extraction_id: r.extraction_id,
       embedding_id: r.embedding_id,
       document_id: r.document_id,
       original_text: r.original_text,

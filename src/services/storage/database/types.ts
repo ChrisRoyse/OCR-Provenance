@@ -172,13 +172,15 @@ export interface ChunkRow {
 
 /**
  * Database row type for embeddings (without vector)
- * chunk_id is for text embeddings, image_id is for VLM description embeddings
- * At least one of chunk_id or image_id must be set
+ * chunk_id is for text embeddings, image_id is for VLM description embeddings,
+ * extraction_id is for extraction embeddings.
+ * At least one of chunk_id, image_id, or extraction_id must be set.
  */
 export interface EmbeddingRow {
   id: string;
   chunk_id: string | null;
   image_id: string | null;
+  extraction_id: string | null;
   document_id: string;
   original_text: string;
   original_text_length: number;

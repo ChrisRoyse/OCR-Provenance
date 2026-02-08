@@ -28,13 +28,13 @@ export function insertEmbedding(
 
   const stmt = db.prepare(`
     INSERT INTO embeddings (
-      id, chunk_id, image_id, document_id, original_text, original_text_length,
+      id, chunk_id, image_id, extraction_id, document_id, original_text, original_text_length,
       source_file_path, source_file_name, source_file_hash,
       page_number, page_range, character_start, character_end,
       chunk_index, total_chunks, model_name, model_version,
       task_type, inference_mode, gpu_device, provenance_id,
       content_hash, created_at, generation_duration_ms
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
 
   runWithForeignKeyCheck(
@@ -43,6 +43,7 @@ export function insertEmbedding(
       embedding.id,
       embedding.chunk_id,
       embedding.image_id,
+      embedding.extraction_id,
       embedding.document_id,
       embedding.original_text,
       embedding.original_text_length,
@@ -65,7 +66,7 @@ export function insertEmbedding(
       created_at,
       embedding.generation_duration_ms,
     ],
-    'inserting embedding: chunk_id/image_id, document_id, or provenance_id does not exist'
+    'inserting embedding: chunk_id/image_id/extraction_id, document_id, or provenance_id does not exist'
   );
 
   updateMetadataCounts();
@@ -97,13 +98,13 @@ export function insertEmbeddings(
 
     const stmt = db.prepare(`
       INSERT INTO embeddings (
-        id, chunk_id, image_id, document_id, original_text, original_text_length,
+        id, chunk_id, image_id, extraction_id, document_id, original_text, original_text_length,
         source_file_path, source_file_name, source_file_hash,
         page_number, page_range, character_start, character_end,
         chunk_index, total_chunks, model_name, model_version,
         task_type, inference_mode, gpu_device, provenance_id,
         content_hash, created_at, generation_duration_ms
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
 
     for (const embedding of embeddings) {
@@ -113,6 +114,7 @@ export function insertEmbeddings(
           embedding.id,
           embedding.chunk_id,
           embedding.image_id,
+          embedding.extraction_id,
           embedding.document_id,
           embedding.original_text,
           embedding.original_text_length,
@@ -174,6 +176,22 @@ export function getEmbeddingByChunkId(
 ): Omit<Embedding, 'vector'> | null {
   const stmt = db.prepare('SELECT * FROM embeddings WHERE chunk_id = ?');
   const row = stmt.get(chunkId) as EmbeddingRow | undefined;
+  return row ? rowToEmbedding(row) : null;
+}
+
+/**
+ * Get embedding by extraction ID (without vector)
+ *
+ * @param db - Database connection
+ * @param extractionId - Extraction ID
+ * @returns Omit<Embedding, 'vector'> | null
+ */
+export function getEmbeddingByExtractionId(
+  db: Database.Database,
+  extractionId: string
+): Omit<Embedding, 'vector'> | null {
+  const stmt = db.prepare('SELECT * FROM embeddings WHERE extraction_id = ?');
+  const row = stmt.get(extractionId) as EmbeddingRow | undefined;
   return row ? rowToEmbedding(row) : null;
 }
 

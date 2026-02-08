@@ -96,6 +96,7 @@ export class EmbeddingService {
           id: embeddingId,
           chunk_id: chunk.id,
           image_id: null, // Text embeddings don't have an image
+          extraction_id: null, // Text embeddings don't have an extraction
           document_id: documentInfo.documentId,
           original_text: chunk.text,
           original_text_length: chunk.text.length,

@@ -9,6 +9,7 @@
  * @module tools/extraction-structured
  */
 
+import path from 'path';
 import { z } from 'zod';
 import { v4 as uuidv4 } from 'uuid';
 import { formatResponse, handleError, type ToolDefinition } from './shared.js';
@@ -17,6 +18,7 @@ import { requireDatabase } from '../server/state.js';
 import { DatalabClient } from '../services/ocr/datalab.js';
 import { ProvenanceType } from '../models/provenance.js';
 import { computeHash } from '../utils/hash.js';
+import { getEmbeddingClient, MODEL_NAME, MODEL_VERSION, EMBEDDING_DIM } from '../services/embedding/nomic.js';
 
 const ExtractStructuredInput = z.object({
   document_id: z.string().min(1).describe('Document ID (must be OCR processed)'),
@@ -30,7 +32,7 @@ const ExtractionListInput = z.object({
 async function handleExtractStructured(params: Record<string, unknown>) {
   try {
     const input = validateInput(ExtractStructuredInput, params);
-    const { db } = requireDatabase();
+    const { db, vector } = requireDatabase();
 
     // Get document - must exist and be OCR processed
     const doc = db.getDocument(input.document_id);
@@ -111,12 +113,95 @@ async function handleExtractStructured(params: Record<string, unknown>) {
       created_at: now,
     });
 
+    // ═══════ F-13: Generate embedding for extraction content (semantic search) ═══════
+    // Provenance chain: DOCUMENT(0) -> OCR_RESULT(1) -> EXTRACTION(2) -> EMBEDDING(3)
+    let embeddingId: string | null = null;
+    let embeddingProvId: string | null = null;
+    try {
+      const embeddingClient = getEmbeddingClient();
+      const vectors = await embeddingClient.embedChunks([extractionContent], 1);
+
+      if (vectors.length === 0) {
+        throw new Error('Embedding generation returned empty result');
+      }
+
+      embeddingId = uuidv4();
+      embeddingProvId = uuidv4();
+
+      // EMBEDDING provenance (depth 3, parent = EXTRACTION)
+      db.insertProvenance({
+        id: embeddingProvId,
+        type: ProvenanceType.EMBEDDING,
+        created_at: now,
+        processed_at: now,
+        source_file_created_at: null,
+        source_file_modified_at: null,
+        source_type: 'EMBEDDING',
+        source_path: doc.file_path,
+        source_id: extractionProvId,
+        root_document_id: doc.provenance_id,
+        location: null,
+        content_hash: extractionHash,
+        input_hash: extractionHash,
+        file_hash: doc.file_hash,
+        processor: MODEL_NAME,
+        processor_version: MODEL_VERSION,
+        processing_params: { task_type: 'search_document', dimensions: EMBEDDING_DIM },
+        processing_duration_ms: null,
+        processing_quality_score: null,
+        parent_id: extractionProvId,
+        parent_ids: JSON.stringify([doc.provenance_id, ocrResult.provenance_id, extractionProvId]),
+        chain_depth: 3,
+        chain_path: JSON.stringify(['DOCUMENT', 'OCR_RESULT', 'EXTRACTION', 'EMBEDDING']),
+      });
+
+      // Insert embedding record
+      db.insertEmbedding({
+        id: embeddingId,
+        chunk_id: null,
+        image_id: null,
+        extraction_id: extractionId,
+        document_id: doc.id,
+        original_text: extractionContent,
+        original_text_length: extractionContent.length,
+        source_file_path: doc.file_path,
+        source_file_name: path.basename(doc.file_path),
+        source_file_hash: doc.file_hash,
+        page_number: null,
+        page_range: null,
+        character_start: 0,
+        character_end: extractionContent.length,
+        chunk_index: 0,
+        total_chunks: 1,
+        model_name: MODEL_NAME,
+        model_version: MODEL_VERSION,
+        task_type: 'search_document',
+        inference_mode: 'local',
+        gpu_device: 'cuda:0',
+        provenance_id: embeddingProvId,
+        content_hash: extractionHash,
+        generation_duration_ms: null,
+      });
+
+      // Store vector in vec_embeddings
+      vector.storeVector(embeddingId, vectors[0]);
+    } catch (embError) {
+      // Log embedding failure but don't fail the extraction itself
+      // The extraction was already stored successfully
+      const errMsg = embError instanceof Error ? embError.message : String(embError);
+      console.error(`[WARN] Extraction embedding generation failed for extraction ${extractionId}: ${errMsg}`);
+      embeddingId = null;
+      embeddingProvId = null;
+    }
+
     return formatResponse({
       extraction_id: extractionId,
       document_id: doc.id,
       extraction_data: response.extractionJson,
       content_hash: extractionHash,
       provenance_id: extractionProvId,
+      embedding_id: embeddingId,
+      embedding_provenance_id: embeddingProvId,
     });
   } catch (error) {
     return handleError(error);

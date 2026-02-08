@@ -658,6 +658,7 @@ export class VLMPipeline {
         id: embeddingId,
         chunk_id: null, // VLM embeddings don't have a chunk
         image_id: image.id, // Use image ID for VLM embeddings
+        extraction_id: null, // VLM embeddings don't have an extraction
         document_id: image.document_id,
         original_text: description,
         original_text_length: description.length,

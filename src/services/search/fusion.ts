@@ -14,6 +14,7 @@ export interface RRFConfig {
 export interface RRFSearchResult {
   chunk_id: string | null;
   image_id: string | null;
+  extraction_id: string | null;
   embedding_id: string;
   document_id: string;
   original_text: string;
@@ -74,6 +75,7 @@ function buildFusedResult(
   return {
     chunk_id: result.chunk_id,
     image_id: result.image_id,
+    extraction_id: result.extraction_id ?? null,
     embedding_id: result.embedding_id,
     document_id: result.document_id,
     original_text: result.original_text,

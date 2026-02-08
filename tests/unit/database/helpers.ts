@@ -166,6 +166,8 @@ export function createTestEmbedding(
   return {
     id,
     chunk_id: chunkId,
+    image_id: null,
+    extraction_id: null,
     document_id: documentId,
     original_text: 'This is the chunk text content.',
     original_text_length: 31,

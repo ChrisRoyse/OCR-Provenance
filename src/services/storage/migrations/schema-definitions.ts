@@ -8,7 +8,7 @@
  */
 
 /** Current schema version */
-export const SCHEMA_VERSION = 9;
+export const SCHEMA_VERSION = 10;
 
 /**
  * Database configuration pragmas for optimal performance and safety
@@ -175,6 +175,7 @@ CREATE TABLE IF NOT EXISTS embeddings (
   id TEXT PRIMARY KEY,
   chunk_id TEXT,
   image_id TEXT,
+  extraction_id TEXT,
   document_id TEXT NOT NULL,
   original_text TEXT NOT NULL,
   original_text_length INTEGER NOT NULL,
@@ -198,9 +199,10 @@ CREATE TABLE IF NOT EXISTS embeddings (
   generation_duration_ms INTEGER,
   FOREIGN KEY (chunk_id) REFERENCES chunks(id),
   FOREIGN KEY (image_id) REFERENCES images(id),
+  FOREIGN KEY (extraction_id) REFERENCES extractions(id),
   FOREIGN KEY (document_id) REFERENCES documents(id),
   FOREIGN KEY (provenance_id) REFERENCES provenance(id),
-  CHECK (chunk_id IS NOT NULL OR image_id IS NOT NULL)
+  CHECK (chunk_id IS NOT NULL OR image_id IS NOT NULL OR extraction_id IS NOT NULL)
 )
 `;
 
@@ -433,6 +435,7 @@ export const CREATE_INDEXES = [
   'CREATE INDEX IF NOT EXISTS idx_embeddings_document_id ON embeddings(document_id)',
   'CREATE INDEX IF NOT EXISTS idx_embeddings_source_file ON embeddings(source_file_path)',
   'CREATE INDEX IF NOT EXISTS idx_embeddings_page ON embeddings(page_number)',
+  'CREATE INDEX IF NOT EXISTS idx_embeddings_extraction_id ON embeddings(extraction_id)',
 
   // Images indexes
   'CREATE INDEX IF NOT EXISTS idx_images_document_id ON images(document_id)',
@@ -511,6 +514,7 @@ export const REQUIRED_INDEXES = [
   'idx_embeddings_document_id',
   'idx_embeddings_source_file',
   'idx_embeddings_page',
+  'idx_embeddings_extraction_id',
   'idx_images_document_id',
   'idx_images_ocr_result_id',
   'idx_images_page',
