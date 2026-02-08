@@ -121,6 +121,9 @@ export interface DocumentRow {
   modified_at: string | null;
   ocr_completed_at: string | null;
   error_message: string | null;
+  doc_title: string | null;
+  doc_author: string | null;
+  doc_subject: string | null;
 }
 
 /**

@@ -85,6 +85,9 @@ export function rowToDocument(row: DocumentRow): Document {
     modified_at: row.modified_at,
     ocr_completed_at: row.ocr_completed_at,
     error_message: row.error_message,
+    doc_title: row.doc_title ?? null,
+    doc_author: row.doc_author ?? null,
+    doc_subject: row.doc_subject ?? null,
   };
 }
 

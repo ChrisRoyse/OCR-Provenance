@@ -144,6 +144,14 @@ class OCRResult:
     # Datalab metadata (page_stats, block_counts, etc.)
     metadata: dict | None = None
 
+    # Structured extraction result (when page_schema provided)
+    extraction_json: dict | list | None = None
+
+    # Document metadata from Datalab
+    doc_title: str | None = None
+    doc_author: str | None = None
+    doc_subject: str | None = None
+
 
 # =============================================================================
 # SUPPORTED FILE TYPES (match src/models/document.ts)
@@ -151,7 +159,8 @@ class OCRResult:
 
 SUPPORTED_EXTENSIONS = frozenset({
     '.pdf', '.png', '.jpg', '.jpeg', '.tiff', '.tif', '.bmp', '.gif', '.webp',
-    '.docx', '.doc', '.pptx', '.ppt', '.xlsx', '.xls'
+    '.docx', '.doc', '.pptx', '.ppt', '.xlsx', '.xls',
+    '.txt', '.csv', '.md'
 })
 
 
@@ -259,7 +268,15 @@ def process_document(
     document_id: str,
     provenance_id: str,
     mode: Literal["fast", "balanced", "accurate"] = "accurate",
-    timeout: int = 300
+    timeout: int = 300,
+    # New Datalab API parameters
+    max_pages: int | None = None,
+    page_range: str | None = None,
+    skip_cache: bool = False,
+    disable_image_extraction: bool = False,
+    extras: list[str] | None = None,
+    page_schema: str | None = None,
+    additional_config: dict | None = None,
 ) -> OCRResult:
     """
     Process a document through Datalab OCR.
@@ -272,6 +289,13 @@ def process_document(
         provenance_id: UUID for the OCR_RESULT provenance record
         mode: OCR quality mode (accurate costs more but better quality)
         timeout: Maximum wait time in seconds (minimum 30s for API polling)
+        max_pages: Maximum pages to process (Datalab limit: 7000)
+        page_range: Specific pages to process, 0-indexed (e.g. "0-5,10")
+        skip_cache: Force reprocessing, skip Datalab cache
+        disable_image_extraction: Skip image extraction for text-only processing
+        extras: Extra Datalab features (e.g. ["track_changes", "chart_understanding"])
+        page_schema: JSON schema string for structured data extraction per page
+        additional_config: Additional Datalab config dict
 
     Returns:
         OCRResult with extracted text and metadata
@@ -313,6 +337,21 @@ def process_document(
             mode=mode,
             paginate=True
         )
+        # Only set optional Datalab API params if provided
+        if max_pages is not None:
+            options.max_pages = max_pages
+        if page_range is not None:
+            options.page_range = page_range
+        if skip_cache:
+            options.skip_cache = True
+        if disable_image_extraction:
+            options.disable_image_extraction = True
+        if extras:
+            options.extras = extras
+        if page_schema:
+            options.page_schema = page_schema
+        if additional_config:
+            options.additional_config = additional_config
 
         # Calculate max_polls based on timeout (1 second poll interval)
         max_polls = max(timeout, 30)
@@ -374,6 +413,26 @@ def process_document(
             elif hasattr(raw_metadata, '__dict__'):
                 metadata_dict = raw_metadata.__dict__
 
+        # Capture structured extraction result (when page_schema provided)
+        extraction_json = None
+        raw_extraction = getattr(result, 'extraction_schema_json', None)
+        if raw_extraction is not None:
+            if isinstance(raw_extraction, str):
+                extraction_json = json.loads(raw_extraction)
+            elif isinstance(raw_extraction, (dict, list)):
+                extraction_json = raw_extraction
+            if extraction_json is not None:
+                logger.info("Captured structured extraction data")
+
+        # Extract document metadata fields from Datalab metadata
+        doc_title = None
+        doc_author = None
+        doc_subject = None
+        if metadata_dict:
+            doc_title = metadata_dict.get('title')
+            doc_author = metadata_dict.get('author')
+            doc_subject = metadata_dict.get('subject')
+
         # Parse page offsets for provenance tracking
         page_offsets = parse_page_offsets(markdown)
 
@@ -399,6 +458,10 @@ def process_document(
             images=images if images else None,
             json_blocks=json_blocks,
             metadata=metadata_dict,
+            extraction_json=extraction_json,
+            doc_title=doc_title,
+            doc_author=doc_author,
+            doc_subject=doc_subject,
         )
 
         logger.info(
@@ -535,6 +598,14 @@ Examples:
     parser.add_argument("--prov-id", type=str, help="Provenance ID (UUID) - auto-generated if not provided")
     parser.add_argument("--json", action="store_true", help="Output as JSON")
     parser.add_argument("--verbose", "-v", action="store_true", help="Verbose logging")
+    # Datalab API parameters
+    parser.add_argument('--max-pages', type=int, help='Max pages to process (Datalab limit: 7000)')
+    parser.add_argument('--page-range', type=str, help='Page range, 0-indexed (e.g. "0-5,10")')
+    parser.add_argument('--skip-cache', action='store_true', help='Force reprocessing, skip Datalab cache')
+    parser.add_argument('--disable-image-extraction', action='store_true', help='Skip image extraction')
+    parser.add_argument('--extras', type=str, help='Comma-separated extras (e.g. "track_changes,chart_understanding")')
+    parser.add_argument('--page-schema', type=str, help='JSON schema string for structured extraction per page')
+    parser.add_argument('--additional-config', type=str, help='JSON string of additional Datalab config')
 
     args = parser.parse_args()
 
@@ -552,11 +623,23 @@ Examples:
             # Single file - use provided IDs or generate new ones
             doc_id = args.doc_id or str(uuid.uuid4())
             prov_id = args.prov_id or str(uuid.uuid4())
+            # Parse extras list from comma-separated string
+            extras_list = args.extras.split(',') if args.extras else None
+            # Parse additional config JSON
+            additional_config = json.loads(args.additional_config) if args.additional_config else None
+
             result = process_document(
                 args.file,
                 document_id=doc_id,
                 provenance_id=prov_id,
-                mode=args.mode
+                mode=args.mode,
+                max_pages=args.max_pages,
+                page_range=args.page_range,
+                skip_cache=args.skip_cache,
+                disable_image_extraction=args.disable_image_extraction,
+                extras=extras_list,
+                page_schema=args.page_schema,
+                additional_config=additional_config,
             )
 
             if args.json:

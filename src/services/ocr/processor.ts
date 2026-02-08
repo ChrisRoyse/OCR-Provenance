@@ -34,6 +34,14 @@ export interface ProcessResult {
   metadata?: Record<string, unknown> | null;
   /** Page character offsets from Datalab for page-aware chunking */
   pageOffsets?: PageOffset[];
+  /** Structured extraction result from page_schema */
+  extractionJson?: Record<string, unknown> | unknown[] | null;
+  /** Document title from metadata */
+  docTitle?: string | null;
+  /** Document author from metadata */
+  docAuthor?: string | null;
+  /** Document subject from metadata */
+  docSubject?: string | null;
 }
 
 export interface BatchResult {
@@ -78,7 +86,16 @@ export class OCRProcessor {
    */
   async processDocument(
     documentId: string,
-    mode?: 'fast' | 'balanced' | 'accurate'
+    mode?: 'fast' | 'balanced' | 'accurate',
+    ocrOptions?: {
+      maxPages?: number;
+      pageRange?: string;
+      skipCache?: boolean;
+      disableImageExtraction?: boolean;
+      extras?: string[];
+      pageSchema?: string;
+      additionalConfig?: Record<string, unknown>;
+    }
   ): Promise<ProcessResult> {
     const ocrMode = mode ?? this.defaultMode;
     const startTime = Date.now();
@@ -104,6 +121,10 @@ export class OCRProcessor {
       let jsonBlocks: Record<string, unknown> | null = null;
       let metadata: Record<string, unknown> | null = null;
       let pageOffsets: PageOffset[] = [];
+      let extractionJson: Record<string, unknown> | unknown[] | null = null;
+      let docTitle: string | null = null;
+      let docAuthor: string | null = null;
+      let docSubject: string | null = null;
 
       for (let attempt = 1; attempt <= 2; attempt++) {
         try {
@@ -111,13 +132,18 @@ export class OCRProcessor {
             document.file_path,
             documentId,
             ocrProvenanceId,
-            ocrMode
+            ocrMode,
+            ocrOptions
           );
           ocrResult = response.result;
           images = response.images;
           jsonBlocks = response.jsonBlocks;
           metadata = response.metadata;
           pageOffsets = response.pageOffsets;
+          extractionJson = response.extractionJson;
+          docTitle = response.docTitle;
+          docAuthor = response.docAuthor;
+          docSubject = response.docSubject;
           break;
         } catch (error) {
           if (attempt === 1 && error instanceof OCRError && error.category === 'OCR_TIMEOUT') {
@@ -169,6 +195,10 @@ export class OCRProcessor {
         jsonBlocks,
         metadata,
         pageOffsets: pageOffsets.length > 0 ? pageOffsets : undefined,
+        extractionJson: extractionJson ?? undefined,
+        docTitle: docTitle ?? undefined,
+        docAuthor: docAuthor ?? undefined,
+        docSubject: docSubject ?? undefined,
       };
 
     } catch (error) {
