@@ -65,19 +65,25 @@ export function getStats(
       (SELECT COUNT(*) FROM ocr_results) as ocr_count,
       (SELECT COUNT(*) FROM embeddings) as embedding_count,
       (SELECT COUNT(*) FROM provenance) as provenance_count,
-      (SELECT COUNT(*) FROM images) as image_count
+      (SELECT COUNT(*) FROM images) as image_count,
+      (SELECT COUNT(*) FROM extractions) as extraction_count,
+      (SELECT COUNT(*) FROM form_fills) as form_fill_count
   `)
     .get() as {
     ocr_count: number;
     embedding_count: number;
     provenance_count: number;
     image_count: number;
+    extraction_count: number;
+    form_fill_count: number;
   };
 
   const ocrCount = otherCounts.ocr_count;
   const embeddingCount = otherCounts.embedding_count;
   const provenanceCount = otherCounts.provenance_count;
   const imageCount = otherCounts.image_count;
+  const extractionCount = otherCounts.extraction_count;
+  const formFillCount = otherCounts.form_fill_count;
 
   const stats = statSync(path);
 
@@ -104,6 +110,8 @@ export function getStats(
     },
     total_embeddings: embeddingCount,
     total_images: imageCount,
+    total_extractions: extractionCount,
+    total_form_fills: formFillCount,
     total_provenance: provenanceCount,
     storage_size_bytes: stats.size,
     avg_chunks_per_document: avgChunksPerDocument,

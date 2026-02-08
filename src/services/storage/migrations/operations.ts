@@ -18,6 +18,8 @@ import {
   CREATE_VLM_FTS_TRIGGERS,
   CREATE_EXTRACTIONS_TABLE,
   CREATE_FORM_FILLS_TABLE,
+  CREATE_EXTRACTIONS_FTS_TABLE,
+  CREATE_EXTRACTIONS_FTS_TRIGGERS,
 } from './schema-definitions.js';
 import {
   configurePragmas,
@@ -793,6 +795,11 @@ export function migrateToLatest(db: Database.Database): void {
     migrateV7ToV8(db);
     bumpVersion(8);
   }
+
+  if (currentVersion < 9) {
+    migrateV8ToV9(db);
+    bumpVersion(9);
+  }
 }
 
 /**
@@ -909,6 +916,96 @@ function migrateV7ToV8(db: Database.Database): void {
       `Failed to migrate from v7 to v8 (extractions, form_fills, doc metadata): ${cause}`,
       'migrate',
       'provenance',
+      error
+    );
+  }
+}
+
+/**
+ * Migrate from schema version 8 to version 9
+ *
+ * Changes in v9:
+ * - extractions_fts: FTS5 virtual table for extraction content full-text search
+ * - extractions_fts_ai/ad/au: Sync triggers on extractions table
+ * - fts_index_metadata id=3: Extraction FTS metadata row
+ * - form_fills.cost_cents: Changed from INTEGER to REAL (fractional cents)
+ *
+ * @param db - Database instance from better-sqlite3
+ * @throws MigrationError if migration fails
+ */
+function migrateV8ToV9(db: Database.Database): void {
+  try {
+    db.exec('PRAGMA foreign_keys = OFF');
+    db.exec('BEGIN TRANSACTION');
+
+    // Step 1: Create extractions FTS5 virtual table
+    db.exec(CREATE_EXTRACTIONS_FTS_TABLE);
+
+    // Step 2: Create extractions FTS sync triggers
+    for (const trigger of CREATE_EXTRACTIONS_FTS_TRIGGERS) {
+      db.exec(trigger);
+    }
+
+    // Step 3: Populate FTS from existing extractions
+    db.exec("INSERT INTO extractions_fts(extractions_fts) VALUES('rebuild')");
+
+    // Step 4: Add extraction FTS metadata row (id=3)
+    const now = new Date().toISOString();
+    const extractionCount = (db.prepare('SELECT COUNT(*) as cnt FROM extractions').get() as { cnt: number }).cnt;
+    db.prepare(`
+      INSERT OR IGNORE INTO fts_index_metadata (id, last_rebuild_at, chunks_indexed, tokenizer, schema_version, content_hash)
+      VALUES (3, ?, ?, 'porter unicode61', 9, NULL)
+    `).run(now, extractionCount);
+
+    // Step 5: Recreate form_fills with cost_cents REAL (was INTEGER)
+    db.exec(`
+      CREATE TABLE form_fills_new (
+        id TEXT PRIMARY KEY NOT NULL,
+        source_file_path TEXT NOT NULL,
+        source_file_hash TEXT NOT NULL,
+        field_data_json TEXT NOT NULL,
+        context TEXT,
+        confidence_threshold REAL NOT NULL DEFAULT 0.5,
+        output_file_path TEXT,
+        output_base64 TEXT,
+        fields_filled TEXT NOT NULL DEFAULT '[]',
+        fields_not_found TEXT NOT NULL DEFAULT '[]',
+        page_count INTEGER,
+        cost_cents REAL,
+        status TEXT NOT NULL CHECK(status IN ('pending', 'processing', 'complete', 'failed')),
+        error_message TEXT,
+        provenance_id TEXT NOT NULL REFERENCES provenance(id),
+        created_at TEXT NOT NULL DEFAULT (datetime('now'))
+      )
+    `);
+    db.exec('INSERT INTO form_fills_new SELECT * FROM form_fills');
+    db.exec('DROP TABLE form_fills');
+    db.exec('ALTER TABLE form_fills_new RENAME TO form_fills');
+    db.exec('CREATE INDEX IF NOT EXISTS idx_form_fills_status ON form_fills(status)');
+
+    db.exec('COMMIT');
+    db.exec('PRAGMA foreign_keys = ON');
+
+    // FK integrity check after table recreation
+    const fkViolations = db.pragma('foreign_key_check') as unknown[];
+    if (fkViolations.length > 0) {
+      throw new Error(
+        `Foreign key integrity check failed after v8->v9 migration: ${fkViolations.length} violation(s). ` +
+        `First: ${JSON.stringify(fkViolations[0])}`
+      );
+    }
+  } catch (error) {
+    try {
+      db.exec('ROLLBACK');
+      db.exec('PRAGMA foreign_keys = ON');
+    } catch {
+      // Ignore rollback errors
+    }
+    const cause = error instanceof Error ? error.message : String(error);
+    throw new MigrationError(
+      `Failed to migrate from v8 to v9 (extractions FTS, cost_cents REAL): ${cause}`,
+      'migrate',
+      'extractions_fts',
       error
     );
   }

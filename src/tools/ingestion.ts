@@ -860,7 +860,7 @@ export async function handleProcessPending(
 
         // Step 1.6: File-based image extraction fallback
         // If Datalab didn't return images, extract directly from file (PDF or DOCX)
-        if (imageCount === 0 && ImageExtractor.isSupported(doc.file_path)) {
+        if (imageCount === 0 && !ocrOptions.disableImageExtraction && ImageExtractor.isSupported(doc.file_path)) {
           console.error(`[INFO] No images from Datalab for ${doc.file_type} file, running file-based extraction`);
           const extractor = new ImageExtractor();
           const extractedImages = await extractor.extractImages(doc.file_path, {
@@ -1170,6 +1170,12 @@ export async function handleOCRStatus(
         processing: stats.documents_by_status.processing,
         complete: stats.documents_by_status.complete,
         failed: stats.documents_by_status.failed,
+      },
+      supplementary: {
+        total_chunks: stats.total_chunks,
+        total_embeddings: stats.total_embeddings,
+        total_extractions: stats.total_extractions,
+        total_form_fills: stats.total_form_fills,
       },
     }));
   } catch (error) {

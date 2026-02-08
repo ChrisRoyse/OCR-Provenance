@@ -125,6 +125,30 @@ export function updateFormFillStatus(
 }
 
 /**
+ * Search form fills by field values using LIKE matching on field_data_json
+ *
+ * @param db - Database connection
+ * @param query - Search query string
+ * @param options - Optional filter options (limit, offset)
+ * @returns FormFill[] - Matching form fills
+ */
+export function searchFormFills(
+  db: Database.Database,
+  query: string,
+  options?: { limit?: number; offset?: number }
+): FormFill[] {
+  const limit = options?.limit ?? 50;
+  const offset = options?.offset ?? 0;
+
+  return db.prepare(`
+    SELECT * FROM form_fills
+    WHERE field_data_json LIKE ? OR fields_filled LIKE ? OR source_file_path LIKE ?
+    ORDER BY created_at DESC
+    LIMIT ? OFFSET ?
+  `).all(`%${query}%`, `%${query}%`, `%${query}%`, limit, offset) as FormFill[];
+}
+
+/**
  * Delete a form fill record
  *
  * @param db - Database connection

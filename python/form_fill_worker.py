@@ -210,7 +210,7 @@ def fill_form(
         max_polls = max(timeout, 30)
 
         # Call Datalab API
-        result = client.fill_form(
+        result = client.fill(
             file_path=str(validated_path),
             options=options,
             max_polls=max_polls,

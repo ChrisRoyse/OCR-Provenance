@@ -37,6 +37,8 @@ import {
   CREATE_FTS_TRIGGERS,
   CREATE_VLM_FTS_TABLE,
   CREATE_VLM_FTS_TRIGGERS,
+  CREATE_EXTRACTIONS_FTS_TABLE,
+  CREATE_EXTRACTIONS_FTS_TRIGGERS,
   CREATE_SCHEMA_VERSION_TABLE,
   DATABASE_PRAGMAS,
 } from '../../src/services/storage/migrations/schema-definitions.js';
@@ -53,7 +55,7 @@ let db: Database.Database;
 const testDir = resolve(tmpdir(), `e2e-cf-test-${Date.now()}`);
 const dbPath = join(testDir, 'e2e-test.db');
 
-function createFreshV8Database(): Database.Database {
+function createFreshDatabase(): Database.Database {
   mkdirSync(testDir, { recursive: true });
   const conn = new Database(dbPath);
 
@@ -78,12 +80,16 @@ function createFreshV8Database(): Database.Database {
   conn.exec(CREATE_CHUNKS_FTS_TABLE);
   conn.exec(CREATE_FTS_INDEX_METADATA);
   conn.exec(CREATE_VLM_FTS_TABLE);
+  conn.exec(CREATE_EXTRACTIONS_FTS_TABLE);
 
   // FTS triggers
   for (const trigger of CREATE_FTS_TRIGGERS) {
     conn.exec(trigger);
   }
   for (const trigger of CREATE_VLM_FTS_TRIGGERS) {
+    conn.exec(trigger);
+  }
+  for (const trigger of CREATE_EXTRACTIONS_FTS_TRIGGERS) {
     conn.exec(trigger);
   }
 
@@ -151,7 +157,7 @@ function insertOCRResult(ocrId: string, provId: string, docId: string): void {
 // ─── Setup/Teardown ─────────────────────────────────────────────────────────────
 
 beforeAll(() => {
-  db = createFreshV8Database();
+  db = createFreshDatabase();
 });
 
 afterAll(() => {
@@ -165,16 +171,16 @@ afterAll(() => {
 // E2E-1: SCHEMA V8 VERIFICATION
 // ═════════════════════════════════════════════════════════════════════════════════
 
-describe('E2E-1: Schema v8 Physical Verification', () => {
-  it('SCHEMA_VERSION is 8', () => {
+describe('E2E-1: Schema v9 Physical Verification', () => {
+  it('SCHEMA_VERSION is 9', () => {
     // WHAT: Verify schema version constant
     // INPUT: SCHEMA_VERSION export
-    // EXPECTED: 8
-    expect(SCHEMA_VERSION).toBe(8);
+    // EXPECTED: 9
+    expect(SCHEMA_VERSION).toBe(9);
 
     // SOURCE OF TRUTH: schema_version table
     const row = db.prepare('SELECT version FROM schema_version WHERE id = 1').get() as { version: number };
-    expect(row.version).toBe(8);
+    expect(row.version).toBe(9);
   });
 
   it('All 14 required tables exist (minus vec_embeddings without extension)', () => {
