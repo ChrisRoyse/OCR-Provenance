@@ -46,15 +46,10 @@ export async function handleDocumentList(
 
     // When a status filter is active, total must reflect the filtered count,
     // not the global total_documents from stats.
-    let total: number;
-    if (input.status_filter) {
-      const stats = db.getStats();
-      const statusKey = input.status_filter as keyof typeof stats.documents_by_status;
-      total = stats.documents_by_status[statusKey] ?? 0;
-    } else {
-      const stats = db.getStats();
-      total = stats.total_documents;
-    }
+    const stats = db.getStats();
+    const total = input.status_filter
+      ? stats.documents_by_status[input.status_filter as keyof typeof stats.documents_by_status] ?? 0
+      : stats.total_documents;
 
     return formatResponse(successResult({
       documents: documents.map(d => ({
