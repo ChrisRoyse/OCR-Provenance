@@ -466,6 +466,16 @@ function migrateV4ToV5(db: Database.Database): void {
   try {
     transaction();
     db.exec('PRAGMA foreign_keys = ON');
+
+    // L-14: FK integrity check for pattern consistency with other migrations.
+    // ADD COLUMN can't violate FKs, but this ensures the table isn't corrupt.
+    const fkViolations = db.pragma('foreign_key_check') as unknown[];
+    if (fkViolations.length > 0) {
+      throw new Error(
+        `Foreign key integrity check failed after v4->v5 migration: ${fkViolations.length} violation(s). ` +
+        `First: ${JSON.stringify(fkViolations[0])}`
+      );
+    }
   } catch (error) {
     db.exec('PRAGMA foreign_keys = ON');
     const cause = error instanceof Error ? error.message : String(error);

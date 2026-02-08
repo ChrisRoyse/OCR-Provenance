@@ -206,8 +206,12 @@ def extract_images(
                                     img_bytes = buf.getvalue()
                                     buf.close()
                                     save_ext = "png"
-                                except Exception:
-                                    pass
+                                except Exception as conv_err:
+                                    errors.append(
+                                        f"Page {page_num + 1}, image {img_idx}: "
+                                        f"RGBA conversion failed for format '{save_ext}', "
+                                        f"saving original: {conv_err}"
+                                    )
 
                         # C-1: close pil_img now that we have dimensions and conversion done
                         pil_img.close()
