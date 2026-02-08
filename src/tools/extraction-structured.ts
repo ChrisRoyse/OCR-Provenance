@@ -194,9 +194,14 @@ async function handleExtractStructured(params: Record<string, unknown>) {
       embeddingProvId = null;
     }
 
+    // Echo the schema back (parse to object if valid JSON, keep as string otherwise)
+    let parsedSchema: unknown = input.page_schema;
+    try { parsedSchema = JSON.parse(input.page_schema); } catch { /* keep as string */ }
+
     return formatResponse({
       extraction_id: extractionId,
       document_id: doc.id,
+      schema_json: parsedSchema,
       extraction_data: response.extractionJson,
       content_hash: extractionHash,
       provenance_id: extractionProvId,

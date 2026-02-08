@@ -134,6 +134,68 @@ describe('DatabaseService - Statistics', () => {
       expect(stats.avg_chunks_per_document).toBe(0);
       expect(stats.avg_embeddings_per_chunk).toBe(0);
     });
+
+    it.skipIf(!sqliteVecAvailable)('returns ocr_quality stats', () => {
+      // Insert document with OCR result that has parse_quality_score
+      const docProv = createTestProvenance();
+      dbService!.insertProvenance(docProv);
+      const doc = createTestDocument(docProv.id, { status: 'complete' });
+      dbService!.insertDocument(doc);
+
+      const ocrProv = createTestProvenance({
+        type: ProvenanceType.OCR_RESULT,
+        root_document_id: doc.id,
+      });
+      dbService!.insertProvenance(ocrProv);
+
+      const ocr = createTestOCRResult(doc.id, ocrProv.id, {
+        parse_quality_score: 4.2,
+        cost_cents: 5.5,
+      });
+      dbService!.insertOCRResult(ocr);
+
+      const stats = dbService!.getStats();
+      expect(stats.ocr_quality).toBeDefined();
+      expect(stats.ocr_quality.avg).toBeCloseTo(4.2, 1);
+      expect(stats.ocr_quality.min).toBeCloseTo(4.2, 1);
+      expect(stats.ocr_quality.max).toBeCloseTo(4.2, 1);
+      expect(stats.ocr_quality.scored_count).toBe(1);
+    });
+
+    it.skipIf(!sqliteVecAvailable)('returns costs stats', () => {
+      const docProv = createTestProvenance();
+      dbService!.insertProvenance(docProv);
+      const doc = createTestDocument(docProv.id, { status: 'complete' });
+      dbService!.insertDocument(doc);
+
+      const ocrProv = createTestProvenance({
+        type: ProvenanceType.OCR_RESULT,
+        root_document_id: doc.id,
+      });
+      dbService!.insertProvenance(ocrProv);
+
+      const ocr = createTestOCRResult(doc.id, ocrProv.id, {
+        cost_cents: 10.5,
+      });
+      dbService!.insertOCRResult(ocr);
+
+      const stats = dbService!.getStats();
+      expect(stats.costs).toBeDefined();
+      expect(stats.costs.total_ocr_cost_cents).toBeCloseTo(10.5, 1);
+      expect(stats.costs.total_form_fill_cost_cents).toBe(0);
+      expect(stats.costs.total_cost_cents).toBeCloseTo(10.5, 1);
+    });
+
+    it.skipIf(!sqliteVecAvailable)('returns zero costs and null quality for empty db', () => {
+      const stats = dbService!.getStats();
+      expect(stats.ocr_quality.avg).toBeNull();
+      expect(stats.ocr_quality.min).toBeNull();
+      expect(stats.ocr_quality.max).toBeNull();
+      expect(stats.ocr_quality.scored_count).toBe(0);
+      expect(stats.costs.total_ocr_cost_cents).toBe(0);
+      expect(stats.costs.total_form_fill_cost_cents).toBe(0);
+      expect(stats.costs.total_cost_cents).toBe(0);
+    });
   });
 });
 

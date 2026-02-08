@@ -28,8 +28,8 @@ export function insertOCRResult(
       id, provenance_id, document_id, extracted_text, text_length,
       datalab_request_id, datalab_mode, parse_quality_score, page_count,
       cost_cents, content_hash, processing_started_at, processing_completed_at,
-      processing_duration_ms
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      processing_duration_ms, json_blocks, extras_json
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
 
   runWithForeignKeyCheck(
@@ -49,6 +49,8 @@ export function insertOCRResult(
       result.processing_started_at,
       result.processing_completed_at,
       result.processing_duration_ms,
+      result.json_blocks ?? null,
+      result.extras_json ?? null,
     ],
     `inserting OCR result: document_id "${result.document_id}" or provenance_id "${result.provenance_id}" does not exist`
   );

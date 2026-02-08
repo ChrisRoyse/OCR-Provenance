@@ -48,6 +48,17 @@ export interface DatabaseStats {
   storage_size_bytes: number;
   avg_chunks_per_document: number;
   avg_embeddings_per_chunk: number;
+  ocr_quality: {
+    avg: number | null;
+    min: number | null;
+    max: number | null;
+    scored_count: number;
+  };
+  costs: {
+    total_ocr_cost_cents: number;
+    total_form_fill_cost_cents: number;
+    total_cost_cents: number;
+  };
 }
 
 /**
@@ -146,6 +157,8 @@ export interface OCRResultRow {
   processing_started_at: string;
   processing_completed_at: string;
   processing_duration_ms: number;
+  json_blocks: string | null;
+  extras_json: string | null;
 }
 
 /**

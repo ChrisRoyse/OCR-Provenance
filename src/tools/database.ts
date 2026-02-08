@@ -157,7 +157,11 @@ function buildStatsResponse(
     processing_documents: stats.documents_by_status.processing,
     complete_documents: stats.documents_by_status.complete,
     failed_documents: stats.documents_by_status.failed,
+    extraction_count: stats.total_extractions,
+    form_fill_count: stats.total_form_fills,
     vector_count: vector.getVectorCount(),
+    ocr_quality: stats.ocr_quality,
+    costs: stats.costs,
   };
 }
 

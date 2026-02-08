@@ -8,7 +8,7 @@
  */
 
 /** Current schema version */
-export const SCHEMA_VERSION = 10;
+export const SCHEMA_VERSION = 11;
 
 /**
  * Database configuration pragmas for optimal performance and safety
@@ -130,6 +130,8 @@ CREATE TABLE IF NOT EXISTS ocr_results (
   processing_started_at TEXT NOT NULL,
   processing_completed_at TEXT NOT NULL,
   processing_duration_ms INTEGER NOT NULL,
+  json_blocks TEXT,
+  extras_json TEXT,
   FOREIGN KEY (provenance_id) REFERENCES provenance(id),
   FOREIGN KEY (document_id) REFERENCES documents(id)
 )

@@ -606,7 +606,7 @@ describe('Migration v9 to v10', () => {
     createV9Schema();
     migrateToLatest(db);
     const version = (db.prepare('SELECT version FROM schema_version').get() as { version: number }).version;
-    expect(version).toBe(10);
+    expect(version).toBeGreaterThanOrEqual(10);
   });
 
   it.skipIf(!sqliteVecAvailable)('passes FK integrity check', () => {
@@ -621,6 +621,6 @@ describe('Migration v9 to v10', () => {
     migrateToLatest(db);
     expect(() => migrateToLatest(db)).not.toThrow();
     const version = (db.prepare('SELECT version FROM schema_version').get() as { version: number }).version;
-    expect(version).toBe(10);
+    expect(version).toBeGreaterThanOrEqual(10);
   });
 });

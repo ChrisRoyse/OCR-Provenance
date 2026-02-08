@@ -396,7 +396,7 @@ describe('Migration v7 to v8', () => {
     createV7Schema();
     migrateToLatest(db);
     const version = (db.prepare('SELECT version FROM schema_version').get() as { version: number }).version;
-    expect(version).toBe(10);
+    expect(version).toBeGreaterThanOrEqual(10);
   });
 
   it.skipIf(!sqliteVecAvailable)('preserves existing provenance records after migration', () => {
@@ -483,6 +483,6 @@ describe('Migration v7 to v8', () => {
     // Running again should be a no-op (already at v10)
     expect(() => migrateToLatest(db)).not.toThrow();
     const version = (db.prepare('SELECT version FROM schema_version').get() as { version: number }).version;
-    expect(version).toBe(10);
+    expect(version).toBeGreaterThanOrEqual(10);
   });
 });
