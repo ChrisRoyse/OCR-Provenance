@@ -375,42 +375,4 @@ export class ImageExtractor {
     });
   }
 
-  /**
-   * Clean up extracted images for a document
-   *
-   * @param outputDir - Directory containing extracted images
-   * @returns number - Number of files deleted
-   */
-  cleanupExtractedImages(outputDir: string): number {
-    if (!fs.existsSync(outputDir)) {
-      return 0;
-    }
-
-    let count = 0;
-    const files = fs.readdirSync(outputDir);
-
-    for (const file of files) {
-      // Only delete image files matching our naming pattern
-      if (/^p\d{3}_i\d{3}\.\w+$/.test(file)) {
-        fs.unlinkSync(path.join(outputDir, file));
-        count++;
-      }
-    }
-
-    return count;
-  }
-
-  /**
-   * Get the default output directory for a document
-   *
-   * @param documentId - Document ID
-   * @returns string - Path to output directory
-   */
-  static getOutputDir(documentId: string, baseDir?: string): string {
-    const base =
-      baseDir ||
-      process.env.IMAGE_OUTPUT_DIR ||
-      path.join(process.cwd(), '.ocr-provenance', 'images');
-    return path.join(base, documentId);
-  }
 }

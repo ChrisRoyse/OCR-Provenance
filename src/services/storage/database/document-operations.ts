@@ -277,8 +277,12 @@ function deleteDerivedRecords(db: Database.Database, documentId: string, caller:
       UPDATE fts_index_metadata SET chunks_indexed = ?, last_rebuild_at = ?
       WHERE id = 2
     `).run(vlmCount, new Date().toISOString());
-  } catch {
-    // fts_index_metadata may not exist in older schemas - ignore
+  } catch (e: unknown) {
+    // Only ignore "no such table" errors from older schemas pre-v4
+    const msg = e instanceof Error ? e.message : String(e);
+    if (!msg.includes('no such table')) {
+      throw e;
+    }
   }
 
   return embeddingCount;

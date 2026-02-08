@@ -31,7 +31,6 @@ import {
 const EvaluationReportInput = z.object({
   output_path: z.string().optional(),
   confidence_threshold: z.number().min(0).max(1).default(0.7),
-  include_details: z.boolean().default(true),
 });
 
 const DocumentReportInput = z.object({
@@ -517,7 +516,6 @@ export const reportTools: Record<string, ToolDefinition> = {
     inputSchema: {
       output_path: z.string().optional().describe('Path to save markdown report (optional)'),
       confidence_threshold: z.number().min(0).max(1).default(0.7).describe('Threshold for low confidence flagging'),
-      include_details: z.boolean().default(true).describe('Include per-document details'),
     },
     handler: handleEvaluationReport,
   },

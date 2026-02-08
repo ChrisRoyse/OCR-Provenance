@@ -92,8 +92,6 @@ export interface DeepAnalysisResult {
 export interface DescribeImageOptions {
   /** Surrounding text context from document */
   contextText?: string;
-  /** Use medical-specific prompt */
-  useMedicalPrompt?: boolean;
   /** Use high resolution mode */
   highResolution?: boolean;
   /** Use universal blind-person-detail prompt (default: true) */
@@ -188,9 +186,6 @@ export class VLMService {
     if (options.contextText) {
       return { prompt: createContextPrompt(options.contextText), schema: IMAGE_ANALYSIS_SCHEMA };
     }
-    if (options.useMedicalPrompt) {
-      return { prompt: MEDICAL_IMAGE_PROMPT, schema: IMAGE_ANALYSIS_SCHEMA };
-    }
     return { prompt: LEGAL_IMAGE_PROMPT, schema: IMAGE_ANALYSIS_SCHEMA };
   }
 
@@ -250,77 +245,6 @@ export class VLMService {
    * @param options - Batch options
    * @returns Array of VLMAnalysisResult
    */
-  async describeImageBatch(
-    images: Array<{ path: string; contextText?: string }>,
-    options: { concurrency?: number; useMedicalPrompt?: boolean } = {}
-  ): Promise<VLMAnalysisResult[]> {
-    const concurrency = options.concurrency ?? 5;
-    const results: VLMAnalysisResult[] = [];
-
-    for (let i = 0; i < images.length; i += concurrency) {
-      const batch = images.slice(i, i + concurrency);
-      const promises = batch.map((img) =>
-        this.describeImage(img.path, {
-          contextText: img.contextText,
-          useMedicalPrompt: options.useMedicalPrompt,
-        })
-      );
-      const batchSettled = await Promise.allSettled(promises);
-      for (const result of batchSettled) {
-        if (result.status === 'fulfilled') {
-          results.push(result.value);
-        } else {
-          console.error(`[WARN] Image description failed: ${result.reason}`);
-          results.push({
-            description: '',
-            analysis: {
-              imageType: 'unknown', primarySubject: '', paragraph1: '', paragraph2: '',
-              paragraph3: '', extractedText: [], dates: [], names: [], numbers: [], confidence: 0,
-            },
-            model: '',
-            processingTimeMs: 0,
-            tokensUsed: 0,
-          });
-        }
-      }
-    }
-
-    return results;
-  }
-
-  /**
-   * Classify multiple images in batch.
-   * Uses Promise.allSettled to prevent one failure from losing all results.
-   *
-   * @param imagePaths - Array of image paths
-   * @param concurrency - Max concurrent requests
-   * @returns Array of ImageClassification
-   */
-  async classifyImageBatch(
-    imagePaths: string[],
-    concurrency: number = 10
-  ): Promise<ImageClassification[]> {
-    const results: ImageClassification[] = [];
-
-    for (let i = 0; i < imagePaths.length; i += concurrency) {
-      const batch = imagePaths.slice(i, i + concurrency);
-      const promises = batch.map((path) => this.classifyImage(path));
-      const batchSettled = await Promise.allSettled(promises);
-      for (const result of batchSettled) {
-        if (result.status === 'fulfilled') {
-          results.push(result.value);
-        } else {
-          console.error(`[WARN] Image classification failed: ${result.reason}`);
-          results.push({
-            type: 'other', hasText: false, textDensity: 'unknown', complexity: 'medium', confidence: 0,
-          });
-        }
-      }
-    }
-
-    return results;
-  }
-
   /**
    * Get service status including Gemini client status.
    */

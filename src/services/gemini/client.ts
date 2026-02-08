@@ -135,35 +135,6 @@ export class GeminiClient {
   }
 
   /**
-   * Analyze multiple images in a single request
-   */
-  async analyzeImages(
-    prompt: string,
-    files: FileRef[],
-    options: {
-      schema?: object;
-      mediaResolution?: MediaResolution;
-    } = {}
-  ): Promise<GeminiResponse> {
-    const parts: Part[] = [
-      { text: prompt },
-      ...files.map((file) => ({
-        inlineData: {
-          mimeType: file.mimeType,
-          data: file.data,
-        },
-      })),
-    ];
-
-    return this.generate(parts, {
-      ...GENERATION_PRESETS.multimodal,
-      maxOutputTokens: 16384, // More output for multiple images
-      responseSchema: options.schema,
-      mediaResolution: options.mediaResolution || this.config.mediaResolution,
-    });
-  }
-
-  /**
    * Analyze a PDF document
    */
   async analyzePDF(prompt: string, file: FileRef, schema?: object): Promise<GeminiResponse> {
