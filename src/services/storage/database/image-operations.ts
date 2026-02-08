@@ -447,24 +447,26 @@ export function deleteImageCascade(db: Database.Database, imageId: string): void
     'DELETE FROM vec_embeddings WHERE embedding_id IN (SELECT id FROM embeddings WHERE image_id = ?)'
   ).run(imageId);
 
-  // 2. Delete provenance records for embeddings derived from this image
-  db.prepare(
-    `DELETE FROM provenance WHERE id IN (
-      SELECT provenance_id FROM embeddings WHERE image_id = ?
-    )`
-  ).run(imageId);
+  // 2. Break circular FK: images.vlm_embedding_id -> embeddings AND embeddings.image_id -> images
+  db.prepare('UPDATE images SET vlm_embedding_id = NULL WHERE id = ?').run(imageId);
 
-  // 3. Delete embeddings for this image
+  // 3. Delete embeddings (safe now that vlm_embedding_id is NULLed)
   db.prepare('DELETE FROM embeddings WHERE image_id = ?').run(imageId);
 
-  // 4. Delete provenance for the image itself (if it has one)
+  // 4. Collect image provenance_id, then delete image (removes FK to provenance)
   const img = db.prepare('SELECT provenance_id FROM images WHERE id = ?').get(imageId) as { provenance_id: string | null } | undefined;
+  db.prepare('DELETE FROM images WHERE id = ?').run(imageId);
+
+  // 5. Delete provenance chain deepest-first: EMBEDDING(4) -> VLM_DESCRIPTION(3) -> IMAGE(2)
+  // Embedding provenance (deleted in step 3) was also a grandchild here, so the
+  // grandchild DELETE is a no-op for it but catches any other depth-4 descendants.
   if (img?.provenance_id) {
+    db.prepare(
+      'DELETE FROM provenance WHERE parent_id IN (SELECT id FROM provenance WHERE parent_id = ?)'
+    ).run(img.provenance_id);
+    db.prepare('DELETE FROM provenance WHERE parent_id = ?').run(img.provenance_id);
     db.prepare('DELETE FROM provenance WHERE id = ?').run(img.provenance_id);
   }
-
-  // 5. Delete the image
-  db.prepare('DELETE FROM images WHERE id = ?').run(imageId);
 }
 
 /**
@@ -488,27 +490,33 @@ export function deleteImagesByDocumentCascade(
     )`
   ).run(documentId);
 
-  // 2. Delete provenance records for embeddings derived from these images
-  db.prepare(
-    `DELETE FROM provenance WHERE id IN (
-      SELECT e.provenance_id FROM embeddings e
-      JOIN images i ON e.image_id = i.id
-      WHERE i.document_id = ?
-    )`
-  ).run(documentId);
+  // 2. Break circular FK: images.vlm_embedding_id -> embeddings AND embeddings.image_id -> images
+  db.prepare('UPDATE images SET vlm_embedding_id = NULL WHERE document_id = ?').run(documentId);
 
-  // 3. Delete embeddings for these images
+  // 3. Delete embeddings (safe now that vlm_embedding_id is NULLed)
   db.prepare(
     'DELETE FROM embeddings WHERE image_id IN (SELECT id FROM images WHERE document_id = ?)'
   ).run(documentId);
 
-  // 4. Delete provenance for the images themselves
-  db.prepare(
-    'DELETE FROM provenance WHERE id IN (SELECT provenance_id FROM images WHERE document_id = ? AND provenance_id IS NOT NULL)'
-  ).run(documentId);
+  // 4. Collect image provenance IDs before deleting images
+  const imageProvIds = db.prepare(
+    'SELECT provenance_id FROM images WHERE document_id = ? AND provenance_id IS NOT NULL'
+  ).all(documentId) as { provenance_id: string }[];
 
-  // 5. Delete images and return count
+  // 5. Delete images (removes FK references to their provenance)
   const result = db.prepare('DELETE FROM images WHERE document_id = ?').run(documentId);
+
+  // 6. Delete provenance chains deepest-first: EMBEDDING(4) -> VLM_DESCRIPTION(3) -> IMAGE(2)
+  // This covers embedding provenance (grandchildren) that was freed in step 3,
+  // VLM_DESCRIPTION provenance (children), and the IMAGE provenance itself.
+  for (const { provenance_id } of imageProvIds) {
+    db.prepare(
+      'DELETE FROM provenance WHERE parent_id IN (SELECT id FROM provenance WHERE parent_id = ?)'
+    ).run(provenance_id);
+    db.prepare('DELETE FROM provenance WHERE parent_id = ?').run(provenance_id);
+    db.prepare('DELETE FROM provenance WHERE id = ?').run(provenance_id);
+  }
+
   return result.changes;
 }
 

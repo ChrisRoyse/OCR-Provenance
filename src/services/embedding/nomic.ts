@@ -57,7 +57,7 @@ export interface QueryEmbeddingResult {
 export const EMBEDDING_DIM = 768;
 export const MODEL_NAME = 'nomic-embed-text-v1.5';
 export const MODEL_VERSION = '1.5.0';
-export const DEFAULT_BATCH_SIZE = 512;
+export const DEFAULT_BATCH_SIZE = 64;
 export const DEFAULT_DEVICE = 'cuda:0';
 
 export class NomicEmbeddingClient {
@@ -73,9 +73,11 @@ export class NomicEmbeddingClient {
 
   /**
    * Maximum chunks per Python worker call to prevent memory issues.
-   * Large documents (3000+ chunks) caused CUDA OOM when passed all at once.
+   * Reduced from 500 to 100: XLSX audit trails produce 37K+ chunks,
+   * and 500 chunks at once causes CUDA driver-level OOM during tokenization
+   * (not caught by PyTorch's OOM recovery).
    */
-  private static readonly MAX_CHUNKS_PER_CALL = 500;
+  private static readonly MAX_CHUNKS_PER_CALL = 100;
 
   async embedChunks(
     chunks: string[],
