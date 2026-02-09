@@ -542,10 +542,31 @@ export class ProvenanceVerifier {
         return { content: image.vlm_description, expectedHash: record.content_hash, isFile: false };
       }
 
+      case ProvenanceType.COMPARISON: {
+        const comparison = this.rawDb.prepare(
+          'SELECT text_diff_json, structural_diff_json, entity_diff_json FROM comparisons WHERE provenance_id = ?'
+        ).get(record.id) as { text_diff_json: string; structural_diff_json: string; entity_diff_json: string } | undefined;
+
+        if (!comparison) {
+          throw new VerifierError(
+            `Comparison not found for provenance ${record.id}`,
+            VerifierErrorCode.CONTENT_NOT_FOUND,
+            { provenanceId: record.id }
+          );
+        }
+
+        const diffContent = JSON.stringify({
+          text_diff: JSON.parse(comparison.text_diff_json),
+          structural_diff: JSON.parse(comparison.structural_diff_json),
+          entity_diff: JSON.parse(comparison.entity_diff_json),
+        });
+
+        return { content: diffContent, expectedHash: record.content_hash, isFile: false };
+      }
+
       case ProvenanceType.EXTRACTION:
       case ProvenanceType.FORM_FILL:
-      case ProvenanceType.ENTITY_EXTRACTION:
-      case ProvenanceType.COMPARISON: {
+      case ProvenanceType.ENTITY_EXTRACTION: {
         // Content verification not yet implemented for these types
         throw new VerifierError(
           `Content verification not yet implemented for provenance type: ${record.type}`,

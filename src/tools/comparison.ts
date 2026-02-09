@@ -16,10 +16,10 @@ import { validateInput } from '../utils/validation.js';
 import { requireDatabase } from '../server/state.js';
 import { computeHash } from '../utils/hash.js';
 import { MCPError } from '../server/errors.js';
-import { compareText, compareStructure, compareEntities, generateSummary } from '../services/comparison/diff-service.js';
+import { compareText, compareEntities, generateSummary } from '../services/comparison/diff-service.js';
 import { insertComparison, getComparison, listComparisons } from '../services/storage/database/comparison-operations.js';
 import { getEntitiesByDocument } from '../services/storage/database/entity-operations.js';
-import type { Comparison } from '../models/comparison.js';
+import type { Comparison, StructuralDiff } from '../models/comparison.js';
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // INPUT SCHEMAS
@@ -44,6 +44,31 @@ const ComparisonGetInput = z.object({
 });
 
 // ═══════════════════════════════════════════════════════════════════════════════
+// HELPERS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+type Row = Record<string, unknown>;
+
+function countChunks(conn: import('better-sqlite3').Database, docId: string): number {
+  return (conn.prepare('SELECT COUNT(*) as cnt FROM chunks WHERE document_id = ?').get(docId) as { cnt: number }).cnt;
+}
+
+function fetchCompleteDocument(conn: import('better-sqlite3').Database, docId: string): { doc: Row; ocr: Row } {
+  const doc = conn.prepare('SELECT * FROM documents WHERE id = ?').get(docId) as Row | undefined;
+  if (!doc) {
+    throw new MCPError('DOCUMENT_NOT_FOUND', `Document '${docId}' not found`);
+  }
+  if (doc.status !== 'complete') {
+    throw new MCPError('VALIDATION_ERROR', `Document '${docId}' has status '${String(doc.status)}', expected 'complete'. Run ocr_process_pending first.`);
+  }
+  const ocr = conn.prepare('SELECT * FROM ocr_results WHERE document_id = ?').get(docId) as Row | undefined;
+  if (!ocr) {
+    throw new MCPError('INTERNAL_ERROR', `No OCR result found for document '${docId}'. Document may need reprocessing.`);
+  }
+  return { doc, ocr };
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
 // TOOL HANDLERS
 // ═══════════════════════════════════════════════════════════════════════════════
 
@@ -54,42 +79,15 @@ async function handleDocumentCompare(params: Record<string, unknown>): Promise<T
     const { db } = requireDatabase();
     const conn = db.getConnection();
 
-    // Validate: different documents
     if (input.document_id_1 === input.document_id_2) {
       throw new MCPError('VALIDATION_ERROR', 'Cannot compare document with itself. Provide two different document IDs.');
     }
 
-    // Fetch documents - FAIL FAST if not found
-    const doc1 = conn.prepare('SELECT * FROM documents WHERE id = ?').get(input.document_id_1) as Record<string, unknown> | undefined;
-    if (!doc1) {
-      throw new MCPError('DOCUMENT_NOT_FOUND', `Document '${input.document_id_1}' not found`);
-    }
-    const doc2 = conn.prepare('SELECT * FROM documents WHERE id = ?').get(input.document_id_2) as Record<string, unknown> | undefined;
-    if (!doc2) {
-      throw new MCPError('DOCUMENT_NOT_FOUND', `Document '${input.document_id_2}' not found`);
-    }
+    const { doc: doc1, ocr: ocr1 } = fetchCompleteDocument(conn, input.document_id_1);
+    const { doc: doc2, ocr: ocr2 } = fetchCompleteDocument(conn, input.document_id_2);
 
-    // Verify documents are OCR processed
-    if (doc1.status !== 'complete') {
-      throw new MCPError('VALIDATION_ERROR', `Document '${input.document_id_1}' has status '${String(doc1.status)}', expected 'complete'. Run ocr_process_pending first.`);
-    }
-    if (doc2.status !== 'complete') {
-      throw new MCPError('VALIDATION_ERROR', `Document '${input.document_id_2}' has status '${String(doc2.status)}', expected 'complete'. Run ocr_process_pending first.`);
-    }
-
-    // Fetch OCR results
-    const ocr1 = conn.prepare('SELECT * FROM ocr_results WHERE document_id = ?').get(input.document_id_1) as Record<string, unknown> | undefined;
-    if (!ocr1) {
-      throw new MCPError('INTERNAL_ERROR', `No OCR result found for document '${input.document_id_1}'. Document may need reprocessing.`);
-    }
-    const ocr2 = conn.prepare('SELECT * FROM ocr_results WHERE document_id = ?').get(input.document_id_2) as Record<string, unknown> | undefined;
-    if (!ocr2) {
-      throw new MCPError('INTERNAL_ERROR', `No OCR result found for document '${input.document_id_2}'. Document may need reprocessing.`);
-    }
-
-    // Fetch chunks for structural comparison
-    const chunks1Count = (conn.prepare('SELECT COUNT(*) as cnt FROM chunks WHERE document_id = ?').get(input.document_id_1) as { cnt: number }).cnt;
-    const chunks2Count = (conn.prepare('SELECT COUNT(*) as cnt FROM chunks WHERE document_id = ?').get(input.document_id_2) as { cnt: number }).cnt;
+    const chunks1Count = countChunks(conn, input.document_id_1);
+    const chunks2Count = countChunks(conn, input.document_id_2);
 
     // Text diff
     const textDiff = input.include_text_diff
@@ -97,18 +95,18 @@ async function handleDocumentCompare(params: Record<string, unknown>): Promise<T
       : null;
 
     // Structural diff
-    const structuralDiff = compareStructure(
-      doc1.page_count as number | null,
-      doc2.page_count as number | null,
-      chunks1Count,
-      chunks2Count,
-      Number(ocr1.text_length),
-      Number(ocr2.text_length),
-      ocr1.parse_quality_score as number | null,
-      ocr2.parse_quality_score as number | null,
-      String(ocr1.datalab_mode),
-      String(ocr2.datalab_mode)
-    );
+    const structuralDiff: StructuralDiff = {
+      doc1_page_count: doc1.page_count as number | null,
+      doc2_page_count: doc2.page_count as number | null,
+      doc1_chunk_count: chunks1Count,
+      doc2_chunk_count: chunks2Count,
+      doc1_text_length: Number(ocr1.text_length),
+      doc2_text_length: Number(ocr2.text_length),
+      doc1_quality_score: ocr1.parse_quality_score as number | null,
+      doc2_quality_score: ocr2.parse_quality_score as number | null,
+      doc1_ocr_mode: String(ocr1.datalab_mode),
+      doc2_ocr_mode: String(ocr2.datalab_mode),
+    };
 
     // Entity diff
     let entityDiff = null;
@@ -232,11 +230,7 @@ async function handleComparisonList(params: Record<string, unknown>): Promise<To
     const { db } = requireDatabase();
     const conn = db.getConnection();
 
-    const comparisons = listComparisons(conn, {
-      document_id: input.document_id,
-      limit: input.limit,
-      offset: input.offset,
-    });
+    const comparisons = listComparisons(conn, input);
 
     // Return summaries without large JSON fields
     const results = comparisons.map(c => ({

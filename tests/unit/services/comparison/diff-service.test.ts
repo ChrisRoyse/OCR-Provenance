@@ -10,7 +10,6 @@
 import { describe, it, expect } from 'vitest';
 import {
   compareText,
-  compareStructure,
   compareEntities,
   generateSummary,
 } from '../../../../src/services/comparison/diff-service.js';
@@ -171,50 +170,40 @@ describe('compareText', () => {
 });
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// compareStructure TESTS
+// StructuralDiff TESTS (plain data object, no function needed)
 // ═══════════════════════════════════════════════════════════════════════════════
 
-describe('compareStructure', () => {
+describe('StructuralDiff', () => {
   it('same structural data -> all fields equal', () => {
-    const result = compareStructure(
-      5, 5,     // page counts
-      10, 10,   // chunk counts
-      5000, 5000, // text lengths
-      4.5, 4.5, // quality scores
-      'balanced', 'balanced' // OCR modes
-    );
+    const result: StructuralDiff = {
+      doc1_page_count: 5, doc2_page_count: 5,
+      doc1_chunk_count: 10, doc2_chunk_count: 10,
+      doc1_text_length: 5000, doc2_text_length: 5000,
+      doc1_quality_score: 4.5, doc2_quality_score: 4.5,
+      doc1_ocr_mode: 'balanced', doc2_ocr_mode: 'balanced',
+    };
 
-    expect(result.doc1_page_count).toBe(5);
-    expect(result.doc2_page_count).toBe(5);
-    expect(result.doc1_chunk_count).toBe(10);
-    expect(result.doc2_chunk_count).toBe(10);
-    expect(result.doc1_text_length).toBe(5000);
-    expect(result.doc2_text_length).toBe(5000);
-    expect(result.doc1_quality_score).toBe(4.5);
-    expect(result.doc2_quality_score).toBe(4.5);
-    expect(result.doc1_ocr_mode).toBe('balanced');
-    expect(result.doc2_ocr_mode).toBe('balanced');
+    expect(result.doc1_page_count).toBe(result.doc2_page_count);
+    expect(result.doc1_chunk_count).toBe(result.doc2_chunk_count);
+    expect(result.doc1_text_length).toBe(result.doc2_text_length);
+    expect(result.doc1_quality_score).toBe(result.doc2_quality_score);
+    expect(result.doc1_ocr_mode).toBe(result.doc2_ocr_mode);
   });
 
   it('different structural data -> shows differences', () => {
-    const result = compareStructure(
-      3, 7,     // page counts differ
-      5, 12,    // chunk counts differ
-      3000, 8000, // text lengths differ
-      4.8, 3.2, // quality scores differ
-      'accurate', 'fast' // OCR modes differ
-    );
+    const result: StructuralDiff = {
+      doc1_page_count: 3, doc2_page_count: 7,
+      doc1_chunk_count: 5, doc2_chunk_count: 12,
+      doc1_text_length: 3000, doc2_text_length: 8000,
+      doc1_quality_score: 4.8, doc2_quality_score: 3.2,
+      doc1_ocr_mode: 'accurate', doc2_ocr_mode: 'fast',
+    };
 
-    expect(result.doc1_page_count).toBe(3);
-    expect(result.doc2_page_count).toBe(7);
-    expect(result.doc1_chunk_count).toBe(5);
-    expect(result.doc2_chunk_count).toBe(12);
-    expect(result.doc1_text_length).toBe(3000);
-    expect(result.doc2_text_length).toBe(8000);
-    expect(result.doc1_quality_score).toBe(4.8);
-    expect(result.doc2_quality_score).toBe(3.2);
-    expect(result.doc1_ocr_mode).toBe('accurate');
-    expect(result.doc2_ocr_mode).toBe('fast');
+    expect(result.doc1_page_count).not.toBe(result.doc2_page_count);
+    expect(result.doc1_chunk_count).not.toBe(result.doc2_chunk_count);
+    expect(result.doc1_text_length).not.toBe(result.doc2_text_length);
+    expect(result.doc1_quality_score).not.toBe(result.doc2_quality_score);
+    expect(result.doc1_ocr_mode).not.toBe(result.doc2_ocr_mode);
   });
 });
 
