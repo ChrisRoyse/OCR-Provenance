@@ -209,12 +209,12 @@ describe('FORENSIC VERIFICATION - Phase 1: Source of Truth', () => {
       console.error('[EVIDENCE] TOTAL TOOLS (6 modules):', total);
 
       expect(dbCount).toBe(5);
-      expect(ingestionCount).toBe(6);
-      expect(searchCount).toBe(4);
+      expect(ingestionCount).toBe(8);
+      expect(searchCount).toBe(6);
       expect(documentCount).toBe(3);
       expect(provenanceCount).toBe(3);
       expect(configCount).toBe(2);
-      expect(total).toBe(23);
+      expect(total).toBe(27);
     });
 
     it('EVIDENCE: Document tools exports correct handlers', () => {

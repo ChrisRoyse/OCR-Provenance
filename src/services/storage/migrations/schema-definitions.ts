@@ -8,7 +8,7 @@
  */
 
 /** Current schema version */
-export const SCHEMA_VERSION = 11;
+export const SCHEMA_VERSION = 13;
 
 /**
  * Database configuration pragmas for optimal performance and safety
@@ -40,12 +40,12 @@ CREATE TABLE IF NOT EXISTS schema_version (
 export const CREATE_PROVENANCE_TABLE = `
 CREATE TABLE IF NOT EXISTS provenance (
   id TEXT PRIMARY KEY,
-  type TEXT NOT NULL CHECK (type IN ('DOCUMENT', 'OCR_RESULT', 'CHUNK', 'IMAGE', 'VLM_DESCRIPTION', 'EMBEDDING', 'EXTRACTION', 'FORM_FILL')),
+  type TEXT NOT NULL CHECK (type IN ('DOCUMENT', 'OCR_RESULT', 'CHUNK', 'IMAGE', 'VLM_DESCRIPTION', 'EMBEDDING', 'EXTRACTION', 'FORM_FILL', 'ENTITY_EXTRACTION')),
   created_at TEXT NOT NULL,
   processed_at TEXT NOT NULL,
   source_file_created_at TEXT,
   source_file_modified_at TEXT,
-  source_type TEXT NOT NULL CHECK (source_type IN ('FILE', 'OCR', 'CHUNKING', 'IMAGE_EXTRACTION', 'VLM', 'VLM_DEDUP', 'EMBEDDING', 'EXTRACTION', 'FORM_FILL')),
+  source_type TEXT NOT NULL CHECK (source_type IN ('FILE', 'OCR', 'CHUNKING', 'IMAGE_EXTRACTION', 'VLM', 'VLM_DEDUP', 'EMBEDDING', 'EXTRACTION', 'FORM_FILL', 'ENTITY_EXTRACTION')),
   source_path TEXT,
   source_id TEXT,
   root_document_id TEXT NOT NULL,
@@ -415,6 +415,62 @@ export const CREATE_EXTRACTIONS_FTS_TRIGGERS = [
 ] as const;
 
 /**
+ * Uploaded files table - files uploaded to Datalab cloud storage
+ * Tracks upload lifecycle: pending -> uploading -> confirming -> complete/failed
+ */
+export const CREATE_UPLOADED_FILES_TABLE = `
+CREATE TABLE IF NOT EXISTS uploaded_files (
+  id TEXT PRIMARY KEY NOT NULL,
+  local_path TEXT NOT NULL,
+  file_name TEXT NOT NULL,
+  file_hash TEXT NOT NULL,
+  file_size INTEGER NOT NULL,
+  content_type TEXT NOT NULL,
+  datalab_file_id TEXT,
+  datalab_reference TEXT,
+  upload_status TEXT NOT NULL DEFAULT 'pending'
+    CHECK (upload_status IN ('pending', 'uploading', 'confirming', 'complete', 'failed')),
+  error_message TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  completed_at TEXT,
+  provenance_id TEXT NOT NULL REFERENCES provenance(id)
+)`;
+
+/**
+ * Entities table - named entities extracted from documents
+ * Provenance depth: 2 (parallel to CHUNK, after OCR_RESULT)
+ */
+export const CREATE_ENTITIES_TABLE = `
+CREATE TABLE IF NOT EXISTS entities (
+  id TEXT PRIMARY KEY NOT NULL,
+  document_id TEXT NOT NULL REFERENCES documents(id),
+  entity_type TEXT NOT NULL CHECK (entity_type IN ('person', 'organization', 'date', 'amount', 'case_number', 'location', 'statute', 'exhibit', 'other')),
+  raw_text TEXT NOT NULL,
+  normalized_text TEXT NOT NULL,
+  confidence REAL NOT NULL DEFAULT 0.0,
+  metadata TEXT,
+  provenance_id TEXT NOT NULL REFERENCES provenance(id),
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+)`;
+
+/**
+ * Entity mentions table - individual occurrences of entities in documents
+ * Links entities to specific locations in chunks/pages
+ */
+export const CREATE_ENTITY_MENTIONS_TABLE = `
+CREATE TABLE IF NOT EXISTS entity_mentions (
+  id TEXT PRIMARY KEY NOT NULL,
+  entity_id TEXT NOT NULL REFERENCES entities(id),
+  document_id TEXT NOT NULL REFERENCES documents(id),
+  chunk_id TEXT REFERENCES chunks(id),
+  page_number INTEGER,
+  character_start INTEGER,
+  character_end INTEGER,
+  context_text TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+)`;
+
+/**
  * All required indexes for query performance
  */
 export const CREATE_INDEXES = [
@@ -462,6 +518,17 @@ export const CREATE_INDEXES = [
   'CREATE INDEX IF NOT EXISTS idx_provenance_type ON provenance(type)',
   'CREATE INDEX IF NOT EXISTS idx_provenance_root_document_id ON provenance(root_document_id)',
   'CREATE INDEX IF NOT EXISTS idx_provenance_parent_id ON provenance(parent_id)',
+
+  // Uploaded files indexes
+  'CREATE INDEX IF NOT EXISTS idx_uploaded_files_file_hash ON uploaded_files(file_hash)',
+  'CREATE INDEX IF NOT EXISTS idx_uploaded_files_status ON uploaded_files(upload_status)',
+  'CREATE INDEX IF NOT EXISTS idx_uploaded_files_datalab_file_id ON uploaded_files(datalab_file_id)',
+
+  // Entity indexes
+  'CREATE INDEX IF NOT EXISTS idx_entities_document_id ON entities(document_id)',
+  'CREATE INDEX IF NOT EXISTS idx_entities_entity_type ON entities(entity_type)',
+  'CREATE INDEX IF NOT EXISTS idx_entities_normalized_text ON entities(normalized_text)',
+  'CREATE INDEX IF NOT EXISTS idx_entity_mentions_entity_id ON entity_mentions(entity_id)',
 ] as const;
 
 /**
@@ -477,6 +544,9 @@ export const TABLE_DEFINITIONS = [
   { name: 'images', sql: CREATE_IMAGES_TABLE },
   { name: 'extractions', sql: CREATE_EXTRACTIONS_TABLE },
   { name: 'form_fills', sql: CREATE_FORM_FILLS_TABLE },
+  { name: 'uploaded_files', sql: CREATE_UPLOADED_FILES_TABLE },
+  { name: 'entities', sql: CREATE_ENTITIES_TABLE },
+  { name: 'entity_mentions', sql: CREATE_ENTITY_MENTIONS_TABLE },
 ] as const;
 
 /**
@@ -498,6 +568,9 @@ export const REQUIRED_TABLES = [
   'extractions',
   'form_fills',
   'extractions_fts',
+  'uploaded_files',
+  'entities',
+  'entity_mentions',
 ] as const;
 
 /**
@@ -531,4 +604,11 @@ export const REQUIRED_INDEXES = [
   'idx_extractions_document_id',
   'idx_form_fills_status',
   'idx_documents_doc_title',
+  'idx_uploaded_files_file_hash',
+  'idx_uploaded_files_status',
+  'idx_uploaded_files_datalab_file_id',
+  'idx_entities_document_id',
+  'idx_entities_entity_type',
+  'idx_entities_normalized_text',
+  'idx_entity_mentions_entity_id',
 ] as const;

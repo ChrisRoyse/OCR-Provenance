@@ -1,9 +1,10 @@
 /**
- * Migration v10 to v11 Tests
+ * Migration v11 to v12 Tests
  *
- * Tests the v10->v11 migration which adds:
- * - json_blocks TEXT column to ocr_results
- * - extras_json TEXT column to ocr_results
+ * Tests the v11->v12 migration which adds:
+ * - uploaded_files table for Datalab cloud file uploads
+ * - datalab_file_id column on documents table
+ * - 3 new indexes: idx_uploaded_files_file_hash, idx_uploaded_files_status, idx_uploaded_files_datalab_file_id
  *
  * Uses REAL databases (better-sqlite3 temp files), NO mocks.
  */
@@ -16,17 +17,18 @@ import {
   cleanupTestDir,
   createTestDb,
   closeDb,
+  getIndexNames,
 } from './helpers.js';
 import { migrateToLatest } from '../../../src/services/storage/migrations/operations.js';
 
 const sqliteVecAvailable = isSqliteVecAvailable();
 
-describe('Migration v10 to v11', () => {
+describe('Migration v11 to v12', () => {
   let tmpDir: string;
   let db: Database.Database;
 
   beforeEach(() => {
-    tmpDir = createTestDir('ocr-mig-v11');
+    tmpDir = createTestDir('ocr-mig-v12');
     const result = createTestDb(tmpDir);
     db = result.db;
   });
@@ -37,11 +39,10 @@ describe('Migration v10 to v11', () => {
   });
 
   /**
-   * Create a minimal but valid v10 schema.
-   * This is v9 + v10 additions (extraction_id on embeddings).
-   * No json_blocks or extras_json on ocr_results.
+   * Create a minimal but valid v11 schema.
+   * This is v10 + v11 additions (json_blocks, extras_json on ocr_results).
    */
-  function createV10Schema(): void {
+  function createV11Schema(): void {
     // eslint-disable-next-line @typescript-eslint/no-require-imports
     const sqliteVec = require('sqlite-vec');
     sqliteVec.load(db);
@@ -57,7 +58,7 @@ describe('Migration v10 to v11', () => {
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL
       );
-      INSERT INTO schema_version VALUES (1, 10, datetime('now'), datetime('now'));
+      INSERT INTO schema_version VALUES (1, 11, datetime('now'), datetime('now'));
     `);
 
     // Provenance (v8+ CHECK constraints)
@@ -107,7 +108,7 @@ describe('Migration v10 to v11', () => {
       INSERT INTO database_metadata VALUES (1, 'test', '1.0.0', datetime('now'), datetime('now'), 0, 0, 0, 0);
     `);
 
-    // Documents
+    // Documents (v8+ with doc_title, doc_author, doc_subject; NO datalab_file_id)
     db.exec(`
       CREATE TABLE documents (
         id TEXT PRIMARY KEY,
@@ -130,7 +131,7 @@ describe('Migration v10 to v11', () => {
       );
     `);
 
-    // OCR results (v10: NO json_blocks, NO extras_json)
+    // OCR results (v11: with json_blocks, extras_json)
     db.exec(`
       CREATE TABLE ocr_results (
         id TEXT PRIMARY KEY,
@@ -147,6 +148,8 @@ describe('Migration v10 to v11', () => {
         processing_started_at TEXT NOT NULL,
         processing_completed_at TEXT NOT NULL,
         processing_duration_ms INTEGER NOT NULL,
+        json_blocks TEXT,
+        extras_json TEXT,
         FOREIGN KEY (provenance_id) REFERENCES provenance(id),
         FOREIGN KEY (document_id) REFERENCES documents(id)
       );
@@ -258,10 +261,10 @@ describe('Migration v10 to v11', () => {
 
     // FTS tables
     db.exec(`CREATE VIRTUAL TABLE chunks_fts USING fts5(text, content='chunks', content_rowid='rowid', tokenize='porter unicode61');`);
-    db.exec(`CREATE TABLE fts_index_metadata (id INTEGER PRIMARY KEY, last_rebuild_at TEXT, chunks_indexed INTEGER NOT NULL DEFAULT 0, tokenizer TEXT NOT NULL DEFAULT 'porter unicode61', schema_version INTEGER NOT NULL DEFAULT 10, content_hash TEXT);`);
-    db.exec(`INSERT INTO fts_index_metadata VALUES (1, NULL, 0, 'porter unicode61', 10, NULL);`);
-    db.exec(`INSERT INTO fts_index_metadata VALUES (2, NULL, 0, 'porter unicode61', 10, NULL);`);
-    db.exec(`INSERT INTO fts_index_metadata VALUES (3, NULL, 0, 'porter unicode61', 10, NULL);`);
+    db.exec(`CREATE TABLE fts_index_metadata (id INTEGER PRIMARY KEY, last_rebuild_at TEXT, chunks_indexed INTEGER NOT NULL DEFAULT 0, tokenizer TEXT NOT NULL DEFAULT 'porter unicode61', schema_version INTEGER NOT NULL DEFAULT 11, content_hash TEXT);`);
+    db.exec(`INSERT INTO fts_index_metadata VALUES (1, NULL, 0, 'porter unicode61', 11, NULL);`);
+    db.exec(`INSERT INTO fts_index_metadata VALUES (2, NULL, 0, 'porter unicode61', 11, NULL);`);
+    db.exec(`INSERT INTO fts_index_metadata VALUES (3, NULL, 0, 'porter unicode61', 11, NULL);`);
     db.exec(`CREATE VIRTUAL TABLE vlm_fts USING fts5(original_text, content='embeddings', content_rowid='rowid', tokenize='porter unicode61');`);
     db.exec(`CREATE VIRTUAL TABLE extractions_fts USING fts5(extraction_json, content='extractions', content_rowid='rowid', tokenize='porter unicode61');`);
     db.exec(`CREATE VIRTUAL TABLE IF NOT EXISTS vec_embeddings USING vec0(embedding_id TEXT PRIMARY KEY, vector FLOAT[768]);`);
@@ -277,7 +280,7 @@ describe('Migration v10 to v11', () => {
     db.exec(`CREATE TRIGGER extractions_fts_ad AFTER DELETE ON extractions BEGIN INSERT INTO extractions_fts(extractions_fts, rowid, extraction_json) VALUES('delete', old.rowid, old.extraction_json); END;`);
     db.exec(`CREATE TRIGGER extractions_fts_au AFTER UPDATE OF extraction_json ON extractions BEGIN INSERT INTO extractions_fts(extractions_fts, rowid, extraction_json) VALUES('delete', old.rowid, old.extraction_json); INSERT INTO extractions_fts(rowid, extraction_json) VALUES (new.rowid, new.extraction_json); END;`);
 
-    // All 27 indexes from v10
+    // All 27 indexes from v11
     db.exec('CREATE INDEX idx_documents_file_path ON documents(file_path);');
     db.exec('CREATE INDEX idx_documents_file_hash ON documents(file_hash);');
     db.exec('CREATE INDEX idx_documents_status ON documents(status);');
@@ -307,132 +310,129 @@ describe('Migration v10 to v11', () => {
     db.exec('CREATE INDEX idx_documents_doc_title ON documents(doc_title);');
   }
 
-  /**
-   * Helper: Insert prerequisite provenance + document + ocr_result
-   */
-  function insertOCRChain(): { docProvId: string; docId: string; ocrProvId: string; ocrId: string } {
-    const now = new Date().toISOString();
-
-    const docProvId = 'prov-doc-v11';
-    db.prepare(`
-      INSERT INTO provenance (id, type, created_at, processed_at, source_type, root_document_id,
-        content_hash, processor, processor_version, processing_params, parent_ids, chain_depth)
-      VALUES (?, 'DOCUMENT', ?, ?, 'FILE', ?, 'sha256:doc', 'test', '1.0', '{}', '[]', 0)
-    `).run(docProvId, now, now, docProvId);
-
-    const docId = 'doc-v11';
-    db.prepare(`
-      INSERT INTO documents (id, file_path, file_name, file_hash, file_size, file_type, status, provenance_id, created_at)
-      VALUES (?, '/test/v11.pdf', 'v11.pdf', 'sha256:v11file', 1024, 'pdf', 'complete', ?, ?)
-    `).run(docId, docProvId, now);
-
-    const ocrProvId = 'prov-ocr-v11';
-    db.prepare(`
-      INSERT INTO provenance (id, type, created_at, processed_at, source_type, source_id,
-        root_document_id, content_hash, processor, processor_version, processing_params,
-        parent_id, parent_ids, chain_depth)
-      VALUES (?, 'OCR_RESULT', ?, ?, 'OCR', ?, ?, 'sha256:ocr', 'datalab', '1.0', '{}', ?, ?, 1)
-    `).run(ocrProvId, now, now, docProvId, docProvId, docProvId, JSON.stringify([docProvId]));
-
-    const ocrId = 'ocr-v11';
-    db.prepare(`
-      INSERT INTO ocr_results (id, provenance_id, document_id, extracted_text, text_length,
-        datalab_request_id, datalab_mode, parse_quality_score, page_count, cost_cents, content_hash,
-        processing_started_at, processing_completed_at, processing_duration_ms)
-      VALUES (?, ?, ?, 'Test text for v11', 17, 'req-v11', 'balanced', 4.2, 1, 3.5, 'sha256:text11', ?, ?, 100)
-    `).run(ocrId, ocrProvId, docId, now, now);
-
-    return { docProvId, docId, ocrProvId, ocrId };
-  }
-
-  it.skipIf(!sqliteVecAvailable)('adds json_blocks column to ocr_results', () => {
-    createV10Schema();
+  it.skipIf(!sqliteVecAvailable)('creates uploaded_files table', () => {
+    createV11Schema();
     migrateToLatest(db);
-    const info = db.prepare('PRAGMA table_info(ocr_results)').all() as { name: string }[];
+
+    const tables = db.prepare(
+      "SELECT name FROM sqlite_master WHERE type='table' AND name='uploaded_files'"
+    ).all() as { name: string }[];
+    expect(tables.length).toBe(1);
+    expect(tables[0].name).toBe('uploaded_files');
+  });
+
+  it.skipIf(!sqliteVecAvailable)('uploaded_files has correct columns', () => {
+    createV11Schema();
+    migrateToLatest(db);
+
+    const info = db.prepare('PRAGMA table_info(uploaded_files)').all() as { name: string }[];
     const cols = info.map(c => c.name);
-    expect(cols).toContain('json_blocks');
+    expect(cols).toContain('id');
+    expect(cols).toContain('local_path');
+    expect(cols).toContain('file_name');
+    expect(cols).toContain('file_hash');
+    expect(cols).toContain('file_size');
+    expect(cols).toContain('content_type');
+    expect(cols).toContain('datalab_file_id');
+    expect(cols).toContain('datalab_reference');
+    expect(cols).toContain('upload_status');
+    expect(cols).toContain('error_message');
+    expect(cols).toContain('created_at');
+    expect(cols).toContain('completed_at');
+    expect(cols).toContain('provenance_id');
   });
 
-  it.skipIf(!sqliteVecAvailable)('adds extras_json column to ocr_results', () => {
-    createV10Schema();
+  it.skipIf(!sqliteVecAvailable)('adds datalab_file_id column to documents', () => {
+    createV11Schema();
     migrateToLatest(db);
-    const info = db.prepare('PRAGMA table_info(ocr_results)').all() as { name: string }[];
+
+    const info = db.prepare('PRAGMA table_info(documents)').all() as { name: string }[];
     const cols = info.map(c => c.name);
-    expect(cols).toContain('extras_json');
+    expect(cols).toContain('datalab_file_id');
   });
 
-  it.skipIf(!sqliteVecAvailable)('existing rows have NULL for new columns', () => {
-    createV10Schema();
-    insertOCRChain();
-
+  it.skipIf(!sqliteVecAvailable)('creates all 3 new indexes', () => {
+    createV11Schema();
     migrateToLatest(db);
 
-    const row = db.prepare('SELECT json_blocks, extras_json FROM ocr_results WHERE id = ?').get('ocr-v11') as {
-      json_blocks: string | null;
-      extras_json: string | null;
-    };
-    expect(row).toBeDefined();
-    expect(row.json_blocks).toBeNull();
-    expect(row.extras_json).toBeNull();
-  });
-
-  it.skipIf(!sqliteVecAvailable)('new inserts work with non-null values', () => {
-    createV10Schema();
-    const { docId, docProvId } = insertOCRChain();
-
-    migrateToLatest(db);
-
-    const now = new Date().toISOString();
-    const ocrProvId2 = 'prov-ocr-v11-2';
-    db.prepare(`
-      INSERT INTO provenance (id, type, created_at, processed_at, source_type, source_id,
-        root_document_id, content_hash, processor, processor_version, processing_params,
-        parent_id, parent_ids, chain_depth)
-      VALUES (?, 'OCR_RESULT', ?, ?, 'OCR', ?, ?, 'sha256:ocr2', 'datalab', '1.0', '{}', ?, ?, 1)
-    `).run(ocrProvId2, now, now, docProvId, docProvId, docProvId, JSON.stringify([docProvId]));
-
-    const blocksJson = JSON.stringify({ children: [{ type: 'Text', text: 'hello' }] });
-    const extrasJson = JSON.stringify({ metadata: { title: 'Test' }, cost_breakdown: { total_cost_cents: 5 } });
-
-    expect(() => {
-      db.prepare(`
-        INSERT INTO ocr_results (id, provenance_id, document_id, extracted_text, text_length,
-          datalab_request_id, datalab_mode, page_count, content_hash,
-          processing_started_at, processing_completed_at, processing_duration_ms,
-          json_blocks, extras_json)
-        VALUES ('ocr-v11-2', ?, ?, 'More text', 9, 'req-v11-2', 'fast', 1, 'sha256:text2', ?, ?, 50, ?, ?)
-      `).run(ocrProvId2, docId, now, now, blocksJson, extrasJson);
-    }).not.toThrow();
-
-    const row = db.prepare('SELECT json_blocks, extras_json FROM ocr_results WHERE id = ?').get('ocr-v11-2') as {
-      json_blocks: string;
-      extras_json: string;
-    };
-    expect(JSON.parse(row.json_blocks)).toEqual({ children: [{ type: 'Text', text: 'hello' }] });
-    expect(JSON.parse(row.extras_json)).toEqual({ metadata: { title: 'Test' }, cost_breakdown: { total_cost_cents: 5 } });
-  });
-
-  it.skipIf(!sqliteVecAvailable)('updates schema version to latest', () => {
-    createV10Schema();
-    migrateToLatest(db);
-    const version = (db.prepare('SELECT version FROM schema_version').get() as { version: number }).version;
-    // migrateToLatest runs all migrations through SCHEMA_VERSION (currently 13)
-    expect(version).toBeGreaterThanOrEqual(11);
+    const indexes = getIndexNames(db);
+    expect(indexes).toContain('idx_uploaded_files_file_hash');
+    expect(indexes).toContain('idx_uploaded_files_status');
+    expect(indexes).toContain('idx_uploaded_files_datalab_file_id');
   });
 
   it.skipIf(!sqliteVecAvailable)('passes FK integrity check', () => {
-    createV10Schema();
+    createV11Schema();
     migrateToLatest(db);
+
     const violations = db.pragma('foreign_key_check') as unknown[];
     expect(violations.length).toBe(0);
   });
 
+  it.skipIf(!sqliteVecAvailable)('updates schema version to 12', () => {
+    createV11Schema();
+    migrateToLatest(db);
+
+    const version = (db.prepare('SELECT version FROM schema_version').get() as { version: number }).version;
+    expect(version).toBe(13);
+  });
+
   it.skipIf(!sqliteVecAvailable)('idempotent - running twice does not error', () => {
-    createV10Schema();
+    createV11Schema();
     migrateToLatest(db);
     expect(() => migrateToLatest(db)).not.toThrow();
+
     const version = (db.prepare('SELECT version FROM schema_version').get() as { version: number }).version;
-    // migrateToLatest runs all migrations through SCHEMA_VERSION (currently 13)
-    expect(version).toBeGreaterThanOrEqual(11);
+    expect(version).toBe(13);
+  });
+
+  it.skipIf(!sqliteVecAvailable)('can insert into uploaded_files after migration', () => {
+    createV11Schema();
+    migrateToLatest(db);
+
+    // Insert provenance record first (FK requirement)
+    const now = new Date().toISOString();
+    db.prepare(`
+      INSERT INTO provenance (id, type, created_at, processed_at, source_type, root_document_id,
+        content_hash, processor, processor_version, processing_params, parent_ids, chain_depth)
+      VALUES ('prov-upload-1', 'DOCUMENT', ?, ?, 'FILE', 'prov-upload-1', 'sha256:abc', 'test', '1.0', '{}', '[]', 0)
+    `).run(now, now);
+
+    // Insert uploaded file
+    expect(() => {
+      db.prepare(`
+        INSERT INTO uploaded_files (id, local_path, file_name, file_hash, file_size, content_type,
+          upload_status, provenance_id, created_at)
+        VALUES ('upload-1', '/test/doc.pdf', 'doc.pdf', 'sha256:filehash', 1024, 'application/pdf',
+          'complete', 'prov-upload-1', ?)
+      `).run(now);
+    }).not.toThrow();
+
+    const row = db.prepare('SELECT * FROM uploaded_files WHERE id = ?').get('upload-1') as Record<string, unknown>;
+    expect(row).toBeDefined();
+    expect(row.file_name).toBe('doc.pdf');
+    expect(row.upload_status).toBe('complete');
+    expect(row.provenance_id).toBe('prov-upload-1');
+  });
+
+  it.skipIf(!sqliteVecAvailable)('enforces upload_status CHECK constraint', () => {
+    createV11Schema();
+    migrateToLatest(db);
+
+    const now = new Date().toISOString();
+    db.prepare(`
+      INSERT INTO provenance (id, type, created_at, processed_at, source_type, root_document_id,
+        content_hash, processor, processor_version, processing_params, parent_ids, chain_depth)
+      VALUES ('prov-upload-2', 'DOCUMENT', ?, ?, 'FILE', 'prov-upload-2', 'sha256:abc', 'test', '1.0', '{}', '[]', 0)
+    `).run(now, now);
+
+    expect(() => {
+      db.prepare(`
+        INSERT INTO uploaded_files (id, local_path, file_name, file_hash, file_size, content_type,
+          upload_status, provenance_id, created_at)
+        VALUES ('upload-bad', '/test/doc.pdf', 'doc.pdf', 'sha256:filehash', 1024, 'application/pdf',
+          'invalid_status', 'prov-upload-2', ?)
+      `).run(now);
+    }).toThrow();
   });
 });

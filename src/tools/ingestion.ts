@@ -17,7 +17,8 @@ import { resolve, extname, basename } from 'path';
 
 import { DatabaseService } from '../services/storage/database/index.js';
 import { OCRProcessor } from '../services/ocr/processor.js';
-import { chunkText, chunkWithPageTracking, ChunkResult, DEFAULT_CHUNKING_CONFIG } from '../services/chunking/chunker.js';
+import { DatalabClient } from '../services/ocr/datalab.js';
+import { chunkText, chunkWithPageTracking, chunkTextPageAware, ChunkResult, DEFAULT_CHUNKING_CONFIG } from '../services/chunking/chunker.js';
 import type { ChunkingConfig } from '../models/chunk.js';
 import { EmbeddingService } from '../services/embedding/embedder.js';
 import { ProvenanceTracker } from '../services/provenance/tracker.js';
@@ -958,9 +959,15 @@ export async function handleProcessPending(
           overlapPercent: state.config.chunkOverlapPercent,
         };
         const pageOffsets = processResult.pageOffsets;
-        const chunkResults = pageOffsets && pageOffsets.length > 0
-          ? chunkWithPageTracking(ocrResult.extracted_text, pageOffsets, chunkConfig)
-          : chunkText(ocrResult.extracted_text, chunkConfig);
+        let chunkResults: ChunkResult[];
+        if (input.chunking_strategy === 'page_aware' && pageOffsets && pageOffsets.length > 0) {
+          // SE-3: Page-boundary-aware chunking -- no chunks span page boundaries
+          chunkResults = chunkTextPageAware(ocrResult.extracted_text, pageOffsets, chunkConfig);
+        } else if (pageOffsets && pageOffsets.length > 0) {
+          chunkResults = chunkWithPageTracking(ocrResult.extracted_text, pageOffsets, chunkConfig);
+        } else {
+          chunkResults = chunkText(ocrResult.extracted_text, chunkConfig);
+        }
 
         console.error(`[INFO] Chunking complete: ${chunkResults.length} chunks`);
 
@@ -1308,6 +1315,114 @@ export async function handleRetryFailed(
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
+// RAW CONVERSION HANDLER (AI-4)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/**
+ * Handle ocr_convert_raw - Convert a document via OCR and return raw results
+ * without storing in database. Quick one-off conversions.
+ */
+async function handleConvertRaw(
+  params: Record<string, unknown>
+): Promise<{ content: Array<{ type: 'text'; text: string }> }> {
+  try {
+    const input = validateInput(z.object({
+      file_path: z.string().min(1),
+      ocr_mode: z.enum(['fast', 'balanced', 'accurate']).default('balanced'),
+      max_pages: z.number().int().min(1).max(7000).optional(),
+      page_range: z.string().optional(),
+    }), params);
+
+    // Verify file exists - FAIL FAST
+    if (!existsSync(input.file_path)) {
+      throw new Error(`File not found: ${input.file_path}`);
+    }
+
+    const stats = statSync(input.file_path);
+    if (!stats.isFile()) {
+      throw new Error(`Not a file: ${input.file_path}`);
+    }
+
+    // Use DatalabClient directly without DB storage
+    const client = new DatalabClient();
+    const result = await client.processRaw(input.file_path, input.ocr_mode, {
+      maxPages: input.max_pages,
+      pageRange: input.page_range,
+    });
+
+    return formatResponse(successResult({
+      file_path: input.file_path,
+      text_length: result.markdown.length,
+      page_count: result.pageCount,
+      markdown: result.markdown,
+      metadata: result.metadata ?? {},
+      quality_score: result.qualityScore,
+      cost_cents: result.costCents,
+      processing_duration_ms: result.durationMs,
+    }));
+  } catch (error) {
+    return handleError(error);
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// REPROCESS HANDLER
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/**
+ * Handle ocr_reprocess - Reprocess a document with different OCR settings
+ * Cleans all derived data first, then re-runs the pipeline.
+ */
+async function handleReprocess(
+  params: Record<string, unknown>
+): Promise<{ content: Array<{ type: 'text'; text: string }> }> {
+  try {
+    const input = validateInput(z.object({
+      document_id: z.string().min(1),
+      ocr_mode: z.enum(['fast', 'balanced', 'accurate']).optional(),
+      skip_cache: z.boolean().default(true),
+    }), params);
+    const { db } = requireDatabase();
+
+    const doc = db.getDocument(input.document_id);
+    if (!doc) throw documentNotFoundError(input.document_id);
+    if (doc.status !== 'complete' && doc.status !== 'failed') {
+      throw new Error(`Document status must be 'complete' or 'failed' to reprocess (current: ${doc.status})`);
+    }
+
+    // Save previous quality score for comparison
+    const previousOCR = db.getOCRResultByDocumentId(doc.id);
+    const previousQuality = previousOCR?.parse_quality_score ?? null;
+
+    // Clean all derived data (chunks, embeddings, images, ocr_results, extractions)
+    db.cleanDocumentDerivedData(doc.id);
+    db.updateDocumentStatus(doc.id, 'pending');
+
+    // Reprocess through pipeline
+    const result = await handleProcessPending({
+      max_concurrent: 1,
+      ocr_mode: input.ocr_mode,
+      skip_cache: input.skip_cache,
+    });
+
+    // Get new quality score
+    const newOCR = db.getOCRResultByDocumentId(doc.id);
+
+    return formatResponse(successResult({
+      document_id: doc.id,
+      previous_quality: previousQuality,
+      new_quality: newOCR?.parse_quality_score ?? null,
+      quality_change: previousQuality !== null && newOCR?.parse_quality_score !== null && newOCR?.parse_quality_score !== undefined
+        ? (newOCR.parse_quality_score - previousQuality).toFixed(2)
+        : null,
+      reprocess_result: result,
+    }));
+  } catch (error) {
+    return handleError(error);
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
 // TOOL DEFINITIONS FOR MCP REGISTRATION
 // ═══════════════════════════════════════════════════════════════════════════════
 
@@ -1325,9 +1440,10 @@ export const ingestionTools: Record<string, ToolDefinition> = {
     handler: handleIngestDirectory,
   },
   'ocr_ingest_files': {
-    description: 'Ingest specific files into the current database',
+    description: 'Ingest specific files into the current database. Supports local file paths and optional file URLs for Datalab direct URL processing.',
     inputSchema: {
       file_paths: z.array(z.string().min(1)).min(1).describe('Array of file paths to ingest'),
+      file_urls: z.array(z.string().url()).optional().describe('URLs of files to ingest (Datalab supports file_url parameter)'),
     },
     handler: handleIngestFiles,
   },
@@ -1343,6 +1459,8 @@ export const ingestionTools: Record<string, ToolDefinition> = {
       extras: z.array(z.enum(['track_changes', 'chart_understanding', 'extract_links', 'table_row_bboxes', 'infographic', 'new_block_types'])).optional().describe('Extra Datalab features to enable'),
       page_schema: z.string().optional().describe('JSON schema string for structured data extraction per page'),
       additional_config: z.record(z.unknown()).optional().describe('Additional Datalab config: keep_pageheader_in_output, keep_pagefooter_in_output, keep_spreadsheet_formatting'),
+      chunking_strategy: z.enum(['fixed', 'page_aware']).default('fixed')
+        .describe('Chunking strategy: fixed-size or page-boundary-aware (no chunks span pages)'),
     },
     handler: handleProcessPending,
   },
@@ -1365,5 +1483,29 @@ export const ingestionTools: Record<string, ToolDefinition> = {
       document_id: z.string().optional().describe('Specific document ID to retry (omit to retry all failed)'),
     },
     handler: handleRetryFailed,
+  },
+  'ocr_reprocess': {
+    description: 'Reprocess a document with different OCR settings (cleans existing data first)',
+    inputSchema: {
+      document_id: z.string().min(1).describe('Document ID to reprocess'),
+      ocr_mode: z.enum(['fast', 'balanced', 'accurate']).optional()
+        .describe('OCR mode override'),
+      skip_cache: z.boolean().default(true)
+        .describe('Skip Datalab cache (default: true for reprocessing)'),
+    },
+    handler: handleReprocess,
+  },
+  'ocr_convert_raw': {
+    description: 'Convert a document via OCR and return raw results without storing in database. Quick one-off conversions.',
+    inputSchema: {
+      file_path: z.string().min(1).describe('Path to file to convert'),
+      ocr_mode: z.enum(['fast', 'balanced', 'accurate']).default('balanced')
+        .describe('OCR processing mode'),
+      max_pages: z.number().int().min(1).max(7000).optional()
+        .describe('Maximum pages to process'),
+      page_range: z.string().optional()
+        .describe('Specific pages to process (0-indexed, e.g., "0-5,10")'),
+    },
+    handler: handleConvertRaw,
   },
 };

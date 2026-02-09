@@ -280,6 +280,7 @@ def process_document(
     extras: list[str] | None = None,
     page_schema: str | None = None,
     additional_config: dict | None = None,
+    file_url: str | None = None,
 ) -> OCRResult:
     """
     Process a document through Datalab OCR.
@@ -299,6 +300,7 @@ def process_document(
         extras: Extra Datalab features (e.g. ["track_changes", "chart_understanding"])
         page_schema: JSON schema string for structured data extraction per page
         additional_config: Additional Datalab config dict
+        file_url: URL of file to process (instead of local file, passed to Datalab as file_url)
 
     Returns:
         OCRResult with extracted text and metadata
@@ -318,10 +320,13 @@ def process_document(
     )
 
     # Validate inputs
-    validated_path = validate_file(file_path)
+    if file_url:
+        validated_path = None  # No local file when using URL
+        logger.info(f"Processing document from URL: {file_url} (mode={mode})")
+    else:
+        validated_path = validate_file(file_path)
+        logger.info(f"Processing document: {validated_path} (mode={mode})")
     api_key = get_api_key()
-
-    logger.info(f"Processing document: {validated_path} (mode={mode})")
 
     # Record timing
     start_time = time.time()
@@ -360,12 +365,20 @@ def process_document(
         max_polls = max(timeout, 30)
 
         # Call Datalab API
-        result = client.convert(
-            file_path=str(validated_path),
-            options=options,
-            max_polls=max_polls,
-            poll_interval=1
-        )
+        if file_url:
+            result = client.convert(
+                file_url=file_url,
+                options=options,
+                max_polls=max_polls,
+                poll_interval=1
+            )
+        else:
+            result = client.convert(
+                file_path=str(validated_path),
+                options=options,
+                max_polls=max_polls,
+                poll_interval=1
+            )
 
         # Record completion
         end_time = time.time()
@@ -426,6 +439,20 @@ def process_document(
                 extraction_json = raw_extraction
             if extraction_json is not None:
                 logger.info("Captured structured extraction data")
+
+        # Capture extras feature data (when extras params are enabled)
+        # These are returned as top-level attributes on the result object
+        extras_features: dict = {}
+        for extras_key in ('links', 'charts', 'tracked_changes', 'table_row_bboxes', 'infographics'):
+            val = getattr(result, extras_key, None)
+            if val is not None:
+                extras_features[extras_key] = val
+        if extras_features:
+            # Merge extras features into metadata dict for downstream storage
+            if metadata_dict is None:
+                metadata_dict = {}
+            metadata_dict['extras_features'] = extras_features
+            logger.info(f"Captured extras features: {list(extras_features.keys())}")
 
         # Extract document metadata fields from Datalab metadata
         doc_title = None
@@ -494,7 +521,7 @@ def process_document(
 
     except DatalabFileError as e:
         logger.error(f"File error: {e}")
-        raise OCRFileError(str(e), str(validated_path)) from e
+        raise OCRFileError(str(e), file_url or str(validated_path)) from e
 
     except Exception as e:
         # Catch-all for unexpected errors - still fail fast
@@ -589,6 +616,7 @@ Examples:
         """
     )
     parser.add_argument("--file", "-f", type=str, help="Single file to process")
+    parser.add_argument("--file-url", type=str, help="URL of file to process (instead of local file)")
     parser.add_argument("--dir", "-d", type=str, help="Directory to scan")
     parser.add_argument("--ext", type=str, default="pdf", help="Extension filter for --dir")
     parser.add_argument("--limit", type=int, default=10, help="Max files for --dir")
@@ -619,11 +647,11 @@ Examples:
     elif args.verbose:
         logging.getLogger().setLevel(logging.DEBUG)
 
-    if not args.file and not args.dir:
-        parser.error("Either --file or --dir is required")
+    if not args.file and not args.dir and not args.file_url:
+        parser.error("Either --file, --file-url, or --dir is required")
 
     try:
-        if args.file:
+        if args.file or args.file_url:
             # Single file - use provided IDs or generate new ones
             doc_id = args.doc_id or str(uuid.uuid4())
             prov_id = args.prov_id or str(uuid.uuid4())
@@ -633,7 +661,7 @@ Examples:
             additional_config = json.loads(args.additional_config) if args.additional_config else None
 
             result = process_document(
-                args.file,
+                args.file or "",
                 document_id=doc_id,
                 provenance_id=prov_id,
                 mode=args.mode,
@@ -644,6 +672,7 @@ Examples:
                 extras=extras_list,
                 page_schema=args.page_schema,
                 additional_config=additional_config,
+                file_url=args.file_url,
             )
 
             if args.json:

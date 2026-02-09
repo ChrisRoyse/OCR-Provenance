@@ -20,3 +20,5 @@ export * from './evaluation.js';
 export * from './reports.js';
 export * from './form-fill.js';
 export * from './extraction-structured.js';
+export * from './file-management.js';
+export * from './entity-analysis.js';

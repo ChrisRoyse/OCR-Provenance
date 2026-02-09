@@ -308,16 +308,18 @@ describe('Task 21: Search Tools Verification', { timeout: TEST_TIMEOUT }, () => 
   // ═══════════════════════════════════════════════════════════════════════════════
 
   describe('VERIFY: Tool Exports', () => {
-    it('searchTools exports exactly 4 tools', () => {
+    it('searchTools exports exactly 6 tools', () => {
       console.error('\n[TEST] Verifying searchTools exports');
       const toolNames = Object.keys(searchTools);
 
       console.error(`[EVIDENCE] Exported tools: ${toolNames.join(', ')}`);
-      expect(toolNames).toHaveLength(4);
+      expect(toolNames).toHaveLength(6);
       expect(toolNames).toContain('ocr_search');
       expect(toolNames).toContain('ocr_search_semantic');
       expect(toolNames).toContain('ocr_search_hybrid');
       expect(toolNames).toContain('ocr_fts_manage');
+      expect(toolNames).toContain('ocr_search_export');
+      expect(toolNames).toContain('ocr_benchmark_compare');
     });
 
     it('each tool has required properties', () => {

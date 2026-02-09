@@ -221,7 +221,10 @@ export class VLMService {
     const response = await this.client.analyzeImage(
       DEEP_ANALYSIS_PROMPT,
       fileRef,
-      { mediaResolution: 'MEDIA_RESOLUTION_HIGH' }
+      {
+        mediaResolution: 'MEDIA_RESOLUTION_HIGH',
+        thinkingConfig: { thinkingLevel: 'HIGH' },
+      }
     );
 
     const deepResult = this.parseDeepAnalysis(response.text);

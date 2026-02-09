@@ -213,6 +213,8 @@ export const IngestFilesInput = z.object({
   file_paths: z
     .array(z.string().min(1, 'File path cannot be empty'))
     .min(1, 'At least one file path is required'),
+  file_urls: z.array(z.string().url()).optional()
+    .describe('URLs of files to ingest (Datalab supports file_url parameter)'),
 });
 
 /**
@@ -239,6 +241,8 @@ export const ProcessPendingInput = z.object({
     .describe('JSON schema string for structured data extraction per page'),
   additional_config: z.record(z.unknown()).optional()
     .describe('Additional Datalab config: keep_pageheader_in_output, keep_pagefooter_in_output, keep_spreadsheet_formatting'),
+  chunking_strategy: z.enum(['fixed', 'page_aware']).default('fixed')
+    .describe('Chunking strategy: fixed-size or page-boundary-aware'),
 });
 
 /**
@@ -275,6 +279,8 @@ export const SearchSemanticInput = z.object({
   include_provenance: z.boolean().default(false),
   document_filter: z.array(z.string()).optional(),
   metadata_filter: MetadataFilter,
+  min_quality_score: z.number().min(0).max(5).optional()
+    .describe('Minimum OCR quality score (0-5). Filters documents with low-quality OCR results.'),
 });
 
 /**
@@ -288,6 +294,8 @@ export const SearchInput = z.object({
   include_provenance: z.boolean().default(false),
   document_filter: z.array(z.string()).optional(),
   metadata_filter: MetadataFilter,
+  min_quality_score: z.number().min(0).max(5).optional()
+    .describe('Minimum OCR quality score (0-5). Filters documents with low-quality OCR results.'),
 });
 
 /**
@@ -302,6 +310,12 @@ export const SearchHybridInput = z.object({
   include_provenance: z.boolean().default(false),
   document_filter: z.array(z.string()).optional(),
   metadata_filter: MetadataFilter,
+  min_quality_score: z.number().min(0).max(5).optional()
+    .describe('Minimum OCR quality score (0-5). Filters documents with low-quality OCR results.'),
+  expand_query: z.boolean().default(false)
+    .describe('Expand query with domain-specific legal/medical synonyms'),
+  rerank: z.boolean().default(false)
+    .describe('Re-rank results using Gemini AI for contextual relevance scoring'),
 });
 
 /**

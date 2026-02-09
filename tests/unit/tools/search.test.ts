@@ -271,12 +271,14 @@ function insertTestChunk(
 // ═══════════════════════════════════════════════════════════════════════════════
 
 describe('searchTools exports', () => {
-  it('exports all 4 search tools', () => {
-    expect(Object.keys(searchTools)).toHaveLength(4);
+  it('exports all 6 search tools', () => {
+    expect(Object.keys(searchTools)).toHaveLength(6);
     expect(searchTools).toHaveProperty('ocr_search');
     expect(searchTools).toHaveProperty('ocr_search_semantic');
     expect(searchTools).toHaveProperty('ocr_search_hybrid');
     expect(searchTools).toHaveProperty('ocr_fts_manage');
+    expect(searchTools).toHaveProperty('ocr_search_export');
+    expect(searchTools).toHaveProperty('ocr_benchmark_compare');
   });
 
   it('each tool has description, inputSchema, and handler', () => {

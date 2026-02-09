@@ -67,6 +67,7 @@ export class GeminiClient {
   private readonly config: GeminiConfig;
   private readonly rateLimiter: GeminiRateLimiter;
   private readonly circuitBreaker: CircuitBreaker;
+  private readonly _contextCache = new Map<string, { text: string; createdAt: number; ttlMs: number }>();
 
   constructor(configOverrides?: Partial<GeminiConfig>) {
     this.config = loadGeminiConfig(configOverrides);
@@ -115,6 +116,7 @@ export class GeminiClient {
     options: {
       schema?: object;
       mediaResolution?: MediaResolution;
+      thinkingConfig?: { thinkingLevel: ThinkingLevel };
     } = {}
   ): Promise<GeminiResponse> {
     const parts: Part[] = [
@@ -127,10 +129,24 @@ export class GeminiClient {
       },
     ];
 
+    const mediaResolution = options.mediaResolution || this.config.mediaResolution;
+
+    // When thinkingConfig is present, do NOT use the multimodal preset
+    // because its responseMimeType: 'application/json' is incompatible
+    // with thinking mode. Use a minimal config instead.
+    if (options.thinkingConfig) {
+      return this.generate(parts, {
+        temperature: 0.0,
+        maxOutputTokens: 16384,
+        thinkingConfig: options.thinkingConfig,
+        mediaResolution,
+      });
+    }
+
     return this.generate(parts, {
       ...GENERATION_PRESETS.multimodal,
       responseSchema: options.schema,
-      mediaResolution: options.mediaResolution || this.config.mediaResolution,
+      mediaResolution,
     });
   }
 
@@ -264,6 +280,10 @@ export class GeminiClient {
       config.thinkingConfig = options.thinkingConfig;
     }
 
+    if (options.mediaResolution) {
+      config.mediaResolution = options.mediaResolution;
+    }
+
     return config;
   }
 
@@ -346,6 +366,98 @@ export class GeminiClient {
     const data = buffer.toString('base64');
 
     return { mimeType, data, sizeBytes };
+  }
+
+  /**
+   * Create cached content for document context.
+   * Used when processing multiple images from the same document -
+   * cache the OCR text context once, then reference it for each image.
+   *
+   * @param contextText - Document OCR text to cache
+   * @param ttlSeconds - Cache TTL in seconds (default: 3600 = 1 hour)
+   * @returns Cache identifier for use with generateWithCache()
+   */
+  async createCachedContent(contextText: string, ttlSeconds: number = 3600): Promise<string> {
+    // Gemini Caching API requires minimum 1024 tokens (~4096 chars)
+    if (contextText.length < 4096) {
+      throw new Error('Context text too short for caching (minimum ~4096 characters / 1024 tokens). Use direct generation instead.');
+    }
+
+    const cacheId = `cache_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    // Store context in memory for this session
+    this._contextCache.set(cacheId, {
+      text: contextText,
+      createdAt: Date.now(),
+      ttlMs: ttlSeconds * 1000,
+    });
+
+    console.error(`[GeminiClient] Created context cache ${cacheId} (${contextText.length} chars, TTL ${ttlSeconds}s)`);
+    return cacheId;
+  }
+
+  /**
+   * Generate content using cached context + new image.
+   * Prepends cached text context to the image analysis prompt.
+   */
+  async generateWithCache(
+    cacheId: string,
+    prompt: string,
+    file: FileRef,
+    options: { schema?: object; mediaResolution?: MediaResolution } = {}
+  ): Promise<GeminiResponse> {
+    const cached = this._contextCache.get(cacheId);
+    if (!cached) {
+      throw new Error(`Cache not found: ${cacheId}. Create a cache first with createCachedContent().`);
+    }
+
+    // Check TTL
+    if (Date.now() - cached.createdAt > cached.ttlMs) {
+      this._contextCache.delete(cacheId);
+      throw new Error(`Cache expired: ${cacheId}. Recreate with createCachedContent().`);
+    }
+
+    // Prepend cached context to prompt
+    const contextualPrompt = `Document context (from OCR):\n${cached.text.slice(0, 8000)}\n\n${prompt}`;
+    return this.analyzeImage(contextualPrompt, file, options);
+  }
+
+  /**
+   * Delete a cached context
+   */
+  deleteCachedContent(cacheId: string): boolean {
+    return this._contextCache.delete(cacheId);
+  }
+
+  /**
+   * Process multiple image analysis requests efficiently.
+   * Handles rate limiting and provides progress tracking.
+   * NOT true async batch API (Gemini async batch requires server-side setup) -
+   * this is sequential with optimal rate limiting.
+   */
+  async batchAnalyzeImages(
+    requests: Array<{ prompt: string; file: FileRef; options?: { schema?: object; mediaResolution?: MediaResolution } }>,
+    onProgress?: (completed: number, total: number) => void,
+  ): Promise<Array<{ index: number; result?: GeminiResponse; error?: string }>> {
+    const results: Array<{ index: number; result?: GeminiResponse; error?: string }> = [];
+
+    for (let i = 0; i < requests.length; i++) {
+      try {
+        const result = await this.analyzeImage(
+          requests[i].prompt,
+          requests[i].file,
+          requests[i].options || {}
+        );
+        results.push({ index: i, result });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        console.error(`[GeminiClient] Batch item ${i}/${requests.length} failed: ${message}`);
+        results.push({ index: i, error: message });
+      }
+
+      onProgress?.(i + 1, requests.length);
+    }
+
+    return results;
   }
 
   /**
