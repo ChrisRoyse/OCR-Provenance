@@ -543,9 +543,9 @@ export class ProvenanceVerifier {
       }
 
       case ProvenanceType.EXTRACTION:
-      case ProvenanceType.FORM_FILL: {
-        // EXTRACTION and FORM_FILL content verification not yet implemented
-        // Return null to skip hash verification for these new types
+      case ProvenanceType.FORM_FILL:
+      case ProvenanceType.ENTITY_EXTRACTION: {
+        // Content verification not yet implemented for these types
         throw new VerifierError(
           `Content verification not yet implemented for provenance type: ${record.type}`,
           VerifierErrorCode.INVALID_TYPE,

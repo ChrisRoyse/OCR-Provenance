@@ -96,6 +96,7 @@ export class DatalabClient {
       extras?: string[];
       pageSchema?: string;
       additionalConfig?: Record<string, unknown>;
+      fileUrl?: string;
     }
   ): Promise<{
     result: OCRResult;
@@ -122,6 +123,7 @@ export class DatalabClient {
     if (ocrOptions?.extras?.length) args.push('--extras', ocrOptions.extras.join(','));
     if (ocrOptions?.pageSchema) args.push('--page-schema', ocrOptions.pageSchema);
     if (ocrOptions?.additionalConfig) args.push('--additional-config', JSON.stringify(ocrOptions.additionalConfig));
+    if (ocrOptions?.fileUrl) args.push('--file-url', ocrOptions.fileUrl);
 
     const options: Options = {
       mode: 'text',
@@ -231,6 +233,142 @@ export class DatalabClient {
           docTitle: ocrResponse.doc_title ?? null,
           docAuthor: ocrResponse.doc_author ?? null,
           docSubject: ocrResponse.doc_subject ?? null,
+        });
+      });
+    });
+  }
+
+  /**
+   * Process a file through Datalab OCR and return raw results without storing in DB.
+   * Used by ocr_convert_raw tool for quick one-off conversions.
+   *
+   * FAIL-FAST: Throws on any error, no fallbacks
+   */
+  async processRaw(
+    filePath: string,
+    mode: 'fast' | 'balanced' | 'accurate' = 'balanced',
+    ocrOptions?: {
+      maxPages?: number;
+      pageRange?: string;
+      fileUrl?: string;
+    }
+  ): Promise<{
+    markdown: string;
+    pageCount: number;
+    qualityScore: number | null;
+    costCents: number | null;
+    durationMs: number;
+    metadata: Record<string, unknown> | null;
+  }> {
+    // Use dummy IDs since we are not storing in DB
+    const dummyDocId = 'raw-convert-' + Date.now();
+    const dummyProvId = 'raw-convert-prov-' + Date.now();
+
+    const args: string[] = [];
+    if (ocrOptions?.fileUrl) {
+      args.push('--file-url', ocrOptions.fileUrl);
+    } else {
+      args.push('--file', filePath);
+    }
+    args.push(
+      '--mode', mode,
+      '--doc-id', dummyDocId,
+      '--prov-id', dummyProvId,
+      '--json',
+    );
+    if (ocrOptions?.maxPages) args.push('--max-pages', String(ocrOptions.maxPages));
+    if (ocrOptions?.pageRange) args.push('--page-range', ocrOptions.pageRange);
+
+    const options: Options = {
+      mode: 'text',
+      pythonPath: this.pythonPath,
+      pythonOptions: ['-u'],
+      args,
+    };
+
+    return new Promise((resolve, reject) => {
+      let settled = false;
+      const shell = new PythonShell(this.workerPath, options);
+      const outputChunks: string[] = [];
+      let stderr = '';
+
+      const timer = setTimeout(() => {
+        if (settled) return;
+        settled = true;
+        try { shell.kill(); } catch { /* ignore */ }
+        reject(new OCRError(`OCR timeout after ${this.timeout}ms`, 'OCR_TIMEOUT'));
+      }, this.timeout);
+
+      shell.on('message', (msg: string) => {
+        outputChunks.push(msg);
+      });
+
+      shell.on('stderr', (err: string) => {
+        if (stderr.length < MAX_STDERR_LENGTH) {
+          stderr += err + '\n';
+        }
+      });
+
+      shell.end((err?: Error) => {
+        clearTimeout(timer);
+        if (settled) return;
+        settled = true;
+
+        const output = outputChunks.join('\n');
+        outputChunks.length = 0;
+
+        if (err) {
+          const lines = output.trim().split('\n').filter(l => l.trim());
+          for (let i = lines.length - 1; i >= 0; i--) {
+            try {
+              const parsed = JSON.parse(lines[i]) as unknown;
+              if (this.isErrorResponse(parsed)) {
+                reject(mapPythonError(parsed.category, parsed.error, parsed.details));
+                return;
+              }
+            } catch { /* not JSON, skip */ }
+          }
+          const detail = stderr ? `${err.message}\nPython stderr:\n${stderr}` : err.message;
+          reject(new OCRError(`Python worker failed: ${detail}`, 'OCR_API_ERROR'));
+          return;
+        }
+
+        const lines = output.trim().split('\n').filter(l => l.trim());
+        if (lines.length === 0) {
+          reject(new OCRError('No output from OCR worker', 'OCR_API_ERROR'));
+          return;
+        }
+
+        let response: unknown;
+        for (let i = lines.length - 1; i >= 0; i--) {
+          try {
+            response = JSON.parse(lines[i]);
+            break;
+          } catch { /* not JSON, try previous line */ }
+        }
+
+        if (!response) {
+          reject(new OCRError(
+            `Failed to parse OCR worker output as JSON. Last line: ${lines[lines.length - 1]?.substring(0, 200)}`,
+            'OCR_API_ERROR'
+          ));
+          return;
+        }
+
+        if (this.isErrorResponse(response)) {
+          reject(mapPythonError(response.category, response.error, response.details));
+          return;
+        }
+
+        const ocrResponse = response as PythonOCRResponse;
+
+        resolve({
+          markdown: ocrResponse.extracted_text ?? '',
+          pageCount: ocrResponse.page_count ?? 0,
+          qualityScore: ocrResponse.parse_quality_score ?? null,
+          costCents: ocrResponse.cost_cents ?? null,
+          durationMs: ocrResponse.processing_duration_ms ?? 0,
+          metadata: ocrResponse.metadata ?? null,
         });
       });
     });

@@ -268,6 +268,77 @@ export function createChunkProvenance(params: ChunkProvenanceParams): CreateProv
   };
 }
 
+/**
+ * Chunk text with page-boundary awareness
+ *
+ * Unlike standard chunking which ignores page boundaries, this mode ensures
+ * no chunk spans across pages. Each page is chunked independently, preserving
+ * document structure for better search relevance.
+ *
+ * Falls back to standard chunkText() if pageOffsets is empty.
+ *
+ * @param text - The full OCR text to chunk
+ * @param pageOffsets - Array of page offset information mapping pages to character ranges
+ * @param config - Chunking configuration (default: 2000 chars, 10% overlap)
+ * @returns Array of ChunkResult with page numbers set from page boundaries
+ */
+export function chunkTextPageAware(
+  text: string,
+  pageOffsets: PageOffset[],
+  config: ChunkingConfig = DEFAULT_CHUNKING_CONFIG
+): ChunkResult[] {
+  // Fall back to standard chunking if no page offsets
+  if (pageOffsets.length === 0) {
+    return chunkText(text, config);
+  }
+
+  const chunks: ChunkResult[] = [];
+  const overlapSize = getOverlapCharacters(config);
+
+  for (let pageIdx = 0; pageIdx < pageOffsets.length; pageIdx++) {
+    const pageStart = pageOffsets[pageIdx].charStart;
+    const pageEnd = pageOffsets[pageIdx].charEnd;
+    const pageText = text.slice(pageStart, pageEnd);
+    const pageNumber = pageOffsets[pageIdx].page;
+
+    if (pageText.trim().length === 0) continue;
+
+    // Chunk within the page
+    let pos = 0;
+    while (pos < pageText.length) {
+      const end = Math.min(pos + config.chunkSize, pageText.length);
+      const chunkContent = pageText.slice(pos, end);
+
+      if (chunkContent.trim().length > 0) {
+        const chunkIndex = chunks.length;
+        chunks.push({
+          text: chunkContent,
+          index: chunkIndex,
+          startOffset: pageStart + pos,
+          endOffset: pageStart + end,
+          overlapWithPrevious: chunkIndex === 0 ? 0 : overlapSize,
+          overlapWithNext: 0, // Set after loop
+          pageNumber,
+          pageRange: null,
+        });
+      }
+
+      // Move forward by stepSize, but stop if we reached end of page
+      if (end >= pageText.length) break;
+      const nextPos = end - overlapSize;
+      if (nextPos <= pos) break; // Prevent infinite loop on tiny pages
+      pos = nextPos;
+    }
+  }
+
+  // Set overlapWithNext for all but last chunk
+  for (let i = 0; i < chunks.length - 1; i++) {
+    chunks[i].overlapWithNext = overlapSize;
+  }
+
+  return chunks;
+}
+
 // Re-export types for convenience
 export type { ChunkResult, ChunkingConfig } from '../../models/chunk.js';
 export { DEFAULT_CHUNKING_CONFIG } from '../../models/chunk.js';
