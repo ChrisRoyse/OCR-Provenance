@@ -18,6 +18,39 @@ import type {
 import type { Entity } from '../../models/entity.js';
 
 /**
+ * Input shape for a document's structural metadata used in compareStructure()
+ */
+export interface StructuralDocInput {
+  page_count: number | null;
+  text_length: number;
+  quality_score: number | null;
+  ocr_mode: string;
+  chunk_count: number;
+}
+
+/**
+ * Compare structural metadata between two documents
+ *
+ * @param doc1 - First document structural metadata
+ * @param doc2 - Second document structural metadata
+ * @returns StructuralDiff with side-by-side metadata
+ */
+export function compareStructure(doc1: StructuralDocInput, doc2: StructuralDocInput): StructuralDiff {
+  return {
+    doc1_page_count: doc1.page_count,
+    doc2_page_count: doc2.page_count,
+    doc1_chunk_count: doc1.chunk_count,
+    doc2_chunk_count: doc2.chunk_count,
+    doc1_text_length: doc1.text_length,
+    doc2_text_length: doc2.text_length,
+    doc1_quality_score: doc1.quality_score,
+    doc2_quality_score: doc2.quality_score,
+    doc1_ocr_mode: doc1.ocr_mode,
+    doc2_ocr_mode: doc2.ocr_mode,
+  };
+}
+
+/**
  * Compare two texts using line-level diff
  *
  * @param text1 - First document text

@@ -502,6 +502,28 @@ async function handleWitnessAnalysis(params: Record<string, unknown>) {
       ? `\n\n=== Image Descriptions ===\n${vlmDescriptions.join('\n')}`
       : '';
 
+    // Include existing comparison data between these documents
+    let comparisonSection = '';
+    if (input.document_ids.length >= 2) {
+      const docIdSet = input.document_ids;
+      const comparisons = db.getConnection().prepare(
+        `SELECT c.document_id_1, c.document_id_2, c.similarity_ratio, c.summary
+         FROM comparisons c
+         WHERE c.document_id_1 IN (${docIdSet.map(() => '?').join(',')})
+           AND c.document_id_2 IN (${docIdSet.map(() => '?').join(',')})
+         ORDER BY c.created_at DESC`
+      ).all(...docIdSet, ...docIdSet) as Array<{
+        document_id_1: string; document_id_2: string;
+        similarity_ratio: number; summary: string;
+      }>;
+      if (comparisons.length > 0) {
+        const compLines = comparisons.map(c =>
+          `- ${c.document_id_1} vs ${c.document_id_2}: ${(c.similarity_ratio * 100).toFixed(1)}% similar. ${c.summary}`
+        );
+        comparisonSection = `\n\n=== Prior Document Comparisons ===\n${compLines.join('\n')}`;
+      }
+    }
+
     const focusInstruction = input.focus_area
       ? `Focus your analysis specifically on: ${input.focus_area}.`
       : '';
@@ -517,7 +539,7 @@ async function handleWitnessAnalysis(params: Record<string, unknown>) {
       `4. CONCLUSIONS: Expert conclusions based on the evidence\n` +
       `5. RELIABILITY ASSESSMENT: Assessment of document reliability and potential issues\n` +
       `6. CONTRADICTIONS: Any contradictions or inconsistencies between documents\n\n` +
-      `Documents:\n${docSections}${vlmSection}`;
+      `Documents:\n${docSections}${vlmSection}${comparisonSection}`;
 
     // Use Gemini thinking mode for structured analysis
     const client = new GeminiClient();
@@ -531,6 +553,7 @@ async function handleWitnessAnalysis(params: Record<string, unknown>) {
       focus_area: input.focus_area ?? null,
       include_images: input.include_images,
       vlm_descriptions_included: vlmDescriptions.length,
+      comparisons_included: comparisonSection.length > 0,
       analysis: response.text,
       usage: {
         input_tokens: response.usage.inputTokens,
