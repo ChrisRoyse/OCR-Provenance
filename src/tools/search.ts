@@ -521,6 +521,9 @@ async function handleBenchmarkCompare(params: Record<string, unknown>): Promise<
         tempDb = DatabaseService.open(dbName, storagePath);
         const conn = tempDb.getConnection();
 
+        let scores: number[];
+        let documentIds: string[];
+
         if (input.search_type === 'bm25') {
           const bm25 = new BM25SearchService(conn);
           const results = bm25.search({
@@ -528,19 +531,9 @@ async function handleBenchmarkCompare(params: Record<string, unknown>): Promise<
             limit: input.limit,
             includeHighlight: false,
           });
-
-          const scores = results.map(r => r.bm25_score);
-          const avgScore = scores.length > 0 ? scores.reduce((a, b) => a + b, 0) / scores.length : 0;
-
-          dbResults.push({
-            database_name: dbName,
-            result_count: results.length,
-            top_scores: scores.slice(0, 5),
-            avg_score: Math.round(avgScore * 1000) / 1000,
-            document_ids: results.map(r => r.document_id),
-          });
+          scores = results.map(r => r.bm25_score);
+          documentIds = results.map(r => r.document_id);
         } else {
-          // Semantic search
           const vector = new VectorService(conn);
           const embedder = getEmbeddingService();
           const queryVector = await embedder.embedSearchQuery(input.query);
@@ -548,18 +541,18 @@ async function handleBenchmarkCompare(params: Record<string, unknown>): Promise<
             limit: input.limit,
             threshold: 0.3,
           });
-
-          const scores = results.map(r => r.similarity_score);
-          const avgScore = scores.length > 0 ? scores.reduce((a, b) => a + b, 0) / scores.length : 0;
-
-          dbResults.push({
-            database_name: dbName,
-            result_count: results.length,
-            top_scores: scores.slice(0, 5),
-            avg_score: Math.round(avgScore * 1000) / 1000,
-            document_ids: results.map(r => r.document_id),
-          });
+          scores = results.map(r => r.similarity_score);
+          documentIds = results.map(r => r.document_id);
         }
+
+        const avgScore = scores.length > 0 ? scores.reduce((a, b) => a + b, 0) / scores.length : 0;
+        dbResults.push({
+          database_name: dbName,
+          result_count: scores.length,
+          top_scores: scores.slice(0, 5),
+          avg_score: Math.round(avgScore * 1000) / 1000,
+          document_ids: documentIds,
+        });
       } catch (error) {
         dbResults.push({
           database_name: dbName,
@@ -585,9 +578,7 @@ async function handleBenchmarkCompare(params: Record<string, unknown>): Promise<
     }
 
     const overlapping = Object.fromEntries(
-      [...allDocIds.entries()]
-        .filter(([, dbs]) => dbs.length > 1)
-        .map(([docId, dbs]) => [docId, dbs])
+      [...allDocIds.entries()].filter(([, dbs]) => dbs.length > 1)
     );
 
     return formatResponse(successResult({
@@ -797,5 +788,3 @@ export const searchTools: Record<string, ToolDefinition> = {
     handler: handleBenchmarkCompare,
   },
 };
-
-export default searchTools;

@@ -101,7 +101,7 @@ export class FileManagerClient {
     const args = ['--action', 'upload', '--file', filePath];
     const response = await this.runWorker<PythonUploadResponse>(args);
     return {
-      fileId: response.file_id,
+      fileId: String(response.file_id),
       reference: response.reference,
       fileName: response.file_name,
       fileHash: response.file_hash,
@@ -132,7 +132,7 @@ export class FileManagerClient {
     const args = ['--action', 'get', '--file-id', fileId];
     const response = await this.runWorker<PythonFileInfoResponse>(args);
     return {
-      fileId: response.file_id,
+      fileId: String(response.file_id),
       fileName: response.file_name,
       fileSize: response.file_size,
       contentType: response.content_type,

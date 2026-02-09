@@ -61,6 +61,7 @@ describe('Column Verification', () => {
       'doc_title',
       'doc_author',
       'doc_subject',
+      'datalab_file_id',
     ];
 
     it.skipIf(!sqliteVecAvailable)('should have all required columns', () => {

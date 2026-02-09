@@ -57,14 +57,8 @@ export async function rerankResults(
   // Take top results to re-rank (max 20 to stay within token limits)
   const toRerank = results.slice(0, Math.min(results.length, 20));
 
-  const prompt = `You are a legal document search relevance expert. Given a search query and a list of document excerpts, score each excerpt's relevance to the query on a scale of 0-10.
-
-Query: "${query}"
-
-Excerpts:
-${toRerank.map((r, i) => `[${i}] ${String(r.original_text).slice(0, 500)}`).join('\n\n')}
-
-Score each excerpt's relevance to the query. Return a JSON object with a "rankings" array containing objects with "index" (number), "relevance_score" (0-10), and "reasoning" (string).`;
+  const excerpts = toRerank.map(r => String(r.original_text));
+  const prompt = buildRerankPrompt(query, excerpts);
 
   const client = new GeminiClient();
   const response = await client.fast(prompt, RERANK_SCHEMA);
