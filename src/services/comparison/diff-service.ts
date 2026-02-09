@@ -36,13 +36,22 @@ export function compareText(text1: string, text2: string, maxOperations: number 
   const operations: TextDiffOperation[] = [];
 
   for (const change of changes) {
-    const op: TextDiffOperation = {
-      type: change.added ? 'insert' : change.removed ? 'delete' : 'equal',
+    let type: TextDiffOperation['type'];
+    if (change.added) {
+      type = 'insert';
+    } else if (change.removed) {
+      type = 'delete';
+    } else {
+      type = 'equal';
+    }
+
+    operations.push({
+      type,
       text: change.value,
       doc1_offset: doc1Offset,
       doc2_offset: doc2Offset,
       line_count: change.count ?? 0,
-    };
+    });
 
     if (change.added) {
       insertions++;
@@ -55,8 +64,6 @@ export function compareText(text1: string, text2: string, maxOperations: number 
       doc1Offset += change.value.length;
       doc2Offset += change.value.length;
     }
-
-    operations.push(op);
   }
 
   const totalOps = operations.length;
@@ -78,35 +85,6 @@ export function compareText(text1: string, text2: string, maxOperations: number 
     similarity_ratio: Math.round(similarityRatio * 10000) / 10000,
     doc1_length: text1.length,
     doc2_length: text2.length,
-  };
-}
-
-/**
- * Compare structural metadata of two documents
- */
-export function compareStructure(
-  doc1PageCount: number | null,
-  doc2PageCount: number | null,
-  doc1ChunkCount: number,
-  doc2ChunkCount: number,
-  doc1TextLength: number,
-  doc2TextLength: number,
-  doc1QualityScore: number | null,
-  doc2QualityScore: number | null,
-  doc1OcrMode: string,
-  doc2OcrMode: string
-): StructuralDiff {
-  return {
-    doc1_page_count: doc1PageCount,
-    doc2_page_count: doc2PageCount,
-    doc1_chunk_count: doc1ChunkCount,
-    doc2_chunk_count: doc2ChunkCount,
-    doc1_text_length: doc1TextLength,
-    doc2_text_length: doc2TextLength,
-    doc1_quality_score: doc1QualityScore,
-    doc2_quality_score: doc2QualityScore,
-    doc1_ocr_mode: doc1OcrMode,
-    doc2_ocr_mode: doc2OcrMode,
   };
 }
 
@@ -162,23 +140,28 @@ export function generateSummary(
 
   if (textDiff) {
     const pct = Math.round(textDiff.similarity_ratio * 100);
-    parts.push(`Text similarity: ${String(pct)}%.`);
-    parts.push(`${String(textDiff.insertions)} insertions, ${String(textDiff.deletions)} deletions, ${String(textDiff.unchanged)} unchanged sections.`);
+    parts.push(`Text similarity: ${pct}%.`);
+    parts.push(`${textDiff.insertions} insertions, ${textDiff.deletions} deletions, ${textDiff.unchanged} unchanged sections.`);
     if (textDiff.truncated) {
-      parts.push(`(Diff truncated: showing ${String(textDiff.operations.length)} of ${String(textDiff.total_operations)} operations.)`);
+      parts.push(`(Diff truncated: showing ${textDiff.operations.length} of ${textDiff.total_operations} operations.)`);
     }
   }
 
   const pageDiff = (structuralDiff.doc1_page_count ?? 0) - (structuralDiff.doc2_page_count ?? 0);
   if (pageDiff !== 0) {
-    parts.push(`Page count difference: ${String(Math.abs(pageDiff))} pages.`);
+    parts.push(`Page count difference: ${Math.abs(pageDiff)} pages.`);
   }
 
   if (entityDiff && Object.keys(entityDiff.by_type).length > 0) {
-    const totalCommon = Object.values(entityDiff.by_type).reduce((sum, t) => sum + t.common.length, 0);
-    const totalUnique1 = Object.values(entityDiff.by_type).reduce((sum, t) => sum + t.doc1_only.length, 0);
-    const totalUnique2 = Object.values(entityDiff.by_type).reduce((sum, t) => sum + t.doc2_only.length, 0);
-    parts.push(`Entities: ${String(totalCommon)} common, ${String(totalUnique1)} unique to doc1, ${String(totalUnique2)} unique to doc2.`);
+    let totalCommon = 0;
+    let totalUnique1 = 0;
+    let totalUnique2 = 0;
+    for (const t of Object.values(entityDiff.by_type)) {
+      totalCommon += t.common.length;
+      totalUnique1 += t.doc1_only.length;
+      totalUnique2 += t.doc2_only.length;
+    }
+    parts.push(`Entities: ${totalCommon} common, ${totalUnique1} unique to doc1, ${totalUnique2} unique to doc2.`);
   }
 
   return parts.join(' ');
