@@ -42,6 +42,7 @@ import {
   CREATE_UPLOADED_FILES_TABLE,
   CREATE_ENTITIES_TABLE,
   CREATE_ENTITY_MENTIONS_TABLE,
+  CREATE_COMPARISONS_TABLE,
   CREATE_SCHEMA_VERSION_TABLE,
   DATABASE_PRAGMAS,
 } from '../../src/services/storage/migrations/schema-definitions.js';
@@ -83,6 +84,7 @@ function createFreshDatabase(): Database.Database {
   conn.exec(CREATE_UPLOADED_FILES_TABLE);
   conn.exec(CREATE_ENTITIES_TABLE);
   conn.exec(CREATE_ENTITY_MENTIONS_TABLE);
+  conn.exec(CREATE_COMPARISONS_TABLE);
   conn.exec(CREATE_CHUNKS_FTS_TABLE);
   conn.exec(CREATE_FTS_INDEX_METADATA);
   conn.exec(CREATE_VLM_FTS_TABLE);
@@ -182,11 +184,11 @@ describe('E2E-1: Schema v10 Physical Verification', () => {
     // WHAT: Verify schema version constant
     // INPUT: SCHEMA_VERSION export
     // EXPECTED: 12
-    expect(SCHEMA_VERSION).toBe(13);
+    expect(SCHEMA_VERSION).toBe(14);
 
     // SOURCE OF TRUTH: schema_version table
     const row = db.prepare('SELECT version FROM schema_version WHERE id = 1').get() as { version: number };
-    expect(row.version).toBe(13);
+    expect(row.version).toBe(14);
   });
 
   it('All 16 required tables exist (minus vec_embeddings without extension)', () => {
@@ -214,7 +216,7 @@ describe('E2E-1: Schema v10 Physical Verification', () => {
     for (const required of REQUIRED_INDEXES) {
       expect(indexes).toContain(required);
     }
-    expect(REQUIRED_INDEXES.length).toBe(34);
+    expect(REQUIRED_INDEXES.length).toBe(37);
   });
 
   it('documents table has metadata columns', () => {

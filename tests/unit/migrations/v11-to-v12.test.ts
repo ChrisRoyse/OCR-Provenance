@@ -374,7 +374,7 @@ describe('Migration v11 to v12', () => {
     migrateToLatest(db);
 
     const version = (db.prepare('SELECT version FROM schema_version').get() as { version: number }).version;
-    expect(version).toBe(13);
+    expect(version).toBe(14);
   });
 
   it.skipIf(!sqliteVecAvailable)('idempotent - running twice does not error', () => {
@@ -383,7 +383,7 @@ describe('Migration v11 to v12', () => {
     expect(() => migrateToLatest(db)).not.toThrow();
 
     const version = (db.prepare('SELECT version FROM schema_version').get() as { version: number }).version;
-    expect(version).toBe(13);
+    expect(version).toBe(14);
   });
 
   it.skipIf(!sqliteVecAvailable)('can insert into uploaded_files after migration', () => {

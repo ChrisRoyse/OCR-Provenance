@@ -544,7 +544,8 @@ export class ProvenanceVerifier {
 
       case ProvenanceType.EXTRACTION:
       case ProvenanceType.FORM_FILL:
-      case ProvenanceType.ENTITY_EXTRACTION: {
+      case ProvenanceType.ENTITY_EXTRACTION:
+      case ProvenanceType.COMPARISON: {
         // Content verification not yet implemented for these types
         throw new VerifierError(
           `Content verification not yet implemented for provenance type: ${record.type}`,
