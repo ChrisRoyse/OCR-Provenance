@@ -50,7 +50,7 @@ function csvEscape(field: string | number | null | undefined): string {
 }
 
 /** Detected item types from findProvenanceId - includes 'provenance' for direct provenance ID lookups */
-type DetectedItemType = 'document' | 'chunk' | 'embedding' | 'ocr_result' | 'image' | 'provenance';
+type DetectedItemType = 'document' | 'chunk' | 'embedding' | 'ocr_result' | 'image' | 'comparison' | 'provenance';
 
 /**
  * Find provenance ID from an item of any type.
@@ -79,6 +79,13 @@ function findProvenanceId(
   const ocrResult = getOCRResult(dbConn, itemId);
   if (ocrResult && ocrResult.provenance_id) {
     return { provenanceId: ocrResult.provenance_id, itemType: 'ocr_result' };
+  }
+
+  const comparison = dbConn
+    .prepare('SELECT provenance_id FROM comparisons WHERE id = ?')
+    .get(itemId) as { provenance_id: string } | undefined;
+  if (comparison) {
+    return { provenanceId: comparison.provenance_id, itemType: 'comparison' };
   }
 
   const prov = db.getProvenance(itemId);
@@ -119,6 +126,11 @@ export async function handleProvenanceGet(
     } else if (itemType === 'ocr_result') {
       const ocr = getOCRResult(db.getConnection(), input.item_id);
       provenanceId = ocr?.provenance_id ?? null;
+    } else if (itemType === 'comparison') {
+      const comp = db.getConnection()
+        .prepare('SELECT provenance_id FROM comparisons WHERE id = ?')
+        .get(input.item_id) as { provenance_id: string } | undefined;
+      provenanceId = comp?.provenance_id ?? null;
     } else {
       provenanceId = input.item_id;
     }
@@ -416,8 +428,8 @@ export const provenanceTools: Record<string, ToolDefinition> = {
   'ocr_provenance_get': {
     description: 'Get the complete provenance chain for an item',
     inputSchema: {
-      item_id: z.string().min(1).describe('ID of the item (document, ocr_result, chunk, embedding, image, or provenance)'),
-      item_type: z.enum(['document', 'ocr_result', 'chunk', 'embedding', 'image', 'auto']).default('auto').describe('Type of item'),
+      item_id: z.string().min(1).describe('ID of the item (document, ocr_result, chunk, embedding, image, comparison, or provenance)'),
+      item_type: z.enum(['document', 'ocr_result', 'chunk', 'embedding', 'image', 'comparison', 'auto']).default('auto').describe('Type of item'),
     },
     handler: handleProvenanceGet,
   },

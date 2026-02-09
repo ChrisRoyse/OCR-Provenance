@@ -23,6 +23,7 @@ import {
 } from '../utils/validation.js';
 import { documentNotFoundError } from '../server/errors.js';
 import { formatResponse, handleError, type ToolResponse, type ToolDefinition } from './shared.js';
+import { getComparisonSummariesByDocument } from '../services/storage/database/comparison-operations.js';
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // DOCUMENT TOOL HANDLERS
@@ -153,6 +154,19 @@ export async function handleDocumentGet(
         created_at: p.created_at,
       }));
     }
+
+    // Comparison context: show all comparisons referencing this document
+    const comparisons = getComparisonSummariesByDocument(db.getConnection(), doc.id);
+    result.comparisons = {
+      total: comparisons.length,
+      items: comparisons.map(c => ({
+        comparison_id: c.id,
+        compared_with: c.document_id_1 === doc.id ? c.document_id_2 : c.document_id_1,
+        similarity_ratio: c.similarity_ratio,
+        summary: c.summary,
+        created_at: c.created_at,
+      })),
+    };
 
     return formatResponse(successResult(result));
   } catch (error) {

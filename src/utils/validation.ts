@@ -90,7 +90,7 @@ export const ProcessingStatus = z.enum(['pending', 'processing', 'complete', 'fa
 /**
  * Item type for provenance lookups
  */
-export const ItemType = z.enum(['document', 'ocr_result', 'chunk', 'embedding', 'image', 'auto']);
+export const ItemType = z.enum(['document', 'ocr_result', 'chunk', 'embedding', 'image', 'comparison', 'auto']);
 
 /**
  * Provenance output format

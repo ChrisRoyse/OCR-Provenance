@@ -72,6 +72,34 @@ export function listComparisons(
 }
 
 /**
+ * Summary of a comparison (excludes large JSON diff fields)
+ */
+export interface ComparisonSummary {
+  id: string;
+  document_id_1: string;
+  document_id_2: string;
+  similarity_ratio: number;
+  summary: string;
+  created_at: string;
+  processing_duration_ms: number | null;
+}
+
+/**
+ * Get comparison summaries for a document (lightweight: no JSON blobs)
+ */
+export function getComparisonSummariesByDocument(
+  db: Database.Database,
+  documentId: string
+): ComparisonSummary[] {
+  return db.prepare(
+    `SELECT id, document_id_1, document_id_2, similarity_ratio, summary, created_at, processing_duration_ms
+     FROM comparisons
+     WHERE document_id_1 = ? OR document_id_2 = ?
+     ORDER BY created_at DESC`
+  ).all(documentId, documentId) as ComparisonSummary[];
+}
+
+/**
  * Delete a single comparison by ID
  */
 export function deleteComparison(db: Database.Database, id: string): boolean {

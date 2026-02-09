@@ -159,6 +159,7 @@ function buildStatsResponse(
     failed_documents: stats.documents_by_status.failed,
     extraction_count: stats.total_extractions,
     form_fill_count: stats.total_form_fills,
+    comparison_count: stats.total_comparisons,
     vector_count: vector.getVectorCount(),
     ocr_quality: stats.ocr_quality,
     costs: stats.costs,

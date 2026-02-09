@@ -22,6 +22,7 @@ import {
   getImageStats,
   getImagesByDocument,
 } from '../services/storage/database/image-operations.js';
+import { getComparisonSummariesByDocument } from '../services/storage/database/comparison-operations.js';
 
 
 // ===============================================================================
@@ -166,6 +167,14 @@ export async function handleEvaluationReport(
       ? totalConfidence / confidenceCount
       : 0;
 
+    // Comparison statistics
+    const comparisonSummary = db.getConnection().prepare(`
+      SELECT COUNT(*) as count, AVG(similarity_ratio) as avg_similarity
+      FROM comparisons
+    `).get() as { count: number; avg_similarity: number | null };
+    const comparisonCount = comparisonSummary.count;
+    const avgComparisonSimilarity = comparisonSummary.avg_similarity;
+
     // Generate markdown report
     const report = generateMarkdownReport({
       dbStats,
@@ -175,6 +184,7 @@ export async function handleEvaluationReport(
       imageTypeDistribution,
       overallAvgConfidence,
       confidenceThreshold,
+      comparisonStats: { total: comparisonCount, avg_similarity: avgComparisonSimilarity },
     });
 
     // Save to file if path provided
@@ -197,6 +207,8 @@ export async function handleEvaluationReport(
         vlm_failed: imageStats.failed,
         overall_avg_confidence: overallAvgConfidence,
         low_confidence_count: lowConfidenceImages.length,
+        total_comparisons: comparisonCount,
+        avg_comparison_similarity: avgComparisonSimilarity,
       },
       image_type_distribution: imageTypeDistribution,
       output_path: outputPath || null,
@@ -312,6 +324,20 @@ export async function handleDocumentReport(
           provenance_id: e.provenance_id,
         })),
       },
+      comparisons: (() => {
+        const comps = getComparisonSummariesByDocument(db.getConnection(), documentId);
+        return {
+          total: comps.length,
+          items: comps.map(c => ({
+            id: c.id,
+            compared_with: c.document_id_1 === documentId ? c.document_id_2 : c.document_id_1,
+            similarity_ratio: c.similarity_ratio,
+            summary: c.summary,
+            created_at: c.created_at,
+            processing_duration_ms: c.processing_duration_ms,
+          })),
+        };
+      })(),
     }));
 
   } catch (error) {
@@ -373,6 +399,18 @@ export async function handleQualitySummary(
       'SELECT COALESCE(SUM(cost_cents), 0) as total FROM form_fills'
     ).get() as { total: number }).total;
 
+    const comparisonStats = db.getConnection().prepare(`
+      SELECT
+        COUNT(*) as total,
+        AVG(similarity_ratio) as avg_similarity,
+        MIN(similarity_ratio) as min_similarity,
+        MAX(similarity_ratio) as max_similarity
+      FROM comparisons
+    `).get() as {
+      total: number; avg_similarity: number | null; min_similarity: number | null;
+      max_similarity: number | null;
+    };
+
     return formatResponse(successResult({
       documents: {
         total: dbStats.total_documents,
@@ -429,6 +467,12 @@ export async function handleQualitySummary(
       },
       form_fills: {
         total: dbStats.total_form_fills,
+      },
+      comparisons: {
+        total: comparisonStats.total,
+        avg_similarity: comparisonStats.total > 0 ? comparisonStats.avg_similarity : null,
+        min_similarity: comparisonStats.total > 0 ? comparisonStats.min_similarity : null,
+        max_similarity: comparisonStats.total > 0 ? comparisonStats.max_similarity : null,
       },
     }));
 
@@ -487,6 +531,20 @@ async function handleCostSummary(params: Record<string, unknown>): Promise<ToolR
       `).all();
     }
 
+    // Comparison processing durations (compute-only, no API cost)
+    const compDurations = conn.prepare(`
+      SELECT COUNT(*) as count,
+             COALESCE(SUM(processing_duration_ms), 0) as total_ms,
+             AVG(processing_duration_ms) as avg_ms
+      FROM comparisons
+    `).get() as { count: number; total_ms: number; avg_ms: number | null };
+
+    result.comparison_compute = {
+      total_comparisons: compDurations.count,
+      total_duration_ms: compDurations.total_ms,
+      avg_duration_ms: compDurations.avg_ms,
+    };
+
     return formatResponse(successResult(result));
   } catch (error) {
     return handleError(error);
@@ -505,6 +563,7 @@ interface ReportParams {
   imageTypeDistribution: Record<string, number>;
   overallAvgConfidence: number;
   confidenceThreshold: number;
+  comparisonStats: { total: number; avg_similarity: number | null };
 }
 
 function generateMarkdownReport(params: ReportParams): string {
@@ -611,6 +670,7 @@ These images may need manual review or reprocessing.
 - **Text Embeddings**: ${dbStats.total_embeddings} embeddings stored
 - **Structured Extractions**: ${dbStats.total_extractions} extractions
 - **Form Fills**: ${dbStats.total_form_fills} form fills
+- **Comparisons**: ${params.comparisonStats.total} document comparisons
 
 ### VLM Processing Rate
 
