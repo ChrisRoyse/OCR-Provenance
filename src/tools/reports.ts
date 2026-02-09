@@ -438,6 +438,62 @@ export async function handleQualitySummary(
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
+// COST ANALYTICS HANDLER
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/**
+ * Handle ocr_cost_summary - Get cost analytics for OCR and form fill operations
+ */
+async function handleCostSummary(params: Record<string, unknown>): Promise<ToolResponse> {
+  try {
+    const input = validateInput(z.object({
+      group_by: z.enum(['document', 'mode', 'month', 'total']).default('total'),
+    }), params);
+    const { db } = requireDatabase();
+    const conn = db.getConnection();
+
+    const totals = conn.prepare(`
+      SELECT
+        (SELECT COALESCE(SUM(cost_cents), 0) FROM ocr_results) as ocr_cost,
+        (SELECT COALESCE(SUM(cost_cents), 0) FROM form_fills) as form_fill_cost,
+        (SELECT COUNT(*) FROM ocr_results WHERE cost_cents > 0) as ocr_count,
+        (SELECT COUNT(*) FROM form_fills WHERE cost_cents > 0) as form_fill_count
+    `).get() as { ocr_cost: number; form_fill_cost: number; ocr_count: number; form_fill_count: number };
+
+    const result: Record<string, unknown> = {
+      total_cost_cents: totals.ocr_cost + totals.form_fill_cost,
+      total_cost_dollars: ((totals.ocr_cost + totals.form_fill_cost) / 100).toFixed(2),
+      ocr: { total_cents: totals.ocr_cost, document_count: totals.ocr_count },
+      form_fill: { total_cents: totals.form_fill_cost, fill_count: totals.form_fill_count },
+    };
+
+    if (input.group_by === 'mode') {
+      result.by_mode = conn.prepare(`
+        SELECT datalab_mode as mode, COUNT(*) as count, COALESCE(SUM(cost_cents), 0) as total_cents
+        FROM ocr_results WHERE cost_cents > 0 GROUP BY datalab_mode
+      `).all();
+    } else if (input.group_by === 'document') {
+      result.by_document = conn.prepare(`
+        SELECT d.file_name, o.datalab_mode as mode, o.cost_cents, o.page_count
+        FROM ocr_results o JOIN documents d ON d.id = o.document_id
+        WHERE o.cost_cents > 0 ORDER BY o.cost_cents DESC LIMIT 50
+      `).all();
+    } else if (input.group_by === 'month') {
+      result.by_month = conn.prepare(`
+        SELECT strftime('%Y-%m', processing_completed_at) as month,
+               COUNT(*) as count, COALESCE(SUM(cost_cents), 0) as total_cents
+        FROM ocr_results WHERE cost_cents > 0
+        GROUP BY strftime('%Y-%m', processing_completed_at) ORDER BY month DESC
+      `).all();
+    }
+
+    return formatResponse(successResult(result));
+  } catch (error) {
+    return handleError(error);
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
 // HELPER FUNCTIONS
 // ═══════════════════════════════════════════════════════════════════════════════
 
@@ -599,5 +655,14 @@ export const reportTools: Record<string, ToolDefinition> = {
     description: 'Get quick quality summary across all documents and images',
     inputSchema: {},
     handler: handleQualitySummary,
+  },
+
+  'ocr_cost_summary': {
+    description: 'Get cost analytics for OCR and form fill operations',
+    inputSchema: {
+      group_by: z.enum(['document', 'mode', 'month', 'total']).default('total')
+        .describe('How to group cost data'),
+    },
+    handler: handleCostSummary,
   },
 };

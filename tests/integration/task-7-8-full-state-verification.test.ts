@@ -101,7 +101,7 @@ describe('FULL STATE VERIFICATION: Tasks 7 & 8', () => {
       db.close();
     });
 
-    it.skipIf(!sqliteVecAvailable)('should create all 22 indexes', () => {
+    it.skipIf(!sqliteVecAvailable)('should create all required indexes', () => {
       const dbPath = join(testDir, 'index-test.db');
       const db = new Database(dbPath);
 
@@ -121,7 +121,7 @@ describe('FULL STATE VERIFICATION: Tasks 7 & 8', () => {
       console.log('\n[EVIDENCE] Indexes created:', indexNames.length);
       indexNames.forEach(name => console.log(`  - ${name}`));
 
-      expect(indexNames.length).toBe(27);
+      expect(indexNames.length).toBe(34);
       expect(indexNames).toContain('idx_documents_file_path');
       expect(indexNames).toContain('idx_documents_file_hash');
       expect(indexNames).toContain('idx_documents_status');

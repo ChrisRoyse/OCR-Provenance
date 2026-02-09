@@ -305,6 +305,17 @@ function deleteDerivedRecords(db: Database.Database, documentId: string, caller:
   // Delete from chunks
   db.prepare('DELETE FROM chunks WHERE document_id = ?').run(documentId);
 
+  // Delete entity mentions and entities (entity_mentions.entity_id -> entities.id)
+  try {
+    db.prepare(
+      'DELETE FROM entity_mentions WHERE entity_id IN (SELECT id FROM entities WHERE document_id = ?)'
+    ).run(documentId);
+    db.prepare('DELETE FROM entities WHERE document_id = ?').run(documentId);
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : String(e);
+    if (!msg.includes('no such table')) throw e;
+  }
+
   // Delete from extractions (BEFORE ocr_results: extractions.ocr_result_id REFERENCES ocr_results(id))
   db.prepare('DELETE FROM extractions WHERE document_id = ?').run(documentId);
 

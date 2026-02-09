@@ -2,7 +2,7 @@
  * OCR Provenance MCP Server
  *
  * Entry point for the MCP server using stdio transport.
- * Exposes 50 OCR, search, and provenance tools via JSON-RPC.
+ * Exposes 64 OCR, search, and provenance tools via JSON-RPC.
  *
  * CRITICAL: NEVER use console.log() - stdout is reserved for JSON-RPC protocol.
  * Use console.error() for all logging.
@@ -34,6 +34,8 @@ import { extractionTools } from './tools/extraction.js';
 import { reportTools } from './tools/reports.js';
 import { formFillTools } from './tools/form-fill.js';
 import { structuredExtractionTools } from './tools/extraction-structured.js';
+import { fileManagementTools } from './tools/file-management.js';
+import { entityAnalysisTools } from './tools/entity-analysis.js';
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // SERVER INITIALIZATION
@@ -54,7 +56,7 @@ for (const [name, tool] of Object.entries(databaseTools)) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// INGESTION TOOLS (6) - Extracted to src/tools/ingestion.ts
+// INGESTION TOOLS (8) - Extracted to src/tools/ingestion.ts
 // ═══════════════════════════════════════════════════════════════════════════════
 
 // Register ingestion tools from extracted module
@@ -63,7 +65,7 @@ for (const [name, tool] of Object.entries(ingestionTools)) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// SEARCH TOOLS (4) - Extracted to src/tools/search.ts
+// SEARCH TOOLS (5) - Extracted to src/tools/search.ts
 // ═══════════════════════════════════════════════════════════════════════════════
 
 // Register search tools from extracted module
@@ -135,7 +137,7 @@ for (const [name, tool] of Object.entries(extractionTools)) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// REPORT TOOLS (3) - Extracted to src/tools/reports.ts
+// REPORT TOOLS (4) - Extracted to src/tools/reports.ts
 // ═══════════════════════════════════════════════════════════════════════════════
 
 // Register report tools from extracted module
@@ -162,6 +164,24 @@ for (const [name, tool] of Object.entries(structuredExtractionTools)) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
+// FILE MANAGEMENT TOOLS (5) - Extracted to src/tools/file-management.ts
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// Register file management tools from extracted module
+for (const [name, tool] of Object.entries(fileManagementTools)) {
+  server.tool(name, tool.description, tool.inputSchema as Record<string, unknown>, tool.handler);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// ENTITY ANALYSIS TOOLS (4) - Extracted to src/tools/entity-analysis.ts
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// Register entity analysis tools from extracted module
+for (const [name, tool] of Object.entries(entityAnalysisTools)) {
+  server.tool(name, tool.description, tool.inputSchema as Record<string, unknown>, tool.handler);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
 // SERVER STARTUP
 // ═══════════════════════════════════════════════════════════════════════════════
 
@@ -169,7 +189,7 @@ async function main() {
   const transport = new StdioServerTransport();
   await server.connect(transport);
   console.error('OCR Provenance MCP Server running on stdio');
-  console.error('Tools registered: 50');
+  console.error('Tools registered: 64');
 }
 
 main().catch((error) => {
