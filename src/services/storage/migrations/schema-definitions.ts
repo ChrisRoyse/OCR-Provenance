@@ -106,6 +106,7 @@ CREATE TABLE IF NOT EXISTS documents (
   doc_title TEXT,
   doc_author TEXT,
   doc_subject TEXT,
+  datalab_file_id TEXT,
   FOREIGN KEY (provenance_id) REFERENCES provenance(id)
 )
 `;
