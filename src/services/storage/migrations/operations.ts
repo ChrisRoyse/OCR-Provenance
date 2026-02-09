@@ -23,6 +23,7 @@ import {
   CREATE_UPLOADED_FILES_TABLE,
   CREATE_ENTITIES_TABLE,
   CREATE_ENTITY_MENTIONS_TABLE,
+  CREATE_COMPARISONS_TABLE,
 } from './schema-definitions.js';
 import {
   configurePragmas,
@@ -1015,6 +1016,11 @@ export function migrateToLatest(db: Database.Database): void {
     migrateV12ToV13(db);
     bumpVersion(13);
   }
+
+  if (currentVersion < 14) {
+    migrateV13ToV14(db);
+    bumpVersion(14);
+  }
 }
 
 /**
@@ -1373,6 +1379,103 @@ function migrateV12ToV13(db: Database.Database): void {
     const cause = error instanceof Error ? error.message : String(error);
     throw new MigrationError(
       `Failed to migrate from v12 to v13 (entity extraction): ${cause}`,
+      'migrate',
+      'provenance',
+      error
+    );
+  }
+}
+
+/**
+ * Migrate from schema version 13 to version 14
+ *
+ * Changes in v14:
+ * - provenance.type: Added 'COMPARISON' to CHECK constraint
+ * - provenance.source_type: Added 'COMPARISON' to CHECK constraint
+ * - comparisons: New table for document comparison results
+ * - 3 new indexes: idx_comparisons_doc1, idx_comparisons_doc2, idx_comparisons_created
+ *
+ * @param db - Database instance from better-sqlite3
+ * @throws MigrationError if migration fails
+ */
+function migrateV13ToV14(db: Database.Database): void {
+  try {
+    db.exec('PRAGMA foreign_keys = OFF');
+    db.exec('BEGIN TRANSACTION');
+
+    // Step 1: Recreate provenance table with COMPARISON in CHECK constraints
+    db.exec(`
+      CREATE TABLE provenance_new (
+        id TEXT PRIMARY KEY,
+        type TEXT NOT NULL CHECK (type IN ('DOCUMENT', 'OCR_RESULT', 'CHUNK', 'IMAGE', 'VLM_DESCRIPTION', 'EMBEDDING', 'EXTRACTION', 'FORM_FILL', 'ENTITY_EXTRACTION', 'COMPARISON')),
+        created_at TEXT NOT NULL,
+        processed_at TEXT NOT NULL,
+        source_file_created_at TEXT,
+        source_file_modified_at TEXT,
+        source_type TEXT NOT NULL CHECK (source_type IN ('FILE', 'OCR', 'CHUNKING', 'IMAGE_EXTRACTION', 'VLM', 'VLM_DEDUP', 'EMBEDDING', 'EXTRACTION', 'FORM_FILL', 'ENTITY_EXTRACTION', 'COMPARISON')),
+        source_path TEXT,
+        source_id TEXT,
+        root_document_id TEXT NOT NULL,
+        location TEXT,
+        content_hash TEXT NOT NULL,
+        input_hash TEXT,
+        file_hash TEXT,
+        processor TEXT NOT NULL,
+        processor_version TEXT NOT NULL,
+        processing_params TEXT NOT NULL,
+        processing_duration_ms INTEGER,
+        processing_quality_score REAL,
+        parent_id TEXT,
+        parent_ids TEXT NOT NULL,
+        chain_depth INTEGER NOT NULL,
+        chain_path TEXT,
+        FOREIGN KEY (source_id) REFERENCES provenance_new(id),
+        FOREIGN KEY (parent_id) REFERENCES provenance_new(id)
+      )
+    `);
+
+    // Step 2: Copy existing data
+    db.exec('INSERT INTO provenance_new SELECT * FROM provenance');
+
+    // Step 3: Drop old table
+    db.exec('DROP TABLE provenance');
+
+    // Step 4: Rename new table
+    db.exec('ALTER TABLE provenance_new RENAME TO provenance');
+
+    // Step 5: Recreate provenance indexes
+    db.exec('CREATE INDEX IF NOT EXISTS idx_provenance_source_id ON provenance(source_id)');
+    db.exec('CREATE INDEX IF NOT EXISTS idx_provenance_type ON provenance(type)');
+    db.exec('CREATE INDEX IF NOT EXISTS idx_provenance_root_document_id ON provenance(root_document_id)');
+    db.exec('CREATE INDEX IF NOT EXISTS idx_provenance_parent_id ON provenance(parent_id)');
+
+    // Step 6: Create comparisons table
+    db.exec(CREATE_COMPARISONS_TABLE);
+
+    // Step 7: Create indexes for comparisons table
+    db.exec('CREATE INDEX IF NOT EXISTS idx_comparisons_doc1 ON comparisons(document_id_1)');
+    db.exec('CREATE INDEX IF NOT EXISTS idx_comparisons_doc2 ON comparisons(document_id_2)');
+    db.exec('CREATE INDEX IF NOT EXISTS idx_comparisons_created ON comparisons(created_at)');
+
+    db.exec('COMMIT');
+    db.exec('PRAGMA foreign_keys = ON');
+
+    // FK integrity check
+    const fkViolations = db.pragma('foreign_key_check') as unknown[];
+    if (fkViolations.length > 0) {
+      throw new Error(
+        `Foreign key integrity check failed after v13->v14 migration: ${fkViolations.length} violation(s). ` +
+        `First: ${JSON.stringify(fkViolations[0])}`
+      );
+    }
+  } catch (error) {
+    try {
+      db.exec('ROLLBACK');
+      db.exec('PRAGMA foreign_keys = ON');
+    } catch { /* ignore rollback errors */ }
+    const cause = error instanceof Error ? error.message : String(error);
+    throw new MigrationError(
+      `Failed to migrate from v13 to v14 (document comparison): ${cause}`,
       'migrate',
       'provenance',
       error

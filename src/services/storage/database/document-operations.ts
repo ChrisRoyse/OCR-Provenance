@@ -305,6 +305,9 @@ function deleteDerivedRecords(db: Database.Database, documentId: string, caller:
   // Delete from chunks
   db.prepare('DELETE FROM chunks WHERE document_id = ?').run(documentId);
 
+  // Delete comparisons referencing this document
+  db.prepare('DELETE FROM comparisons WHERE document_id_1 = ? OR document_id_2 = ?').run(documentId, documentId);
+
   // Delete entity mentions and entities (entity_mentions.entity_id -> entities.id)
   try {
     db.prepare(

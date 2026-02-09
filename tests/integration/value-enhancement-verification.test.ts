@@ -82,14 +82,14 @@ describe.skipIf(!sqliteVecAvailable)('VALUE ENHANCEMENT VERIFICATION: Phases 1-5
 
   describe('Phase 1: Schema & Quality/Cost Analytics', () => {
 
-    it('should have schema version 13', () => {
+    it('should have schema version 14', () => {
       const row = db.prepare('SELECT version FROM schema_version WHERE id = 1').get() as { version: number };
       expect(row).toBeDefined();
-      expect(row.version).toBe(13);
+      expect(row.version).toBe(14);
       expect(row.version).toBe(SCHEMA_VERSION);
     });
 
-    it('should have all 18 required tables', () => {
+    it('should have all 19 required tables', () => {
       const tables = db.prepare(
         "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'"
       ).all() as Array<{ name: string }>;
@@ -98,10 +98,10 @@ describe.skipIf(!sqliteVecAvailable)('VALUE ENHANCEMENT VERIFICATION: Phases 1-5
       for (const required of REQUIRED_TABLES) {
         expect(tableNames).toContain(required);
       }
-      expect(REQUIRED_TABLES.length).toBe(18);
+      expect(REQUIRED_TABLES.length).toBe(19);
     });
 
-    it('should have all 34 required indexes', () => {
+    it('should have all 37 required indexes', () => {
       const indexes = db.prepare(
         "SELECT name FROM sqlite_master WHERE type='index' AND name LIKE 'idx_%'"
       ).all() as Array<{ name: string }>;
@@ -110,8 +110,8 @@ describe.skipIf(!sqliteVecAvailable)('VALUE ENHANCEMENT VERIFICATION: Phases 1-5
       for (const required of REQUIRED_INDEXES) {
         expect(indexNames).toContain(required);
       }
-      expect(REQUIRED_INDEXES.length).toBe(34);
-      expect(indexNames.length).toBeGreaterThanOrEqual(34);
+      expect(REQUIRED_INDEXES.length).toBe(37);
+      expect(indexNames.length).toBeGreaterThanOrEqual(37);
     });
 
     it('should filter documents by quality score (QW-2)', () => {

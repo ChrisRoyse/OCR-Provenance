@@ -8,7 +8,7 @@
  */
 
 /** Current schema version */
-export const SCHEMA_VERSION = 13;
+export const SCHEMA_VERSION = 14;
 
 /**
  * Database configuration pragmas for optimal performance and safety
@@ -40,12 +40,12 @@ CREATE TABLE IF NOT EXISTS schema_version (
 export const CREATE_PROVENANCE_TABLE = `
 CREATE TABLE IF NOT EXISTS provenance (
   id TEXT PRIMARY KEY,
-  type TEXT NOT NULL CHECK (type IN ('DOCUMENT', 'OCR_RESULT', 'CHUNK', 'IMAGE', 'VLM_DESCRIPTION', 'EMBEDDING', 'EXTRACTION', 'FORM_FILL', 'ENTITY_EXTRACTION')),
+  type TEXT NOT NULL CHECK (type IN ('DOCUMENT', 'OCR_RESULT', 'CHUNK', 'IMAGE', 'VLM_DESCRIPTION', 'EMBEDDING', 'EXTRACTION', 'FORM_FILL', 'ENTITY_EXTRACTION', 'COMPARISON')),
   created_at TEXT NOT NULL,
   processed_at TEXT NOT NULL,
   source_file_created_at TEXT,
   source_file_modified_at TEXT,
-  source_type TEXT NOT NULL CHECK (source_type IN ('FILE', 'OCR', 'CHUNKING', 'IMAGE_EXTRACTION', 'VLM', 'VLM_DEDUP', 'EMBEDDING', 'EXTRACTION', 'FORM_FILL', 'ENTITY_EXTRACTION')),
+  source_type TEXT NOT NULL CHECK (source_type IN ('FILE', 'OCR', 'CHUNKING', 'IMAGE_EXTRACTION', 'VLM', 'VLM_DEDUP', 'EMBEDDING', 'EXTRACTION', 'FORM_FILL', 'ENTITY_EXTRACTION', 'COMPARISON')),
   source_path TEXT,
   source_id TEXT,
   root_document_id TEXT NOT NULL,
@@ -472,6 +472,26 @@ CREATE TABLE IF NOT EXISTS entity_mentions (
 )`;
 
 /**
+ * Comparisons table - document comparison results
+ * Provenance depth: 2 (parallel to CHUNK, after OCR_RESULT)
+ */
+export const CREATE_COMPARISONS_TABLE = `
+CREATE TABLE IF NOT EXISTS comparisons (
+  id TEXT PRIMARY KEY NOT NULL,
+  document_id_1 TEXT NOT NULL REFERENCES documents(id),
+  document_id_2 TEXT NOT NULL REFERENCES documents(id),
+  similarity_ratio REAL NOT NULL,
+  text_diff_json TEXT NOT NULL,
+  structural_diff_json TEXT NOT NULL,
+  entity_diff_json TEXT NOT NULL,
+  summary TEXT NOT NULL,
+  content_hash TEXT NOT NULL,
+  provenance_id TEXT NOT NULL REFERENCES provenance(id),
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  processing_duration_ms INTEGER
+)`;
+
+/**
  * All required indexes for query performance
  */
 export const CREATE_INDEXES = [
@@ -530,6 +550,11 @@ export const CREATE_INDEXES = [
   'CREATE INDEX IF NOT EXISTS idx_entities_entity_type ON entities(entity_type)',
   'CREATE INDEX IF NOT EXISTS idx_entities_normalized_text ON entities(normalized_text)',
   'CREATE INDEX IF NOT EXISTS idx_entity_mentions_entity_id ON entity_mentions(entity_id)',
+
+  // Comparison indexes
+  'CREATE INDEX IF NOT EXISTS idx_comparisons_doc1 ON comparisons(document_id_1)',
+  'CREATE INDEX IF NOT EXISTS idx_comparisons_doc2 ON comparisons(document_id_2)',
+  'CREATE INDEX IF NOT EXISTS idx_comparisons_created ON comparisons(created_at)',
 ] as const;
 
 /**
@@ -548,6 +573,7 @@ export const TABLE_DEFINITIONS = [
   { name: 'uploaded_files', sql: CREATE_UPLOADED_FILES_TABLE },
   { name: 'entities', sql: CREATE_ENTITIES_TABLE },
   { name: 'entity_mentions', sql: CREATE_ENTITY_MENTIONS_TABLE },
+  { name: 'comparisons', sql: CREATE_COMPARISONS_TABLE },
 ] as const;
 
 /**
@@ -572,6 +598,7 @@ export const REQUIRED_TABLES = [
   'uploaded_files',
   'entities',
   'entity_mentions',
+  'comparisons',
 ] as const;
 
 /**
@@ -612,4 +639,7 @@ export const REQUIRED_INDEXES = [
   'idx_entities_entity_type',
   'idx_entities_normalized_text',
   'idx_entity_mentions_entity_id',
+  'idx_comparisons_doc1',
+  'idx_comparisons_doc2',
+  'idx_comparisons_created',
 ] as const;

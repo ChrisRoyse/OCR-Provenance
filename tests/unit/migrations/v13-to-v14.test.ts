@@ -1,12 +1,10 @@
 /**
- * Migration v12 to v13 Tests
+ * Migration v13 to v14 Tests
  *
- * Tests the v12->v13 migration which adds:
- * - ENTITY_EXTRACTION to provenance type and source_type CHECK constraints
- * - entities table for named entity storage
- * - entity_mentions table for occurrence tracking
- * - 4 new indexes: idx_entities_document_id, idx_entities_entity_type,
- *   idx_entities_normalized_text, idx_entity_mentions_entity_id
+ * Tests the v13->v14 migration which adds:
+ * - COMPARISON to provenance type and source_type CHECK constraints
+ * - comparisons table for document comparison results
+ * - 3 new indexes: idx_comparisons_doc1, idx_comparisons_doc2, idx_comparisons_created
  *
  * Uses REAL databases (better-sqlite3 temp files), NO mocks.
  */
@@ -21,17 +19,20 @@ import {
   closeDb,
   getIndexNames,
   getTableNames,
+  getTableColumns,
+  insertTestProvenance,
+  insertTestDocument,
 } from './helpers.js';
 import { migrateToLatest } from '../../../src/services/storage/migrations/operations.js';
 
 const sqliteVecAvailable = isSqliteVecAvailable();
 
-describe('Migration v12 to v13', () => {
+describe('Migration v13 to v14 (Document Comparison)', () => {
   let tmpDir: string;
   let db: Database.Database;
 
   beforeEach(() => {
-    tmpDir = createTestDir('ocr-mig-v13');
+    tmpDir = createTestDir('ocr-mig-v14');
     const result = createTestDb(tmpDir);
     db = result.db;
   });
@@ -42,10 +43,10 @@ describe('Migration v12 to v13', () => {
   });
 
   /**
-   * Create a minimal but valid v12 schema.
-   * v12 = v11 + uploaded_files table + datalab_file_id column on documents.
+   * Create a minimal but valid v13 schema.
+   * v13 = v12 + entities + entity_mentions + ENTITY_EXTRACTION in provenance CHECK.
    */
-  function createV12Schema(): void {
+  function createV13Schema(): void {
     // eslint-disable-next-line @typescript-eslint/no-require-imports
     const sqliteVec = require('sqlite-vec');
     sqliteVec.load(db);
@@ -61,19 +62,19 @@ describe('Migration v12 to v13', () => {
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL
       );
-      INSERT INTO schema_version VALUES (1, 12, datetime('now'), datetime('now'));
+      INSERT INTO schema_version VALUES (1, 13, datetime('now'), datetime('now'));
     `);
 
-    // Provenance (v8+ CHECK constraints, no ENTITY_EXTRACTION)
+    // Provenance (v13 CHECK constraints: includes ENTITY_EXTRACTION but NOT COMPARISON)
     db.exec(`
       CREATE TABLE provenance (
         id TEXT PRIMARY KEY,
-        type TEXT NOT NULL CHECK (type IN ('DOCUMENT', 'OCR_RESULT', 'CHUNK', 'IMAGE', 'VLM_DESCRIPTION', 'EMBEDDING', 'EXTRACTION', 'FORM_FILL')),
+        type TEXT NOT NULL CHECK (type IN ('DOCUMENT', 'OCR_RESULT', 'CHUNK', 'IMAGE', 'VLM_DESCRIPTION', 'EMBEDDING', 'EXTRACTION', 'FORM_FILL', 'ENTITY_EXTRACTION')),
         created_at TEXT NOT NULL,
         processed_at TEXT NOT NULL,
         source_file_created_at TEXT,
         source_file_modified_at TEXT,
-        source_type TEXT NOT NULL CHECK (source_type IN ('FILE', 'OCR', 'CHUNKING', 'IMAGE_EXTRACTION', 'VLM', 'VLM_DEDUP', 'EMBEDDING', 'EXTRACTION', 'FORM_FILL')),
+        source_type TEXT NOT NULL CHECK (source_type IN ('FILE', 'OCR', 'CHUNKING', 'IMAGE_EXTRACTION', 'VLM', 'VLM_DEDUP', 'EMBEDDING', 'EXTRACTION', 'FORM_FILL', 'ENTITY_EXTRACTION')),
         source_path TEXT,
         source_id TEXT,
         root_document_id TEXT NOT NULL,
@@ -111,7 +112,7 @@ describe('Migration v12 to v13', () => {
       INSERT INTO database_metadata VALUES (1, 'test', '1.0.0', datetime('now'), datetime('now'), 0, 0, 0, 0);
     `);
 
-    // Documents (v12: includes datalab_file_id)
+    // Documents (v12+: includes datalab_file_id)
     db.exec(`
       CREATE TABLE documents (
         id TEXT PRIMARY KEY,
@@ -283,12 +284,42 @@ describe('Migration v12 to v13', () => {
       );
     `);
 
+    // Entities (v13)
+    db.exec(`
+      CREATE TABLE entities (
+        id TEXT PRIMARY KEY NOT NULL,
+        document_id TEXT NOT NULL REFERENCES documents(id),
+        entity_type TEXT NOT NULL CHECK (entity_type IN ('person', 'organization', 'date', 'amount', 'case_number', 'location', 'statute', 'exhibit', 'other')),
+        raw_text TEXT NOT NULL,
+        normalized_text TEXT NOT NULL,
+        confidence REAL NOT NULL DEFAULT 0.0,
+        metadata TEXT,
+        provenance_id TEXT NOT NULL REFERENCES provenance(id),
+        created_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+    `);
+
+    // Entity mentions (v13)
+    db.exec(`
+      CREATE TABLE entity_mentions (
+        id TEXT PRIMARY KEY NOT NULL,
+        entity_id TEXT NOT NULL REFERENCES entities(id),
+        document_id TEXT NOT NULL REFERENCES documents(id),
+        chunk_id TEXT REFERENCES chunks(id),
+        page_number INTEGER,
+        character_start INTEGER,
+        character_end INTEGER,
+        context_text TEXT,
+        created_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+    `);
+
     // FTS tables
     db.exec(`CREATE VIRTUAL TABLE chunks_fts USING fts5(text, content='chunks', content_rowid='rowid', tokenize='porter unicode61');`);
-    db.exec(`CREATE TABLE fts_index_metadata (id INTEGER PRIMARY KEY, last_rebuild_at TEXT, chunks_indexed INTEGER NOT NULL DEFAULT 0, tokenizer TEXT NOT NULL DEFAULT 'porter unicode61', schema_version INTEGER NOT NULL DEFAULT 12, content_hash TEXT);`);
-    db.exec(`INSERT INTO fts_index_metadata VALUES (1, NULL, 0, 'porter unicode61', 12, NULL);`);
-    db.exec(`INSERT INTO fts_index_metadata VALUES (2, NULL, 0, 'porter unicode61', 12, NULL);`);
-    db.exec(`INSERT INTO fts_index_metadata VALUES (3, NULL, 0, 'porter unicode61', 12, NULL);`);
+    db.exec(`CREATE TABLE fts_index_metadata (id INTEGER PRIMARY KEY, last_rebuild_at TEXT, chunks_indexed INTEGER NOT NULL DEFAULT 0, tokenizer TEXT NOT NULL DEFAULT 'porter unicode61', schema_version INTEGER NOT NULL DEFAULT 13, content_hash TEXT);`);
+    db.exec(`INSERT INTO fts_index_metadata VALUES (1, NULL, 0, 'porter unicode61', 13, NULL);`);
+    db.exec(`INSERT INTO fts_index_metadata VALUES (2, NULL, 0, 'porter unicode61', 13, NULL);`);
+    db.exec(`INSERT INTO fts_index_metadata VALUES (3, NULL, 0, 'porter unicode61', 13, NULL);`);
     db.exec(`CREATE VIRTUAL TABLE vlm_fts USING fts5(original_text, content='embeddings', content_rowid='rowid', tokenize='porter unicode61');`);
     db.exec(`CREATE VIRTUAL TABLE extractions_fts USING fts5(extraction_json, content='extractions', content_rowid='rowid', tokenize='porter unicode61');`);
     db.exec(`CREATE VIRTUAL TABLE IF NOT EXISTS vec_embeddings USING vec0(embedding_id TEXT PRIMARY KEY, vector FLOAT[768]);`);
@@ -304,7 +335,7 @@ describe('Migration v12 to v13', () => {
     db.exec(`CREATE TRIGGER extractions_fts_ad AFTER DELETE ON extractions BEGIN INSERT INTO extractions_fts(extractions_fts, rowid, extraction_json) VALUES('delete', old.rowid, old.extraction_json); END;`);
     db.exec(`CREATE TRIGGER extractions_fts_au AFTER UPDATE OF extraction_json ON extractions BEGIN INSERT INTO extractions_fts(extractions_fts, rowid, extraction_json) VALUES('delete', old.rowid, old.extraction_json); INSERT INTO extractions_fts(rowid, extraction_json) VALUES (new.rowid, new.extraction_json); END;`);
 
-    // All 30 indexes from v12
+    // All 34 indexes from v13
     db.exec('CREATE INDEX idx_documents_file_path ON documents(file_path);');
     db.exec('CREATE INDEX idx_documents_file_hash ON documents(file_hash);');
     db.exec('CREATE INDEX idx_documents_status ON documents(status);');
@@ -335,130 +366,164 @@ describe('Migration v12 to v13', () => {
     db.exec('CREATE INDEX idx_uploaded_files_file_hash ON uploaded_files(file_hash);');
     db.exec('CREATE INDEX idx_uploaded_files_status ON uploaded_files(upload_status);');
     db.exec('CREATE INDEX idx_uploaded_files_datalab_file_id ON uploaded_files(datalab_file_id);');
+    db.exec('CREATE INDEX idx_entities_document_id ON entities(document_id);');
+    db.exec('CREATE INDEX idx_entities_entity_type ON entities(entity_type);');
+    db.exec('CREATE INDEX idx_entities_normalized_text ON entities(normalized_text);');
+    db.exec('CREATE INDEX idx_entity_mentions_entity_id ON entity_mentions(entity_id);');
   }
 
-  it.skipIf(!sqliteVecAvailable)('creates entities table', () => {
-    createV12Schema();
+  it.skipIf(!sqliteVecAvailable)('creates comparisons table from v13 schema', () => {
+    createV13Schema();
     migrateToLatest(db);
 
     const tables = getTableNames(db);
-    expect(tables).toContain('entities');
+    expect(tables).toContain('comparisons');
   });
 
-  it.skipIf(!sqliteVecAvailable)('creates entity_mentions table', () => {
-    createV12Schema();
+  it.skipIf(!sqliteVecAvailable)('preserves existing provenance rows during migration', () => {
+    createV13Schema();
+
+    // Insert provenance records before migration
+    const now = new Date().toISOString();
+    db.prepare(`
+      INSERT INTO provenance (id, type, created_at, processed_at, source_type, root_document_id,
+        content_hash, processor, processor_version, processing_params, parent_ids, chain_depth)
+      VALUES ('prov-pre-1', 'DOCUMENT', ?, ?, 'FILE', 'prov-pre-1',
+        'sha256:existing1', 'test', '1.0', '{}', '[]', 0)
+    `).run(now, now);
+    db.prepare(`
+      INSERT INTO provenance (id, type, created_at, processed_at, source_type, root_document_id,
+        content_hash, processor, processor_version, processing_params, parent_ids, chain_depth)
+      VALUES ('prov-pre-2', 'OCR_RESULT', ?, ?, 'OCR', 'prov-pre-1',
+        'sha256:existing2', 'datalab', '1.0', '{}', '["prov-pre-1"]', 1)
+    `).run(now, now);
+
+    const countBefore = (db.prepare('SELECT COUNT(*) as cnt FROM provenance').get() as { cnt: number }).cnt;
+
     migrateToLatest(db);
 
-    const tables = getTableNames(db);
-    expect(tables).toContain('entity_mentions');
+    const countAfter = (db.prepare('SELECT COUNT(*) as cnt FROM provenance').get() as { cnt: number }).cnt;
+    expect(countAfter).toBe(countBefore);
+
+    // Verify data integrity
+    const row1 = db.prepare('SELECT * FROM provenance WHERE id = ?').get('prov-pre-1') as { type: string; content_hash: string };
+    expect(row1).toBeDefined();
+    expect(row1.type).toBe('DOCUMENT');
+    expect(row1.content_hash).toBe('sha256:existing1');
+
+    const row2 = db.prepare('SELECT * FROM provenance WHERE id = ?').get('prov-pre-2') as { type: string; content_hash: string };
+    expect(row2).toBeDefined();
+    expect(row2.type).toBe('OCR_RESULT');
+    expect(row2.content_hash).toBe('sha256:existing2');
   });
 
-  it.skipIf(!sqliteVecAvailable)('entities table has correct columns', () => {
-    createV12Schema();
-    migrateToLatest(db);
-
-    const info = db.prepare('PRAGMA table_info(entities)').all() as { name: string }[];
-    const cols = info.map(c => c.name);
-    expect(cols).toContain('id');
-    expect(cols).toContain('document_id');
-    expect(cols).toContain('entity_type');
-    expect(cols).toContain('raw_text');
-    expect(cols).toContain('normalized_text');
-    expect(cols).toContain('confidence');
-    expect(cols).toContain('metadata');
-    expect(cols).toContain('provenance_id');
-    expect(cols).toContain('created_at');
-  });
-
-  it.skipIf(!sqliteVecAvailable)('entity_mentions table has correct columns', () => {
-    createV12Schema();
-    migrateToLatest(db);
-
-    const info = db.prepare('PRAGMA table_info(entity_mentions)').all() as { name: string }[];
-    const cols = info.map(c => c.name);
-    expect(cols).toContain('id');
-    expect(cols).toContain('entity_id');
-    expect(cols).toContain('document_id');
-    expect(cols).toContain('chunk_id');
-    expect(cols).toContain('page_number');
-    expect(cols).toContain('character_start');
-    expect(cols).toContain('character_end');
-    expect(cols).toContain('context_text');
-    expect(cols).toContain('created_at');
-  });
-
-  it.skipIf(!sqliteVecAvailable)('creates all 4 new indexes', () => {
-    createV12Schema();
-    migrateToLatest(db);
-
-    const indexes = getIndexNames(db);
-    expect(indexes).toContain('idx_entities_document_id');
-    expect(indexes).toContain('idx_entities_entity_type');
-    expect(indexes).toContain('idx_entities_normalized_text');
-    expect(indexes).toContain('idx_entity_mentions_entity_id');
-  });
-
-  it.skipIf(!sqliteVecAvailable)('provenance CHECK constraint includes ENTITY_EXTRACTION', () => {
-    createV12Schema();
+  it.skipIf(!sqliteVecAvailable)('COMPARISON type accepted in provenance after migration', () => {
+    createV13Schema();
     migrateToLatest(db);
 
     const now = new Date().toISOString();
 
-    // Should succeed: insert ENTITY_EXTRACTION provenance
+    // Should succeed: insert COMPARISON provenance
     expect(() => {
       db.prepare(`
         INSERT INTO provenance (id, type, created_at, processed_at, source_type, root_document_id,
           content_hash, processor, processor_version, processing_params, parent_ids, chain_depth)
-        VALUES ('prov-entity-1', 'ENTITY_EXTRACTION', ?, ?, 'ENTITY_EXTRACTION', 'prov-entity-1',
-          'sha256:abc', 'test', '1.0', '{}', '[]', 2)
+        VALUES ('prov-comp-1', 'COMPARISON', ?, ?, 'COMPARISON', 'prov-comp-1',
+          'sha256:comparison1', 'document-comparison', '1.0.0', '{}', '[]', 2)
       `).run(now, now);
     }).not.toThrow();
 
-    // Verify the record exists
-    const row = db.prepare('SELECT type, source_type FROM provenance WHERE id = ?').get('prov-entity-1') as { type: string; source_type: string };
-    expect(row.type).toBe('ENTITY_EXTRACTION');
-    expect(row.source_type).toBe('ENTITY_EXTRACTION');
+    // Verify the record exists in DB
+    const row = db.prepare('SELECT type, source_type FROM provenance WHERE id = ?').get('prov-comp-1') as { type: string; source_type: string };
+    expect(row.type).toBe('COMPARISON');
+    expect(row.source_type).toBe('COMPARISON');
   });
 
-  it.skipIf(!sqliteVecAvailable)('passes FK integrity check', () => {
-    createV12Schema();
-    migrateToLatest(db);
-
-    const violations = db.pragma('foreign_key_check') as unknown[];
-    expect(violations.length).toBe(0);
-  });
-
-  it.skipIf(!sqliteVecAvailable)('updates schema version to 13', () => {
-    createV12Schema();
+  it.skipIf(!sqliteVecAvailable)('schema version is 14 after migration', () => {
+    createV13Schema();
     migrateToLatest(db);
 
     const version = (db.prepare('SELECT version FROM schema_version').get() as { version: number }).version;
     expect(version).toBe(14);
   });
 
-  it.skipIf(!sqliteVecAvailable)('preserves existing provenance data', () => {
-    createV12Schema();
+  it.skipIf(!sqliteVecAvailable)('all 3 comparison indexes exist', () => {
+    createV13Schema();
+    migrateToLatest(db);
 
-    // Insert a provenance record BEFORE migration
-    const now = new Date().toISOString();
-    db.prepare(`
-      INSERT INTO provenance (id, type, created_at, processed_at, source_type, root_document_id,
-        content_hash, processor, processor_version, processing_params, parent_ids, chain_depth)
-      VALUES ('prov-existing-1', 'DOCUMENT', ?, ?, 'FILE', 'prov-existing-1',
-        'sha256:existing', 'test', '1.0', '{}', '[]', 0)
-    `).run(now, now);
+    const indexes = getIndexNames(db);
+    expect(indexes).toContain('idx_comparisons_doc1');
+    expect(indexes).toContain('idx_comparisons_doc2');
+    expect(indexes).toContain('idx_comparisons_created');
+  });
+
+  it.skipIf(!sqliteVecAvailable)('FK integrity clean after migration', () => {
+    createV13Schema();
+    migrateToLatest(db);
+
+    const violations = db.pragma('foreign_key_check') as unknown[];
+    expect(violations.length).toBe(0);
+  });
+
+  it.skipIf(!sqliteVecAvailable)('fresh database init creates v14 schema', () => {
+    // Load sqlite-vec for fresh init
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const sqliteVec = require('sqlite-vec');
+    sqliteVec.load(db);
 
     migrateToLatest(db);
 
-    // Verify existing data survived
-    const row = db.prepare('SELECT * FROM provenance WHERE id = ?').get('prov-existing-1') as { type: string; content_hash: string };
-    expect(row).toBeDefined();
-    expect(row.type).toBe('DOCUMENT');
-    expect(row.content_hash).toBe('sha256:existing');
+    const tables = getTableNames(db);
+    expect(tables).toContain('comparisons');
+    expect(tables).toContain('provenance');
+    expect(tables).toContain('documents');
+
+    const version = (db.prepare('SELECT version FROM schema_version').get() as { version: number }).version;
+    expect(version).toBe(14);
+
+    const indexes = getIndexNames(db);
+    expect(indexes).toContain('idx_comparisons_doc1');
+    expect(indexes).toContain('idx_comparisons_doc2');
+    expect(indexes).toContain('idx_comparisons_created');
   });
 
-  it.skipIf(!sqliteVecAvailable)('idempotent - running twice does not error', () => {
-    createV12Schema();
+  it.skipIf(!sqliteVecAvailable)('comparisons table has correct columns', () => {
+    createV13Schema();
+    migrateToLatest(db);
+
+    const columns = getTableColumns(db, 'comparisons');
+    expect(columns).toContain('id');
+    expect(columns).toContain('document_id_1');
+    expect(columns).toContain('document_id_2');
+    expect(columns).toContain('similarity_ratio');
+    expect(columns).toContain('text_diff_json');
+    expect(columns).toContain('structural_diff_json');
+    expect(columns).toContain('entity_diff_json');
+    expect(columns).toContain('summary');
+    expect(columns).toContain('content_hash');
+    expect(columns).toContain('provenance_id');
+    expect(columns).toContain('created_at');
+    expect(columns).toContain('processing_duration_ms');
+    expect(columns.length).toBe(12);
+  });
+
+  it.skipIf(!sqliteVecAvailable)('COMPARISON type NOT accepted before migration (v13 CHECK)', () => {
+    createV13Schema();
+
+    const now = new Date().toISOString();
+    // Should fail: v13 provenance CHECK does not include COMPARISON
+    expect(() => {
+      db.prepare(`
+        INSERT INTO provenance (id, type, created_at, processed_at, source_type, root_document_id,
+          content_hash, processor, processor_version, processing_params, parent_ids, chain_depth)
+        VALUES ('prov-bad-1', 'COMPARISON', ?, ?, 'COMPARISON', 'prov-bad-1',
+          'sha256:badcomp', 'test', '1.0', '{}', '[]', 2)
+      `).run(now, now);
+    }).toThrow();
+  });
+
+  it.skipIf(!sqliteVecAvailable)('idempotent - running migration twice does not error', () => {
+    createV13Schema();
     migrateToLatest(db);
     expect(() => migrateToLatest(db)).not.toThrow();
 
@@ -466,79 +531,77 @@ describe('Migration v12 to v13', () => {
     expect(version).toBe(14);
   });
 
-  it.skipIf(!sqliteVecAvailable)('enforces entity_type CHECK constraint', () => {
-    createV12Schema();
+  it.skipIf(!sqliteVecAvailable)('comparisons table enforces document FK constraints', () => {
+    createV13Schema();
     migrateToLatest(db);
 
     const now = new Date().toISOString();
-    // Insert provenance + document for FK
+
+    // Create provenance for the comparison
     db.prepare(`
       INSERT INTO provenance (id, type, created_at, processed_at, source_type, root_document_id,
         content_hash, processor, processor_version, processing_params, parent_ids, chain_depth)
-      VALUES ('prov-check-1', 'DOCUMENT', ?, ?, 'FILE', 'prov-check-1', 'sha256:a', 'test', '1.0', '{}', '[]', 0)
+      VALUES ('prov-fk-test', 'COMPARISON', ?, ?, 'COMPARISON', 'prov-fk-test',
+        'sha256:fktest', 'document-comparison', '1.0.0', '{}', '[]', 2)
     `).run(now, now);
-    db.prepare(`
-      INSERT INTO documents (id, file_path, file_name, file_hash, file_size, file_type, status, provenance_id, created_at)
-      VALUES ('doc-check-1', '/test/doc.pdf', 'doc.pdf', 'sha256:doc', 1024, 'pdf', 'complete', 'prov-check-1', ?)
-    `).run(now);
 
-    // Valid entity_type
+    // Should fail: document_id_1 does not exist
     expect(() => {
       db.prepare(`
-        INSERT INTO entities (id, document_id, entity_type, raw_text, normalized_text, confidence, provenance_id, created_at)
-        VALUES ('ent-1', 'doc-check-1', 'person', 'John Doe', 'john doe', 0.95, 'prov-check-1', ?)
-      `).run(now);
-    }).not.toThrow();
-
-    // Invalid entity_type
-    expect(() => {
-      db.prepare(`
-        INSERT INTO entities (id, document_id, entity_type, raw_text, normalized_text, confidence, provenance_id, created_at)
-        VALUES ('ent-bad', 'doc-check-1', 'invalid_type', 'test', 'test', 0.5, 'prov-check-1', ?)
+        INSERT INTO comparisons (id, document_id_1, document_id_2, similarity_ratio,
+          text_diff_json, structural_diff_json, entity_diff_json, summary,
+          content_hash, provenance_id, created_at, processing_duration_ms)
+        VALUES ('cmp-fk-bad', 'nonexistent-doc1', 'nonexistent-doc2', 0.5,
+          '{}', '{}', '{}', 'test summary',
+          'sha256:fkbad', 'prov-fk-test', ?, 100)
       `).run(now);
     }).toThrow();
   });
 
-  it.skipIf(!sqliteVecAvailable)('can insert and query entities and mentions', () => {
-    createV12Schema();
+  it.skipIf(!sqliteVecAvailable)('can insert and query comparison after migration', () => {
+    createV13Schema();
     migrateToLatest(db);
 
     const now = new Date().toISOString();
 
-    // Setup: provenance + document
+    // Create two documents with provenance
+    insertTestProvenance(db, 'prov-doc-a', 'DOCUMENT', 'prov-doc-a');
+    insertTestDocument(db, 'doc-a', 'prov-doc-a', 'complete');
+    insertTestProvenance(db, 'prov-doc-b', 'DOCUMENT', 'prov-doc-b');
+    insertTestDocument(db, 'doc-b', 'prov-doc-b', 'complete');
+
+    // Create comparison provenance
     db.prepare(`
       INSERT INTO provenance (id, type, created_at, processed_at, source_type, root_document_id,
         content_hash, processor, processor_version, processing_params, parent_ids, chain_depth)
-      VALUES ('prov-ent-test', 'DOCUMENT', ?, ?, 'FILE', 'prov-ent-test', 'sha256:b', 'test', '1.0', '{}', '[]', 0)
+      VALUES ('prov-cmp-1', 'COMPARISON', ?, ?, 'COMPARISON', 'prov-doc-a',
+        'sha256:cmp1hash', 'document-comparison', '1.0.0', '{}', '["prov-doc-a"]', 2)
     `).run(now, now);
+
+    // Insert comparison
+    const textDiff = JSON.stringify({ operations: [], similarity_ratio: 0.85 });
+    const structDiff = JSON.stringify({ doc1_page_count: 5, doc2_page_count: 5 });
+    const entityDiff = JSON.stringify({ doc1_total_entities: 10, doc2_total_entities: 12 });
+
     db.prepare(`
-      INSERT INTO documents (id, file_path, file_name, file_hash, file_size, file_type, status, provenance_id, created_at)
-      VALUES ('doc-ent-test', '/test/doc.pdf', 'doc.pdf', 'sha256:doc2', 1024, 'pdf', 'complete', 'prov-ent-test', ?)
-    `).run(now);
+      INSERT INTO comparisons (id, document_id_1, document_id_2, similarity_ratio,
+        text_diff_json, structural_diff_json, entity_diff_json, summary,
+        content_hash, provenance_id, created_at, processing_duration_ms)
+      VALUES ('cmp-1', 'doc-a', 'doc-b', 0.85, ?, ?, ?, 'Documents are 85% similar',
+        'sha256:cmpcontentsha', 'prov-cmp-1', ?, 250)
+    `).run(textDiff, structDiff, entityDiff, now);
 
-    // Insert entity
-    db.prepare(`
-      INSERT INTO entities (id, document_id, entity_type, raw_text, normalized_text, confidence, provenance_id, created_at)
-      VALUES ('ent-test-1', 'doc-ent-test', 'organization', 'Acme Corp', 'acme corp', 0.9, 'prov-ent-test', ?)
-    `).run(now);
+    // Query and verify
+    const row = db.prepare('SELECT * FROM comparisons WHERE id = ?').get('cmp-1') as Record<string, unknown>;
+    expect(row).toBeDefined();
+    expect(row.document_id_1).toBe('doc-a');
+    expect(row.document_id_2).toBe('doc-b');
+    expect(row.similarity_ratio).toBe(0.85);
+    expect(row.summary).toBe('Documents are 85% similar');
+    expect(row.processing_duration_ms).toBe(250);
 
-    // Insert mention
-    db.prepare(`
-      INSERT INTO entity_mentions (id, entity_id, document_id, page_number, context_text, created_at)
-      VALUES ('men-test-1', 'ent-test-1', 'doc-ent-test', 3, 'Acme Corp filed the motion...', ?)
-    `).run(now);
-
-    // Query
-    const entity = db.prepare('SELECT * FROM entities WHERE id = ?').get('ent-test-1') as Record<string, unknown>;
-    expect(entity.entity_type).toBe('organization');
-    expect(entity.normalized_text).toBe('acme corp');
-
-    const mention = db.prepare('SELECT * FROM entity_mentions WHERE entity_id = ?').get('ent-test-1') as Record<string, unknown>;
-    expect(mention.page_number).toBe(3);
-    expect(mention.context_text).toBe('Acme Corp filed the motion...');
-
-    // LIKE query on normalized_text index
-    const likeResult = db.prepare('SELECT * FROM entities WHERE normalized_text LIKE ?').all('%acme%') as Record<string, unknown>[];
-    expect(likeResult.length).toBe(1);
+    // Verify JSON round-trip
+    const parsed = JSON.parse(row.text_diff_json as string);
+    expect(parsed.similarity_ratio).toBe(0.85);
   });
 });
