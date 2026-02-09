@@ -10,6 +10,8 @@
  * @module tools/file-management
  */
 
+import { statSync } from 'fs';
+import { basename } from 'path';
 import { z } from 'zod';
 import { v4 as uuidv4 } from 'uuid';
 import { formatResponse, handleError, type ToolDefinition } from './shared.js';
@@ -17,7 +19,7 @@ import { validateInput } from '../utils/validation.js';
 import { requireDatabase } from '../server/state.js';
 import { FileManagerClient } from '../services/ocr/file-manager.js';
 import { ProvenanceType } from '../models/provenance.js';
-import { computeHash } from '../utils/hash.js';
+import { computeHash, hashFile } from '../utils/hash.js';
 import {
   insertUploadedFile,
   getUploadedFile,
@@ -27,7 +29,6 @@ import {
   updateUploadedFileDatalabInfo,
   deleteUploadedFile,
 } from '../services/storage/database/upload-operations.js';
-import { hashFile } from '../utils/hash.js';
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // INPUT SCHEMAS
@@ -120,8 +121,6 @@ async function handleFileUpload(params: Record<string, unknown>) {
     });
 
     // Insert pending record
-    const { statSync } = await import('fs');
-    const { basename } = await import('path');
     const stats = statSync(input.file_path);
 
     insertUploadedFile(conn, {
