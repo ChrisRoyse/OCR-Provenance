@@ -240,14 +240,6 @@ export class VLMService {
   }
 
   /**
-   * Process multiple images in batch with concurrency control.
-   * Uses Promise.allSettled to prevent one failure from losing all results.
-   *
-   * @param images - Array of image paths with optional context
-   * @param options - Batch options
-   * @returns Array of VLMAnalysisResult
-   */
-  /**
    * Get service status including Gemini client status.
    */
   getStatus() {

@@ -146,7 +146,7 @@ export class BM25SearchService {
       } else {
         // L-5: Treat hyphens as word separators (matching FTS5 unicode61 tokenizer)
         const parts = raw.split(/-/)
-          .map(p => p.replace(/['"()*:^~+{}\[\]\\]/g, ''))
+          .map(p => p.replace(/['"()*:^~+{}\[\]\\;@<>#!$%&|,./`?]/g, ''))
           .filter(p => p.length > 0);
         result.push(...parts);
       }

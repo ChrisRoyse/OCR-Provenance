@@ -104,7 +104,7 @@ function normalizeEntity(rawText: string, entityType: string): string {
 /**
  * Chunk text into segments of approximately maxChars characters
  */
-function chunkText(text: string, maxChars: number): string[] {
+function splitTextIntoSegments(text: string, maxChars: number): string[] {
   const chunks: string[] = [];
   let start = 0;
   while (start < text.length) {
@@ -181,7 +181,7 @@ async function handleEntityExtract(params: Record<string, unknown>) {
     }
 
     // Chunk OCR text into ~4000 char segments for Gemini
-    const textChunks = chunkText(ocrResult.extracted_text, 4000);
+    const textChunks = splitTextIntoSegments(ocrResult.extracted_text, 4000);
 
     // Build type filter instruction
     const typeFilter = input.entity_types && input.entity_types.length > 0

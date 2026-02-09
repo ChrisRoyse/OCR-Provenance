@@ -226,7 +226,7 @@ def upload_file(file_path: str, timeout: int = 300) -> UploadResult:
     logger.info("Step 1: Requesting presigned upload URL")
     upload_request_url = f"{DATALAB_BASE_URL}/api/v1/files/upload"
     upload_payload = {
-        "file_name": file_name,
+        "filename": file_name,
         "content_type": content_type,
         "file_size": file_size,
     }
