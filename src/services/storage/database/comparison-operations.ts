@@ -5,7 +5,7 @@
  */
 
 import Database from 'better-sqlite3';
-import { Comparison } from '../../../models/comparison.js';
+import type { Comparison } from '../../../models/comparison.js';
 import { runWithForeignKeyCheck } from './helpers.js';
 
 /**
@@ -56,21 +56,19 @@ export function listComparisons(
   db: Database.Database,
   options?: { document_id?: string; limit?: number; offset?: number }
 ): Comparison[] {
-  const conditions: string[] = [];
   const params: (string | number)[] = [];
+  let where = '';
 
   if (options?.document_id) {
-    conditions.push('(document_id_1 = ? OR document_id_2 = ?)');
+    where = 'WHERE document_id_1 = ? OR document_id_2 = ?';
     params.push(options.document_id, options.document_id);
   }
 
-  const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
-  const limit = options?.limit ?? 50;
-  const offset = options?.offset ?? 0;
-  params.push(limit, offset);
+  params.push(options?.limit ?? 50, options?.offset ?? 0);
 
-  const sql = `SELECT * FROM comparisons ${where} ORDER BY created_at DESC LIMIT ? OFFSET ?`;
-  return db.prepare(sql).all(...params) as Comparison[];
+  return db.prepare(
+    `SELECT * FROM comparisons ${where} ORDER BY created_at DESC LIMIT ? OFFSET ?`
+  ).all(...params) as Comparison[];
 }
 
 /**
