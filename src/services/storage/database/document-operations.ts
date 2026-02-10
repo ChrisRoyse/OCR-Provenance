@@ -305,6 +305,14 @@ function deleteDerivedRecords(db: Database.Database, documentId: string, caller:
   // Delete from chunks
   db.prepare('DELETE FROM chunks WHERE document_id = ?').run(documentId);
 
+  // Decrement cluster document_count before removing assignments
+  db.prepare(
+    `UPDATE clusters SET document_count = document_count - 1
+     WHERE id IN (SELECT cluster_id FROM document_clusters WHERE document_id = ? AND cluster_id IS NOT NULL)`
+  ).run(documentId);
+  // Delete document-cluster assignments
+  db.prepare('DELETE FROM document_clusters WHERE document_id = ?').run(documentId);
+
   // Delete comparisons referencing this document
   db.prepare('DELETE FROM comparisons WHERE document_id_1 = ? OR document_id_2 = ?').run(documentId, documentId);
 

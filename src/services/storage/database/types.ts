@@ -45,6 +45,7 @@ export interface DatabaseStats {
   total_extractions: number;
   total_form_fills: number;
   total_comparisons: number;
+  total_clusters: number;
   total_provenance: number;
   storage_size_bytes: number;
   avg_chunks_per_document: number;
