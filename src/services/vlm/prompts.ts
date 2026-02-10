@@ -115,47 +115,6 @@ Return as JSON:
 }`;
 
 /**
- * Medical document specific prompt.
- * For images from medical records, charts, or clinical documents.
- */
-export const MEDICAL_IMAGE_PROMPT = `You are analyzing an image from a medical document. Provide detailed clinical analysis.
-
-IDENTIFICATION:
-What type of medical image or document is this? (lab results, vitals chart, medication list, assessment form, imaging study, wound photo, equipment diagram, etc.)
-
-CLINICAL CONTENT:
-Describe all visible clinical information:
-- Patient identifiers (redact actual values but note their presence)
-- Dates of service, procedures, or observations
-- Measurements, values, ranges, units
-- Medications, dosages, frequencies
-- Diagnoses, conditions, assessments
-- Provider names, credentials, signatures
-
-DOCUMENTATION VALUE:
-What information is relevant for medical-legal purposes?
-Note any standard of care indicators.
-Identify any anomalies or concerning findings.
-
-Be FACTUAL. Do not provide medical advice or diagnoses.
-Note if any text is illegible.
-
-Return as JSON:
-{
-  "imageType": "string",
-  "documentCategory": "clinical|administrative|diagnostic|pharmaceutical|other",
-  "paragraph1": "string (identification)",
-  "paragraph2": "string (clinical content)",
-  "paragraph3": "string (documentation value)",
-  "extractedText": ["visible text strings"],
-  "dates": ["service dates"],
-  "medications": ["medication names if visible"],
-  "measurements": ["values with units"],
-  "providers": ["names, credentials"],
-  "confidence": 0.0-1.0
-}`;
-
-/**
  * JSON schema for structured output validation.
  * Used with Gemini's structured output mode.
  */
@@ -192,33 +151,6 @@ export const CLASSIFICATION_SCHEMA = {
     confidence: { type: 'number' },
   },
   required: ['type', 'hasText', 'textDensity', 'complexity', 'confidence'],
-};
-
-/**
- * JSON schema for deep analysis output.
- */
-export const DEEP_ANALYSIS_SCHEMA = {
-  type: 'object',
-  properties: {
-    thinkingSteps: { type: 'array', items: { type: 'string' } },
-    imageType: { type: 'string' },
-    fullDescription: { type: 'string' },
-    extractedData: {
-      type: 'object',
-      properties: {
-        text: { type: 'array', items: { type: 'string' } },
-        dates: { type: 'array', items: { type: 'string' } },
-        amounts: { type: 'array', items: { type: 'string' } },
-        names: { type: 'array', items: { type: 'string' } },
-        references: { type: 'array', items: { type: 'string' } },
-      },
-    },
-    legalSignificance: { type: 'string' },
-    medicalSignificance: { type: 'string' },
-    uncertainties: { type: 'array', items: { type: 'string' } },
-    confidence: { type: 'number' },
-  },
-  required: ['imageType', 'fullDescription', 'confidence'],
 };
 
 /**

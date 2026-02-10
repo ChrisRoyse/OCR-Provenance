@@ -1,11 +1,10 @@
 #!/usr/bin/env python3
 """
-Image Optimizer and Relevance Analyzer for OCR + VLM Pipeline.
+Image Optimizer and Relevance Analyzer for VLM Pipeline.
 
-Provides three key functions:
-1. Resize images for OCR (max 4800px width for Datalab API)
-2. Resize images for VLM (optimize token usage)
-3. Analyze image relevance to filter out logos, icons, and decorative elements
+Provides two key functions:
+1. Resize images for VLM (optimize token usage)
+2. Analyze image relevance to filter out logos, icons, and decorative elements
 
 The relevance analysis uses a multi-layer heuristic approach:
 - Layer 1: Size filtering (tiny images are likely icons)
@@ -14,17 +13,11 @@ The relevance analysis uses a multi-layer heuristic approach:
 - Layer 4: Optional VLM pre-classification for borderline cases
 
 Usage:
-    # Resize for OCR
-    python image_optimizer.py --resize-for-ocr /path/to/image.png --output /tmp/resized.png
-
     # Resize for VLM
     python image_optimizer.py --resize-for-vlm /path/to/image.png --output /tmp/resized.png
 
     # Analyze image relevance (full analysis)
     python image_optimizer.py --analyze /path/to/image.png
-
-    # Batch analyze directory
-    python image_optimizer.py --analyze-dir /path/to/images/ --min-relevance 0.5
 
 Output:
     JSON to stdout with operation results.
@@ -85,7 +78,6 @@ ICON_MAX_DIMENSION = 180         # Images this small are likely icons
 EXTREME_ASPECT_RATIO = 3.5       # Ratios > this are likely banners/decorative
 
 # OCR and VLM size limits
-OCR_MAX_WIDTH = 4800             # Datalab API limit (empirical)
 VLM_MAX_DIMENSION = 2048         # Gemini optimal size
 VLM_MAX_FILE_SIZE = 20_000_000   # 20MB Gemini limit
 
@@ -320,63 +312,6 @@ def analyze_image(image_path: str) -> ImageAnalysis:
     )
 
 
-def resize_for_ocr(
-    input_path: str,
-    output_path: str,
-    max_width: int = OCR_MAX_WIDTH
-) -> dict[str, Any]:
-    """
-    Resize an image for OCR processing if it exceeds the max width.
-
-    Args:
-        input_path: Path to input image
-        output_path: Path to save resized image
-        max_width: Maximum width in pixels (default: 4800)
-
-    Returns:
-        Dict with resize results
-    """
-    with Image.open(input_path) as img:
-        original_width, original_height = img.size
-
-        if original_width <= max_width:
-            # No resize needed, copy file
-            if input_path != output_path:
-                img.save(output_path, quality=95)
-            return {
-                "success": True,
-                "resized": False,
-                "original_width": original_width,
-                "original_height": original_height,
-                "output_width": original_width,
-                "output_height": original_height,
-                "output_path": output_path,
-            }
-
-        # Calculate new dimensions preserving aspect ratio
-        scale = max_width / original_width
-        new_width = max_width
-        new_height = int(original_height * scale)
-
-        # Resize with high quality (L-10: close resized image after save)
-        resized = img.resize((new_width, new_height), Image.Resampling.LANCZOS)
-        try:
-            resized.save(output_path, quality=95)
-        finally:
-            resized.close()
-
-    return {
-        "success": True,
-        "resized": True,
-        "original_width": original_width,
-        "original_height": original_height,
-        "output_width": new_width,
-        "output_height": new_height,
-        "scale_factor": round(scale, 4),
-        "output_path": output_path,
-    }
-
-
 def resize_for_vlm(
     input_path: str,
     output_path: str,
@@ -447,72 +382,6 @@ def resize_for_vlm(
     }
 
 
-def analyze_directory(
-    dir_path: str,
-    min_relevance: float = MIN_RELEVANCE_SCORE
-) -> dict[str, Any]:
-    """
-    Analyze all images in a directory for VLM relevance.
-
-    Returns summary statistics and per-image analysis.
-    """
-    results = {
-        "directory": dir_path,
-        "total": 0,
-        "should_vlm": 0,
-        "skip_too_small": 0,
-        "skip_logo_icon": 0,
-        "skip_decorative": 0,
-        "skip_low_relevance": 0,
-        "images": [],
-    }
-
-    image_extensions = {'.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.tiff', '.tif'}
-
-    for entry in Path(dir_path).iterdir():
-        if entry.suffix.lower() not in image_extensions:
-            continue
-
-        results["total"] += 1
-
-        try:
-            analysis = analyze_image(str(entry))
-
-            image_result = {
-                "path": str(entry),
-                "width": analysis.width,
-                "height": analysis.height,
-                "category": analysis.predicted_category.value,
-                "relevance": analysis.overall_relevance,
-                "should_vlm": analysis.should_vlm,
-            }
-
-            if analysis.skip_reason:
-                image_result["skip_reason"] = analysis.skip_reason
-
-            results["images"].append(image_result)
-
-            if analysis.should_vlm:
-                results["should_vlm"] += 1
-            elif "Too small" in (analysis.skip_reason or ""):
-                results["skip_too_small"] += 1
-            elif analysis.predicted_category in (ImageCategory.LOGO, ImageCategory.ICON):
-                results["skip_logo_icon"] += 1
-            elif analysis.predicted_category == ImageCategory.DECORATIVE:
-                results["skip_decorative"] += 1
-            else:
-                results["skip_low_relevance"] += 1
-
-        except Exception as e:
-            results["images"].append({
-                "path": str(entry),
-                "error": str(e),
-                "should_vlm": False,
-            })
-
-    return results
-
-
 def main():
     """CLI entry point."""
     parser = argparse.ArgumentParser(
@@ -521,11 +390,6 @@ def main():
 
     # Mode selection
     mode_group = parser.add_mutually_exclusive_group(required=True)
-    mode_group.add_argument(
-        "--resize-for-ocr",
-        metavar="IMAGE",
-        help="Resize image for OCR (max 4800px width)"
-    )
     mode_group.add_argument(
         "--resize-for-vlm",
         metavar="IMAGE",
@@ -536,11 +400,6 @@ def main():
         metavar="IMAGE",
         help="Analyze single image for VLM relevance"
     )
-    mode_group.add_argument(
-        "--analyze-dir",
-        metavar="DIR",
-        help="Analyze all images in directory"
-    )
 
     # Options
     parser.add_argument(
@@ -548,37 +407,16 @@ def main():
         help="Output path for resized image"
     )
     parser.add_argument(
-        "--max-width",
-        type=int,
-        default=OCR_MAX_WIDTH,
-        help=f"Max width for OCR resize (default: {OCR_MAX_WIDTH})"
-    )
-    parser.add_argument(
         "--max-dimension",
         type=int,
         default=VLM_MAX_DIMENSION,
         help=f"Max dimension for VLM resize (default: {VLM_MAX_DIMENSION})"
     )
-    parser.add_argument(
-        "--min-relevance",
-        type=float,
-        default=MIN_RELEVANCE_SCORE,
-        help=f"Minimum relevance score for VLM (default: {MIN_RELEVANCE_SCORE})"
-    )
 
     args = parser.parse_args()
 
     try:
-        if args.resize_for_ocr:
-            if not args.output:
-                print(json.dumps({
-                    "success": False,
-                    "error": "--output required for resize operations"
-                }))
-                sys.exit(1)
-            result = resize_for_ocr(args.resize_for_ocr, args.output, args.max_width)
-
-        elif args.resize_for_vlm:
+        if args.resize_for_vlm:
             if not args.output:
                 print(json.dumps({
                     "success": False,
@@ -605,10 +443,6 @@ def main():
             }
             if analysis.skip_reason:
                 result["skip_reason"] = analysis.skip_reason
-
-        elif args.analyze_dir:
-            result = analyze_directory(args.analyze_dir, args.min_relevance)
-            result["success"] = True
 
         print(json.dumps(result, indent=2))
         sys.exit(0)

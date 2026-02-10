@@ -14,10 +14,12 @@
 import type Database from 'better-sqlite3';
 import { v4 as uuidv4 } from 'uuid';
 import type { EntityType } from '../../models/entity.js';
+import type { Chunk } from '../../models/chunk.js';
 import {
   insertEntity,
   insertEntityMention,
 } from '../storage/database/entity-operations.js';
+import { getChunksByDocumentId } from '../storage/database/chunk-operations.js';
 
 /** Mapping from extraction field names to entity types */
 const FIELD_TO_ENTITY_TYPE: Record<string, EntityType> = {
@@ -98,6 +100,15 @@ export function mapExtractionEntitiesToDB(
     throw new Error(`No structured extractions found for document ${documentId}. Run ocr_extract_structured first.`);
   }
 
+  // Load OCR text and DB chunks for chunk_id mapping
+  const ocrRow = db.prepare(
+    'SELECT extracted_text FROM ocr_results WHERE document_id = ?',
+  ).get(documentId) as { extracted_text: string } | undefined;
+
+  const ocrText = ocrRow?.extracted_text ?? '';
+  const lowerOcrText = ocrText.toLowerCase();
+  const dbChunks = getChunksByDocumentId(db, documentId);
+
   let totalCreated = 0;
 
   for (const extraction of extractions) {
@@ -138,16 +149,19 @@ export function mapExtractionEntitiesToDB(
         created_at: now,
       });
 
-      // Create entity mention
+      // Map entity text to chunk via position in OCR text
+      const chunkMapping = findEntityChunkMapping(entity.text, lowerOcrText, dbChunks);
+
+      // Create entity mention with chunk mapping
       const mentionId = uuidv4();
       insertEntityMention(db, {
         id: mentionId,
         entity_id: entityId,
         document_id: documentId,
-        chunk_id: null,
-        page_number: null,
-        character_start: null,
-        character_end: null,
+        chunk_id: chunkMapping.chunk_id,
+        page_number: chunkMapping.page_number,
+        character_start: chunkMapping.character_start,
+        character_end: chunkMapping.character_end,
         context_text: `Extracted from field "${entity.field_name}"`,
         created_at: now,
       });
@@ -157,6 +171,51 @@ export function mapExtractionEntitiesToDB(
   }
 
   return { entities_created: totalCreated, extractions_processed: extractions.length };
+}
+
+/**
+ * Find chunk mapping for an entity's raw text by searching the OCR text.
+ * Uses case-insensitive search to find position, then maps to the DB chunk
+ * that covers that position.
+ *
+ * @param entityText - The entity's raw text value
+ * @param lowerOcrText - The full OCR text, pre-lowercased
+ * @param dbChunks - DB chunks ordered by chunk_index
+ * @returns Object with chunk_id, character_start, character_end, page_number or nulls
+ */
+function findEntityChunkMapping(
+  entityText: string,
+  lowerOcrText: string,
+  dbChunks: Chunk[],
+): { chunk_id: string | null; character_start: number | null; character_end: number | null; page_number: number | null } {
+  if (dbChunks.length === 0 || !entityText || lowerOcrText.length === 0) {
+    return { chunk_id: null, character_start: null, character_end: null, page_number: null };
+  }
+
+  const lowerEntity = entityText.toLowerCase().trim();
+  const pos = lowerOcrText.indexOf(lowerEntity);
+
+  if (pos === -1) {
+    return { chunk_id: null, character_start: null, character_end: null, page_number: null };
+  }
+
+  const charStart = pos;
+  const charEnd = pos + entityText.trim().length;
+
+  // Find the chunk that contains this position
+  for (const chunk of dbChunks) {
+    if (pos >= chunk.character_start && pos < chunk.character_end) {
+      return {
+        chunk_id: chunk.id,
+        character_start: charStart,
+        character_end: charEnd,
+        page_number: chunk.page_number,
+      };
+    }
+  }
+
+  // Position found but no chunk covers it (edge case)
+  return { chunk_id: null, character_start: charStart, character_end: charEnd, page_number: null };
 }
 
 interface FieldEntity {

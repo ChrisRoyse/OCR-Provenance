@@ -328,15 +328,9 @@ function createDocumentChain(): {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 describe('Task 14 Full State Verification', () => {
-  it(
+  it.skipIf(!canRunTests)(
     'HAPPY PATH: embedDocumentChunks stores embeddings with full provenance',
     async () => {
-      // Skip if requirements not met (checked at runtime, not collection time)
-      if (!canRunTests) {
-        console.log('[SKIP] Test requirements not met');
-        return;
-      }
-
       console.log('\n' + '='.repeat(80));
       console.log('HAPPY PATH TEST: Full Embedding Pipeline');
       console.log('='.repeat(80) + '\n');
@@ -490,11 +484,7 @@ describe('Task 14 Full State Verification', () => {
     120000
   );
 
-  it('EDGE CASE: Empty chunks array returns empty result', async () => {
-    if (!canRunTests) {
-      console.log('[SKIP] Test requirements not met');
-      return;
-    }
+  it.skipIf(!canRunTests)('EDGE CASE: Empty chunks array returns empty result', async () => {
     console.log('\n--- EDGE CASE: Empty chunks ---');
 
     const result = await service.embedDocumentChunks(db, vectorService, [], {
@@ -515,13 +505,9 @@ describe('Task 14 Full State Verification', () => {
     console.log('EDGE CASE: Empty chunks PASSED\n');
   });
 
-  it(
+  it.skipIf(!canRunTests)(
     'EDGE CASE: Query embedding is ephemeral (not stored)',
     async () => {
-      if (!canRunTests) {
-        console.log('[SKIP] Test requirements not met');
-        return;
-      }
       console.log('\n--- EDGE CASE: Query embedding ephemeral ---');
 
       const countBefore = vectorService.getVectorCount();
@@ -540,13 +526,9 @@ describe('Task 14 Full State Verification', () => {
     30000
   );
 
-  it(
+  it.skipIf(!canRunTests)(
     'EDGE CASE: processPendingChunks only processes pending',
     async () => {
-      if (!canRunTests) {
-        console.log('[SKIP] Test requirements not met');
-        return;
-      }
       console.log('\n--- EDGE CASE: processPendingChunks ---');
 
       // Create new document chain

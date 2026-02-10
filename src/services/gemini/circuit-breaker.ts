@@ -5,7 +5,7 @@
  * - recovery_ms: 60000 (60 seconds)
  */
 
-export enum CircuitState {
+enum CircuitState {
   CLOSED = 'CLOSED', // Normal operation
   OPEN = 'OPEN', // Failing, reject requests
   HALF_OPEN = 'HALF_OPEN', // Testing recovery

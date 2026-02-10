@@ -130,11 +130,7 @@ const UNIFORM_VEC = makeTestVector(0, 0, 0);
 describe.sequential('clustering_worker.py', () => {
   // ---- HDBSCAN tests ----
 
-  it('hdbscan with 2 obvious clusters produces correct labels', async () => {
-    if (!pythonAvailable) {
-      return expect(true).toBe(true); // skip gracefully
-    }
-
+  it.skipIf(!pythonAvailable)('hdbscan with 2 obvious clusters produces correct labels', async () => {
     const result = await runWorker({
       embeddings: [DOC_A1_VEC, DOC_A2_VEC, DOC_B1_VEC, DOC_B2_VEC],
       document_ids: ['a1', 'a2', 'b1', 'b2'],
@@ -154,11 +150,7 @@ describe.sequential('clustering_worker.py', () => {
     expect(parsed.labels[0]).not.toBe(parsed.labels[2]);
   }, 30000);
 
-  it('hdbscan: noise documents have label -1', async () => {
-    if (!pythonAvailable) {
-      return expect(true).toBe(true);
-    }
-
+  it.skipIf(!pythonAvailable)('hdbscan: noise documents have label -1', async () => {
     // min_cluster_size=3 with only 2 per group -> expect noise labels
     // Use 6 docs (3 per cluster) with min_cluster_size=4 so no cluster reaches threshold
     const extraA = makeTestVector(0, 10);
@@ -184,11 +176,7 @@ describe.sequential('clustering_worker.py', () => {
     expect(parsed.noise_indices.length).toBe(parsed.noise_count);
   }, 30000);
 
-  it('hdbscan: probabilities array length matches labels length', async () => {
-    if (!pythonAvailable) {
-      return expect(true).toBe(true);
-    }
-
+  it.skipIf(!pythonAvailable)('hdbscan: probabilities array length matches labels length', async () => {
     const result = await runWorker({
       embeddings: [DOC_A1_VEC, DOC_A2_VEC, DOC_B1_VEC, DOC_B2_VEC],
       document_ids: ['a1', 'a2', 'b1', 'b2'],
@@ -202,11 +190,7 @@ describe.sequential('clustering_worker.py', () => {
     expect(parsed.probabilities).toHaveLength(parsed.labels.length);
   }, 30000);
 
-  it('hdbscan: min_cluster_size larger than doc count -> error', async () => {
-    if (!pythonAvailable) {
-      return expect(true).toBe(true);
-    }
-
+  it.skipIf(!pythonAvailable)('hdbscan: min_cluster_size larger than doc count -> error', async () => {
     // sklearn HDBSCAN rejects min_cluster_size > n_samples with ValueError
     const result = await runWorker({
       embeddings: [DOC_A1_VEC, DOC_A2_VEC, DOC_B1_VEC],
@@ -223,11 +207,7 @@ describe.sequential('clustering_worker.py', () => {
 
   // ---- Agglomerative tests ----
 
-  it('agglomerative with n_clusters=2 produces correct labels', async () => {
-    if (!pythonAvailable) {
-      return expect(true).toBe(true);
-    }
-
+  it.skipIf(!pythonAvailable)('agglomerative with n_clusters=2 produces correct labels', async () => {
     const result = await runWorker({
       embeddings: [DOC_A1_VEC, DOC_A2_VEC, DOC_B1_VEC, DOC_B2_VEC],
       document_ids: ['a1', 'a2', 'b1', 'b2'],
@@ -247,11 +227,7 @@ describe.sequential('clustering_worker.py', () => {
     expect(parsed.labels[0]).not.toBe(parsed.labels[2]);
   }, 30000);
 
-  it('agglomerative: probabilities all 1.0', async () => {
-    if (!pythonAvailable) {
-      return expect(true).toBe(true);
-    }
-
+  it.skipIf(!pythonAvailable)('agglomerative: probabilities all 1.0', async () => {
     const result = await runWorker({
       embeddings: [DOC_A1_VEC, DOC_A2_VEC, DOC_B1_VEC, DOC_B2_VEC],
       document_ids: ['a1', 'a2', 'b1', 'b2'],
@@ -267,11 +243,7 @@ describe.sequential('clustering_worker.py', () => {
     }
   }, 30000);
 
-  it('agglomerative with linkage=ward -> error (incompatible with cosine)', async () => {
-    if (!pythonAvailable) {
-      return expect(true).toBe(true);
-    }
-
+  it.skipIf(!pythonAvailable)('agglomerative with linkage=ward -> error (incompatible with cosine)', async () => {
     const result = await runWorker({
       embeddings: [DOC_A1_VEC, DOC_A2_VEC, DOC_B1_VEC],
       document_ids: ['a1', 'a2', 'b1'],
@@ -289,11 +261,7 @@ describe.sequential('clustering_worker.py', () => {
 
   // ---- KMeans tests ----
 
-  it('kmeans with n_clusters=2 produces correct labels', async () => {
-    if (!pythonAvailable) {
-      return expect(true).toBe(true);
-    }
-
+  it.skipIf(!pythonAvailable)('kmeans with n_clusters=2 produces correct labels', async () => {
     const result = await runWorker({
       embeddings: [DOC_A1_VEC, DOC_A2_VEC, DOC_B1_VEC, DOC_B2_VEC],
       document_ids: ['a1', 'a2', 'b1', 'b2'],
@@ -315,11 +283,7 @@ describe.sequential('clustering_worker.py', () => {
 
   // ---- All identical embeddings ----
 
-  it('all identical embeddings -> 1 cluster (hdbscan allow_single_cluster)', async () => {
-    if (!pythonAvailable) {
-      return expect(true).toBe(true);
-    }
-
+  it.skipIf(!pythonAvailable)('all identical embeddings -> 1 cluster (hdbscan allow_single_cluster)', async () => {
     const result = await runWorker({
       embeddings: [UNIFORM_VEC, UNIFORM_VEC, UNIFORM_VEC],
       document_ids: ['d1', 'd2', 'd3'],
@@ -345,11 +309,7 @@ describe.sequential('clustering_worker.py', () => {
 
   // ---- Minimum case ----
 
-  it('minimum case: 2 documents works', async () => {
-    if (!pythonAvailable) {
-      return expect(true).toBe(true);
-    }
-
+  it.skipIf(!pythonAvailable)('minimum case: 2 documents works', async () => {
     // Use hdbscan for 2-doc minimum case. With allow_single_cluster=True
     // and min_cluster_size=2, HDBSCAN handles the edge case gracefully.
     const result = await runWorker({
@@ -369,11 +329,7 @@ describe.sequential('clustering_worker.py', () => {
 
   // ---- Error cases ----
 
-  it('invalid JSON input -> error response with success=false', async () => {
-    if (!pythonAvailable) {
-      return expect(true).toBe(true);
-    }
-
+  it.skipIf(!pythonAvailable)('invalid JSON input -> error response with success=false', async () => {
     const result = await runWorkerRaw('this is not json{{{');
 
     expect(result.exitCode).toBe(1);
@@ -382,11 +338,7 @@ describe.sequential('clustering_worker.py', () => {
     expect(parsed.error_type).toBe('JSONDecodeError');
   }, 30000);
 
-  it('0 documents -> error response', async () => {
-    if (!pythonAvailable) {
-      return expect(true).toBe(true);
-    }
-
+  it.skipIf(!pythonAvailable)('0 documents -> error response', async () => {
     const result = await runWorker({
       embeddings: [],
       document_ids: [],
@@ -399,11 +351,7 @@ describe.sequential('clustering_worker.py', () => {
     expect(parsed.error).toContain('2-dimensional');
   }, 30000);
 
-  it('1 document -> error response (minimum 2 required)', async () => {
-    if (!pythonAvailable) {
-      return expect(true).toBe(true);
-    }
-
+  it.skipIf(!pythonAvailable)('1 document -> error response (minimum 2 required)', async () => {
     const result = await runWorker({
       embeddings: [DOC_A1_VEC],
       document_ids: ['a1'],
@@ -418,11 +366,7 @@ describe.sequential('clustering_worker.py', () => {
 
   // ---- Metric validation ----
 
-  it('silhouette score between -1 and 1', async () => {
-    if (!pythonAvailable) {
-      return expect(true).toBe(true);
-    }
-
+  it.skipIf(!pythonAvailable)('silhouette score between -1 and 1', async () => {
     const result = await runWorker({
       embeddings: [DOC_A1_VEC, DOC_A2_VEC, DOC_B1_VEC, DOC_B2_VEC],
       document_ids: ['a1', 'a2', 'b1', 'b2'],
@@ -437,11 +381,7 @@ describe.sequential('clustering_worker.py', () => {
     expect(parsed.silhouette_score).toBeLessThanOrEqual(1);
   }, 30000);
 
-  it('coherence scores between 0 and 1 for each cluster', async () => {
-    if (!pythonAvailable) {
-      return expect(true).toBe(true);
-    }
-
+  it.skipIf(!pythonAvailable)('coherence scores between 0 and 1 for each cluster', async () => {
     const result = await runWorker({
       embeddings: [DOC_A1_VEC, DOC_A2_VEC, DOC_B1_VEC, DOC_B2_VEC],
       document_ids: ['a1', 'a2', 'b1', 'b2'],
@@ -460,11 +400,7 @@ describe.sequential('clustering_worker.py', () => {
     }
   }, 30000);
 
-  it('centroids are L2-normalized (norm approximately 1.0)', async () => {
-    if (!pythonAvailable) {
-      return expect(true).toBe(true);
-    }
-
+  it.skipIf(!pythonAvailable)('centroids are L2-normalized (norm approximately 1.0)', async () => {
     const result = await runWorker({
       embeddings: [DOC_A1_VEC, DOC_A2_VEC, DOC_B1_VEC, DOC_B2_VEC],
       document_ids: ['a1', 'a2', 'b1', 'b2'],

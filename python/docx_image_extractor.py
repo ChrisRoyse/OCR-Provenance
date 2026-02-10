@@ -483,11 +483,6 @@ def main():
         default=100,
         help="Maximum images to extract (default: 100)",
     )
-    parser.add_argument(
-        "--formats",
-        nargs="*",
-        help="Image formats to include (default: all)",
-    )
 
     args = parser.parse_args()
 
@@ -505,7 +500,6 @@ def main():
         output_dir=args.output,
         min_size=args.min_size,
         max_images=args.max_images,
-        formats=args.formats,
     )
 
     print(json.dumps(result))

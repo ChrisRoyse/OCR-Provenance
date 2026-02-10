@@ -99,20 +99,3 @@ export function getComparisonSummariesByDocument(
   ).all(documentId, documentId) as ComparisonSummary[];
 }
 
-/**
- * Delete a single comparison by ID
- */
-export function deleteComparison(db: Database.Database, id: string): boolean {
-  const result = db.prepare('DELETE FROM comparisons WHERE id = ?').run(id);
-  return result.changes > 0;
-}
-
-/**
- * Delete all comparisons referencing a document (for cascade delete)
- */
-export function deleteComparisonsByDocument(db: Database.Database, documentId: string): number {
-  const result = db.prepare(
-    'DELETE FROM comparisons WHERE document_id_1 = ? OR document_id_2 = ?'
-  ).run(documentId, documentId);
-  return result.changes;
-}

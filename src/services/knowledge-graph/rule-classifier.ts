@@ -13,7 +13,7 @@
 import type { EntityType } from '../../models/entity.js';
 import type { RelationshipType } from '../../models/knowledge-graph.js';
 
-export interface RuleResult {
+interface RuleResult {
   type: RelationshipType;
   confidence: number;
 }

@@ -47,7 +47,7 @@ export const VerifierErrorCode = {
   HASH_FORMAT_INVALID: 'HASH_FORMAT_INVALID',
 } as const;
 
-export type VerifierErrorCodeType = typeof VerifierErrorCode[keyof typeof VerifierErrorCode];
+type VerifierErrorCodeType = typeof VerifierErrorCode[keyof typeof VerifierErrorCode];
 
 /**
  * VerifierError - Typed error for verification operations
@@ -66,7 +66,7 @@ export class VerifierError extends Error {
 }
 
 /** Result of single item verification */
-export interface ItemVerificationResult {
+interface ItemVerificationResult {
   valid: boolean;
   item_id: string;
   item_type: ProvenanceType;
@@ -77,7 +77,7 @@ export interface ItemVerificationResult {
 }
 
 /** Result of chain verification */
-export interface ChainVerificationResult extends VerificationResult {
+interface ChainVerificationResult extends VerificationResult {
   start_id: string;
   chain_depth: number;
   root_document_id: string;
@@ -85,7 +85,7 @@ export interface ChainVerificationResult extends VerificationResult {
 }
 
 /** Result of database-wide verification */
-export interface DatabaseVerificationResult extends VerificationResult {
+interface DatabaseVerificationResult extends VerificationResult {
   database_name: string;
   documents_verified: number;
   ocr_results_verified: number;
@@ -564,17 +564,208 @@ export class ProvenanceVerifier {
         return { content: diffContent, expectedHash: record.content_hash, isFile: false };
       }
 
-      case ProvenanceType.EXTRACTION:
-      case ProvenanceType.FORM_FILL:
-      case ProvenanceType.ENTITY_EXTRACTION:
-      case ProvenanceType.CLUSTERING:
-      case ProvenanceType.KNOWLEDGE_GRAPH: {
-        // Content verification not yet implemented for these types
-        throw new VerifierError(
-          `Content verification not yet implemented for provenance type: ${record.type}`,
-          VerifierErrorCode.INVALID_TYPE,
-          { type: record.type }
+      case ProvenanceType.EXTRACTION: {
+        // EXTRACTION: content_hash = computeHash(JSON.stringify(extractionJson))
+        // Re-derive: Load extraction record and hash its extraction_json field
+        const extraction = this.rawDb.prepare(
+          'SELECT extraction_json FROM extractions WHERE provenance_id = ?'
+        ).get(record.id) as { extraction_json: string } | undefined;
+
+        if (!extraction) {
+          throw new VerifierError(
+            `Extraction not found for provenance ${record.id}`,
+            VerifierErrorCode.CONTENT_NOT_FOUND,
+            { provenanceId: record.id, type: record.type }
+          );
+        }
+
+        // The hash was computed over JSON.stringify(response.extractionJson) which was
+        // stored as extraction_json. Re-hash the stored string directly.
+        return { content: extraction.extraction_json, expectedHash: record.content_hash, isFile: false };
+      }
+
+      case ProvenanceType.FORM_FILL: {
+        // FORM_FILL: content_hash = computeHash(JSON.stringify({ fields_filled, fields_not_found }))
+        // Re-derive: Load from form_fills table, reconstruct the same object
+        const formFill = this.rawDb.prepare(
+          'SELECT fields_filled, fields_not_found FROM form_fills WHERE provenance_id = ?'
+        ).get(record.id) as { fields_filled: string; fields_not_found: string } | undefined;
+
+        if (!formFill) {
+          throw new VerifierError(
+            `Form fill not found for provenance ${record.id}`,
+            VerifierErrorCode.CONTENT_NOT_FOUND,
+            { provenanceId: record.id, type: record.type }
+          );
+        }
+
+        // Reconstruct the exact object that was hashed: { fields_filled, fields_not_found }
+        // The original code hashes: computeHash(JSON.stringify({ fields_filled: result.fieldsFilled, fields_not_found: result.fieldsNotFound }))
+        // form_fills stores these as JSON strings, so parse them back to arrays
+        const formFillContent = JSON.stringify({
+          fields_filled: JSON.parse(formFill.fields_filled),
+          fields_not_found: JSON.parse(formFill.fields_not_found),
+        });
+
+        return { content: formFillContent, expectedHash: record.content_hash, isFile: false };
+      }
+
+      case ProvenanceType.ENTITY_EXTRACTION: {
+        // ENTITY_EXTRACTION has 3 creation paths:
+        // 1. Gemini extraction: computeHash(JSON.stringify([...dedupMap.values()]))
+        //    processor = 'gemini-entity-extraction'
+        // 2. VLM extraction: computeHash(JSON.stringify({ document_id, source: 'vlm' }))
+        //    processor = 'vlm-entity-extraction'
+        // 3. Extraction mapper: computeHash(JSON.stringify({ document_id, source: 'extraction' }))
+        //    processor = 'extraction-entity-mapper'
+
+        const processingParams = record.processing_params
+          ? (typeof record.processing_params === 'string'
+            ? JSON.parse(record.processing_params)
+            : record.processing_params)
+          : {};
+
+        if (processingParams.source === 'vlm' || processingParams.source === 'extraction') {
+          // VLM and extraction entity extraction hash a simple metadata object
+          // Find the document_id from entities linked to this provenance
+          const entityRow = this.rawDb.prepare(
+            'SELECT document_id FROM entities WHERE provenance_id = ? LIMIT 1'
+          ).get(record.id) as { document_id: string } | undefined;
+
+          if (!entityRow) {
+            throw new VerifierError(
+              `No entities found for entity_extraction provenance ${record.id}`,
+              VerifierErrorCode.CONTENT_NOT_FOUND,
+              { provenanceId: record.id, type: record.type }
+            );
+          }
+
+          const entityContent = JSON.stringify({
+            document_id: entityRow.document_id,
+            source: processingParams.source,
+          });
+          return { content: entityContent, expectedHash: record.content_hash, isFile: false };
+        }
+
+        // Gemini entity extraction: hash was computed over the deduped entity array
+        // Re-derive by loading entities for this provenance_id, ordered the same way
+        const entities = this.rawDb.prepare(
+          'SELECT raw_text, entity_type, confidence FROM entities WHERE provenance_id = ? ORDER BY entity_type, normalized_text'
+        ).all(record.id) as Array<{ raw_text: string; entity_type: string; confidence: number }>;
+
+        if (entities.length === 0) {
+          throw new VerifierError(
+            `No entities found for entity_extraction provenance ${record.id}`,
+            VerifierErrorCode.CONTENT_NOT_FOUND,
+            { provenanceId: record.id, type: record.type }
+          );
+        }
+
+        // The original hash was: computeHash(JSON.stringify([...dedupMap.values()]))
+        // where dedupMap values were { type, raw_text, confidence }
+        const entityContent = JSON.stringify(
+          entities.map(e => ({ type: e.entity_type, raw_text: e.raw_text, confidence: e.confidence }))
         );
+        return { content: entityContent, expectedHash: record.content_hash, isFile: false };
+      }
+
+      case ProvenanceType.CLUSTERING: {
+        // CLUSTERING: content_hash = computeHash(JSON.stringify(centroid) + ':' + runId)
+        // Re-derive: Load cluster record and reconstruct the same input
+        const cluster = this.rawDb.prepare(
+          'SELECT centroid_json, run_id FROM clusters WHERE provenance_id = ?'
+        ).get(record.id) as { centroid_json: string; run_id: string } | undefined;
+
+        if (!cluster) {
+          throw new VerifierError(
+            `Cluster not found for provenance ${record.id}`,
+            VerifierErrorCode.CONTENT_NOT_FOUND,
+            { provenanceId: record.id, type: record.type }
+          );
+        }
+
+        // The original hash: computeHash(JSON.stringify(centroid) + ':' + runId)
+        // centroid_json is already JSON.stringify(centroid), so use it directly
+        const clusterContent = cluster.centroid_json + ':' + cluster.run_id;
+        return { content: clusterContent, expectedHash: record.content_hash, isFile: false };
+      }
+
+      case ProvenanceType.KNOWLEDGE_GRAPH: {
+        // KNOWLEDGE_GRAPH has two creation paths:
+        // 1. Build provenance: computeHash(JSON.stringify(sortedEntityIds))
+        //    processor = 'knowledge-graph-builder'
+        // 2. Per-node provenance: computeHash(JSON.stringify({ node_id, canonical_name }))
+        //    processor = 'entity-resolution'
+
+        const processor = record.processor ?? '';
+
+        if (processor === 'entity-resolution') {
+          // Per-node provenance: hash was computed over { node_id, canonical_name }
+          const kgNode = this.rawDb.prepare(
+            'SELECT id, canonical_name FROM knowledge_nodes WHERE provenance_id = ?'
+          ).get(record.id) as { id: string; canonical_name: string } | undefined;
+
+          if (!kgNode) {
+            // Node provenance references may also be stored differently: the node's
+            // provenance_id is the build-level provenance, while per-node provenance
+            // records are separate. Search by processing_params.node_id.
+            const params = record.processing_params
+              ? (typeof record.processing_params === 'string'
+                ? JSON.parse(record.processing_params)
+                : record.processing_params)
+              : {};
+
+            if (params.node_id) {
+              const nodeRow = this.rawDb.prepare(
+                'SELECT id, canonical_name FROM knowledge_nodes WHERE id = ?'
+              ).get(params.node_id) as { id: string; canonical_name: string } | undefined;
+
+              if (nodeRow) {
+                const nodeContent = JSON.stringify({ node_id: nodeRow.id, canonical_name: nodeRow.canonical_name });
+                return { content: nodeContent, expectedHash: record.content_hash, isFile: false };
+              }
+            }
+
+            throw new VerifierError(
+              `Knowledge node not found for provenance ${record.id}`,
+              VerifierErrorCode.CONTENT_NOT_FOUND,
+              { provenanceId: record.id, type: record.type }
+            );
+          }
+
+          const nodeContent = JSON.stringify({ node_id: kgNode.id, canonical_name: kgNode.canonical_name });
+          return { content: nodeContent, expectedHash: record.content_hash, isFile: false };
+        }
+
+        // Build-level provenance: hash was computed over sorted entity IDs
+        // Re-derive: collect all entity IDs from the documents that were part of this build
+        const processingParams = record.processing_params
+          ? (typeof record.processing_params === 'string'
+            ? JSON.parse(record.processing_params)
+            : record.processing_params)
+          : {};
+
+        // Get all nodes created with this provenance_id to find which entities were included
+        // The nodes' entity links point to the entities that were resolved
+        const linkedEntityIds = this.rawDb.prepare(`
+          SELECT nel.entity_id FROM node_entity_links nel
+          JOIN knowledge_nodes kn ON nel.node_id = kn.id
+          WHERE kn.provenance_id = ?
+          ORDER BY nel.entity_id
+        `).all(record.id) as Array<{ entity_id: string }>;
+
+        if (linkedEntityIds.length === 0) {
+          throw new VerifierError(
+            `No knowledge graph data found for provenance ${record.id}`,
+            VerifierErrorCode.CONTENT_NOT_FOUND,
+            { provenanceId: record.id, type: record.type, processingParams }
+          );
+        }
+
+        // The original hash: computeHash(JSON.stringify(sortedEntityIds))
+        const sortedIds = linkedEntityIds.map(r => r.entity_id).sort();
+        const kgContent = JSON.stringify(sortedIds);
+        return { content: kgContent, expectedHash: record.content_hash, isFile: false };
       }
 
       default: {

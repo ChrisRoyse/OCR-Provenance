@@ -26,7 +26,6 @@ export {
 export {
   VectorService,
   VectorError,
-  VectorErrorCode,
   type VectorSearchResult,
   type VectorSearchOptions,
 } from './vector.js';

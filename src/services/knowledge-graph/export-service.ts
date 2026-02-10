@@ -22,7 +22,7 @@ import type { RelationshipType } from '../../models/knowledge-graph.js';
 // Types
 // ============================================================
 
-export interface ExportOptions {
+interface ExportOptions {
   entity_type_filter?: EntityType[];
   relationship_type_filter?: RelationshipType[];
   min_confidence?: number;
@@ -30,7 +30,7 @@ export interface ExportOptions {
   include_metadata?: boolean;
 }
 
-export interface ExportResult {
+interface ExportResult {
   format: string;
   files_written: string[];
   node_count: number;

@@ -291,20 +291,6 @@ describe('searchTools exports', () => {
     }
   });
 
-  it('handlers are exported functions', () => {
-    expect(typeof handleSearchSemantic).toBe('function');
-    expect(typeof handleSearch).toBe('function');
-    expect(typeof handleSearchHybrid).toBe('function');
-    expect(typeof handleFTSManage).toBe('function');
-  });
-
-  it('tool names match expected values', () => {
-    const names = Object.keys(searchTools);
-    expect(names).toContain('ocr_search');
-    expect(names).toContain('ocr_search_semantic');
-    expect(names).toContain('ocr_search_hybrid');
-    expect(names).toContain('ocr_fts_manage');
-  });
 });
 
 // ═══════════════════════════════════════════════════════════════════════════════

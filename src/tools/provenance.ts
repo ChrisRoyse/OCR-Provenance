@@ -50,7 +50,7 @@ function csvEscape(field: string | number | null | undefined): string {
 }
 
 /** Detected item types from findProvenanceId - includes 'provenance' for direct provenance ID lookups */
-type DetectedItemType = 'document' | 'chunk' | 'embedding' | 'ocr_result' | 'image' | 'comparison' | 'clustering' | 'knowledge_graph' | 'provenance';
+type DetectedItemType = 'document' | 'chunk' | 'embedding' | 'ocr_result' | 'image' | 'comparison' | 'clustering' | 'knowledge_graph' | 'form_fill' | 'extraction' | 'provenance';
 
 /**
  * Find provenance ID from an item of any type.
@@ -100,6 +100,20 @@ function findProvenanceId(
     .get(itemId) as { provenance_id: string } | undefined;
   if (knowledgeNode) {
     return { provenanceId: knowledgeNode.provenance_id, itemType: 'knowledge_graph' };
+  }
+
+  const formFill = dbConn
+    .prepare('SELECT provenance_id FROM form_fills WHERE id = ?')
+    .get(itemId) as { provenance_id: string } | undefined;
+  if (formFill) {
+    return { provenanceId: formFill.provenance_id, itemType: 'form_fill' };
+  }
+
+  const extraction = dbConn
+    .prepare('SELECT provenance_id FROM extractions WHERE id = ?')
+    .get(itemId) as { provenance_id: string } | undefined;
+  if (extraction) {
+    return { provenanceId: extraction.provenance_id, itemType: 'extraction' };
   }
 
   const prov = db.getProvenance(itemId);
@@ -155,6 +169,16 @@ export async function handleProvenanceGet(
         .prepare('SELECT provenance_id FROM knowledge_nodes WHERE id = ?')
         .get(input.item_id) as { provenance_id: string } | undefined;
       provenanceId = kgNode?.provenance_id ?? null;
+    } else if (itemType === 'form_fill') {
+      const ff = db.getConnection()
+        .prepare('SELECT provenance_id FROM form_fills WHERE id = ?')
+        .get(input.item_id) as { provenance_id: string } | undefined;
+      provenanceId = ff?.provenance_id ?? null;
+    } else if (itemType === 'extraction') {
+      const ext = db.getConnection()
+        .prepare('SELECT provenance_id FROM extractions WHERE id = ?')
+        .get(input.item_id) as { provenance_id: string } | undefined;
+      provenanceId = ext?.provenance_id ?? null;
     } else {
       provenanceId = input.item_id;
     }
@@ -452,8 +476,8 @@ export const provenanceTools: Record<string, ToolDefinition> = {
   'ocr_provenance_get': {
     description: 'Get the complete provenance chain for an item',
     inputSchema: {
-      item_id: z.string().min(1).describe('ID of the item (document, ocr_result, chunk, embedding, image, comparison, clustering, or provenance)'),
-      item_type: z.enum(['document', 'ocr_result', 'chunk', 'embedding', 'image', 'comparison', 'clustering', 'knowledge_graph', 'auto']).default('auto').describe('Type of item'),
+      item_id: z.string().min(1).describe('ID of the item (document, ocr_result, chunk, embedding, image, comparison, clustering, knowledge_graph, form_fill, extraction, or provenance)'),
+      item_type: z.enum(['document', 'ocr_result', 'chunk', 'embedding', 'image', 'comparison', 'clustering', 'knowledge_graph', 'form_fill', 'extraction', 'auto']).default('auto').describe('Type of item'),
     },
     handler: handleProvenanceGet,
   },

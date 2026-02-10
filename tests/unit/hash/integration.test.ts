@@ -10,8 +10,6 @@ import {
   it,
   expect,
   computeHash,
-  verifyHash,
-  verifyHashDetailed,
   isValidHashFormat,
 } from './helpers.js';
 
@@ -53,8 +51,8 @@ describe('Integration: Provenance Use Cases', () => {
     const outputHash = computeHash(outputText);
 
     // Simulate verifying processing did not tamper with input
-    expect(verifyHash(inputText, inputHash)).toBe(true);
-    expect(verifyHash(outputText, outputHash)).toBe(true);
+    expect(computeHash(inputText)).toBe(inputHash);
+    expect(computeHash(outputText)).toBe(outputHash);
   });
 
   it('should detect tampered content in provenance chain', () => {
@@ -64,13 +62,10 @@ describe('Integration: Provenance Use Cases', () => {
     // Simulate tampered content
     const tamperedContent = 'Original document content that must not change!'; // Added !
 
-    // Verification should fail
-    expect(verifyHash(tamperedContent, storedHash)).toBe(false);
-
-    // Detailed verification provides forensic info
-    const result = verifyHashDetailed(tamperedContent, storedHash);
-    expect(result.valid).toBe(false);
-    expect(result.expected).toBe(storedHash);
-    expect(result.computed).not.toBe(storedHash);
+    // Verification should fail - recomputed hash differs from stored hash
+    const tamperedHash = computeHash(tamperedContent);
+    expect(tamperedHash).not.toBe(storedHash);
+    expect(isValidHashFormat(tamperedHash)).toBe(true);
+    expect(isValidHashFormat(storedHash)).toBe(true);
   });
 });
