@@ -115,8 +115,7 @@ function getFilteredData(
     return { nodes, edges: [] };
   }
 
-  const nodeIds = new Set(nodes.map((n) => n.id));
-  const nodeIdArr = [...nodeIds];
+  const nodeIdArr = nodes.map((n) => n.id);
 
   // Build edge query with both-endpoints-in-set constraint
   const placeholders = nodeIdArr.map(() => '?').join(',');

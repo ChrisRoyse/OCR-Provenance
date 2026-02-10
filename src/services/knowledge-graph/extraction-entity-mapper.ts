@@ -91,8 +91,8 @@ export function mapExtractionEntitiesToDB(
 ): { entities_created: number; extractions_processed: number } {
   // Get extractions for this document
   const extractions = db.prepare(`
-    SELECT id, extraction_json, page_number FROM extractions WHERE document_id = ?
-  `).all(documentId) as Array<{ id: string; extraction_json: string; page_number: number | null }>;
+    SELECT id, extraction_json FROM extractions WHERE document_id = ?
+  `).all(documentId) as Array<{ id: string; extraction_json: string }>;
 
   if (extractions.length === 0) {
     throw new Error(`No structured extractions found for document ${documentId}. Run ocr_extract_structured first.`);
@@ -145,7 +145,7 @@ export function mapExtractionEntitiesToDB(
         entity_id: entityId,
         document_id: documentId,
         chunk_id: null,
-        page_number: extraction.page_number,
+        page_number: null,
         character_start: null,
         character_end: null,
         context_text: `Extracted from field "${entity.field_name}"`,

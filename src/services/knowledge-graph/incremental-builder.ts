@@ -23,13 +23,8 @@
 
 import { DatabaseService } from '../storage/database/index.js';
 import type { Entity, EntityType } from '../../models/entity.js';
-import type {
-  KnowledgeNode,
-  KnowledgeEdge,
-  NodeEntityLink,
-} from '../../models/knowledge-graph.js';
+import type { KnowledgeNode, KnowledgeEdge, NodeEntityLink } from '../../models/knowledge-graph.js';
 import { ProvenanceType } from '../../models/provenance.js';
-import type { SourceType } from '../../models/provenance.js';
 import { getProvenanceTracker } from '../provenance/tracker.js';
 import {
   resolveEntities,
@@ -163,7 +158,7 @@ export async function incrementalBuildGraph(
 
   const provenanceId = tracker.createProvenance({
     type: ProvenanceType.KNOWLEDGE_GRAPH,
-    source_type: 'KNOWLEDGE_GRAPH' as SourceType,
+    source_type: 'KNOWLEDGE_GRAPH',
     source_id: sourceProvId,
     root_document_id: firstDoc?.provenance_id ?? documentIds[0],
     content_hash: contentHash,
@@ -375,7 +370,7 @@ export async function incrementalBuildGraph(
 
       tracker.createProvenance({
         type: ProvenanceType.KNOWLEDGE_GRAPH,
-        source_type: 'KNOWLEDGE_GRAPH' as SourceType,
+        source_type: 'KNOWLEDGE_GRAPH',
         source_id: provenanceId,
         root_document_id: firstDoc?.provenance_id ?? documentIds[0],
         content_hash: computeHash(
@@ -496,10 +491,7 @@ function buildIncrementalEdges(
   const allArr = [...allRelevantNodeIds];
 
   // Cap to avoid O(n^2) blowup
-  const cappedTouched =
-    touchedArr.length > MAX_COOCCURRENCE_ENTITIES
-      ? touchedArr.slice(0, MAX_COOCCURRENCE_ENTITIES)
-      : touchedArr;
+  const cappedTouched = touchedArr.slice(0, MAX_COOCCURRENCE_ENTITIES);
 
   const processedPairs = new Set<string>();
 

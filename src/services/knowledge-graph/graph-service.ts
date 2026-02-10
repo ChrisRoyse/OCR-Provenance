@@ -19,7 +19,6 @@ import {
   type RelationshipType,
 } from '../../models/knowledge-graph.js';
 import { ProvenanceType } from '../../models/provenance.js';
-import type { SourceType } from '../../models/provenance.js';
 import { getProvenanceTracker } from '../provenance/tracker.js';
 import { resolveEntities, type ResolutionMode, type ClusterContext } from './resolution-service.js';
 import { classifyByRules, classifyByExtractionSchema, classifyByClusterHint } from './rule-classifier.js';
@@ -226,7 +225,7 @@ export async function buildKnowledgeGraph(
 
   const provenanceId = tracker.createProvenance({
     type: ProvenanceType.KNOWLEDGE_GRAPH,
-    source_type: 'KNOWLEDGE_GRAPH' as SourceType,
+    source_type: 'KNOWLEDGE_GRAPH',
     source_id: sourceProvId,
     root_document_id: firstDoc?.provenance_id ?? documentIds[0],
     content_hash: contentHash,
@@ -247,18 +246,16 @@ export async function buildKnowledgeGraph(
 
   // Step 4: Build cluster context for resolution boost
   const clusterContext: ClusterContext = { clusterMap: new Map() };
-  if (documentIds.length > 0) {
-    try {
-      const clusterPlaceholders = documentIds.map(() => '?').join(',');
-      const clusterRows = conn.prepare(`
-        SELECT document_id, cluster_id FROM document_clusters WHERE document_id IN (${clusterPlaceholders})
-      `).all(...documentIds) as Array<{ document_id: string; cluster_id: string }>;
-      for (const row of clusterRows) {
-        clusterContext.clusterMap.set(row.document_id, row.cluster_id);
-      }
-    } catch {
-      // Cluster tables may not exist in older schemas - skip
+  try {
+    const clusterPlaceholders = documentIds.map(() => '?').join(',');
+    const clusterRows = conn.prepare(`
+      SELECT document_id, cluster_id FROM document_clusters WHERE document_id IN (${clusterPlaceholders})
+    `).all(...documentIds) as Array<{ document_id: string; cluster_id: string }>;
+    for (const row of clusterRows) {
+      clusterContext.clusterMap.set(row.document_id, row.cluster_id);
     }
+  } catch {
+    // Cluster tables may not exist in older schemas - skip
   }
 
   // Step 5: Resolve entities into nodes
@@ -282,7 +279,7 @@ export async function buildKnowledgeGraph(
 
     tracker.createProvenance({
       type: ProvenanceType.KNOWLEDGE_GRAPH,
-      source_type: 'KNOWLEDGE_GRAPH' as SourceType,
+      source_type: 'KNOWLEDGE_GRAPH',
       source_id: provenanceId,
       root_document_id: firstDoc?.provenance_id ?? documentIds[0],
       content_hash: computeHash(JSON.stringify({ node_id: node.id, canonical_name: node.canonical_name })),
@@ -415,8 +412,7 @@ export async function buildKnowledgeGraph(
 
       // P4.2: Only pass unclassified edges to Gemini
       if (unclassifiedEdges.length > 0) {
-        const geminiApiKey = process.env.GEMINI_API_KEY;
-        if (geminiApiKey) {
+        if (process.env.GEMINI_API_KEY) {
           await classifyRelationshipsWithGemini(db, unclassifiedEdges);
         } else {
           console.error('[KnowledgeGraph] classify_relationships=true but GEMINI_API_KEY not set, skipping AI classification');
@@ -799,7 +795,6 @@ export function buildTemporalEdges(
  *
  * @param db - DatabaseService instance
  * @param edges - Co-located edges to classify
- * @param geminiApiKey - Gemini API key
  */
 async function classifyRelationshipsWithGemini(
   db: DatabaseService,
@@ -893,7 +888,10 @@ Respond with ONLY the relationship type, nothing else.`;
       }
     } catch (error) {
       // On failure, keep the edge as co_located and store error info
-      const existingMeta = edge.metadata ? (() => { try { return JSON.parse(edge.metadata!); } catch { return {}; } })() : {};
+      let existingMeta: Record<string, unknown> = {};
+      if (edge.metadata) {
+        try { existingMeta = JSON.parse(edge.metadata); } catch { /* malformed metadata */ }
+      }
       updateKnowledgeEdge(conn, edge.id, {
         metadata: JSON.stringify({
           ...existingMeta,

@@ -349,6 +349,10 @@ async function handleKnowledgeGraphMerge(
     const { db } = requireDatabase();
     const conn = db.getConnection();
 
+    if (input.source_node_id === input.target_node_id) {
+      throw new Error('Cannot merge a node into itself. Source and target must be different nodes.');
+    }
+
     const sourceNode = getKnowledgeNode(conn, input.source_node_id);
     if (!sourceNode) {
       throw new Error(`Source node not found: ${input.source_node_id}`);
@@ -417,8 +421,8 @@ async function handleKnowledgeGraphMerge(
           ? Math.round((totalConfidence / linkCount) * 10000) / 10000
           : targetNode.avg_confidence;
 
-      // 4. Transfer edges from source to target
-      const sourceEdges = getEdgesForNode(conn, sourceNode.id);
+      // 4. Transfer edges from source to target (no limit - must get ALL edges)
+      const sourceEdges = getEdgesForNode(conn, sourceNode.id, { limit: 1000000 });
       let edgesTransferred = 0;
       let edgesMerged = 0;
 
@@ -473,7 +477,7 @@ async function handleKnowledgeGraphMerge(
       }
 
       // 5. Update target node stats
-      const targetEdges = getEdgesForNode(conn, targetNode.id);
+      const targetEdges = getEdgesForNode(conn, targetNode.id, { limit: 1000000 });
       updateKnowledgeNode(conn, targetNode.id, {
         document_count: uniqueDocIds.size,
         mention_count: allLinks.length,
