@@ -50,7 +50,7 @@ function csvEscape(field: string | number | null | undefined): string {
 }
 
 /** Detected item types from findProvenanceId - includes 'provenance' for direct provenance ID lookups */
-type DetectedItemType = 'document' | 'chunk' | 'embedding' | 'ocr_result' | 'image' | 'comparison' | 'clustering' | 'provenance';
+type DetectedItemType = 'document' | 'chunk' | 'embedding' | 'ocr_result' | 'image' | 'comparison' | 'clustering' | 'knowledge_graph' | 'provenance';
 
 /**
  * Find provenance ID from an item of any type.
@@ -93,6 +93,13 @@ function findProvenanceId(
     .get(itemId) as { provenance_id: string } | undefined;
   if (cluster) {
     return { provenanceId: cluster.provenance_id, itemType: 'clustering' };
+  }
+
+  const knowledgeNode = dbConn
+    .prepare('SELECT provenance_id FROM knowledge_nodes WHERE id = ?')
+    .get(itemId) as { provenance_id: string } | undefined;
+  if (knowledgeNode) {
+    return { provenanceId: knowledgeNode.provenance_id, itemType: 'knowledge_graph' };
   }
 
   const prov = db.getProvenance(itemId);
@@ -143,6 +150,11 @@ export async function handleProvenanceGet(
         .prepare('SELECT provenance_id FROM clusters WHERE id = ?')
         .get(input.item_id) as { provenance_id: string } | undefined;
       provenanceId = cluster?.provenance_id ?? null;
+    } else if (itemType === 'knowledge_graph') {
+      const kgNode = db.getConnection()
+        .prepare('SELECT provenance_id FROM knowledge_nodes WHERE id = ?')
+        .get(input.item_id) as { provenance_id: string } | undefined;
+      provenanceId = kgNode?.provenance_id ?? null;
     } else {
       provenanceId = input.item_id;
     }
@@ -440,8 +452,8 @@ export const provenanceTools: Record<string, ToolDefinition> = {
   'ocr_provenance_get': {
     description: 'Get the complete provenance chain for an item',
     inputSchema: {
-      item_id: z.string().min(1).describe('ID of the item (document, ocr_result, chunk, embedding, image, comparison, or provenance)'),
-      item_type: z.enum(['document', 'ocr_result', 'chunk', 'embedding', 'image', 'comparison', 'auto']).default('auto').describe('Type of item'),
+      item_id: z.string().min(1).describe('ID of the item (document, ocr_result, chunk, embedding, image, comparison, clustering, or provenance)'),
+      item_type: z.enum(['document', 'ocr_result', 'chunk', 'embedding', 'image', 'comparison', 'clustering', 'knowledge_graph', 'auto']).default('auto').describe('Type of item'),
     },
     handler: handleProvenanceGet,
   },

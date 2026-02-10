@@ -8,7 +8,7 @@
  */
 
 /** Current schema version */
-export const SCHEMA_VERSION = 15;
+export const SCHEMA_VERSION = 16;
 
 /**
  * Database configuration pragmas for optimal performance and safety
@@ -40,12 +40,12 @@ CREATE TABLE IF NOT EXISTS schema_version (
 export const CREATE_PROVENANCE_TABLE = `
 CREATE TABLE IF NOT EXISTS provenance (
   id TEXT PRIMARY KEY,
-  type TEXT NOT NULL CHECK (type IN ('DOCUMENT', 'OCR_RESULT', 'CHUNK', 'IMAGE', 'VLM_DESCRIPTION', 'EMBEDDING', 'EXTRACTION', 'FORM_FILL', 'ENTITY_EXTRACTION', 'COMPARISON', 'CLUSTERING')),
+  type TEXT NOT NULL CHECK (type IN ('DOCUMENT', 'OCR_RESULT', 'CHUNK', 'IMAGE', 'VLM_DESCRIPTION', 'EMBEDDING', 'EXTRACTION', 'FORM_FILL', 'ENTITY_EXTRACTION', 'COMPARISON', 'CLUSTERING', 'KNOWLEDGE_GRAPH')),
   created_at TEXT NOT NULL,
   processed_at TEXT NOT NULL,
   source_file_created_at TEXT,
   source_file_modified_at TEXT,
-  source_type TEXT NOT NULL CHECK (source_type IN ('FILE', 'OCR', 'CHUNKING', 'IMAGE_EXTRACTION', 'VLM', 'VLM_DEDUP', 'EMBEDDING', 'EXTRACTION', 'FORM_FILL', 'ENTITY_EXTRACTION', 'COMPARISON', 'CLUSTERING')),
+  source_type TEXT NOT NULL CHECK (source_type IN ('FILE', 'OCR', 'CHUNKING', 'IMAGE_EXTRACTION', 'VLM', 'VLM_DEDUP', 'EMBEDDING', 'EXTRACTION', 'FORM_FILL', 'ENTITY_EXTRACTION', 'COMPARISON', 'CLUSTERING', 'KNOWLEDGE_GRAPH')),
   source_path TEXT,
   source_id TEXT,
   root_document_id TEXT NOT NULL,
@@ -535,6 +535,67 @@ CREATE TABLE IF NOT EXISTS document_clusters (
 )`;
 
 /**
+ * Knowledge graph nodes - unified entities resolved across documents
+ * Provenance depth: 2 (parallel to ENTITY_EXTRACTION, after OCR_RESULT)
+ */
+export const CREATE_KNOWLEDGE_NODES_TABLE = `
+CREATE TABLE IF NOT EXISTS knowledge_nodes (
+  id TEXT PRIMARY KEY,
+  entity_type TEXT NOT NULL CHECK (entity_type IN ('person', 'organization', 'date', 'amount', 'case_number', 'location', 'statute', 'exhibit', 'other')),
+  canonical_name TEXT NOT NULL,
+  normalized_name TEXT NOT NULL,
+  aliases TEXT,
+  document_count INTEGER NOT NULL DEFAULT 1,
+  mention_count INTEGER NOT NULL DEFAULT 0,
+  avg_confidence REAL NOT NULL DEFAULT 0.0,
+  metadata TEXT,
+  provenance_id TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  FOREIGN KEY (provenance_id) REFERENCES provenance(id)
+)
+`;
+
+/**
+ * Knowledge graph edges - relationships between nodes
+ * Provenance depth: 2 (parallel to ENTITY_EXTRACTION, after OCR_RESULT)
+ */
+export const CREATE_KNOWLEDGE_EDGES_TABLE = `
+CREATE TABLE IF NOT EXISTS knowledge_edges (
+  id TEXT PRIMARY KEY,
+  source_node_id TEXT NOT NULL,
+  target_node_id TEXT NOT NULL,
+  relationship_type TEXT NOT NULL CHECK (relationship_type IN ('co_mentioned', 'co_located', 'works_at', 'represents', 'located_in', 'filed_in', 'cites', 'references', 'party_to', 'related_to')),
+  weight REAL NOT NULL DEFAULT 1.0,
+  evidence_count INTEGER NOT NULL DEFAULT 1,
+  document_ids TEXT NOT NULL,
+  metadata TEXT,
+  provenance_id TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  FOREIGN KEY (source_node_id) REFERENCES knowledge_nodes(id),
+  FOREIGN KEY (target_node_id) REFERENCES knowledge_nodes(id),
+  FOREIGN KEY (provenance_id) REFERENCES provenance(id)
+)
+`;
+
+/**
+ * Node-entity links - maps knowledge nodes to source entity extractions
+ */
+export const CREATE_NODE_ENTITY_LINKS_TABLE = `
+CREATE TABLE IF NOT EXISTS node_entity_links (
+  id TEXT PRIMARY KEY,
+  node_id TEXT NOT NULL,
+  entity_id TEXT NOT NULL UNIQUE,
+  document_id TEXT NOT NULL,
+  similarity_score REAL NOT NULL DEFAULT 1.0,
+  created_at TEXT NOT NULL,
+  FOREIGN KEY (node_id) REFERENCES knowledge_nodes(id),
+  FOREIGN KEY (entity_id) REFERENCES entities(id),
+  FOREIGN KEY (document_id) REFERENCES documents(id)
+)
+`;
+
+/**
  * All required indexes for query performance
  */
 export const CREATE_INDEXES = [
@@ -606,6 +667,16 @@ export const CREATE_INDEXES = [
   'CREATE INDEX IF NOT EXISTS idx_doc_clusters_document ON document_clusters(document_id)',
   'CREATE INDEX IF NOT EXISTS idx_doc_clusters_cluster ON document_clusters(cluster_id)',
   'CREATE INDEX IF NOT EXISTS idx_doc_clusters_run ON document_clusters(run_id)',
+
+  // Knowledge graph indexes
+  'CREATE INDEX IF NOT EXISTS idx_kn_entity_type ON knowledge_nodes(entity_type)',
+  'CREATE INDEX IF NOT EXISTS idx_kn_normalized_name ON knowledge_nodes(normalized_name)',
+  'CREATE INDEX IF NOT EXISTS idx_kn_document_count ON knowledge_nodes(document_count DESC)',
+  'CREATE INDEX IF NOT EXISTS idx_ke_source_node ON knowledge_edges(source_node_id)',
+  'CREATE INDEX IF NOT EXISTS idx_ke_target_node ON knowledge_edges(target_node_id)',
+  'CREATE INDEX IF NOT EXISTS idx_ke_relationship_type ON knowledge_edges(relationship_type)',
+  'CREATE INDEX IF NOT EXISTS idx_nel_node_id ON node_entity_links(node_id)',
+  'CREATE INDEX IF NOT EXISTS idx_nel_document_id ON node_entity_links(document_id)',
 ] as const;
 
 /**
@@ -627,6 +698,9 @@ export const TABLE_DEFINITIONS = [
   { name: 'comparisons', sql: CREATE_COMPARISONS_TABLE },
   { name: 'clusters', sql: CREATE_CLUSTERS_TABLE },
   { name: 'document_clusters', sql: CREATE_DOCUMENT_CLUSTERS_TABLE },
+  { name: 'knowledge_nodes', sql: CREATE_KNOWLEDGE_NODES_TABLE },
+  { name: 'knowledge_edges', sql: CREATE_KNOWLEDGE_EDGES_TABLE },
+  { name: 'node_entity_links', sql: CREATE_NODE_ENTITY_LINKS_TABLE },
 ] as const;
 
 /**
@@ -654,6 +728,9 @@ export const REQUIRED_TABLES = [
   'comparisons',
   'clusters',
   'document_clusters',
+  'knowledge_nodes',
+  'knowledge_edges',
+  'node_entity_links',
 ] as const;
 
 /**
@@ -703,4 +780,12 @@ export const REQUIRED_INDEXES = [
   'idx_doc_clusters_document',
   'idx_doc_clusters_cluster',
   'idx_doc_clusters_run',
+  'idx_kn_entity_type',
+  'idx_kn_normalized_name',
+  'idx_kn_document_count',
+  'idx_ke_source_node',
+  'idx_ke_target_node',
+  'idx_ke_relationship_type',
+  'idx_nel_node_id',
+  'idx_nel_document_id',
 ] as const;

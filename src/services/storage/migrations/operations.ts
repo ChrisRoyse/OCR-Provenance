@@ -26,6 +26,9 @@ import {
   CREATE_COMPARISONS_TABLE,
   CREATE_CLUSTERS_TABLE,
   CREATE_DOCUMENT_CLUSTERS_TABLE,
+  CREATE_KNOWLEDGE_NODES_TABLE,
+  CREATE_KNOWLEDGE_EDGES_TABLE,
+  CREATE_NODE_ENTITY_LINKS_TABLE,
 } from './schema-definitions.js';
 import {
   configurePragmas,
@@ -1028,6 +1031,11 @@ export function migrateToLatest(db: Database.Database): void {
     migrateV14ToV15(db);
     bumpVersion(15);
   }
+
+  if (currentVersion < 16) {
+    migrateV15ToV16(db);
+    bumpVersion(16);
+  }
 }
 
 /**
@@ -1483,6 +1491,114 @@ function migrateV13ToV14(db: Database.Database): void {
     const cause = error instanceof Error ? error.message : String(error);
     throw new MigrationError(
       `Failed to migrate from v13 to v14 (document comparison): ${cause}`,
+      'migrate',
+      'provenance',
+      error
+    );
+  }
+}
+
+/**
+ * Migrate from schema version 15 to version 16
+ *
+ * Changes in v16:
+ * - provenance.type: Added 'KNOWLEDGE_GRAPH' to CHECK constraint
+ * - provenance.source_type: Added 'KNOWLEDGE_GRAPH' to CHECK constraint
+ * - knowledge_nodes: New table for unified entities resolved across documents
+ * - knowledge_edges: New table for relationships between knowledge nodes
+ * - node_entity_links: New table linking knowledge nodes to source entity extractions
+ * - 8 new indexes: idx_kn_entity_type, idx_kn_normalized_name, idx_kn_document_count,
+ *   idx_ke_source_node, idx_ke_target_node, idx_ke_relationship_type,
+ *   idx_nel_node_id, idx_nel_document_id
+ *
+ * @param db - Database instance from better-sqlite3
+ * @throws MigrationError if migration fails
+ */
+function migrateV15ToV16(db: Database.Database): void {
+  try {
+    db.exec('PRAGMA foreign_keys = OFF');
+    db.exec('BEGIN TRANSACTION');
+
+    // Step 1: Recreate provenance table with KNOWLEDGE_GRAPH in CHECK constraints
+    db.exec(`
+      CREATE TABLE provenance_new (
+        id TEXT PRIMARY KEY,
+        type TEXT NOT NULL CHECK (type IN ('DOCUMENT', 'OCR_RESULT', 'CHUNK', 'IMAGE', 'VLM_DESCRIPTION', 'EMBEDDING', 'EXTRACTION', 'FORM_FILL', 'ENTITY_EXTRACTION', 'COMPARISON', 'CLUSTERING', 'KNOWLEDGE_GRAPH')),
+        created_at TEXT NOT NULL,
+        processed_at TEXT NOT NULL,
+        source_file_created_at TEXT,
+        source_file_modified_at TEXT,
+        source_type TEXT NOT NULL CHECK (source_type IN ('FILE', 'OCR', 'CHUNKING', 'IMAGE_EXTRACTION', 'VLM', 'VLM_DEDUP', 'EMBEDDING', 'EXTRACTION', 'FORM_FILL', 'ENTITY_EXTRACTION', 'COMPARISON', 'CLUSTERING', 'KNOWLEDGE_GRAPH')),
+        source_path TEXT,
+        source_id TEXT,
+        root_document_id TEXT NOT NULL,
+        location TEXT,
+        content_hash TEXT NOT NULL,
+        input_hash TEXT,
+        file_hash TEXT,
+        processor TEXT NOT NULL,
+        processor_version TEXT NOT NULL,
+        processing_params TEXT NOT NULL,
+        processing_duration_ms INTEGER,
+        processing_quality_score REAL,
+        parent_id TEXT,
+        parent_ids TEXT NOT NULL,
+        chain_depth INTEGER NOT NULL,
+        chain_path TEXT,
+        FOREIGN KEY (source_id) REFERENCES provenance_new(id),
+        FOREIGN KEY (parent_id) REFERENCES provenance_new(id)
+      )
+    `);
+
+    // Step 2: Copy existing data
+    db.exec('INSERT INTO provenance_new SELECT * FROM provenance');
+
+    // Step 3: Drop old table
+    db.exec('DROP TABLE provenance');
+
+    // Step 4: Rename new table
+    db.exec('ALTER TABLE provenance_new RENAME TO provenance');
+
+    // Step 5: Recreate provenance indexes
+    db.exec('CREATE INDEX IF NOT EXISTS idx_provenance_source_id ON provenance(source_id)');
+    db.exec('CREATE INDEX IF NOT EXISTS idx_provenance_type ON provenance(type)');
+    db.exec('CREATE INDEX IF NOT EXISTS idx_provenance_root_document_id ON provenance(root_document_id)');
+    db.exec('CREATE INDEX IF NOT EXISTS idx_provenance_parent_id ON provenance(parent_id)');
+
+    // Step 6: Create knowledge graph tables
+    db.exec(CREATE_KNOWLEDGE_NODES_TABLE);
+    db.exec(CREATE_KNOWLEDGE_EDGES_TABLE);
+    db.exec(CREATE_NODE_ENTITY_LINKS_TABLE);
+
+    // Step 7: Create indexes for knowledge graph tables
+    db.exec('CREATE INDEX IF NOT EXISTS idx_kn_entity_type ON knowledge_nodes(entity_type)');
+    db.exec('CREATE INDEX IF NOT EXISTS idx_kn_normalized_name ON knowledge_nodes(normalized_name)');
+    db.exec('CREATE INDEX IF NOT EXISTS idx_kn_document_count ON knowledge_nodes(document_count DESC)');
+    db.exec('CREATE INDEX IF NOT EXISTS idx_ke_source_node ON knowledge_edges(source_node_id)');
+    db.exec('CREATE INDEX IF NOT EXISTS idx_ke_target_node ON knowledge_edges(target_node_id)');
+    db.exec('CREATE INDEX IF NOT EXISTS idx_ke_relationship_type ON knowledge_edges(relationship_type)');
+    db.exec('CREATE INDEX IF NOT EXISTS idx_nel_node_id ON node_entity_links(node_id)');
+    db.exec('CREATE INDEX IF NOT EXISTS idx_nel_document_id ON node_entity_links(document_id)');
+
+    db.exec('COMMIT');
+    db.exec('PRAGMA foreign_keys = ON');
+
+    // FK integrity check
+    const fkViolations = db.pragma('foreign_key_check') as unknown[];
+    if (fkViolations.length > 0) {
+      throw new Error(
+        `Foreign key integrity check failed after v15->v16 migration: ${fkViolations.length} violation(s). ` +
+        `First: ${JSON.stringify(fkViolations[0])}`
+      );
+    }
+  } catch (error) {
+    try {
+      db.exec('ROLLBACK');
+      db.exec('PRAGMA foreign_keys = ON');
+    } catch { /* ignore rollback errors */ }
+    const cause = error instanceof Error ? error.message : String(error);
+    throw new MigrationError(
+      `Failed to migrate from v15 to v16 (knowledge graph): ${cause}`,
       'migrate',
       'provenance',
       error

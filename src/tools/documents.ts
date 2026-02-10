@@ -25,6 +25,7 @@ import { documentNotFoundError } from '../server/errors.js';
 import { formatResponse, handleError, type ToolResponse, type ToolDefinition } from './shared.js';
 import { getComparisonSummariesByDocument } from '../services/storage/database/comparison-operations.js';
 import { getClusterSummariesForDocument } from '../services/storage/database/cluster-operations.js';
+import { getKnowledgeNodeSummariesByDocument } from '../services/storage/database/knowledge-graph-operations.js';
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // DOCUMENT TOOL HANDLERS
@@ -180,6 +181,15 @@ export async function handleDocumentGet(
         classification_tag: c.classification_tag,
         coherence_score: c.coherence_score,
       }));
+    }
+
+    // Knowledge graph membership
+    const knowledgeNodes = getKnowledgeNodeSummariesByDocument(db.getConnection(), doc.id);
+    if (knowledgeNodes.length > 0) {
+      result.knowledge_graph = {
+        nodes: knowledgeNodes,
+        cross_document_relationships: knowledgeNodes.filter(n => n.document_count > 1).length,
+      };
     }
 
     return formatResponse(successResult(result));
