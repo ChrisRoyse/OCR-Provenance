@@ -24,6 +24,7 @@ import {
 import { documentNotFoundError } from '../server/errors.js';
 import { formatResponse, handleError, type ToolResponse, type ToolDefinition } from './shared.js';
 import { getComparisonSummariesByDocument } from '../services/storage/database/comparison-operations.js';
+import { getClusterSummariesForDocument } from '../services/storage/database/cluster-operations.js';
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // DOCUMENT TOOL HANDLERS
@@ -167,6 +168,19 @@ export async function handleDocumentGet(
         created_at: c.created_at,
       })),
     };
+
+    // Cluster memberships: show all clusters this document belongs to
+    const clusterMemberships = getClusterSummariesForDocument(db.getConnection(), doc.id);
+    if (clusterMemberships.length > 0) {
+      result.clusters = clusterMemberships.map(c => ({
+        cluster_id: c.id,
+        run_id: c.run_id,
+        cluster_index: c.cluster_index,
+        label: c.label,
+        classification_tag: c.classification_tag,
+        coherence_score: c.coherence_score,
+      }));
+    }
 
     return formatResponse(successResult(result));
   } catch (error) {

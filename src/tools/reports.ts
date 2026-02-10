@@ -23,6 +23,7 @@ import {
   getImagesByDocument,
 } from '../services/storage/database/image-operations.js';
 import { getComparisonSummariesByDocument } from '../services/storage/database/comparison-operations.js';
+import { getClusteringStats, getClusterSummariesForDocument } from '../services/storage/database/cluster-operations.js';
 
 
 // ===============================================================================
@@ -175,6 +176,9 @@ export async function handleEvaluationReport(
     const comparisonCount = comparisonSummary.count;
     const avgComparisonSimilarity = comparisonSummary.avg_similarity;
 
+    // Clustering statistics
+    const clusteringStats = getClusteringStats(db.getConnection());
+
     // Generate markdown report
     const report = generateMarkdownReport({
       dbStats,
@@ -185,6 +189,7 @@ export async function handleEvaluationReport(
       overallAvgConfidence,
       confidenceThreshold,
       comparisonStats: { total: comparisonCount, avg_similarity: avgComparisonSimilarity },
+      clusteringStats,
     });
 
     // Save to file if path provided
@@ -209,6 +214,9 @@ export async function handleEvaluationReport(
         low_confidence_count: lowConfidenceImages.length,
         total_comparisons: comparisonCount,
         avg_comparison_similarity: avgComparisonSimilarity,
+        total_clusters: clusteringStats.total_clusters,
+        total_cluster_runs: clusteringStats.total_runs,
+        avg_coherence: clusteringStats.avg_coherence,
       },
       image_type_distribution: imageTypeDistribution,
       output_path: outputPath || null,
@@ -276,6 +284,9 @@ export async function handleDocumentReport(
       error: img.error_message,
     }));
 
+    const docComparisons = getComparisonSummariesByDocument(db.getConnection(), documentId);
+    const docClusterMemberships = getClusterSummariesForDocument(db.getConnection(), documentId);
+
     return formatResponse(successResult({
       document: {
         id: doc.id,
@@ -324,20 +335,28 @@ export async function handleDocumentReport(
           provenance_id: e.provenance_id,
         })),
       },
-      comparisons: (() => {
-        const comps = getComparisonSummariesByDocument(db.getConnection(), documentId);
-        return {
-          total: comps.length,
-          items: comps.map(c => ({
-            id: c.id,
-            compared_with: c.document_id_1 === documentId ? c.document_id_2 : c.document_id_1,
-            similarity_ratio: c.similarity_ratio,
-            summary: c.summary,
-            created_at: c.created_at,
-            processing_duration_ms: c.processing_duration_ms,
-          })),
-        };
-      })(),
+      comparisons: {
+        total: docComparisons.length,
+        items: docComparisons.map(c => ({
+          id: c.id,
+          compared_with: c.document_id_1 === documentId ? c.document_id_2 : c.document_id_1,
+          similarity_ratio: c.similarity_ratio,
+          summary: c.summary,
+          created_at: c.created_at,
+          processing_duration_ms: c.processing_duration_ms,
+        })),
+      },
+      clusters: {
+        total: docClusterMemberships.length,
+        items: docClusterMemberships.map(c => ({
+          cluster_id: c.id,
+          run_id: c.run_id,
+          cluster_index: c.cluster_index,
+          label: c.label,
+          classification_tag: c.classification_tag,
+          coherence_score: c.coherence_score,
+        })),
+      },
     }));
 
   } catch (error) {
@@ -411,6 +430,8 @@ export async function handleQualitySummary(
       max_similarity: number | null;
     };
 
+    const qualityClusteringStats = getClusteringStats(db.getConnection());
+
     return formatResponse(successResult({
       documents: {
         total: dbStats.total_documents,
@@ -473,6 +494,11 @@ export async function handleQualitySummary(
         avg_similarity: comparisonStats.total > 0 ? comparisonStats.avg_similarity : null,
         min_similarity: comparisonStats.total > 0 ? comparisonStats.min_similarity : null,
         max_similarity: comparisonStats.total > 0 ? comparisonStats.max_similarity : null,
+      },
+      clustering: {
+        total_clusters: qualityClusteringStats.total_clusters,
+        total_runs: qualityClusteringStats.total_runs,
+        avg_coherence: qualityClusteringStats.total_clusters > 0 ? qualityClusteringStats.avg_coherence : null,
       },
     }));
 
@@ -545,6 +571,22 @@ async function handleCostSummary(params: Record<string, unknown>): Promise<ToolR
       avg_duration_ms: compDurations.avg_ms,
     };
 
+    // Clustering processing durations (compute-only, no API cost)
+    const clusterDurations = conn.prepare(`
+      SELECT COUNT(*) as count,
+             COUNT(DISTINCT run_id) as runs,
+             COALESCE(SUM(processing_duration_ms), 0) as total_ms,
+             AVG(processing_duration_ms) as avg_ms
+      FROM clusters
+    `).get() as { count: number; runs: number; total_ms: number; avg_ms: number | null };
+
+    result.clustering_compute = {
+      total_clusters: clusterDurations.count,
+      total_runs: clusterDurations.runs,
+      total_duration_ms: clusterDurations.total_ms,
+      avg_duration_ms: clusterDurations.avg_ms,
+    };
+
     return formatResponse(successResult(result));
   } catch (error) {
     return handleError(error);
@@ -564,6 +606,7 @@ interface ReportParams {
   overallAvgConfidence: number;
   confidenceThreshold: number;
   comparisonStats: { total: number; avg_similarity: number | null };
+  clusteringStats: { total_clusters: number; total_runs: number; avg_coherence: number | null };
 }
 
 function generateMarkdownReport(params: ReportParams): string {
@@ -671,6 +714,7 @@ These images may need manual review or reprocessing.
 - **Structured Extractions**: ${dbStats.total_extractions} extractions
 - **Form Fills**: ${dbStats.total_form_fills} form fills
 - **Comparisons**: ${params.comparisonStats.total} document comparisons
+- **Clusters**: ${params.clusteringStats.total_clusters} clusters across ${params.clusteringStats.total_runs} runs${params.clusteringStats.avg_coherence !== null ? ` (avg coherence: ${(params.clusteringStats.avg_coherence * 100).toFixed(1)}%)` : ''}
 
 ### VLM Processing Rate
 

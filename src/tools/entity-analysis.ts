@@ -26,6 +26,7 @@ import {
   getEntityMentions,
   deleteEntitiesByDocument,
 } from '../services/storage/database/entity-operations.js';
+import { getClusterSummariesForDocument } from '../services/storage/database/cluster-operations.js';
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // INPUT SCHEMAS
@@ -524,6 +525,23 @@ async function handleWitnessAnalysis(params: Record<string, unknown>) {
       }
     }
 
+    // Include cluster context for each document
+    let clusterSection = '';
+    const clusterLines: string[] = [];
+    for (const docId of input.document_ids) {
+      const memberships = getClusterSummariesForDocument(db.getConnection(), docId);
+      if (memberships.length > 0) {
+        for (const m of memberships) {
+          const label = m.label ?? `Cluster ${m.cluster_index}`;
+          const tag = m.classification_tag ? ` [${m.classification_tag}]` : '';
+          clusterLines.push(`- ${docId}: ${label}${tag} (coherence: ${m.coherence_score ?? 'N/A'})`);
+        }
+      }
+    }
+    if (clusterLines.length > 0) {
+      clusterSection = `\n\n=== Document Cluster Memberships ===\n${clusterLines.join('\n')}`;
+    }
+
     const focusInstruction = input.focus_area
       ? `Focus your analysis specifically on: ${input.focus_area}.`
       : '';
@@ -539,7 +557,7 @@ async function handleWitnessAnalysis(params: Record<string, unknown>) {
       `4. CONCLUSIONS: Expert conclusions based on the evidence\n` +
       `5. RELIABILITY ASSESSMENT: Assessment of document reliability and potential issues\n` +
       `6. CONTRADICTIONS: Any contradictions or inconsistencies between documents\n\n` +
-      `Documents:\n${docSections}${vlmSection}${comparisonSection}`;
+      `Documents:\n${docSections}${vlmSection}${comparisonSection}${clusterSection}`;
 
     // Use Gemini thinking mode for structured analysis
     const client = new GeminiClient();

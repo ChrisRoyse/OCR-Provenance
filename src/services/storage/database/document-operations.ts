@@ -402,7 +402,17 @@ export function deleteDocument(
     .all(doc.provenance_id) as { id: string }[];
 
   const deleteProvStmt = db.prepare('DELETE FROM provenance WHERE id = ?');
+  const clusterRefCheck = db.prepare('SELECT COUNT(*) as cnt FROM clusters WHERE provenance_id = ?');
+  const detachProvStmt = db.prepare('UPDATE provenance SET source_id = NULL, parent_id = NULL WHERE id = ?');
   for (const { id: provId } of provenanceIds) {
+    // Skip CLUSTERING provenance still referenced by clusters (NOT NULL FK).
+    // Detach from parent chain so remaining deletes don't hit FK violations.
+    // These are cleaned up when the cluster run is deleted via ocr_cluster_delete.
+    const refCount = (clusterRefCheck.get(provId) as { cnt: number }).cnt;
+    if (refCount > 0) {
+      detachProvStmt.run(provId);
+      continue;
+    }
     deleteProvStmt.run(provId);
   }
 

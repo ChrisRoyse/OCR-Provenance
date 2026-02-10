@@ -109,33 +109,19 @@ export function computeDocumentEmbeddings(
   conn: Database.Database,
   documentIds?: string[]
 ): DocumentEmbedding[] {
-  // Query: get all chunk-based embedding vectors grouped by document
   // chunk_id IS NOT NULL ensures we only get chunk embeddings (not VLM or extraction)
-  let sql: string;
-  let params: (string | number)[];
+  const hasFilter = documentIds && documentIds.length > 0;
+  const filterClause = hasFilter
+    ? ` AND e.document_id IN (${documentIds.map(() => '?').join(', ')})`
+    : '';
 
-  if (documentIds && documentIds.length > 0) {
-    const placeholders = documentIds.map(() => '?').join(', ');
-    sql = `
-      SELECT e.document_id, v.vector
-      FROM vec_embeddings v
-      JOIN embeddings e ON e.id = v.embedding_id
-      WHERE e.chunk_id IS NOT NULL AND e.document_id IN (${placeholders})
-      ORDER BY e.document_id, e.chunk_index
-    `;
-    params = [...documentIds];
-  } else {
-    sql = `
-      SELECT e.document_id, v.vector
-      FROM vec_embeddings v
-      JOIN embeddings e ON e.id = v.embedding_id
-      WHERE e.chunk_id IS NOT NULL
-      ORDER BY e.document_id, e.chunk_index
-    `;
-    params = [];
-  }
-
-  const rows = conn.prepare(sql).all(...params) as Array<{
+  const rows = conn.prepare(`
+    SELECT e.document_id, v.vector
+    FROM vec_embeddings v
+    JOIN embeddings e ON e.id = v.embedding_id
+    WHERE e.chunk_id IS NOT NULL${filterClause}
+    ORDER BY e.document_id, e.chunk_index
+  `).all(...(hasFilter ? documentIds : [])) as Array<{
     document_id: string;
     vector: Buffer;
   }>;
@@ -329,7 +315,7 @@ async function runClusteringWorker(
  * Compute cosine similarity between a document embedding and a centroid.
  * Both vectors are assumed to be L2-normalized, so similarity = dot product.
  */
-function cosineSimilarity(a: Float32Array | number[], b: number[]): number {
+export function cosineSimilarity(a: Float32Array | number[], b: number[]): number {
   let dot = 0;
   for (let i = 0; i < a.length; i++) {
     dot += (a[i] ?? 0) * (b[i] ?? 0);
@@ -545,13 +531,7 @@ export async function runClustering(
 
   storeTransaction();
 
-  // Build noise document IDs
-  const noiseDocIds: string[] = [];
-  for (let i = 0; i < labels.length; i++) {
-    if (labels[i] === -1) {
-      noiseDocIds.push(orderedDocIds[i]);
-    }
-  }
+  const noiseDocIds = orderedDocIds.filter((_, i) => labels[i] === -1);
 
   const totalDurationMs = Math.round(performance.now() - startTime);
   console.error(`[CLUSTER] Done: ${workerResult.n_clusters} clusters, ${noiseDocIds.length} noise docs, ${totalDurationMs}ms`);

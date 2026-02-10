@@ -2,7 +2,7 @@
  * OCR Provenance MCP Server
  *
  * Entry point for the MCP server using stdio transport.
- * Exposes 67 OCR, search, and provenance tools via JSON-RPC.
+ * Exposes 72 OCR, search, provenance, and clustering tools via JSON-RPC.
  *
  * CRITICAL: NEVER use console.log() - stdout is reserved for JSON-RPC protocol.
  * Use console.error() for all logging.
@@ -37,6 +37,7 @@ import { structuredExtractionTools } from './tools/extraction-structured.js';
 import { fileManagementTools } from './tools/file-management.js';
 import { entityAnalysisTools } from './tools/entity-analysis.js';
 import { comparisonTools } from './tools/comparison.js';
+import { clusteringTools } from './tools/clustering.js';
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // SERVER INITIALIZATION
@@ -192,6 +193,15 @@ for (const [name, tool] of Object.entries(comparisonTools)) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
+// CLUSTERING TOOLS (5) - Extracted to src/tools/clustering.ts
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// Register clustering tools from extracted module
+for (const [name, tool] of Object.entries(clusteringTools)) {
+  server.tool(name, tool.description, tool.inputSchema as Record<string, unknown>, tool.handler);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
 // SERVER STARTUP
 // ═══════════════════════════════════════════════════════════════════════════════
 
@@ -199,7 +209,7 @@ async function main() {
   const transport = new StdioServerTransport();
   await server.connect(transport);
   console.error('OCR Provenance MCP Server running on stdio');
-  console.error('Tools registered: 67');
+  console.error('Tools registered: 72');
 }
 
 main().catch((error) => {
