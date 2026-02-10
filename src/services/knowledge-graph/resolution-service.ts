@@ -9,8 +9,8 @@
  * CRITICAL: NEVER use console.log() - stdout is JSON-RPC protocol.
  */
 
-import { Entity, EntityType } from '../../models/entity.js';
-import { KnowledgeNode, NodeEntityLink } from '../../models/knowledge-graph.js';
+import type { Entity, EntityType } from '../../models/entity.js';
+import type { KnowledgeNode, NodeEntityLink } from '../../models/knowledge-graph.js';
 import {
   sorensenDice,
   tokenSortedSimilarity,
