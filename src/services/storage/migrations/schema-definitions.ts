@@ -8,7 +8,7 @@
  */
 
 /** Current schema version */
-export const SCHEMA_VERSION = 14;
+export const SCHEMA_VERSION = 15;
 
 /**
  * Database configuration pragmas for optimal performance and safety
@@ -40,12 +40,12 @@ CREATE TABLE IF NOT EXISTS schema_version (
 export const CREATE_PROVENANCE_TABLE = `
 CREATE TABLE IF NOT EXISTS provenance (
   id TEXT PRIMARY KEY,
-  type TEXT NOT NULL CHECK (type IN ('DOCUMENT', 'OCR_RESULT', 'CHUNK', 'IMAGE', 'VLM_DESCRIPTION', 'EMBEDDING', 'EXTRACTION', 'FORM_FILL', 'ENTITY_EXTRACTION', 'COMPARISON')),
+  type TEXT NOT NULL CHECK (type IN ('DOCUMENT', 'OCR_RESULT', 'CHUNK', 'IMAGE', 'VLM_DESCRIPTION', 'EMBEDDING', 'EXTRACTION', 'FORM_FILL', 'ENTITY_EXTRACTION', 'COMPARISON', 'CLUSTERING')),
   created_at TEXT NOT NULL,
   processed_at TEXT NOT NULL,
   source_file_created_at TEXT,
   source_file_modified_at TEXT,
-  source_type TEXT NOT NULL CHECK (source_type IN ('FILE', 'OCR', 'CHUNKING', 'IMAGE_EXTRACTION', 'VLM', 'VLM_DEDUP', 'EMBEDDING', 'EXTRACTION', 'FORM_FILL', 'ENTITY_EXTRACTION', 'COMPARISON')),
+  source_type TEXT NOT NULL CHECK (source_type IN ('FILE', 'OCR', 'CHUNKING', 'IMAGE_EXTRACTION', 'VLM', 'VLM_DEDUP', 'EMBEDDING', 'EXTRACTION', 'FORM_FILL', 'ENTITY_EXTRACTION', 'COMPARISON', 'CLUSTERING')),
   source_path TEXT,
   source_id TEXT,
   root_document_id TEXT NOT NULL,
@@ -492,6 +492,49 @@ CREATE TABLE IF NOT EXISTS comparisons (
 )`;
 
 /**
+ * Clusters table - groups of semantically similar documents
+ * Provenance depth: 2 (parallel to CHUNK, after OCR_RESULT)
+ */
+export const CREATE_CLUSTERS_TABLE = `
+CREATE TABLE IF NOT EXISTS clusters (
+  id TEXT PRIMARY KEY NOT NULL,
+  run_id TEXT NOT NULL,
+  cluster_index INTEGER NOT NULL,
+  label TEXT,
+  description TEXT,
+  classification_tag TEXT,
+  document_count INTEGER NOT NULL DEFAULT 0,
+  centroid_json TEXT,
+  top_terms_json TEXT,
+  coherence_score REAL,
+  algorithm TEXT NOT NULL,
+  algorithm_params_json TEXT NOT NULL,
+  silhouette_score REAL,
+  content_hash TEXT NOT NULL,
+  provenance_id TEXT NOT NULL UNIQUE REFERENCES provenance(id),
+  created_at TEXT NOT NULL,
+  processing_duration_ms INTEGER
+)`;
+
+/**
+ * Document-cluster assignments - links documents to clusters within a run
+ * UNIQUE(document_id, run_id) ensures one assignment per document per run
+ * cluster_id is nullable for noise documents (HDBSCAN -1 labels)
+ */
+export const CREATE_DOCUMENT_CLUSTERS_TABLE = `
+CREATE TABLE IF NOT EXISTS document_clusters (
+  id TEXT PRIMARY KEY NOT NULL,
+  document_id TEXT NOT NULL REFERENCES documents(id),
+  cluster_id TEXT REFERENCES clusters(id),
+  run_id TEXT NOT NULL,
+  similarity_to_centroid REAL NOT NULL,
+  membership_probability REAL NOT NULL DEFAULT 1.0,
+  is_noise INTEGER NOT NULL DEFAULT 0,
+  assigned_at TEXT NOT NULL,
+  UNIQUE(document_id, run_id)
+)`;
+
+/**
  * All required indexes for query performance
  */
 export const CREATE_INDEXES = [
@@ -555,6 +598,14 @@ export const CREATE_INDEXES = [
   'CREATE INDEX IF NOT EXISTS idx_comparisons_doc1 ON comparisons(document_id_1)',
   'CREATE INDEX IF NOT EXISTS idx_comparisons_doc2 ON comparisons(document_id_2)',
   'CREATE INDEX IF NOT EXISTS idx_comparisons_created ON comparisons(created_at)',
+
+  // Cluster indexes
+  'CREATE INDEX IF NOT EXISTS idx_clusters_run_id ON clusters(run_id)',
+  'CREATE INDEX IF NOT EXISTS idx_clusters_tag ON clusters(classification_tag)',
+  'CREATE INDEX IF NOT EXISTS idx_clusters_created ON clusters(created_at DESC)',
+  'CREATE INDEX IF NOT EXISTS idx_doc_clusters_document ON document_clusters(document_id)',
+  'CREATE INDEX IF NOT EXISTS idx_doc_clusters_cluster ON document_clusters(cluster_id)',
+  'CREATE INDEX IF NOT EXISTS idx_doc_clusters_run ON document_clusters(run_id)',
 ] as const;
 
 /**
@@ -574,6 +625,8 @@ export const TABLE_DEFINITIONS = [
   { name: 'entities', sql: CREATE_ENTITIES_TABLE },
   { name: 'entity_mentions', sql: CREATE_ENTITY_MENTIONS_TABLE },
   { name: 'comparisons', sql: CREATE_COMPARISONS_TABLE },
+  { name: 'clusters', sql: CREATE_CLUSTERS_TABLE },
+  { name: 'document_clusters', sql: CREATE_DOCUMENT_CLUSTERS_TABLE },
 ] as const;
 
 /**
@@ -599,6 +652,8 @@ export const REQUIRED_TABLES = [
   'entities',
   'entity_mentions',
   'comparisons',
+  'clusters',
+  'document_clusters',
 ] as const;
 
 /**
@@ -642,4 +697,10 @@ export const REQUIRED_INDEXES = [
   'idx_comparisons_doc1',
   'idx_comparisons_doc2',
   'idx_comparisons_created',
+  'idx_clusters_run_id',
+  'idx_clusters_tag',
+  'idx_clusters_created',
+  'idx_doc_clusters_document',
+  'idx_doc_clusters_cluster',
+  'idx_doc_clusters_run',
 ] as const;

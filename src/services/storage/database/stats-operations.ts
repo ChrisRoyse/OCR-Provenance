@@ -68,7 +68,8 @@ export function getStats(
       (SELECT COUNT(*) FROM images) as image_count,
       (SELECT COUNT(*) FROM extractions) as extraction_count,
       (SELECT COUNT(*) FROM form_fills) as form_fill_count,
-      (SELECT COUNT(*) FROM comparisons) as comparison_count
+      (SELECT COUNT(*) FROM comparisons) as comparison_count,
+      (SELECT COUNT(*) FROM clusters) as cluster_count
   `)
     .get() as {
     ocr_count: number;
@@ -78,6 +79,7 @@ export function getStats(
     extraction_count: number;
     form_fill_count: number;
     comparison_count: number;
+    cluster_count: number;
   };
 
   const ocrCount = otherCounts.ocr_count;
@@ -87,6 +89,7 @@ export function getStats(
   const extractionCount = otherCounts.extraction_count;
   const formFillCount = otherCounts.form_fill_count;
   const comparisonCount = otherCounts.comparison_count;
+  const clusterCount = otherCounts.cluster_count;
 
   const qualityCosts = db
     .prepare(`
@@ -135,6 +138,7 @@ export function getStats(
     total_extractions: extractionCount,
     total_form_fills: formFillCount,
     total_comparisons: comparisonCount,
+    total_clusters: clusterCount,
     total_provenance: provenanceCount,
     storage_size_bytes: stats.size,
     avg_chunks_per_document: avgChunksPerDocument,

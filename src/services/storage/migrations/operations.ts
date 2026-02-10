@@ -24,6 +24,8 @@ import {
   CREATE_ENTITIES_TABLE,
   CREATE_ENTITY_MENTIONS_TABLE,
   CREATE_COMPARISONS_TABLE,
+  CREATE_CLUSTERS_TABLE,
+  CREATE_DOCUMENT_CLUSTERS_TABLE,
 } from './schema-definitions.js';
 import {
   configurePragmas,
@@ -1021,6 +1023,11 @@ export function migrateToLatest(db: Database.Database): void {
     migrateV13ToV14(db);
     bumpVersion(14);
   }
+
+  if (currentVersion < 15) {
+    migrateV14ToV15(db);
+    bumpVersion(15);
+  }
 }
 
 /**
@@ -1476,6 +1483,111 @@ function migrateV13ToV14(db: Database.Database): void {
     const cause = error instanceof Error ? error.message : String(error);
     throw new MigrationError(
       `Failed to migrate from v13 to v14 (document comparison): ${cause}`,
+      'migrate',
+      'provenance',
+      error
+    );
+  }
+}
+
+/**
+ * Migrate from schema version 14 to version 15
+ *
+ * Changes in v15:
+ * - provenance.type: Added 'CLUSTERING' to CHECK constraint
+ * - provenance.source_type: Added 'CLUSTERING' to CHECK constraint
+ * - clusters: New table for document clustering results
+ * - document_clusters: New table for document-cluster assignments
+ * - 6 new indexes: idx_clusters_run_id, idx_clusters_tag, idx_clusters_created,
+ *   idx_doc_clusters_document, idx_doc_clusters_cluster, idx_doc_clusters_run
+ *
+ * @param db - Database instance from better-sqlite3
+ * @throws MigrationError if migration fails
+ */
+function migrateV14ToV15(db: Database.Database): void {
+  try {
+    db.exec('PRAGMA foreign_keys = OFF');
+    db.exec('BEGIN TRANSACTION');
+
+    // Step 1: Recreate provenance table with CLUSTERING in CHECK constraints
+    db.exec(`
+      CREATE TABLE provenance_new (
+        id TEXT PRIMARY KEY,
+        type TEXT NOT NULL CHECK (type IN ('DOCUMENT', 'OCR_RESULT', 'CHUNK', 'IMAGE', 'VLM_DESCRIPTION', 'EMBEDDING', 'EXTRACTION', 'FORM_FILL', 'ENTITY_EXTRACTION', 'COMPARISON', 'CLUSTERING')),
+        created_at TEXT NOT NULL,
+        processed_at TEXT NOT NULL,
+        source_file_created_at TEXT,
+        source_file_modified_at TEXT,
+        source_type TEXT NOT NULL CHECK (source_type IN ('FILE', 'OCR', 'CHUNKING', 'IMAGE_EXTRACTION', 'VLM', 'VLM_DEDUP', 'EMBEDDING', 'EXTRACTION', 'FORM_FILL', 'ENTITY_EXTRACTION', 'COMPARISON', 'CLUSTERING')),
+        source_path TEXT,
+        source_id TEXT,
+        root_document_id TEXT NOT NULL,
+        location TEXT,
+        content_hash TEXT NOT NULL,
+        input_hash TEXT,
+        file_hash TEXT,
+        processor TEXT NOT NULL,
+        processor_version TEXT NOT NULL,
+        processing_params TEXT NOT NULL,
+        processing_duration_ms INTEGER,
+        processing_quality_score REAL,
+        parent_id TEXT,
+        parent_ids TEXT NOT NULL,
+        chain_depth INTEGER NOT NULL,
+        chain_path TEXT,
+        FOREIGN KEY (source_id) REFERENCES provenance_new(id),
+        FOREIGN KEY (parent_id) REFERENCES provenance_new(id)
+      )
+    `);
+
+    // Step 2: Copy existing data
+    db.exec('INSERT INTO provenance_new SELECT * FROM provenance');
+
+    // Step 3: Drop old table
+    db.exec('DROP TABLE provenance');
+
+    // Step 4: Rename new table
+    db.exec('ALTER TABLE provenance_new RENAME TO provenance');
+
+    // Step 5: Recreate provenance indexes
+    db.exec('CREATE INDEX IF NOT EXISTS idx_provenance_source_id ON provenance(source_id)');
+    db.exec('CREATE INDEX IF NOT EXISTS idx_provenance_type ON provenance(type)');
+    db.exec('CREATE INDEX IF NOT EXISTS idx_provenance_root_document_id ON provenance(root_document_id)');
+    db.exec('CREATE INDEX IF NOT EXISTS idx_provenance_parent_id ON provenance(parent_id)');
+
+    // Step 6: Create clusters table
+    db.exec(CREATE_CLUSTERS_TABLE);
+
+    // Step 7: Create document_clusters table
+    db.exec(CREATE_DOCUMENT_CLUSTERS_TABLE);
+
+    // Step 8: Create indexes for clustering tables
+    db.exec('CREATE INDEX IF NOT EXISTS idx_clusters_run_id ON clusters(run_id)');
+    db.exec('CREATE INDEX IF NOT EXISTS idx_clusters_tag ON clusters(classification_tag)');
+    db.exec('CREATE INDEX IF NOT EXISTS idx_clusters_created ON clusters(created_at DESC)');
+    db.exec('CREATE INDEX IF NOT EXISTS idx_doc_clusters_document ON document_clusters(document_id)');
+    db.exec('CREATE INDEX IF NOT EXISTS idx_doc_clusters_cluster ON document_clusters(cluster_id)');
+    db.exec('CREATE INDEX IF NOT EXISTS idx_doc_clusters_run ON document_clusters(run_id)');
+
+    db.exec('COMMIT');
+    db.exec('PRAGMA foreign_keys = ON');
+
+    // FK integrity check
+    const fkViolations = db.pragma('foreign_key_check') as unknown[];
+    if (fkViolations.length > 0) {
+      throw new Error(
+        `Foreign key integrity check failed after v14->v15 migration: ${fkViolations.length} violation(s). ` +
+        `First: ${JSON.stringify(fkViolations[0])}`
+      );
+    }
+  } catch (error) {
+    try {
+      db.exec('ROLLBACK');
+      db.exec('PRAGMA foreign_keys = ON');
+    } catch { /* ignore rollback errors */ }
+    const cause = error instanceof Error ? error.message : String(error);
+    throw new MigrationError(
+      `Failed to migrate from v14 to v15 (document clustering): ${cause}`,
       'migrate',
       'provenance',
       error
