@@ -50,7 +50,7 @@ function csvEscape(field: string | number | null | undefined): string {
 }
 
 /** Detected item types from findProvenanceId - includes 'provenance' for direct provenance ID lookups */
-type DetectedItemType = 'document' | 'chunk' | 'embedding' | 'ocr_result' | 'image' | 'comparison' | 'provenance';
+type DetectedItemType = 'document' | 'chunk' | 'embedding' | 'ocr_result' | 'image' | 'comparison' | 'clustering' | 'provenance';
 
 /**
  * Find provenance ID from an item of any type.
@@ -86,6 +86,13 @@ function findProvenanceId(
     .get(itemId) as { provenance_id: string } | undefined;
   if (comparison) {
     return { provenanceId: comparison.provenance_id, itemType: 'comparison' };
+  }
+
+  const cluster = dbConn
+    .prepare('SELECT provenance_id FROM clusters WHERE id = ?')
+    .get(itemId) as { provenance_id: string } | undefined;
+  if (cluster) {
+    return { provenanceId: cluster.provenance_id, itemType: 'clustering' };
   }
 
   const prov = db.getProvenance(itemId);
@@ -131,6 +138,11 @@ export async function handleProvenanceGet(
         .prepare('SELECT provenance_id FROM comparisons WHERE id = ?')
         .get(input.item_id) as { provenance_id: string } | undefined;
       provenanceId = comp?.provenance_id ?? null;
+    } else if (itemType === 'clustering') {
+      const cluster = db.getConnection()
+        .prepare('SELECT provenance_id FROM clusters WHERE id = ?')
+        .get(input.item_id) as { provenance_id: string } | undefined;
+      provenanceId = cluster?.provenance_id ?? null;
     } else {
       provenanceId = input.item_id;
     }
