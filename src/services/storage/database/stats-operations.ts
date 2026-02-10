@@ -69,7 +69,9 @@ export function getStats(
       (SELECT COUNT(*) FROM extractions) as extraction_count,
       (SELECT COUNT(*) FROM form_fills) as form_fill_count,
       (SELECT COUNT(*) FROM comparisons) as comparison_count,
-      (SELECT COUNT(*) FROM clusters) as cluster_count
+      (SELECT COUNT(*) FROM clusters) as cluster_count,
+      (SELECT COUNT(*) FROM knowledge_nodes) as knowledge_node_count,
+      (SELECT COUNT(*) FROM knowledge_edges) as knowledge_edge_count
   `)
     .get() as {
     ocr_count: number;
@@ -80,6 +82,8 @@ export function getStats(
     form_fill_count: number;
     comparison_count: number;
     cluster_count: number;
+    knowledge_node_count: number;
+    knowledge_edge_count: number;
   };
 
   const ocrCount = otherCounts.ocr_count;
@@ -90,6 +94,8 @@ export function getStats(
   const formFillCount = otherCounts.form_fill_count;
   const comparisonCount = otherCounts.comparison_count;
   const clusterCount = otherCounts.cluster_count;
+  const knowledgeNodeCount = otherCounts.knowledge_node_count;
+  const knowledgeEdgeCount = otherCounts.knowledge_edge_count;
 
   const qualityCosts = db
     .prepare(`
@@ -139,6 +145,8 @@ export function getStats(
     total_form_fills: formFillCount,
     total_comparisons: comparisonCount,
     total_clusters: clusterCount,
+    total_knowledge_nodes: knowledgeNodeCount,
+    total_knowledge_edges: knowledgeEdgeCount,
     total_provenance: provenanceCount,
     storage_size_bytes: stats.size,
     avg_chunks_per_document: avgChunksPerDocument,

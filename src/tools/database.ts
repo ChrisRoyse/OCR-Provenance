@@ -161,6 +161,8 @@ function buildStatsResponse(
     form_fill_count: stats.total_form_fills,
     comparison_count: stats.total_comparisons,
     cluster_count: stats.total_clusters,
+    total_knowledge_nodes: stats.total_knowledge_nodes,
+    total_knowledge_edges: stats.total_knowledge_edges,
     vector_count: vector.getVectorCount(),
     ocr_quality: stats.ocr_quality,
     costs: stats.costs,

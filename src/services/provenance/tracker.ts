@@ -312,6 +312,8 @@ export class ProvenanceTracker {
         return ['DOCUMENT', 'OCR_RESULT', 'COMPARISON'];
       case ProvenanceType.CLUSTERING:
         return ['DOCUMENT', 'OCR_RESULT', 'CLUSTERING'];
+      case ProvenanceType.KNOWLEDGE_GRAPH:
+        return ['DOCUMENT', 'OCR_RESULT', 'KNOWLEDGE_GRAPH'];
       case ProvenanceType.EMBEDDING:
         // Default path is from CHUNK (depth 3). VLM description embeddings
         // (depth 4) bypass createProvenance() and build chain_path directly

@@ -15,6 +15,7 @@ import {
 } from './types.js';
 import { runWithForeignKeyCheck } from './helpers.js';
 import { rowToDocument } from './converters.js';
+import { cleanupGraphForDocument } from './knowledge-graph-operations.js';
 
 /**
  * Insert a new document
@@ -316,6 +317,9 @@ function deleteDerivedRecords(db: Database.Database, documentId: string, caller:
   // Delete comparisons referencing this document
   db.prepare('DELETE FROM comparisons WHERE document_id_1 = ? OR document_id_2 = ?').run(documentId, documentId);
 
+  // Clean up knowledge graph data (must come before entities deletion since links reference entities)
+  cleanupGraphForDocument(db, documentId);
+
   // Delete entity mentions and entities (entity_mentions.entity_id -> entities.id)
   try {
     db.prepare(
@@ -403,13 +407,16 @@ export function deleteDocument(
 
   const deleteProvStmt = db.prepare('DELETE FROM provenance WHERE id = ?');
   const clusterRefCheck = db.prepare('SELECT COUNT(*) as cnt FROM clusters WHERE provenance_id = ?');
+  const kgNodeRefCheck = db.prepare('SELECT COUNT(*) as cnt FROM knowledge_nodes WHERE provenance_id = ?');
   const detachProvStmt = db.prepare('UPDATE provenance SET source_id = NULL, parent_id = NULL WHERE id = ?');
   for (const { id: provId } of provenanceIds) {
     // Skip CLUSTERING provenance still referenced by clusters (NOT NULL FK).
+    // Skip KNOWLEDGE_GRAPH provenance still referenced by surviving knowledge_nodes (NOT NULL FK).
     // Detach from parent chain so remaining deletes don't hit FK violations.
-    // These are cleaned up when the cluster run is deleted via ocr_cluster_delete.
-    const refCount = (clusterRefCheck.get(provId) as { cnt: number }).cnt;
-    if (refCount > 0) {
+    // These are cleaned up when the cluster run / knowledge graph is deleted.
+    const clusterRefs = (clusterRefCheck.get(provId) as { cnt: number }).cnt;
+    const kgNodeRefs = (kgNodeRefCheck.get(provId) as { cnt: number }).cnt;
+    if (clusterRefs > 0 || kgNodeRefs > 0) {
       detachProvStmt.run(provId);
       continue;
     }

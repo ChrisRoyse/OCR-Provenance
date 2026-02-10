@@ -24,6 +24,7 @@ import {
 } from '../services/storage/database/image-operations.js';
 import { getComparisonSummariesByDocument } from '../services/storage/database/comparison-operations.js';
 import { getClusteringStats, getClusterSummariesForDocument } from '../services/storage/database/cluster-operations.js';
+import { getKnowledgeNodeSummariesByDocument } from '../services/storage/database/knowledge-graph-operations.js';
 
 
 // ===============================================================================
@@ -179,6 +180,10 @@ export async function handleEvaluationReport(
     // Clustering statistics
     const clusteringStats = getClusteringStats(db.getConnection());
 
+    // Knowledge graph statistics
+    const knowledgeNodeCount = (db.getConnection().prepare('SELECT COUNT(*) as cnt FROM knowledge_nodes').get() as { cnt: number }).cnt;
+    const knowledgeEdgeCount = (db.getConnection().prepare('SELECT COUNT(*) as cnt FROM knowledge_edges').get() as { cnt: number }).cnt;
+
     // Generate markdown report
     const report = generateMarkdownReport({
       dbStats,
@@ -190,6 +195,7 @@ export async function handleEvaluationReport(
       confidenceThreshold,
       comparisonStats: { total: comparisonCount, avg_similarity: avgComparisonSimilarity },
       clusteringStats,
+      knowledgeGraphStats: { total_nodes: knowledgeNodeCount, total_edges: knowledgeEdgeCount },
     });
 
     // Save to file if path provided
@@ -217,6 +223,8 @@ export async function handleEvaluationReport(
         total_clusters: clusteringStats.total_clusters,
         total_cluster_runs: clusteringStats.total_runs,
         avg_coherence: clusteringStats.avg_coherence,
+        total_knowledge_nodes: knowledgeNodeCount,
+        total_knowledge_edges: knowledgeEdgeCount,
       },
       image_type_distribution: imageTypeDistribution,
       output_path: outputPath || null,
@@ -357,6 +365,16 @@ export async function handleDocumentReport(
           coherence_score: c.coherence_score,
         })),
       },
+      knowledge_graph: (() => {
+        const kgNodes = getKnowledgeNodeSummariesByDocument(db.getConnection(), documentId);
+        if (kgNodes.length === 0) return { total_nodes: 0, cross_document_nodes: 0, total_edges: 0, nodes: [] };
+        return {
+          total_nodes: kgNodes.length,
+          cross_document_nodes: kgNodes.filter(n => n.document_count > 1).length,
+          total_edges: kgNodes.reduce((sum, n) => sum + n.edge_count, 0),
+          nodes: kgNodes,
+        };
+      })(),
     }));
 
   } catch (error) {
@@ -500,6 +518,16 @@ export async function handleQualitySummary(
         total_runs: qualityClusteringStats.total_runs,
         avg_coherence: qualityClusteringStats.total_clusters > 0 ? qualityClusteringStats.avg_coherence : null,
       },
+      knowledge_graph: (() => {
+        const conn = db.getConnection();
+        const totalEntities = (conn.prepare('SELECT COUNT(*) as cnt FROM entities').get() as { cnt: number }).cnt;
+        const linkedEntities = (conn.prepare('SELECT COUNT(*) as cnt FROM node_entity_links').get() as { cnt: number }).cnt;
+        return {
+          entities_resolved: linkedEntities,
+          total_entities: totalEntities,
+          resolution_coverage: totalEntities > 0 ? linkedEntities / totalEntities : 0,
+        };
+      })(),
     }));
 
   } catch (error) {
@@ -587,6 +615,16 @@ async function handleCostSummary(params: Record<string, unknown>): Promise<ToolR
       avg_duration_ms: clusterDurations.avg_ms,
     };
 
+    // Knowledge graph build costs (Gemini calls for AI resolution + relationship classification)
+    const kgProvenance = conn.prepare(
+      "SELECT COUNT(*) as cnt, COALESCE(SUM(processing_duration_ms), 0) as total_ms FROM provenance WHERE type = 'KNOWLEDGE_GRAPH'"
+    ).get() as { cnt: number; total_ms: number };
+
+    result.knowledge_graph_build = {
+      total_builds: kgProvenance.cnt,
+      total_duration_ms: kgProvenance.total_ms,
+    };
+
     return formatResponse(successResult(result));
   } catch (error) {
     return handleError(error);
@@ -607,6 +645,7 @@ interface ReportParams {
   confidenceThreshold: number;
   comparisonStats: { total: number; avg_similarity: number | null };
   clusteringStats: { total_clusters: number; total_runs: number; avg_coherence: number | null };
+  knowledgeGraphStats: { total_nodes: number; total_edges: number };
 }
 
 function generateMarkdownReport(params: ReportParams): string {
@@ -715,6 +754,7 @@ These images may need manual review or reprocessing.
 - **Form Fills**: ${dbStats.total_form_fills} form fills
 - **Comparisons**: ${params.comparisonStats.total} document comparisons
 - **Clusters**: ${params.clusteringStats.total_clusters} clusters across ${params.clusteringStats.total_runs} runs${params.clusteringStats.avg_coherence !== null ? ` (avg coherence: ${(params.clusteringStats.avg_coherence * 100).toFixed(1)}%)` : ''}
+- **Knowledge Graph**: ${params.knowledgeGraphStats.total_nodes} nodes, ${params.knowledgeGraphStats.total_edges} edges
 
 ### VLM Processing Rate
 
