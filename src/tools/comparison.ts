@@ -155,13 +155,13 @@ async function handleDocumentCompare(params: Record<string, unknown>): Promise<T
       }
     );
 
-    // Entity diff
+    // Entity diff (KG-aware: resolves entities through knowledge graph canonical names)
     let entityDiff = null;
     if (input.include_entity_diff) {
       try {
         const entities1 = getEntitiesByDocument(conn, input.document_id_1);
         const entities2 = getEntitiesByDocument(conn, input.document_id_2);
-        entityDiff = compareEntities(entities1, entities2);
+        entityDiff = compareEntities(entities1, entities2, conn);
       } catch (e: unknown) {
         // If entities table doesn't exist (no entities extracted yet), return empty
         const msg = e instanceof Error ? e.message : String(e);

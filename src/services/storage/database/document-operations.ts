@@ -528,14 +528,3 @@ export function cleanDocumentDerivedData(db: Database.Database, documentId: stri
   console.error(`[INFO] Cleaned derived data for document ${documentId}: ${embeddingCount} embeddings, ${nonRootProvIds.length} provenance records removed`);
 }
 
-/**
- * Reset documents stuck in 'processing' status back to 'pending'
- *
- * @param db - Database connection
- * @returns number - Number of documents reset
- */
-export function resetProcessingDocuments(db: Database.Database): number {
-  return db.prepare(
-    "UPDATE documents SET status = 'pending', error_message = 'Reset from stuck processing state' WHERE status = 'processing'"
-  ).run().changes;
-}

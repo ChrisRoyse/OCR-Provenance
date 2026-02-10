@@ -16,7 +16,6 @@ import {
   os,
   computeHash,
   hashFile,
-  verifyFileHash,
   isValidHashFormat,
 } from './helpers.js';
 
@@ -73,53 +72,3 @@ describe('hashFile', () => {
   });
 });
 
-describe('verifyFileHash', () => {
-  let testDir: string;
-  let testFilePath: string;
-  const testContent = 'File content for verification test';
-
-  beforeAll(async () => {
-    testDir = path.join(os.tmpdir(), `hash-verify-test-${String(Date.now())}`);
-    await fs.promises.mkdir(testDir, { recursive: true });
-    testFilePath = path.join(testDir, 'verify-test.txt');
-    await fs.promises.writeFile(testFilePath, testContent);
-  });
-
-  afterAll(async () => {
-    try {
-      await fs.promises.rm(testDir, { recursive: true, force: true });
-    } catch {
-      // Ignore cleanup errors
-    }
-  });
-
-  it('should return true for matching hash', async () => {
-    const expectedHash = computeHash(testContent);
-    const result = await verifyFileHash(testFilePath, expectedHash);
-    expect(result).toBe(true);
-  });
-
-  it('should return false for non-matching hash', async () => {
-    const wrongHash = 'sha256:0000000000000000000000000000000000000000000000000000000000000000';
-    const result = await verifyFileHash(testFilePath, wrongHash);
-    expect(result).toBe(false);
-  });
-
-  it('should return false for invalid hash format', async () => {
-    const result = await verifyFileHash(testFilePath, 'invalid-hash');
-    expect(result).toBe(false);
-  });
-
-  it('should detect file content modification', async () => {
-    // Get original hash
-    const originalHash = await hashFile(testFilePath);
-
-    // Modify file
-    const modifiedPath = path.join(testDir, 'modified-test.txt');
-    await fs.promises.writeFile(modifiedPath, testContent + ' MODIFIED');
-
-    // Verify original hash no longer matches modified content
-    const result = await verifyFileHash(modifiedPath, originalHash);
-    expect(result).toBe(false);
-  });
-});

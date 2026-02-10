@@ -11,7 +11,6 @@ import {
   expect,
   computeHash,
   isValidHashFormat,
-  HASH_TOTAL_LENGTH,
 } from './helpers.js';
 
 describe('computeHash', () => {
@@ -41,7 +40,7 @@ describe('computeHash', () => {
 
   it('should have correct total length', () => {
     const hash = computeHash('test');
-    expect(hash.length).toBe(HASH_TOTAL_LENGTH);
+    expect(hash.length).toBe(71); // 'sha256:' (7) + 64 hex chars
   });
 
   it('should produce lowercase hex output', () => {

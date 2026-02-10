@@ -32,9 +32,9 @@ import {
 } from './shared.js';
 import { BM25SearchService } from '../services/search/bm25.js';
 import { RRFFusion } from '../services/search/fusion.js';
-import { expandQueryWithKG, getExpandedTerms } from '../services/search/query-expander.js';
-import { rerankResults } from '../services/search/reranker.js';
-import { getEntitiesForChunks, getDocumentIdsForEntities } from '../services/storage/database/knowledge-graph-operations.js';
+import { expandQueryWithKG, expandQueryWithCoMentioned, getExpandedTerms } from '../services/search/query-expander.js';
+import { rerankResults, type EdgeInfo } from '../services/search/reranker.js';
+import { getEntitiesForChunks, getDocumentIdsForEntities, getEdgesForNode, getKnowledgeNode, type ChunkEntityInfo } from '../services/storage/database/knowledge-graph-operations.js';
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // TYPE DEFINITIONS
@@ -134,44 +134,100 @@ export async function handleSearchSemantic(
   try {
     const input = validateInput(SearchSemanticInput, params);
     const { db, vector } = requireDatabase();
+    const conn = db.getConnection();
 
     // Resolve metadata filter to document IDs, then chain through quality filter
-    const documentFilter = resolveQualityFilter(db, input.min_quality_score,
+    let documentFilter = resolveQualityFilter(db, input.min_quality_score,
       resolveMetadataFilter(db, input.metadata_filter, input.document_filter));
+
+    // PAR-1: Entity filter - resolve entity names/types to document IDs
+    if (input.entity_filter) {
+      const entityDocIds = getDocumentIdsForEntities(
+        conn,
+        input.entity_filter.entity_names,
+        input.entity_filter.entity_types,
+      );
+      if (entityDocIds.length === 0) {
+        return formatResponse(successResult({
+          query: input.query,
+          results: [],
+          total: 0,
+          threshold: input.similarity_threshold,
+          entity_filter_applied: true,
+          entity_filter_document_count: 0,
+        }));
+      }
+      if (documentFilter && documentFilter.length > 0) {
+        const entitySet = new Set(entityDocIds);
+        documentFilter = documentFilter.filter(id => entitySet.has(id));
+        if (documentFilter.length === 0) {
+          return formatResponse(successResult({
+            query: input.query,
+            results: [],
+            total: 0,
+            threshold: input.similarity_threshold,
+            entity_filter_applied: true,
+            entity_filter_document_count: 0,
+          }));
+        }
+      } else {
+        documentFilter = entityDocIds;
+      }
+    }
 
     // Generate query embedding
     const embedder = getEmbeddingService();
     const queryVector = await embedder.embedSearchQuery(input.query);
 
+    // PAR-1: Over-fetch for reranking if needed
+    const limit = input.limit ?? 10;
+    const searchLimit = input.rerank ? Math.max(limit * 2, 20) : limit;
+
     // Search for similar vectors
     const results = vector.searchSimilar(queryVector, {
-      limit: input.limit,
+      limit: searchLimit,
       threshold: input.similarity_threshold,
       documentFilter,
     });
 
     // Entity enrichment: collect chunk IDs and fetch entities if requested
-    let entityMap: Map<string, Array<{ node_id: string; entity_type: string; canonical_name: string; confidence: number; document_count: number }>> | undefined;
-    if (input.include_entities) {
+    let entityMap: Map<string, ChunkEntityInfo[]> | undefined;
+    if (input.include_entities || input.rerank) {
       const chunkIds = results.map(r => r.chunk_id).filter((id): id is string => id != null);
       if (chunkIds.length > 0) {
-        entityMap = getEntitiesForChunks(db.getConnection(), chunkIds);
+        entityMap = getEntitiesForChunks(conn, chunkIds);
       }
     }
 
-    // Format results with optional provenance
-    const formattedResults = results.map(r => {
-      // L-7 fix: Include source_file_hash, content_hash, provenance_id from VectorSearchResult.
-      // Constitution requires SHA-256 hashes on all content and provenance traceability.
-      const result: Record<string, unknown> = {
-        embedding_id: r.embedding_id,
+    // PAR-1: Re-rank results using Gemini AI if requested
+    let finalResults: Array<Record<string, unknown>>;
+    let rerankInfo: Record<string, unknown> | undefined;
+
+    if (input.rerank && results.length > 0) {
+      // Build entity context map for reranking
+      let entityContextForRerank: Map<number, Array<{ entity_type: string; canonical_name: string; document_count: number }>> | undefined;
+      if (entityMap) {
+        entityContextForRerank = new Map();
+        results.forEach((r, i) => {
+          if (r.chunk_id && entityMap!.has(r.chunk_id)) {
+            const entities = entityMap!.get(r.chunk_id)!;
+            entityContextForRerank!.set(i, entities.map(e => ({
+              entity_type: e.entity_type,
+              canonical_name: e.canonical_name,
+              document_count: e.document_count,
+            })));
+          }
+        });
+      }
+
+      const rerankInput = results.map(r => ({
         chunk_id: r.chunk_id,
         image_id: r.image_id,
-        extraction_id: r.extraction_id ?? null,
+        extraction_id: r.extraction_id,
+        embedding_id: r.embedding_id,
         document_id: r.document_id,
-        result_type: r.result_type,
-        similarity_score: r.similarity_score,
         original_text: r.original_text,
+        result_type: r.result_type,
         source_file_path: r.source_file_path,
         source_file_name: r.source_file_name,
         source_file_hash: r.source_file_hash,
@@ -179,28 +235,104 @@ export async function handleSearchSemantic(
         character_start: r.character_start,
         character_end: r.character_end,
         chunk_index: r.chunk_index,
-        total_chunks: r.total_chunks,
-        content_hash: r.content_hash,
         provenance_id: r.provenance_id,
+        content_hash: r.content_hash,
+        rank: 0,
+        score: r.similarity_score,
+      }));
+
+      const reranked = await rerankResults(input.query, rerankInput, limit, entityContextForRerank);
+      finalResults = reranked.map(r => {
+        const original = results[r.original_index];
+        const result: Record<string, unknown> = {
+          embedding_id: original.embedding_id,
+          chunk_id: original.chunk_id,
+          image_id: original.image_id,
+          extraction_id: original.extraction_id ?? null,
+          document_id: original.document_id,
+          result_type: original.result_type,
+          similarity_score: original.similarity_score,
+          original_text: original.original_text,
+          source_file_path: original.source_file_path,
+          source_file_name: original.source_file_name,
+          source_file_hash: original.source_file_hash,
+          page_number: original.page_number,
+          character_start: original.character_start,
+          character_end: original.character_end,
+          chunk_index: original.chunk_index,
+          total_chunks: original.total_chunks,
+          content_hash: original.content_hash,
+          provenance_id: original.provenance_id,
+          rerank_score: r.relevance_score,
+          rerank_reasoning: r.reasoning,
+        };
+        if (input.include_provenance) {
+          result.provenance = formatProvenanceChain(db, original.provenance_id);
+        }
+        if (input.include_entities && entityMap && original.chunk_id) {
+          result.entities_mentioned = entityMap.get(original.chunk_id) ?? [];
+        }
+        return result;
+      });
+      rerankInfo = {
+        reranked: true,
+        entity_aware: !!entityContextForRerank && entityContextForRerank.size > 0,
+        candidates_evaluated: Math.min(results.length, 20),
+        results_returned: finalResults.length,
       };
+    } else {
+      // Format results with optional provenance (original path)
+      finalResults = results.map(r => {
+        const result: Record<string, unknown> = {
+          embedding_id: r.embedding_id,
+          chunk_id: r.chunk_id,
+          image_id: r.image_id,
+          extraction_id: r.extraction_id ?? null,
+          document_id: r.document_id,
+          result_type: r.result_type,
+          similarity_score: r.similarity_score,
+          original_text: r.original_text,
+          source_file_path: r.source_file_path,
+          source_file_name: r.source_file_name,
+          source_file_hash: r.source_file_hash,
+          page_number: r.page_number,
+          character_start: r.character_start,
+          character_end: r.character_end,
+          chunk_index: r.chunk_index,
+          total_chunks: r.total_chunks,
+          content_hash: r.content_hash,
+          provenance_id: r.provenance_id,
+        };
 
-      if (input.include_provenance) {
-        result.provenance = formatProvenanceChain(db, r.provenance_id);
-      }
+        if (input.include_provenance) {
+          result.provenance = formatProvenanceChain(db, r.provenance_id);
+        }
 
-      if (entityMap && r.chunk_id) {
-        result.entities_mentioned = entityMap.get(r.chunk_id) ?? [];
-      }
+        if (input.include_entities && entityMap && r.chunk_id) {
+          result.entities_mentioned = entityMap.get(r.chunk_id) ?? [];
+        }
 
-      return result;
-    });
+        return result;
+      });
+    }
 
-    return formatResponse(successResult({
+    const responseData: Record<string, unknown> = {
       query: input.query,
-      results: formattedResults,
-      total: formattedResults.length,
+      results: finalResults,
+      total: finalResults.length,
       threshold: input.similarity_threshold,
-    }));
+    };
+
+    if (rerankInfo) {
+      responseData.rerank = rerankInfo;
+    }
+
+    if (input.entity_filter) {
+      responseData.entity_filter_applied = true;
+      responseData.entity_filter_document_count = documentFilter?.length ?? 0;
+    }
+
+    return formatResponse(successResult(responseData));
   } catch (error) {
     return handleError(error);
   }
@@ -216,21 +348,63 @@ export async function handleSearch(
   try {
     const input = validateInput(SearchInput, params);
     const { db } = requireDatabase();
+    const conn = db.getConnection();
 
     // Resolve metadata filter to document IDs, then chain through quality filter
-    const documentFilter = resolveQualityFilter(db, input.min_quality_score,
+    let documentFilter = resolveQualityFilter(db, input.min_quality_score,
       resolveMetadataFilter(db, input.metadata_filter, input.document_filter));
 
-    const bm25 = new BM25SearchService(db.getConnection());
+    // PAR-1: Entity filter - resolve entity names/types to document IDs
+    if (input.entity_filter) {
+      const entityDocIds = getDocumentIdsForEntities(
+        conn,
+        input.entity_filter.entity_names,
+        input.entity_filter.entity_types,
+      );
+      if (entityDocIds.length === 0) {
+        return formatResponse(successResult({
+          query: input.query,
+          search_type: 'bm25',
+          results: [],
+          total: 0,
+          sources: { chunk_count: 0, vlm_count: 0, extraction_count: 0 },
+          entity_filter_applied: true,
+          entity_filter_document_count: 0,
+        }));
+      }
+      if (documentFilter && documentFilter.length > 0) {
+        const entitySet = new Set(entityDocIds);
+        documentFilter = documentFilter.filter(id => entitySet.has(id));
+        if (documentFilter.length === 0) {
+          return formatResponse(successResult({
+            query: input.query,
+            search_type: 'bm25',
+            results: [],
+            total: 0,
+            sources: { chunk_count: 0, vlm_count: 0, extraction_count: 0 },
+            entity_filter_applied: true,
+            entity_filter_document_count: 0,
+          }));
+        }
+      } else {
+        documentFilter = entityDocIds;
+      }
+    }
+
+    // PAR-1: Expand query with KG aliases if requested (BM25 benefits from keyword expansion)
+    const bm25Query = input.expand_query ? expandQueryWithKG(input.query, conn) : input.query;
+    const expansionInfo = input.expand_query ? getExpandedTerms(input.query) : undefined;
+
+    const bm25 = new BM25SearchService(conn);
     const limit = input.limit ?? 10;
 
     // M-3 fix: Over-fetch from both sources (limit * 2) since we merge and truncate.
     // Without this, requesting limit=10 from each source may yield <10 after merge.
-    const fetchLimit = limit * 2;
+    const fetchLimit = input.rerank ? Math.max(limit * 2, 20) : limit * 2;
 
     // Search chunks FTS
     const chunkResults = bm25.search({
-      query: input.query,
+      query: bm25Query,
       limit: fetchLimit,
       phraseSearch: input.phrase_search,
       documentFilter,
@@ -239,7 +413,7 @@ export async function handleSearch(
 
     // Search VLM FTS
     const vlmResults = bm25.searchVLM({
-      query: input.query,
+      query: bm25Query,
       limit: fetchLimit,
       phraseSearch: input.phrase_search,
       documentFilter,
@@ -248,7 +422,7 @@ export async function handleSearch(
 
     // Search extractions FTS (F-12)
     const extractionResults = bm25.searchExtractions({
-      query: input.query,
+      query: bm25Query,
       limit: fetchLimit,
       phraseSearch: input.phrase_search,
       documentFilter,
@@ -256,54 +430,116 @@ export async function handleSearch(
     });
 
     // Merge by score (higher is better), apply combined limit
+    const mergeLimit = input.rerank ? Math.max(limit * 2, 20) : limit;
     const allResults = [...chunkResults, ...vlmResults, ...extractionResults]
       .sort((a, b) => b.bm25_score - a.bm25_score)
-      .slice(0, limit);
+      .slice(0, mergeLimit);
 
     // Re-rank after merge
     const rankedResults = allResults.map((r, i) => ({ ...r, rank: i + 1 }));
 
     // Entity enrichment: collect chunk IDs and fetch entities if requested
-    let bm25EntityMap: Map<string, Array<{ node_id: string; entity_type: string; canonical_name: string; confidence: number; document_count: number }>> | undefined;
-    if (input.include_entities) {
+    let bm25EntityMap: Map<string, ChunkEntityInfo[]> | undefined;
+    if (input.include_entities || input.rerank) {
       const chunkIds = rankedResults.map(r => r.chunk_id).filter((id): id is string => id != null);
       if (chunkIds.length > 0) {
-        bm25EntityMap = getEntitiesForChunks(db.getConnection(), chunkIds);
+        bm25EntityMap = getEntitiesForChunks(conn, chunkIds);
       }
     }
 
-    const results = rankedResults.map(r => {
-      const base: Record<string, unknown> = { ...r };
-      if (input.include_provenance) {
-        base.provenance_chain = formatProvenanceChain(db, r.provenance_id);
+    // PAR-1: Re-rank results using Gemini AI if requested
+    let finalResults: Array<Record<string, unknown>>;
+    let rerankInfo: Record<string, unknown> | undefined;
+
+    if (input.rerank && rankedResults.length > 0) {
+      // Build entity context map for reranking
+      let entityContextForRerank: Map<number, Array<{ entity_type: string; canonical_name: string; document_count: number }>> | undefined;
+      if (bm25EntityMap) {
+        entityContextForRerank = new Map();
+        rankedResults.forEach((r, i) => {
+          if (r.chunk_id && bm25EntityMap!.has(r.chunk_id)) {
+            const entities = bm25EntityMap!.get(r.chunk_id)!;
+            entityContextForRerank!.set(i, entities.map(e => ({
+              entity_type: e.entity_type,
+              canonical_name: e.canonical_name,
+              document_count: e.document_count,
+            })));
+          }
+        });
       }
-      if (bm25EntityMap && r.chunk_id) {
-        base.entities_mentioned = bm25EntityMap.get(r.chunk_id) ?? [];
-      }
-      return base;
-    });
+
+      const rerankInput = rankedResults.map(r => ({ ...r }));
+      const reranked = await rerankResults(input.query, rerankInput, limit, entityContextForRerank);
+      finalResults = reranked.map(r => {
+        const original = rankedResults[r.original_index];
+        const base: Record<string, unknown> = {
+          ...original,
+          rerank_score: r.relevance_score,
+          rerank_reasoning: r.reasoning,
+        };
+        if (input.include_provenance) {
+          base.provenance_chain = formatProvenanceChain(db, original.provenance_id);
+        }
+        if (input.include_entities && bm25EntityMap && original.chunk_id) {
+          base.entities_mentioned = bm25EntityMap.get(original.chunk_id) ?? [];
+        }
+        return base;
+      });
+      rerankInfo = {
+        reranked: true,
+        entity_aware: !!entityContextForRerank && entityContextForRerank.size > 0,
+        candidates_evaluated: Math.min(rankedResults.length, 20),
+        results_returned: finalResults.length,
+      };
+    } else {
+      finalResults = rankedResults.map(r => {
+        const base: Record<string, unknown> = { ...r };
+        if (input.include_provenance) {
+          base.provenance_chain = formatProvenanceChain(db, r.provenance_id);
+        }
+        if (input.include_entities && bm25EntityMap && r.chunk_id) {
+          base.entities_mentioned = bm25EntityMap.get(r.chunk_id) ?? [];
+        }
+        return base;
+      });
+    }
 
     // Compute source counts from final merged results (not pre-merge candidates)
     let finalChunkCount = 0;
     let finalVlmCount = 0;
     let finalExtractionCount = 0;
-    for (const r of results) {
+    for (const r of finalResults) {
       if (r.result_type === 'chunk') finalChunkCount++;
       else if (r.result_type === 'vlm') finalVlmCount++;
       else finalExtractionCount++;
     }
 
-    return formatResponse(successResult({
+    const responseData: Record<string, unknown> = {
       query: input.query,
       search_type: 'bm25',
-      results,
-      total: results.length,
+      results: finalResults,
+      total: finalResults.length,
       sources: {
         chunk_count: finalChunkCount,
         vlm_count: finalVlmCount,
         extraction_count: finalExtractionCount,
       },
-    }));
+    };
+
+    if (expansionInfo) {
+      responseData.query_expansion = expansionInfo;
+    }
+
+    if (rerankInfo) {
+      responseData.rerank = rerankInfo;
+    }
+
+    if (input.entity_filter) {
+      responseData.entity_filter_applied = true;
+      responseData.entity_filter_document_count = documentFilter?.length ?? 0;
+    }
+
+    return formatResponse(successResult(responseData));
   } catch (error) {
     return handleError(error);
   }
@@ -376,8 +612,9 @@ export async function handleSearchHybrid(
     }
 
     // SE-1: Expand query with domain synonyms if requested (BM25 only -- semantic handles meaning natively)
-    // P2.1: Use KG-powered expansion when available for richer alias coverage
-    const bm25Query = input.expand_query ? expandQueryWithKG(input.query, conn) : input.query;
+    // P2.1: Use KG-powered expansion with co-mentioned entities for hybrid search
+    // Hybrid search benefits from the broadest expansion since RRF fusion de-ranks noise
+    const bm25Query = input.expand_query ? expandQueryWithCoMentioned(input.query, conn) : input.query;
     const expansionInfo = input.expand_query ? getExpandedTerms(input.query) : undefined;
 
     // Get BM25 results (chunks + VLM + extractions)
@@ -477,7 +714,7 @@ export async function handleSearchHybrid(
     const rawResults = fusion.fuse(bm25Ranked, semanticRanked, fusionLimit);
 
     // P2.2: Entity enrichment - collect chunk IDs and fetch entities
-    let hybridEntityMap: Map<string, Array<{ node_id: string; entity_type: string; canonical_name: string; confidence: number; document_count: number }>> | undefined;
+    let hybridEntityMap: Map<string, ChunkEntityInfo[]> | undefined;
     if (input.include_entities || input.rerank) {
       const chunkIds = rawResults.map(r => r.chunk_id).filter((id): id is string => id != null);
       if (chunkIds.length > 0) {
@@ -506,9 +743,72 @@ export async function handleSearchHybrid(
         });
       }
 
+      // ENH-4: Build edge context from entity nodes found in search results
+      let edgeContextForRerank: EdgeInfo[] | undefined;
+      if (hybridEntityMap) {
+        // Collect unique node IDs from all entities in the results
+        const nodeIdSet = new Set<string>();
+        for (const entities of hybridEntityMap.values()) {
+          for (const e of entities) {
+            nodeIdSet.add(e.node_id);
+          }
+        }
+
+        if (nodeIdSet.size > 0) {
+          // Build a map of node_id -> canonical_name for resolving edge endpoints
+          const nodeNameMap = new Map<string, string>();
+          for (const entities of hybridEntityMap.values()) {
+            for (const e of entities) {
+              nodeNameMap.set(e.node_id, e.canonical_name);
+            }
+          }
+
+          // Query edges between these nodes (limit per node to avoid explosion)
+          const edgesSeen = new Set<string>();
+          const edgeInfoList: EdgeInfo[] = [];
+          for (const nodeId of nodeIdSet) {
+            const edges = getEdgesForNode(conn, nodeId, { limit: 20 });
+            for (const edge of edges) {
+              // Only include edges where BOTH endpoints are in our result set
+              if (!nodeIdSet.has(edge.source_node_id) || !nodeIdSet.has(edge.target_node_id)) continue;
+              // Deduplicate edges
+              if (edgesSeen.has(edge.id)) continue;
+              edgesSeen.add(edge.id);
+
+              // Resolve node names (from map or DB lookup)
+              let sourceName = nodeNameMap.get(edge.source_node_id);
+              if (!sourceName) {
+                const sourceNode = getKnowledgeNode(conn, edge.source_node_id);
+                sourceName = sourceNode?.canonical_name ?? edge.source_node_id;
+                nodeNameMap.set(edge.source_node_id, sourceName);
+              }
+              let targetName = nodeNameMap.get(edge.target_node_id);
+              if (!targetName) {
+                const targetNode = getKnowledgeNode(conn, edge.target_node_id);
+                targetName = targetNode?.canonical_name ?? edge.target_node_id;
+                nodeNameMap.set(edge.target_node_id, targetName);
+              }
+
+              edgeInfoList.push({
+                source_name: sourceName,
+                target_name: targetName,
+                relationship_type: edge.relationship_type,
+                weight: edge.weight,
+              });
+            }
+          }
+
+          // Cap at 30 edges to stay within token limits, sorted by weight descending
+          if (edgeInfoList.length > 0) {
+            edgeInfoList.sort((a, b) => b.weight - a.weight);
+            edgeContextForRerank = edgeInfoList.slice(0, 30);
+          }
+        }
+      }
+
       // Cast rawResults to the shape rerankResults expects (spread drops the index signature issue)
       const rerankInput = rawResults.map(r => ({ ...r }));
-      const reranked = await rerankResults(input.query, rerankInput, limit, entityContextForRerank);
+      const reranked = await rerankResults(input.query, rerankInput, limit, entityContextForRerank, edgeContextForRerank);
       finalResults = reranked.map(r => {
         const original = rawResults[r.original_index];
         const base: Record<string, unknown> = {
@@ -527,6 +827,8 @@ export async function handleSearchHybrid(
       rerankInfo = {
         reranked: true,
         entity_aware: !!entityContextForRerank && entityContextForRerank.size > 0,
+        edge_aware: !!edgeContextForRerank && edgeContextForRerank.length > 0,
+        edge_count: edgeContextForRerank?.length ?? 0,
         candidates_evaluated: Math.min(rawResults.length, 20),
         results_returned: finalResults.length,
       };
@@ -624,6 +926,7 @@ async function handleBenchmarkCompare(params: Record<string, unknown>): Promise<
       top_scores: number[];
       avg_score: number;
       document_ids: string[];
+      kg_metrics?: { nodes: number; edges: number };
       error?: string;
     }> = [];
 
@@ -658,12 +961,27 @@ async function handleBenchmarkCompare(params: Record<string, unknown>): Promise<
         }
 
         const avgScore = scores.length > 0 ? scores.reduce((a, b) => a + b, 0) / scores.length : 0;
+
+        // POL-6: Query KG metrics for this database
+        let kgMetrics: { nodes: number; edges: number } = { nodes: 0, edges: 0 };
+        try {
+          const nodeCount = conn.prepare('SELECT COUNT(*) as cnt FROM knowledge_nodes').get() as { cnt: number } | undefined;
+          const edgeCount = conn.prepare('SELECT COUNT(*) as cnt FROM knowledge_edges').get() as { cnt: number } | undefined;
+          kgMetrics = {
+            nodes: nodeCount?.cnt ?? 0,
+            edges: edgeCount?.cnt ?? 0,
+          };
+        } catch {
+          // KG tables may not exist in older databases
+        }
+
         dbResults.push({
           database_name: dbName,
           result_count: scores.length,
           top_scores: scores.slice(0, 5),
           avg_score: Math.round(avgScore * 1000) / 1000,
           document_ids: documentIds,
+          kg_metrics: kgMetrics,
         });
       } catch (error) {
         dbResults.push({
@@ -725,16 +1043,24 @@ async function handleSearchExport(params: Record<string, unknown>): Promise<Tool
       format: z.enum(['csv', 'json']).default('csv'),
       output_path: z.string().min(1),
       include_text: z.boolean().default(true),
+      include_entities: z.boolean().default(false),
     }), params);
 
-    // Run the appropriate search
+    // Run the appropriate search, passing include_entities when requested
     let searchResult: ToolResponse;
+    const searchParams: Record<string, unknown> = {
+      query: input.query,
+      limit: input.limit,
+      include_provenance: false,
+      include_entities: input.include_entities,
+    };
+
     if (input.search_type === 'bm25') {
-      searchResult = await handleSearch({ query: input.query, limit: input.limit, include_provenance: false });
+      searchResult = await handleSearch(searchParams);
     } else if (input.search_type === 'semantic') {
-      searchResult = await handleSearchSemantic({ query: input.query, limit: input.limit, include_provenance: false });
+      searchResult = await handleSearchSemantic(searchParams);
     } else {
-      searchResult = await handleSearchHybrid({ query: input.query, limit: input.limit, include_provenance: false });
+      searchResult = await handleSearchHybrid(searchParams);
     }
 
     // Parse search results from the ToolResponse
@@ -758,6 +1084,9 @@ async function handleSearchExport(params: Record<string, unknown>): Promise<Tool
           result_type: r.result_type,
         };
         if (input.include_text) row.text = r.original_text;
+        if (input.include_entities && r.entities_mentioned) {
+          row.entities_mentioned = r.entities_mentioned;
+        }
         return row;
       });
       fs.writeFileSync(input.output_path, JSON.stringify(exportData, null, 2));
@@ -765,6 +1094,7 @@ async function handleSearchExport(params: Record<string, unknown>): Promise<Tool
       // CSV
       const headers = ['document_id', 'source_file', 'page_number', 'score', 'result_type'];
       if (input.include_text) headers.push('text');
+      if (input.include_entities) headers.push('entities_mentioned');
       const csvLines = [headers.join(',')];
       for (const r of results) {
         const row = [
@@ -777,6 +1107,14 @@ async function handleSearchExport(params: Record<string, unknown>): Promise<Tool
         if (input.include_text) {
           row.push(`"${(r.original_text || '').replace(/"/g, '""').replace(/\n/g, ' ')}"`);
         }
+        if (input.include_entities) {
+          // Format entities as semicolon-separated canonical names for CSV
+          const entities = r.entities_mentioned as Array<{ canonical_name?: string }> | undefined;
+          const entityStr = entities && Array.isArray(entities)
+            ? entities.map((e: { canonical_name?: string }) => e.canonical_name ?? '').filter(Boolean).join(';')
+            : '';
+          row.push(`"${entityStr.replace(/"/g, '""')}"`);
+        }
         csvLines.push(row.join(','));
       }
       fs.writeFileSync(input.output_path, csvLines.join('\n'));
@@ -788,6 +1126,7 @@ async function handleSearchExport(params: Record<string, unknown>): Promise<Tool
       result_count: results.length,
       search_type: input.search_type,
       query: input.query,
+      include_entities: input.include_entities,
     }));
   } catch (error) {
     return handleError(error);
@@ -819,6 +1158,14 @@ export const searchTools: Record<string, ToolDefinition> = {
       }).optional().describe('Filter by document metadata (LIKE match)'),
       min_quality_score: z.number().min(0).max(5).optional()
         .describe('Minimum OCR quality score (0-5)'),
+      expand_query: z.boolean().default(false)
+        .describe('Expand query with domain-specific legal/medical synonyms and knowledge graph aliases'),
+      entity_filter: z.object({
+        entity_names: z.array(z.string()).optional(),
+        entity_types: z.array(z.string()).optional(),
+      }).optional().describe('Filter results by knowledge graph entities'),
+      rerank: z.boolean().default(false)
+        .describe('Re-rank results using Gemini AI for contextual relevance scoring'),
     },
     handler: handleSearch,
   },
@@ -838,6 +1185,12 @@ export const searchTools: Record<string, ToolDefinition> = {
       }).optional().describe('Filter by document metadata (LIKE match)'),
       min_quality_score: z.number().min(0).max(5).optional()
         .describe('Minimum OCR quality score (0-5)'),
+      entity_filter: z.object({
+        entity_names: z.array(z.string()).optional(),
+        entity_types: z.array(z.string()).optional(),
+      }).optional().describe('Filter results by knowledge graph entities'),
+      rerank: z.boolean().default(false)
+        .describe('Re-rank results using Gemini AI for contextual relevance scoring'),
     },
     handler: handleSearchSemantic,
   },
@@ -890,6 +1243,8 @@ export const searchTools: Record<string, ToolDefinition> = {
       output_path: z.string().min(1).describe('File path to save export'),
       include_text: z.boolean().default(true)
         .describe('Include full text in export'),
+      include_entities: z.boolean().default(false)
+        .describe('Include knowledge graph entities for each result'),
     },
     handler: handleSearchExport,
   },

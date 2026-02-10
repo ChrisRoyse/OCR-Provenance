@@ -107,24 +107,6 @@ export function listFormFills(
 }
 
 /**
- * Update form fill status
- *
- * @param db - Database connection
- * @param id - Form fill ID
- * @param status - New status
- * @param errorMessage - Optional error message (for 'failed' status)
- */
-export function updateFormFillStatus(
-  db: Database.Database,
-  id: string,
-  status: 'pending' | 'processing' | 'complete' | 'failed',
-  errorMessage?: string
-): void {
-  db.prepare('UPDATE form_fills SET status = ?, error_message = ? WHERE id = ?')
-    .run(status, errorMessage ?? null, id);
-}
-
-/**
  * Search form fills by field values using LIKE matching on field_data_json
  *
  * @param db - Database connection

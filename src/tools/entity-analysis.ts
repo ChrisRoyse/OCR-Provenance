@@ -26,10 +26,12 @@ import {
   getEntityMentions,
   deleteEntitiesByDocument,
 } from '../services/storage/database/entity-operations.js';
+import { getChunksByDocumentId } from '../services/storage/database/chunk-operations.js';
 import { getClusterSummariesForDocument } from '../services/storage/database/cluster-operations.js';
 import { getKnowledgeNodeSummariesByDocument } from '../services/storage/database/knowledge-graph-operations.js';
 import { extractEntitiesFromVLM } from '../services/knowledge-graph/vlm-entity-extractor.js';
 import { mapExtractionEntitiesToDB } from '../services/knowledge-graph/extraction-entity-mapper.js';
+import type { Chunk } from '../models/chunk.js';
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // INPUT SCHEMAS
@@ -132,6 +134,72 @@ function splitTextIntoSegments(text: string, maxChars: number): string[] {
     start = end;
   }
   return chunks;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// CHUNK MAPPING HELPERS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/**
+ * Find which DB chunk contains a given character position in the OCR text.
+ * Chunks have character_start (inclusive) and character_end (exclusive).
+ *
+ * @param dbChunks - Chunks ordered by chunk_index (from getChunksByDocumentId)
+ * @param position - Character offset in the OCR text
+ * @returns The matching chunk, or null if no chunk covers that position
+ */
+function findChunkForPosition(dbChunks: Chunk[], position: number): Chunk | null {
+  for (const chunk of dbChunks) {
+    if (position >= chunk.character_start && position < chunk.character_end) {
+      return chunk;
+    }
+  }
+  return null;
+}
+
+/**
+ * Find the position of an entity's raw_text in the OCR text, then map to a DB chunk.
+ * Uses case-insensitive search. Returns chunk info including chunk_id, character offsets,
+ * and page_number.
+ *
+ * @param entityRawText - The raw entity text from Gemini extraction
+ * @param ocrText - The full OCR extracted text
+ * @param dbChunks - DB chunks ordered by chunk_index
+ * @returns Object with chunk_id, character_start, character_end, page_number or nulls
+ */
+function mapEntityToChunk(
+  entityRawText: string,
+  ocrText: string,
+  dbChunks: Chunk[],
+): { chunk_id: string | null; character_start: number | null; character_end: number | null; page_number: number | null } {
+  if (dbChunks.length === 0 || !entityRawText || entityRawText.trim().length === 0) {
+    return { chunk_id: null, character_start: null, character_end: null, page_number: null };
+  }
+
+  // Case-insensitive search for the entity text in the OCR text
+  const lowerOcr = ocrText.toLowerCase();
+  const lowerEntity = entityRawText.toLowerCase().trim();
+  const pos = lowerOcr.indexOf(lowerEntity);
+
+  if (pos === -1) {
+    return { chunk_id: null, character_start: null, character_end: null, page_number: null };
+  }
+
+  const charStart = pos;
+  const charEnd = pos + entityRawText.trim().length;
+
+  const chunk = findChunkForPosition(dbChunks, pos);
+  if (!chunk) {
+    // Position found in OCR text but no chunk covers it (edge case with overlap gaps)
+    return { chunk_id: null, character_start: charStart, character_end: charEnd, page_number: null };
+  }
+
+  return {
+    chunk_id: chunk.id,
+    character_start: charStart,
+    character_end: charEnd,
+    page_number: chunk.page_number,
+  };
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -277,6 +345,11 @@ async function handleEntityExtract(params: Record<string, unknown>) {
       chain_path: JSON.stringify(['DOCUMENT', 'OCR_RESULT', 'ENTITY_EXTRACTION']),
     });
 
+    // Load DB chunks for chunk_id mapping (ordered by chunk_index)
+    const dbChunks = getChunksByDocumentId(conn, doc.id);
+    const ocrText = ocrResult.extracted_text;
+    let chunkMappedCount = 0;
+
     // Store entities and mentions in DB
     const typeCounts: Record<string, number> = {};
     let totalInserted = 0;
@@ -297,16 +370,22 @@ async function handleEntityExtract(params: Record<string, unknown>) {
         created_at: now,
       });
 
-      // Create a mention record for the entity
+      // Map entity to its DB chunk via text position in OCR text
+      const mapping = mapEntityToChunk(entityData.raw_text, ocrText, dbChunks);
+      if (mapping.chunk_id) {
+        chunkMappedCount++;
+      }
+
+      // Create a mention record for the entity with chunk mapping
       const mentionId = uuidv4();
       insertEntityMention(conn, {
         id: mentionId,
         entity_id: entityId,
         document_id: doc.id,
-        chunk_id: null,
-        page_number: null,
-        character_start: null,
-        character_end: null,
+        chunk_id: mapping.chunk_id,
+        page_number: mapping.page_number,
+        character_start: mapping.character_start,
+        character_end: mapping.character_end,
         context_text: entityData.raw_text,
         created_at: now,
       });
@@ -321,6 +400,9 @@ async function handleEntityExtract(params: Record<string, unknown>) {
       total_raw_extracted: allRawEntities.length,
       deduplicated: allRawEntities.length - totalInserted,
       entities_by_type: typeCounts,
+      chunk_mapped: chunkMappedCount,
+      chunk_unmapped: totalInserted - chunkMappedCount,
+      total_db_chunks: dbChunks.length,
       provenance_id: entityProvId,
       processing_duration_ms: processingDurationMs,
       text_chunks_processed: textChunks.length,
@@ -345,12 +427,36 @@ async function handleEntitySearch(params: Record<string, unknown>) {
       limit: input.limit,
     });
 
-    // Enrich with mentions and document info
+    // Prepare KG lookup statements (wrapped in try/catch for pre-v16 schema compat)
+    let kgNodeStmt: ReturnType<typeof conn.prepare> | null = null;
+    let kgEdgesStmt: ReturnType<typeof conn.prepare> | null = null;
+    try {
+      kgNodeStmt = conn.prepare(`
+        SELECT kn.id as node_id, kn.canonical_name, kn.aliases, kn.document_count, kn.edge_count
+        FROM node_entity_links nel
+        JOIN knowledge_nodes kn ON nel.node_id = kn.id
+        WHERE nel.entity_id = ?
+      `);
+      kgEdgesStmt = conn.prepare(`
+        SELECT kn2.canonical_name, ke.relationship_type, ke.weight
+        FROM knowledge_edges ke
+        JOIN knowledge_nodes kn2 ON (
+          CASE WHEN ke.source_node_id = @nid THEN ke.target_node_id ELSE ke.source_node_id END = kn2.id
+        )
+        WHERE ke.source_node_id = @nid OR ke.target_node_id = @nid
+        ORDER BY ke.weight DESC
+        LIMIT 5
+      `);
+    } catch {
+      // Pre-v16 schema without knowledge graph tables - skip KG enrichment
+    }
+
+    // Enrich with mentions, document info, and KG context
     const results = entities.map(entity => {
       const mentions = getEntityMentions(conn, entity.id);
       const document = db.getDocument(entity.document_id);
 
-      return {
+      const result: Record<string, unknown> = {
         entity_id: entity.id,
         entity_type: entity.entity_type,
         raw_text: entity.raw_text,
@@ -370,6 +476,59 @@ async function handleEntitySearch(params: Record<string, unknown>) {
         })),
         mention_count: mentions.length,
       };
+
+      // ENH-5: Enrich with knowledge graph data if available
+      if (kgNodeStmt) {
+        try {
+          const kgNode = kgNodeStmt.get(entity.id) as {
+            node_id: string; canonical_name: string; aliases: string | null;
+            document_count: number; edge_count: number;
+          } | undefined;
+
+          if (kgNode) {
+            // Parse aliases JSON
+            let aliases: string[] = [];
+            if (kgNode.aliases) {
+              try {
+                const parsed = JSON.parse(kgNode.aliases);
+                if (Array.isArray(parsed)) {
+                  aliases = parsed.filter((a: unknown) => typeof a === 'string' && a.length > 0);
+                }
+              } catch {
+                // Malformed aliases JSON
+              }
+            }
+
+            result.kg_node_id = kgNode.node_id;
+            result.kg_canonical_name = kgNode.canonical_name;
+            result.kg_aliases = aliases;
+            result.kg_document_count = kgNode.document_count;
+            result.kg_edge_count = kgNode.edge_count;
+
+            // Fetch top connected entities
+            if (kgEdgesStmt) {
+              try {
+                const connectedRows = kgEdgesStmt.all({ nid: kgNode.node_id }) as Array<{
+                  canonical_name: string; relationship_type: string; weight: number;
+                }>;
+                if (connectedRows.length > 0) {
+                  result.kg_connected_entities = connectedRows.map(r => ({
+                    name: r.canonical_name,
+                    relationship_type: r.relationship_type,
+                    weight: r.weight,
+                  }));
+                }
+              } catch {
+                // Edge query failed - skip connected entities
+              }
+            }
+          }
+        } catch {
+          // KG lookup failed for this entity - skip enrichment
+        }
+      }
+
+      return result;
     });
 
     return formatResponse({
@@ -517,14 +676,14 @@ async function handleWitnessAnalysis(params: Record<string, unknown>) {
     // Include existing comparison data between these documents
     let comparisonSection = '';
     if (input.document_ids.length >= 2) {
-      const docIdSet = input.document_ids;
+      const docIds = input.document_ids;
       const comparisons = db.getConnection().prepare(
         `SELECT c.document_id_1, c.document_id_2, c.similarity_ratio, c.summary
          FROM comparisons c
-         WHERE c.document_id_1 IN (${docIdSet.map(() => '?').join(',')})
-           AND c.document_id_2 IN (${docIdSet.map(() => '?').join(',')})
+         WHERE c.document_id_1 IN (${docIds.map(() => '?').join(',')})
+           AND c.document_id_2 IN (${docIds.map(() => '?').join(',')})
          ORDER BY c.created_at DESC`
-      ).all(...docIdSet, ...docIdSet) as Array<{
+      ).all(...docIds, ...docIds) as Array<{
         document_id_1: string; document_id_2: string;
         similarity_ratio: number; summary: string;
       }>;

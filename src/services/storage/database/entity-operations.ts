@@ -162,34 +162,3 @@ export function deleteEntitiesByDocument(db: Database.Database, documentId: stri
   return result.changes;
 }
 
-/**
- * Get entity statistics (count by type)
- *
- * @param db - Database connection
- * @returns Record of entity_type -> count
- */
-export function getEntityStats(db: Database.Database): Record<string, number> {
-  const rows = db.prepare(
-    'SELECT entity_type, COUNT(*) as cnt FROM entities GROUP BY entity_type ORDER BY cnt DESC'
-  ).all() as { entity_type: string; cnt: number }[];
-
-  const stats: Record<string, number> = {};
-  for (const row of rows) {
-    stats[row.entity_type] = row.cnt;
-  }
-  return stats;
-}
-
-/**
- * Get entity count for a document
- *
- * @param db - Database connection
- * @param documentId - Document ID
- * @returns number - Total entity count
- */
-export function countEntitiesByDocument(db: Database.Database, documentId: string): number {
-  const row = db.prepare(
-    'SELECT COUNT(*) as cnt FROM entities WHERE document_id = ?'
-  ).get(documentId) as { cnt: number };
-  return row.cnt;
-}

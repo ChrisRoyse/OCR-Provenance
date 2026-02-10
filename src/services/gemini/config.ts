@@ -144,32 +144,3 @@ export const GENERATION_PRESETS = {
   },
 } as const;
 
-/**
- * Model capabilities reference
- */
-export const MODEL_INFO = {
-  [GEMINI_MODELS.FLASH_2]: {
-    contextWindow: 1_000_000,
-    maxOutput: 8192,
-    costPer1MInput: 0.075,
-    costPer1MOutput: 0.3,
-    targetLatency: '<2s',
-    supportsThinking: false,
-  },
-  [GEMINI_MODELS.FLASH_3]: {
-    contextWindow: 1_000_000,
-    maxOutput: 65536,
-    costPer1MInput: 0.075,
-    costPer1MOutput: 0.3,
-    targetLatency: '<8s',
-    supportsThinking: true,
-  },
-  [GEMINI_MODELS.PRO]: {
-    contextWindow: 1_000_000,
-    maxOutput: 65536,
-    costPer1MInput: 3.0,
-    costPer1MOutput: 12.0,
-    targetLatency: '<15s',
-    supportsThinking: true,
-  },
-} as const;

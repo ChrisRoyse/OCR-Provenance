@@ -60,13 +60,13 @@ const FUZZY_MERGE_THRESHOLD = 0.85;
 /** Maximum entities per document for co-occurrence */
 const MAX_COOCCURRENCE_ENTITIES = 200;
 
-export interface IncrementalBuildOptions {
+interface IncrementalBuildOptions {
   document_ids: string[];
   resolution_mode?: ResolutionMode;
   classify_relationships?: boolean;
 }
 
-export interface IncrementalBuildResult {
+interface IncrementalBuildResult {
   documents_processed: number;
   new_entities_found: number;
   entities_matched_to_existing: number;

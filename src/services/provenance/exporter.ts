@@ -31,7 +31,7 @@ export type ExportFormat = 'json' | 'w3c-prov' | 'csv';
  * W3C PROV-JSON Document structure
  * Reference: https://www.w3.org/submissions/prov-json/
  */
-export interface PROVDocument {
+interface PROVDocument {
   prefix: Record<string, string>;
   entity: Record<string, Record<string, unknown>>;
   activity: Record<string, Record<string, unknown>>;
@@ -42,7 +42,7 @@ export interface PROVDocument {
 }
 
 /** Result of JSON export */
-export interface JSONExportResult {
+interface JSONExportResult {
   format: 'json';
   scope: ExportScope;
   document_id?: string;
@@ -52,7 +52,7 @@ export interface JSONExportResult {
 }
 
 /** Result of W3C PROV-JSON export */
-export interface W3CPROVExportResult {
+interface W3CPROVExportResult {
   format: 'w3c-prov';
   scope: ExportScope;
   document_id?: string;
@@ -64,7 +64,7 @@ export interface W3CPROVExportResult {
 }
 
 /** Result of CSV export */
-export interface CSVExportResult {
+interface CSVExportResult {
   format: 'csv';
   scope: ExportScope;
   document_id?: string;
@@ -74,7 +74,7 @@ export interface CSVExportResult {
 }
 
 /** Result of file export */
-export interface FileExportResult {
+interface FileExportResult {
   success: boolean;
   format: ExportFormat;
   output_path: string;
@@ -95,7 +95,7 @@ export const ExporterErrorCode = {
   DOCUMENT_REQUIRED: 'DOCUMENT_ID_REQUIRED_FOR_SCOPE',
 } as const;
 
-export type ExporterErrorCodeType = typeof ExporterErrorCode[keyof typeof ExporterErrorCode];
+type ExporterErrorCodeType = typeof ExporterErrorCode[keyof typeof ExporterErrorCode];
 
 /**
  * ExporterError - Typed error for export operations

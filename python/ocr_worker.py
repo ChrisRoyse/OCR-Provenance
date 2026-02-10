@@ -529,61 +529,6 @@ def process_document(
         raise OCRAPIError(str(e), 500, request_id) from e
 
 
-def process_batch(
-    file_paths: list[str],
-    document_ids: list[str],
-    provenance_ids: list[str],
-    mode: Literal["fast", "balanced", "accurate"] = "accurate",
-    max_concurrent: int = 3
-) -> list[OCRResult | OCRError]:
-    """
-    Process multiple documents with concurrency control.
-
-    Args:
-        file_paths: List of document paths
-        document_ids: Matching list of document UUIDs
-        provenance_ids: Matching list of provenance UUIDs
-        mode: OCR mode for all documents
-        max_concurrent: Max parallel requests (respect Datalab rate limits)
-
-    Returns:
-        List of OCRResult on success or OCRError on failure (same order as input)
-    """
-    from concurrent.futures import ThreadPoolExecutor, as_completed
-
-    if not (len(file_paths) == len(document_ids) == len(provenance_ids)):
-        raise ValueError("file_paths, document_ids, and provenance_ids must have same length")
-
-    results: dict[int, OCRResult | OCRError] = {}
-
-    def process_one(idx: int) -> tuple[int, OCRResult | OCRError]:
-        try:
-            result = process_document(
-                file_paths[idx],
-                document_ids[idx],
-                provenance_ids[idx],
-                mode
-            )
-            return idx, result
-        except OCRError as e:
-            return idx, e
-
-    with ThreadPoolExecutor(max_workers=max_concurrent) as executor:
-        futures = {executor.submit(process_one, i): i for i in range(len(file_paths))}
-
-        for future in as_completed(futures):
-            idx, result = future.result()
-            results[idx] = result
-
-            if isinstance(result, OCRError):
-                logger.error(f"Failed [{idx}]: {file_paths[idx]} - {result}")
-            else:
-                logger.info(f"Complete [{idx}]: {file_paths[idx]}")
-
-    # Return in original order
-    return [results[i] for i in range(len(file_paths))]
-
-
 # =============================================================================
 # CLI INTERFACE (for manual testing)
 # =============================================================================
@@ -610,16 +555,10 @@ Examples:
 
   # Process with JSON output
   python ocr_worker.py --file ./data/bench/doc_0005.pdf --json
-
-  # Batch process directory
-  python ocr_worker.py --dir ./data/bench/ --ext pdf --limit 5
         """
     )
     parser.add_argument("--file", "-f", type=str, help="Single file to process")
     parser.add_argument("--file-url", type=str, help="URL of file to process (instead of local file)")
-    parser.add_argument("--dir", "-d", type=str, help="Directory to scan")
-    parser.add_argument("--ext", type=str, default="pdf", help="Extension filter for --dir")
-    parser.add_argument("--limit", type=int, default=10, help="Max files for --dir")
     parser.add_argument(
         "--mode", "-m",
         choices=["fast", "balanced", "accurate"],
@@ -629,7 +568,6 @@ Examples:
     parser.add_argument("--doc-id", type=str, help="Document ID (UUID) - auto-generated if not provided")
     parser.add_argument("--prov-id", type=str, help="Provenance ID (UUID) - auto-generated if not provided")
     parser.add_argument("--json", action="store_true", help="Output as JSON")
-    parser.add_argument("--verbose", "-v", action="store_true", help="Verbose logging")
     # Datalab API parameters
     parser.add_argument('--max-pages', type=int, help='Max pages to process (Datalab limit: 7000)')
     parser.add_argument('--page-range', type=str, help='Page range, 0-indexed (e.g. "0-5,10")')
@@ -644,86 +582,48 @@ Examples:
     if args.json:
         # Suppress logging in JSON mode for clean output
         logging.getLogger().setLevel(logging.CRITICAL)
-    elif args.verbose:
-        logging.getLogger().setLevel(logging.DEBUG)
 
-    if not args.file and not args.dir and not args.file_url:
-        parser.error("Either --file, --file-url, or --dir is required")
+    if not args.file and not args.file_url:
+        parser.error("Either --file or --file-url is required")
 
     try:
-        if args.file or args.file_url:
-            # Single file - use provided IDs or generate new ones
-            doc_id = args.doc_id or str(uuid.uuid4())
-            prov_id = args.prov_id or str(uuid.uuid4())
-            # Parse extras list from comma-separated string
-            extras_list = args.extras.split(',') if args.extras else None
-            # Parse additional config JSON
-            additional_config = json.loads(args.additional_config) if args.additional_config else None
+        # Use provided IDs or generate new ones
+        doc_id = args.doc_id or str(uuid.uuid4())
+        prov_id = args.prov_id or str(uuid.uuid4())
+        # Parse extras list from comma-separated string
+        extras_list = args.extras.split(',') if args.extras else None
+        # Parse additional config JSON
+        additional_config = json.loads(args.additional_config) if args.additional_config else None
 
-            result = process_document(
-                args.file or "",
-                document_id=doc_id,
-                provenance_id=prov_id,
-                mode=args.mode,
-                max_pages=args.max_pages,
-                page_range=args.page_range,
-                skip_cache=args.skip_cache,
-                disable_image_extraction=args.disable_image_extraction,
-                extras=extras_list,
-                page_schema=args.page_schema,
-                additional_config=additional_config,
-                file_url=args.file_url,
-            )
+        result = process_document(
+            args.file or "",
+            document_id=doc_id,
+            provenance_id=prov_id,
+            mode=args.mode,
+            max_pages=args.max_pages,
+            page_range=args.page_range,
+            skip_cache=args.skip_cache,
+            disable_image_extraction=args.disable_image_extraction,
+            extras=extras_list,
+            page_schema=args.page_schema,
+            additional_config=additional_config,
+            file_url=args.file_url,
+        )
 
-            if args.json:
-                # asdict() recursively converts nested dataclasses
-                # Use compact format (no indent) for python-shell compatibility
-                print(json.dumps(asdict(result)))
-            else:
-                print("=== OCR Result ===")
-                print(f"Pages: {result.page_count}")
-                print(f"Characters: {result.text_length}")
-                print(f"Duration: {result.processing_duration_ms}ms")
-                print(f"Cost: ${(result.cost_cents or 0)/100:.4f}")
-                print(f"Quality: {result.parse_quality_score}")
-                print(f"Hash: {result.content_hash[:40]}...")
-                print("\n=== Extracted Text (first 500 chars) ===")
-                print(result.extracted_text[:500])
-
+        if args.json:
+            # asdict() recursively converts nested dataclasses
+            # Use compact format (no indent) for python-shell compatibility
+            print(json.dumps(asdict(result)))
         else:
-            # Directory batch
-            dir_path = Path(args.dir)
-            if not dir_path.is_dir():
-                raise ValueError(f"Not a directory: {args.dir}")
-
-            files = sorted(dir_path.glob(f"*.{args.ext}"))[:args.limit]
-
-            if not files:
-                print(f"No .{args.ext} files found in {args.dir}")
-                sys.exit(1)
-
-            print(f"Processing {len(files)} files...")
-
-            results = process_batch(
-                [str(f) for f in files],
-                [str(uuid.uuid4()) for _ in files],
-                [str(uuid.uuid4()) for _ in files],
-                mode=args.mode,
-                max_concurrent=3
-            )
-
-            success = sum(1 for r in results if isinstance(r, OCRResult))
-            failed = len(results) - success
-
-            print(f"\nResults: {success} success, {failed} failed")
-
-            if args.json:
-                output = [
-                    asdict(r) if isinstance(r, OCRResult)
-                    else {"error": str(r), "category": r.category}
-                    for r in results
-                ]
-                print(json.dumps(output, indent=2))
+            print("=== OCR Result ===")
+            print(f"Pages: {result.page_count}")
+            print(f"Characters: {result.text_length}")
+            print(f"Duration: {result.processing_duration_ms}ms")
+            print(f"Cost: ${(result.cost_cents or 0)/100:.4f}")
+            print(f"Quality: {result.parse_quality_score}")
+            print(f"Hash: {result.content_hash[:40]}...")
+            print("\n=== Extracted Text (first 500 chars) ===")
+            print(result.extracted_text[:500])
 
     except Exception as e:
         logger.exception(f"Fatal error: {e}")

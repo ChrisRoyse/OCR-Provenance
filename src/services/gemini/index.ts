@@ -20,7 +20,6 @@ export {
   GEMINI_MODELS,
   RATE_LIMITS,
   GENERATION_PRESETS,
-  MODEL_INFO,
   ALLOWED_MIME_TYPES,
   MAX_FILE_SIZE,
   type GeminiModelId,
@@ -41,7 +40,6 @@ export {
 // Circuit Breaker
 export {
   CircuitBreaker,
-  CircuitState,
   type CircuitBreakerConfig,
   type CircuitBreakerStatus,
 } from './circuit-breaker.js';

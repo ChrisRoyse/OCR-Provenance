@@ -1,13 +1,12 @@
 /**
  * Unit Tests for Validation Enums
  *
- * Tests OCRMode, ProcessingStatus, ItemType, and ConfigKey enums
+ * Tests OCRMode, ItemType, and ConfigKey enums
  */
 
 import { describe, it, expect } from 'vitest';
 import {
   OCRMode,
-  ProcessingStatus,
   ItemType,
   ConfigKey,
 } from './fixtures.js';
@@ -22,15 +21,6 @@ describe('Enums', () => {
 
     it('should reject invalid modes', () => {
       expect(() => OCRMode.parse('invalid')).toThrow();
-    });
-  });
-
-  describe('ProcessingStatus', () => {
-    it('should accept valid statuses', () => {
-      expect(ProcessingStatus.parse('pending')).toBe('pending');
-      expect(ProcessingStatus.parse('processing')).toBe('processing');
-      expect(ProcessingStatus.parse('complete')).toBe('complete');
-      expect(ProcessingStatus.parse('failed')).toBe('failed');
     });
   });
 

@@ -100,7 +100,7 @@ export interface DirectoryAnalysisResult {
 /**
  * Error result from Python script
  */
-export interface ErrorResult {
+interface ErrorResult {
   success: false;
   error: string;
 }

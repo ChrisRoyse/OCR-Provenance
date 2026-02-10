@@ -13,15 +13,6 @@ export { default as os } from 'os';
 export {
   computeHash,
   hashFile,
-  verifyHash,
-  verifyFileHash,
   isValidHashFormat,
-  extractHashHex,
-  compareHashes,
-  computeCompositeHash,
-  verifyHashDetailed,
-  HASH_PREFIX,
-  HASH_HEX_LENGTH,
-  HASH_TOTAL_LENGTH,
-  HASH_PATTERN,
+  computeFileHashSync,
 } from '../../../src/utils/hash.js';

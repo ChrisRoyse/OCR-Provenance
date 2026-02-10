@@ -27,7 +27,7 @@ export const ProvenanceErrorCode = {
   INVALID_PARAMS: 'INVALID_PROVENANCE_PARAMS',
 } as const;
 
-export type ProvenanceErrorCodeType = typeof ProvenanceErrorCode[keyof typeof ProvenanceErrorCode];
+type ProvenanceErrorCodeType = typeof ProvenanceErrorCode[keyof typeof ProvenanceErrorCode];
 
 /**
  * ProvenanceError - Typed error for provenance operations
@@ -47,7 +47,7 @@ export class ProvenanceError extends Error {
 }
 
 /** Result of getProvenanceChain */
-export interface ProvenanceChainResult {
+interface ProvenanceChainResult {
   /** The record we started from */
   current: ProvenanceRecord;
   /** Ancestors ordered: immediate parent first, root last */
@@ -305,15 +305,15 @@ export class ProvenanceTracker {
       case ProvenanceType.EXTRACTION:
         return ['DOCUMENT', 'OCR_RESULT', 'EXTRACTION'];
       case ProvenanceType.FORM_FILL:
-        return ['DOCUMENT', 'FORM_FILL'];
+        return ['FORM_FILL'];
       case ProvenanceType.ENTITY_EXTRACTION:
         return ['DOCUMENT', 'OCR_RESULT', 'ENTITY_EXTRACTION'];
       case ProvenanceType.COMPARISON:
         return ['DOCUMENT', 'OCR_RESULT', 'COMPARISON'];
       case ProvenanceType.CLUSTERING:
-        return ['DOCUMENT', 'OCR_RESULT', 'CLUSTERING'];
+        return ['DOCUMENT', 'CLUSTERING'];
       case ProvenanceType.KNOWLEDGE_GRAPH:
-        return ['DOCUMENT', 'OCR_RESULT', 'KNOWLEDGE_GRAPH'];
+        return ['DOCUMENT', 'KNOWLEDGE_GRAPH'];
       case ProvenanceType.EMBEDDING:
         // Default path is from CHUNK (depth 3). VLM description embeddings
         // (depth 4) bypass createProvenance() and build chain_path directly

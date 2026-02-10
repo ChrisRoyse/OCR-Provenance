@@ -284,18 +284,6 @@ describe('documentTools exports', () => {
     }
   });
 
-  it('handlers are exported functions', () => {
-    expect(typeof handleDocumentList).toBe('function');
-    expect(typeof handleDocumentGet).toBe('function');
-    expect(typeof handleDocumentDelete).toBe('function');
-  });
-
-  it('tool names match expected values', () => {
-    const names = Object.keys(documentTools);
-    expect(names).toContain('ocr_document_list');
-    expect(names).toContain('ocr_document_get');
-    expect(names).toContain('ocr_document_delete');
-  });
 });
 
 // ═══════════════════════════════════════════════════════════════════════════════

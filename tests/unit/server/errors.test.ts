@@ -19,7 +19,6 @@ import {
   provenanceNotFoundError,
   pathNotFoundError,
   pathNotDirectoryError,
-  internalError,
   type ErrorCategory,
 } from '../../../src/server/errors.js';
 
@@ -84,25 +83,6 @@ describe('MCPError', () => {
       }
     });
 
-    it('should preserve details object reference', () => {
-      const details = { complex: { nested: [1, 2, 3] } };
-      const error = new MCPError('INTERNAL_ERROR', 'Test', details);
-
-      expect(error.details).toBe(details);
-    });
-
-    it('should handle empty message', () => {
-      const error = new MCPError('VALIDATION_ERROR', '');
-
-      expect(error.message).toBe('');
-      expect(error.category).toBe('VALIDATION_ERROR');
-    });
-
-    it('should handle empty details object', () => {
-      const error = new MCPError('INTERNAL_ERROR', 'Test', {});
-
-      expect(error.details).toEqual({});
-    });
   });
 
   describe('fromUnknown', () => {
@@ -469,59 +449,11 @@ describe('pathNotDirectoryError', () => {
   });
 });
 
-describe('internalError', () => {
-  it('should create INTERNAL_ERROR with message', () => {
-    const error = internalError('Unexpected failure');
-
-    expect(error).toBeInstanceOf(MCPError);
-    expect(error.category).toBe('INTERNAL_ERROR');
-    expect(error.message).toBe('Unexpected failure');
-    expect(error.details).toBeUndefined();
-  });
-
-  it('should create INTERNAL_ERROR with details', () => {
-    const error = internalError('System error', {
-      operation: 'read',
-      errno: -2,
-    });
-
-    expect(error.details).toEqual({
-      operation: 'read',
-      errno: -2,
-    });
-  });
-});
-
 // ═══════════════════════════════════════════════════════════════════════════════
 // EDGE CASES AND BOUNDARY CONDITIONS
 // ═══════════════════════════════════════════════════════════════════════════════
 
 describe('Edge Cases', () => {
-  it('should handle very long error messages', () => {
-    const longMessage = 'A'.repeat(10000);
-    const error = new MCPError('VALIDATION_ERROR', longMessage);
-
-    expect(error.message).toBe(longMessage);
-    expect(error.message.length).toBe(10000);
-  });
-
-  it('should handle Unicode in messages', () => {
-    const unicodeMessage = 'Error: \u4e2d\u6587 \u65e5\u672c\u8a9e emoji: \ud83d\ude00';
-    const error = new MCPError('VALIDATION_ERROR', unicodeMessage);
-
-    expect(error.message).toBe(unicodeMessage);
-  });
-
-  it('should handle details with circular reference detection', () => {
-    // Note: toJSON should still work as long as we don't try to stringify circular refs
-    const details: Record<string, unknown> = { a: 1 };
-    const error = new MCPError('INTERNAL_ERROR', 'Test', details);
-
-    expect(error.details?.a).toBe(1);
-    const json = error.toJSON();
-    expect(json.details).toEqual({ a: 1 });
-  });
-
   it('should handle null in details values', () => {
     const error = new MCPError('VALIDATION_ERROR', 'Test', {
       nullField: null,

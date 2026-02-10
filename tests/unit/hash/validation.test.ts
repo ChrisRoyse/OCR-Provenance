@@ -10,7 +10,6 @@ import {
   it,
   expect,
   isValidHashFormat,
-  extractHashHex,
 } from './helpers.js';
 
 describe('isValidHashFormat', () => {
@@ -82,20 +81,3 @@ describe('isValidHashFormat', () => {
   });
 });
 
-describe('extractHashHex', () => {
-  it('should extract hex portion from valid hash', () => {
-    const hash = 'sha256:2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824';
-    const hex = extractHashHex(hash);
-    expect(hex).toBe('2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824');
-    expect(hex.length).toBe(64);
-  });
-
-  it('should throw for invalid hash format', () => {
-    expect(() => extractHashHex('invalid')).toThrow('Invalid hash format');
-    expect(() => extractHashHex('sha256:short')).toThrow('Invalid hash format');
-  });
-
-  it('should throw with descriptive error message', () => {
-    expect(() => extractHashHex('bad:hash')).toThrow("Expected 'sha256:' + 64 hex characters");
-  });
-});

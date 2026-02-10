@@ -5,13 +5,13 @@
  * Formula: score = sum(weight / (k + rank))
  */
 
-export interface RRFConfig {
+interface RRFConfig {
   k: number;
   bm25Weight: number;
   semanticWeight: number;
 }
 
-export interface RRFSearchResult {
+interface RRFSearchResult {
   chunk_id: string | null;
   image_id: string | null;
   extraction_id: string | null;

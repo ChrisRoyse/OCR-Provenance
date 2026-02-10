@@ -23,7 +23,7 @@ const require = createRequire(import.meta.url);
 /**
  * Error codes for vector operations
  */
-export enum VectorErrorCode {
+enum VectorErrorCode {
   INVALID_VECTOR_DIMENSIONS = 'INVALID_VECTOR_DIMENSIONS',
   EMBEDDING_NOT_FOUND = 'EMBEDDING_NOT_FOUND',
   VEC_EXTENSION_NOT_LOADED = 'VEC_EXTENSION_NOT_LOADED',

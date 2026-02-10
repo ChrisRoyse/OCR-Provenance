@@ -15,7 +15,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 /** Max stderr accumulation: 10KB (matches datalab.ts pattern) */
 const MAX_STDERR_LENGTH = 10_240;
 
-export interface FileUploadResult {
+interface FileUploadResult {
   fileId: string;
   reference: string | null;
   fileName: string;
@@ -27,7 +27,7 @@ export interface FileUploadResult {
   processingDurationMs: number;
 }
 
-export interface FileInfo {
+interface FileInfo {
   fileId: string;
   fileName: string | null;
   fileSize: number | null;
@@ -37,7 +37,7 @@ export interface FileInfo {
   status: string | null;
 }
 
-export interface FileListResult {
+interface FileListResult {
   files: Record<string, unknown>[];
   total: number;
 }
@@ -75,7 +75,7 @@ interface PythonErrorResponse {
   details?: Record<string, unknown>;
 }
 
-export interface FileManagerClientConfig {
+interface FileManagerClientConfig {
   pythonPath?: string;
   timeout?: number;
 }

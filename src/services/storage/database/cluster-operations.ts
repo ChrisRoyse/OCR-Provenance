@@ -86,21 +86,6 @@ export function listClusters(
 }
 
 /**
- * Update cluster labels, description, and classification tag
- */
-export function updateClusterLabels(
-  db: Database.Database,
-  id: string,
-  label: string,
-  description: string,
-  tag: string
-): void {
-  db.prepare(
-    'UPDATE clusters SET label = ?, description = ?, classification_tag = ? WHERE id = ?'
-  ).run(label, description, tag, id);
-}
-
-/**
  * Delete all clusters and their document assignments for a run.
  * First deletes document_clusters, then clusters.
  * Returns the number of clusters deleted.
@@ -142,20 +127,6 @@ export function insertDocumentCluster(db: Database.Database, dc: DocumentCluster
 }
 
 /**
- * Get all cluster assignments for a document
- */
-export function getDocumentClusters(db: Database.Database, documentId: string): DocumentCluster[] {
-  const rows = db.prepare(
-    'SELECT * FROM document_clusters WHERE document_id = ?'
-  ).all(documentId) as Array<Omit<DocumentCluster, 'is_noise'> & { is_noise: number }>;
-
-  return rows.map((row) => ({
-    ...row,
-    is_noise: row.is_noise === 1,
-  }));
-}
-
-/**
  * Get all documents in a cluster, joined with documents for file_name
  */
 export function getClusterDocuments(
@@ -179,22 +150,6 @@ export function getClusterDocuments(
     similarity_to_centroid: number;
     membership_probability: number;
   }>;
-}
-
-/**
- * Delete all cluster assignments for a document (for cascade delete)
- */
-export function deleteDocumentClustersByDocId(db: Database.Database, documentId: string): number {
-  const result = db.prepare('DELETE FROM document_clusters WHERE document_id = ?').run(documentId);
-  return result.changes;
-}
-
-/**
- * Delete all document-cluster assignments for a run
- */
-export function deleteDocumentClustersByRunId(db: Database.Database, runId: string): number {
-  const result = db.prepare('DELETE FROM document_clusters WHERE run_id = ?').run(runId);
-  return result.changes;
 }
 
 // --- Summaries ---

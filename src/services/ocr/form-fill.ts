@@ -15,14 +15,14 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 /** Max stderr accumulation: 10KB (matches datalab.ts pattern) */
 const MAX_STDERR_LENGTH = 10_240;
 
-export interface FormFillOptions {
+interface FormFillOptions {
   fieldData: Record<string, { value: string; description?: string }>;
   context?: string;
   confidenceThreshold?: number;
   pageRange?: string;
 }
 
-export interface FormFillResult {
+interface FormFillResult {
   id: string;
   sourceFilePath: string;
   sourceFileHash: string;
@@ -56,7 +56,7 @@ interface PythonErrorResponse {
   details?: Record<string, unknown>;
 }
 
-export interface FormFillClientConfig {
+interface FormFillClientConfig {
   pythonPath?: string;
   timeout?: number;
 }

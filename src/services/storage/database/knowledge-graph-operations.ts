@@ -1036,38 +1036,68 @@ export function deleteAllGraphData(db: Database.Database): {
   };
 }
 
+/** Entity info returned per chunk from getEntitiesForChunks */
+export interface ChunkEntityInfo {
+  node_id: string;
+  entity_type: string;
+  canonical_name: string;
+  aliases: string[];
+  confidence: number;
+  document_count: number;
+}
+
 /**
  * Get knowledge graph entities mentioned in specific chunks.
  * Used to enrich search results with entity context.
+ * Includes KG aliases for each entity node.
  *
  * @param db - Database connection
  * @param chunkIds - Array of chunk IDs to look up
- * @returns Map of chunk_id -> array of entity info
+ * @returns Map of chunk_id -> array of entity info (with aliases)
  */
 export function getEntitiesForChunks(
   db: Database.Database,
   chunkIds: string[],
-): Map<string, Array<{ node_id: string; entity_type: string; canonical_name: string; confidence: number; document_count: number }>> {
+): Map<string, ChunkEntityInfo[]> {
   if (chunkIds.length === 0) return new Map();
 
   const placeholders = chunkIds.map(() => '?').join(',');
   const rows = db.prepare(`
     SELECT em.chunk_id, kn.id as node_id, kn.entity_type, kn.canonical_name,
-           kn.avg_confidence as confidence, kn.document_count
+           kn.aliases as aliases_json, kn.avg_confidence as confidence, kn.document_count
     FROM entity_mentions em
     JOIN entities e ON em.entity_id = e.id
     JOIN node_entity_links nel ON nel.entity_id = e.id
     JOIN knowledge_nodes kn ON nel.node_id = kn.id
     WHERE em.chunk_id IN (${placeholders})
-  `).all(...chunkIds) as Array<{ chunk_id: string; node_id: string; entity_type: string; canonical_name: string; confidence: number; document_count: number }>;
+  `).all(...chunkIds) as Array<{
+    chunk_id: string; node_id: string; entity_type: string;
+    canonical_name: string; aliases_json: string | null;
+    confidence: number; document_count: number;
+  }>;
 
-  const result = new Map<string, Array<{ node_id: string; entity_type: string; canonical_name: string; confidence: number; document_count: number }>>();
+  const result = new Map<string, ChunkEntityInfo[]>();
   for (const row of rows) {
     if (!result.has(row.chunk_id)) result.set(row.chunk_id, []);
+
+    // Parse aliases JSON (stored as JSON string array, e.g. '["alias1","alias2"]')
+    let aliases: string[] = [];
+    if (row.aliases_json) {
+      try {
+        const parsed = JSON.parse(row.aliases_json);
+        if (Array.isArray(parsed)) {
+          aliases = parsed.filter((a: unknown) => typeof a === 'string' && a.length > 0);
+        }
+      } catch {
+        // Malformed JSON - skip aliases
+      }
+    }
+
     result.get(row.chunk_id)!.push({
       node_id: row.node_id,
       entity_type: row.entity_type,
       canonical_name: row.canonical_name,
+      aliases,
       confidence: row.confidence,
       document_count: row.document_count,
     });
@@ -1077,10 +1107,13 @@ export function getEntitiesForChunks(
 
 /**
  * Get document IDs containing specified entities.
- * Used for entity-filtered search.
+ * Uses a 3-strategy approach for entity name matching:
+ *   1. Exact case-insensitive canonical_name match
+ *   2. FTS5 MATCH on knowledge_nodes_fts (handles partial/multi-word)
+ *   3. Alias JSON LIKE match
  *
  * @param db - Database connection
- * @param entityNames - Optional array of canonical entity names to match
+ * @param entityNames - Optional array of entity names to match (fuzzy)
  * @param entityTypes - Optional array of entity types to match
  * @returns Array of matching document IDs
  */
@@ -1089,31 +1122,81 @@ export function getDocumentIdsForEntities(
   entityNames?: string[],
   entityTypes?: string[],
 ): string[] {
-  const conditions: string[] = [];
-  const params: string[] = [];
+  if (!entityNames?.length && !entityTypes?.length) return [];
 
+  const nodeIds = new Set<string>();
+
+  // Collect matching node IDs via multiple strategies
   if (entityNames && entityNames.length > 0) {
-    const namePlaceholders = entityNames.map(() => '?').join(',');
-    conditions.push(`LOWER(kn.canonical_name) IN (${namePlaceholders})`);
-    params.push(...entityNames.map(n => n.toLowerCase()));
+    for (const name of entityNames) {
+      const lowerName = name.toLowerCase();
+
+      // Strategy 1: Exact canonical_name match (case-insensitive)
+      const exactRows = db.prepare(
+        'SELECT id FROM knowledge_nodes WHERE LOWER(canonical_name) = ?'
+      ).all(lowerName) as Array<{ id: string }>;
+      for (const row of exactRows) nodeIds.add(row.id);
+
+      // Strategy 2: FTS5 MATCH (handles partial and multi-word)
+      try {
+        const escaped = name.replace(/["*()\\+:^-]/g, ' ').trim();
+        if (escaped.length > 0) {
+          const ftsRows = db.prepare(
+            `SELECT kn.id FROM knowledge_nodes_fts fts
+             JOIN knowledge_nodes kn ON kn.rowid = fts.rowid
+             WHERE knowledge_nodes_fts MATCH ?
+             LIMIT 20`
+          ).all(escaped) as Array<{ id: string }>;
+          for (const row of ftsRows) nodeIds.add(row.id);
+        }
+      } catch {
+        // FTS5 table may not exist in older schemas - skip
+      }
+
+      // Strategy 3: Alias JSON LIKE match
+      const aliasRows = db.prepare(
+        'SELECT id FROM knowledge_nodes WHERE aliases LIKE ?'
+      ).all(`%${lowerName}%`) as Array<{ id: string }>;
+      for (const row of aliasRows) nodeIds.add(row.id);
+    }
   }
 
+  // Apply entity type filter
   if (entityTypes && entityTypes.length > 0) {
-    const typePlaceholders = entityTypes.map(() => '?').join(',');
-    conditions.push(`kn.entity_type IN (${typePlaceholders})`);
-    params.push(...entityTypes);
+    if (nodeIds.size === 0 && !entityNames?.length) {
+      // Type-only filter: get nodes matching these types
+      const typePlaceholders = entityTypes.map(() => '?').join(',');
+      const typeRows = db.prepare(
+        `SELECT id FROM knowledge_nodes WHERE entity_type IN (${typePlaceholders})`
+      ).all(...entityTypes) as Array<{ id: string }>;
+      for (const row of typeRows) nodeIds.add(row.id);
+    } else if (nodeIds.size > 0) {
+      // Combined filter: narrow existing nodes by type
+      const nodeIdArray = [...nodeIds];
+      const nodePlaceholders = nodeIdArray.map(() => '?').join(',');
+      const typePlaceholders = entityTypes.map(() => '?').join(',');
+      const filteredRows = db.prepare(
+        `SELECT id FROM knowledge_nodes WHERE id IN (${nodePlaceholders}) AND entity_type IN (${typePlaceholders})`
+      ).all(...nodeIdArray, ...entityTypes) as Array<{ id: string }>;
+      nodeIds.clear();
+      for (const row of filteredRows) nodeIds.add(row.id);
+    }
   }
 
-  if (conditions.length === 0) return [];
+  if (nodeIds.size === 0) return [];
 
-  const rows = db.prepare(`
-    SELECT DISTINCT nel.document_id
-    FROM knowledge_nodes kn
-    JOIN node_entity_links nel ON nel.node_id = kn.id
-    WHERE ${conditions.join(' AND ')}
-  `).all(...params) as Array<{ document_id: string }>;
+  // Get document IDs from matching nodes via entity links
+  const nodeIdArray = [...nodeIds];
+  const nodePlaceholders = nodeIdArray.map(() => '?').join(',');
+  const docRows = db.prepare(
+    `SELECT DISTINCT em.document_id
+     FROM node_entity_links nel
+     JOIN entities e ON nel.entity_id = e.id
+     JOIN entity_mentions em ON em.entity_id = e.id
+     WHERE nel.node_id IN (${nodePlaceholders})`
+  ).all(...nodeIdArray) as Array<{ document_id: string }>;
 
-  return rows.map(r => r.document_id);
+  return docRows.map(r => r.document_id);
 }
 
 /**
@@ -1139,7 +1222,7 @@ export function searchKnowledgeNodesFTS(
   try {
     const rows = db.prepare(`
       SELECT kn.id, kn.entity_type, kn.canonical_name, kn.document_count, kn.edge_count,
-             rank as rank
+             rank
       FROM knowledge_nodes_fts fts
       JOIN knowledge_nodes kn ON kn.rowid = fts.rowid
       WHERE knowledge_nodes_fts MATCH ?

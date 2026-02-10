@@ -38,14 +38,14 @@ import { computeHash } from '../../utils/hash.js';
 // ERRORS
 // ═══════════════════════════════════════════════════════════════════════════════
 
-export type ClusteringErrorCode =
+type ClusteringErrorCode =
   | 'INSUFFICIENT_DOCUMENTS'
   | 'NO_EMBEDDINGS'
   | 'WORKER_FAILED'
   | 'WORKER_TIMEOUT'
   | 'WORKER_PARSE_ERROR';
 
-export class ClusteringError extends Error {
+class ClusteringError extends Error {
   constructor(
     message: string,
     public readonly code: ClusteringErrorCode,

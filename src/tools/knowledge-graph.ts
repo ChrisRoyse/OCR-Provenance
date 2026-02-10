@@ -507,6 +507,14 @@ async function handleKnowledgeGraphMerge(
       };
     })();
 
+    // Clean up orphaned provenance from source node
+    // The source node has been deleted but its provenance record remains
+    try {
+      conn.prepare('DELETE FROM provenance WHERE id = ?').run(sourceNode.provenance_id);
+    } catch {
+      // Ignore if provenance record doesn't exist or is still referenced
+    }
+
     return formatResponse(successResult(mergeResult));
   } catch (error) {
     return handleError(error);

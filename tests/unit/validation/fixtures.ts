@@ -6,12 +6,10 @@
 export {
   // Helper functions
   validateInput,
-  safeValidateInput,
   ValidationError,
 
   // Enums
   OCRMode,
-  ProcessingStatus,
   ItemType,
   ConfigKey,
 
