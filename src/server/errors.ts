@@ -119,22 +119,17 @@ export class MCPError extends Error {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /**
- * Tool result structure for error responses
+ * Format MCPError for tool response
+ * ALWAYS includes category, message, and details
  */
-export interface ErrorResponse {
+export function formatErrorResponse(error: MCPError): {
   success: false;
   error: {
     category: ErrorCategory;
     message: string;
     details?: Record<string, unknown>;
   };
-}
-
-/**
- * Format MCPError for tool response
- * ALWAYS includes category, message, and details
- */
-export function formatErrorResponse(error: MCPError): ErrorResponse {
+} {
   return {
     success: false,
     error: {
@@ -219,11 +214,4 @@ export function pathNotDirectoryError(path: string): MCPError {
   return new MCPError('PATH_NOT_DIRECTORY', `Path is not a directory: ${path}`, {
     path,
   });
-}
-
-/**
- * Create internal error
- */
-export function internalError(message: string, details?: Record<string, unknown>): MCPError {
-  return new MCPError('INTERNAL_ERROR', message, details);
 }

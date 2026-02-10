@@ -58,7 +58,6 @@ export const EMBEDDING_DIM = 768;
 export const MODEL_NAME = 'nomic-embed-text-v1.5';
 export const MODEL_VERSION = '1.5.0';
 export const DEFAULT_BATCH_SIZE = 64;
-export const DEFAULT_DEVICE = 'cuda:0';
 
 export class NomicEmbeddingClient {
   private readonly workerPath: string;

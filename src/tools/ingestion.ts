@@ -221,7 +221,7 @@ export function parseBlockTypeFromFilename(filename: string): string | null {
 /**
  * Page-level image classification from Datalab JSON block hierarchy.
  */
-export interface PageImageClassification {
+interface PageImageClassification {
   hasFigure: boolean;
   hasPicture: boolean;
   pictureInHeaderFooter: number;

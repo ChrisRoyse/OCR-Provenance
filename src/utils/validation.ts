@@ -51,28 +51,6 @@ export function validateInput<T>(schema: z.ZodSchema<T>, input: unknown): T {
   return result.data;
 }
 
-/**
- * Safely validate input without throwing, returns result object
- *
- * @param schema - Zod schema to validate against
- * @param input - Input value to validate
- * @returns Object with success status and either data or error
- */
-export function safeValidateInput<T>(
-  schema: z.ZodSchema<T>,
-  input: unknown
-): { success: true; data: T } | { success: false; error: ValidationError } {
-  const result = schema.safeParse(input);
-  if (!result.success) {
-    const errors = result.error.errors.map((e) => {
-      const path = e.path.length > 0 ? `${e.path.join('.')}: ` : '';
-      return `${path}${e.message}`;
-    });
-    return { success: false, error: new ValidationError(errors.join('; ')) };
-  }
-  return { success: true, data: result.data };
-}
-
 // ═══════════════════════════════════════════════════════════════════════════════
 // SHARED ENUMS AND BASE SCHEMAS
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -83,19 +61,9 @@ export function safeValidateInput<T>(
 export const OCRMode = z.enum(['fast', 'balanced', 'accurate']);
 
 /**
- * Document/processing status
- */
-export const ProcessingStatus = z.enum(['pending', 'processing', 'complete', 'failed']);
-
-/**
  * Item type for provenance lookups
  */
-export const ItemType = z.enum(['document', 'ocr_result', 'chunk', 'embedding', 'image', 'comparison', 'clustering', 'knowledge_graph', 'auto']);
-
-/**
- * Provenance output format
- */
-export const ProvenanceFormat = z.enum(['chain', 'tree', 'flat']);
+export const ItemType = z.enum(['document', 'ocr_result', 'chunk', 'embedding', 'image', 'comparison', 'clustering', 'knowledge_graph', 'form_fill', 'extraction', 'auto']);
 
 /**
  * Export format for provenance data
@@ -119,16 +87,6 @@ export const ConfigKey = z.enum([
   'chunk_overlap_percent',
   'log_level',
 ]);
-
-/**
- * Sort order for list operations
- */
-export const SortOrder = z.enum(['asc', 'desc']);
-
-/**
- * Document list sort fields
- */
-export const DocumentSortField = z.enum(['created_at', 'file_name', 'file_size']);
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // DATABASE MANAGEMENT SCHEMAS
@@ -283,6 +241,12 @@ export const SearchSemanticInput = z.object({
   metadata_filter: MetadataFilter,
   min_quality_score: z.number().min(0).max(5).optional()
     .describe('Minimum OCR quality score (0-5). Filters documents with low-quality OCR results.'),
+  entity_filter: z.object({
+    entity_names: z.array(z.string()).optional(),
+    entity_types: z.array(z.string()).optional(),
+  }).optional().describe('Filter results by knowledge graph entities'),
+  rerank: z.boolean().default(false)
+    .describe('Re-rank results using Gemini AI for contextual relevance scoring'),
 });
 
 /**
@@ -300,6 +264,14 @@ export const SearchInput = z.object({
   metadata_filter: MetadataFilter,
   min_quality_score: z.number().min(0).max(5).optional()
     .describe('Minimum OCR quality score (0-5). Filters documents with low-quality OCR results.'),
+  expand_query: z.boolean().default(false)
+    .describe('Expand query with domain-specific legal/medical synonyms and knowledge graph aliases'),
+  entity_filter: z.object({
+    entity_names: z.array(z.string()).optional(),
+    entity_types: z.array(z.string()).optional(),
+  }).optional().describe('Filter results by knowledge graph entities'),
+  rerank: z.boolean().default(false)
+    .describe('Re-rank results using Gemini AI for contextual relevance scoring'),
 });
 
 /**
@@ -343,7 +315,7 @@ export const FTSManageInput = z.object({
  * Schema for listing documents
  */
 export const DocumentListInput = z.object({
-  status_filter: ProcessingStatus.optional(),
+  status_filter: z.enum(['pending', 'processing', 'complete', 'failed']).optional(),
   limit: z.number().int().min(1).max(1000).default(50),
   offset: z.number().int().min(0).default(0),
 });
@@ -429,52 +401,3 @@ export const ConfigSetInput = z.object({
   key: ConfigKey,
   value: z.union([z.string(), z.number(), z.boolean()]),
 });
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// TYPE EXPORTS (inferred from schemas)
-// ═══════════════════════════════════════════════════════════════════════════════
-
-// Enum types
-export type OCRMode = z.infer<typeof OCRMode>;
-export type ProcessingStatus = z.infer<typeof ProcessingStatus>;
-export type ItemType = z.infer<typeof ItemType>;
-export type ProvenanceFormat = z.infer<typeof ProvenanceFormat>;
-export type ExportFormat = z.infer<typeof ExportFormat>;
-export type ExportScope = z.infer<typeof ExportScope>;
-export type ConfigKey = z.infer<typeof ConfigKey>;
-export type SortOrder = z.infer<typeof SortOrder>;
-export type DocumentSortField = z.infer<typeof DocumentSortField>;
-
-// Database management types
-export type DatabaseCreateInput = z.infer<typeof DatabaseCreateInput>;
-export type DatabaseListInput = z.infer<typeof DatabaseListInput>;
-export type DatabaseSelectInput = z.infer<typeof DatabaseSelectInput>;
-export type DatabaseStatsInput = z.infer<typeof DatabaseStatsInput>;
-export type DatabaseDeleteInput = z.infer<typeof DatabaseDeleteInput>;
-
-// Document ingestion types
-export type IngestDirectoryInput = z.infer<typeof IngestDirectoryInput>;
-export type IngestFilesInput = z.infer<typeof IngestFilesInput>;
-export type ProcessPendingInput = z.infer<typeof ProcessPendingInput>;
-export type OCRStatusInput = z.infer<typeof OCRStatusInput>;
-export type RetryFailedInput = z.infer<typeof RetryFailedInput>;
-
-// Search types
-export type SearchSemanticInput = z.infer<typeof SearchSemanticInput>;
-export type SearchInput = z.infer<typeof SearchInput>;
-export type SearchHybridInput = z.infer<typeof SearchHybridInput>;
-export type FTSManageInput = z.infer<typeof FTSManageInput>;
-
-// Document management types
-export type DocumentListInput = z.infer<typeof DocumentListInput>;
-export type DocumentGetInput = z.infer<typeof DocumentGetInput>;
-export type DocumentDeleteInput = z.infer<typeof DocumentDeleteInput>;
-
-// Provenance types
-export type ProvenanceGetInput = z.infer<typeof ProvenanceGetInput>;
-export type ProvenanceVerifyInput = z.infer<typeof ProvenanceVerifyInput>;
-export type ProvenanceExportInput = z.infer<typeof ProvenanceExportInput>;
-
-// Config types
-export type ConfigGetInput = z.infer<typeof ConfigGetInput>;
-export type ConfigSetInput = z.infer<typeof ConfigSetInput>;

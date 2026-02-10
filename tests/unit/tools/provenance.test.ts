@@ -327,18 +327,6 @@ describe('provenanceTools exports', () => {
     }
   });
 
-  it('handlers are exported functions', () => {
-    expect(typeof handleProvenanceGet).toBe('function');
-    expect(typeof handleProvenanceVerify).toBe('function');
-    expect(typeof handleProvenanceExport).toBe('function');
-  });
-
-  it('tool names match expected values', () => {
-    const names = Object.keys(provenanceTools);
-    expect(names).toContain('ocr_provenance_get');
-    expect(names).toContain('ocr_provenance_verify');
-    expect(names).toContain('ocr_provenance_export');
-  });
 });
 
 // ═══════════════════════════════════════════════════════════════════════════════

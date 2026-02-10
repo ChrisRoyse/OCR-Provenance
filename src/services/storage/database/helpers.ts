@@ -18,7 +18,7 @@ export const DEFAULT_STORAGE_PATH = join(homedir(), '.ocr-provenance', 'database
 /**
  * Valid database name pattern: alphanumeric, underscores, hyphens
  */
-export const VALID_NAME_PATTERN = /^[a-zA-Z0-9_-]+$/;
+const VALID_NAME_PATTERN = /^[a-zA-Z0-9_-]+$/;
 
 /**
  * Validate database name format

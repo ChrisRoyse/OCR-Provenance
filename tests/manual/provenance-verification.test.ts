@@ -723,31 +723,3 @@ describe('Complete Provenance Chain Verification', () => {
   });
 });
 
-// Run summary at the end
-describe('Provenance Verification Summary', () => {
-  it.skipIf(!sqliteVecAvailable)('should print verification summary', () => {
-    console.log('\n' + '='.repeat(80));
-    console.log('VERIFICATION SUMMARY');
-    console.log('='.repeat(80));
-    console.log(`
-    Provenance Chain Structure:
-
-    DOCUMENT (depth 0)
-        |
-    OCR_RESULT (depth 1)
-        |
-        +---> CHUNK (depth 2) ---> EMBEDDING (depth 3)
-        |
-        +---> IMAGE (depth 2) ---> VLM_DESCRIPTION (depth 3) ---> EMBEDDING (depth 4)
-
-    All tests verify:
-    - Chain depth is correctly assigned for each type
-    - Parent relationships are correctly maintained
-    - Content hashes are verifiable for all types
-    - Chain traversal works for both paths
-    - IMAGE and VLM_DESCRIPTION types are properly integrated
-    `);
-
-    expect(true).toBe(true);
-  });
-});
