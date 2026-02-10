@@ -329,10 +329,10 @@ describe('Entity Resolution', () => {
       expect(result.stats.unmatched).toBe(3);
     });
 
-    it('throws error for >1000 entities per type in fuzzy mode', async () => {
-      // Create 1001 entities with distinct normalized_text values
+    it('throws error for >5000 entities per type in fuzzy mode', async () => {
+      // Create 5001 entities with distinct normalized_text values
       const entities: Entity[] = [];
-      for (let i = 0; i < 1001; i++) {
+      for (let i = 0; i < 5001; i++) {
         entities.push(
           makeEntity({
             entity_type: 'person',
@@ -345,7 +345,7 @@ describe('Entity Resolution', () => {
 
       await expect(
         resolveEntities(entities, 'fuzzy', dummyProvId),
-      ).rejects.toThrow('exceeding the maximum of 1000');
+      ).rejects.toThrow('exceeding the maximum of 5000');
     });
 
     it('handles entities with duplicate normalized_text in same document', async () => {

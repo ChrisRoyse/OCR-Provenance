@@ -118,7 +118,10 @@ export function deleteKnowledgeNode(
 }
 
 /**
- * List knowledge nodes with optional filters
+ * List knowledge nodes with optional filters.
+ *
+ * When entity_name is provided, attempts FTS5 search first for better
+ * performance, falling back to LIKE if FTS table is unavailable.
  */
 export function listKnowledgeNodes(
   db: Database.Database,
@@ -131,6 +134,51 @@ export function listKnowledgeNodes(
     offset?: number;
   },
 ): KnowledgeNode[] {
+  const limit = options?.limit ?? 50;
+  const offset = options?.offset ?? 0;
+
+  // Fast path: use FTS5 when entity_name is the primary filter
+  // and no document_filter is active (FTS + JOIN is complex)
+  if (options?.entity_name && !options?.document_filter?.length) {
+    try {
+      const sanitized = options.entity_name.replace(/['"]/g, '').trim();
+      if (sanitized.length > 0) {
+        const ftsConditions: string[] = [];
+        const ftsParams: (string | number)[] = [];
+
+        // Base FTS query
+        let ftsQuery = `
+          SELECT kn.* FROM knowledge_nodes_fts fts
+          JOIN knowledge_nodes kn ON kn.rowid = fts.rowid
+          WHERE knowledge_nodes_fts MATCH ?`;
+        ftsParams.push(sanitized);
+
+        if (options.entity_type) {
+          ftsConditions.push('kn.entity_type = ?');
+          ftsParams.push(options.entity_type);
+        }
+        if (options.min_document_count !== undefined) {
+          ftsConditions.push('kn.document_count >= ?');
+          ftsParams.push(options.min_document_count);
+        }
+        if (ftsConditions.length > 0) {
+          ftsQuery += ` AND ${ftsConditions.join(' AND ')}`;
+        }
+        ftsQuery += ` ORDER BY rank LIMIT ? OFFSET ?`;
+        ftsParams.push(limit, offset);
+
+        const ftsResults = db.prepare(ftsQuery).all(...ftsParams) as KnowledgeNode[];
+        if (ftsResults.length > 0) {
+          return ftsResults;
+        }
+        // If FTS returned nothing, fall through to LIKE (handles partial matches)
+      }
+    } catch {
+      // FTS table may not exist in older schemas - fall through to LIKE
+    }
+  }
+
+  // Standard LIKE-based query path
   const conditions: string[] = [];
   const params: (string | number)[] = [];
 
@@ -158,8 +206,6 @@ export function listKnowledgeNodes(
   }
 
   const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
-  const limit = options?.limit ?? 50;
-  const offset = options?.offset ?? 0;
   params.push(limit, offset);
 
   const distinctClause = joinClause ? 'DISTINCT' : '';
@@ -211,6 +257,10 @@ export function insertKnowledgeEdge(
     ],
     `inserting knowledge_edge: FK violation for source_node_id="${edge.source_node_id}" or target_node_id="${edge.target_node_id}"`,
   );
+
+  // Maintain edge_count on both endpoint nodes
+  db.prepare('UPDATE knowledge_nodes SET edge_count = edge_count + 1 WHERE id = ?').run(edge.source_node_id);
+  db.prepare('UPDATE knowledge_nodes SET edge_count = edge_count + 1 WHERE id = ?').run(edge.target_node_id);
 
   return edge.id;
 }
@@ -311,22 +361,43 @@ export function findEdge(
 }
 
 /**
- * Delete edge by ID
+ * Delete edge by ID, decrementing edge_count on both endpoint nodes.
  */
 export function deleteKnowledgeEdge(
   db: Database.Database,
   id: string,
 ): void {
+  const edge = db.prepare('SELECT source_node_id, target_node_id FROM knowledge_edges WHERE id = ?').get(id) as { source_node_id: string; target_node_id: string } | undefined;
+  if (!edge) return;
+
   db.prepare('DELETE FROM knowledge_edges WHERE id = ?').run(id);
+  db.prepare('UPDATE knowledge_nodes SET edge_count = CASE WHEN edge_count > 0 THEN edge_count - 1 ELSE 0 END WHERE id = ?').run(edge.source_node_id);
+  db.prepare('UPDATE knowledge_nodes SET edge_count = CASE WHEN edge_count > 0 THEN edge_count - 1 ELSE 0 END WHERE id = ?').run(edge.target_node_id);
 }
 
 /**
- * Delete all edges for a node (both directions)
+ * Delete all edges for a node (both directions), decrementing edge_count
+ * on connected nodes. The node being deleted does not need its count updated.
  */
 export function deleteEdgesForNode(
   db: Database.Database,
   nodeId: string,
 ): void {
+  // Find all connected nodes before deleting edges so we can decrement their counts
+  const connectedEdges = db.prepare(
+    'SELECT id, source_node_id, target_node_id FROM knowledge_edges WHERE source_node_id = ? OR target_node_id = ?',
+  ).all(nodeId, nodeId) as Array<{ id: string; source_node_id: string; target_node_id: string }>;
+
+  // Decrement edge_count on the OTHER endpoint of each edge (not the node being deleted)
+  for (const edge of connectedEdges) {
+    const otherId = edge.source_node_id === nodeId ? edge.target_node_id : edge.source_node_id;
+    if (otherId !== nodeId) {
+      db.prepare(
+        'UPDATE knowledge_nodes SET edge_count = CASE WHEN edge_count > 0 THEN edge_count - 1 ELSE 0 END WHERE id = ?',
+      ).run(otherId);
+    }
+  }
+
   db.prepare(
     'DELETE FROM knowledge_edges WHERE source_node_id = ? OR target_node_id = ?',
   ).run(nodeId, nodeId);
@@ -369,8 +440,8 @@ export function insertNodeEntityLink(
   link: NodeEntityLink,
 ): string {
   const stmt = db.prepare(`
-    INSERT INTO node_entity_links (id, node_id, entity_id, document_id, similarity_score, created_at)
-    VALUES (?, ?, ?, ?, ?, ?)
+    INSERT INTO node_entity_links (id, node_id, entity_id, document_id, similarity_score, resolution_method, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
   `);
 
   runWithForeignKeyCheck(
@@ -381,6 +452,7 @@ export function insertNodeEntityLink(
       link.entity_id,
       link.document_id,
       link.similarity_score,
+      link.resolution_method,
       link.created_at,
     ],
     `inserting node_entity_link: FK violation for node_id="${link.node_id}" or entity_id="${link.entity_id}" or document_id="${link.document_id}"`,
@@ -489,9 +561,12 @@ export function getGraphData(
 }
 
 /**
- * BFS path finding between two nodes.
+ * Bidirectional BFS path finding between two nodes.
+ * Expands from both source and target simultaneously, meeting in the middle.
  * Returns all paths up to max_hops, capped at 20 paths.
- * Uses a per-path visited set to allow different paths through the same node.
+ *
+ * The bidirectional approach reduces the search space from O(b^d) to O(b^(d/2))
+ * where b is branching factor and d is path depth.
  */
 export function findPaths(
   db: Database.Database,
@@ -508,6 +583,11 @@ export function findPaths(
 }> {
   const maxHops = Math.min(options?.max_hops ?? 3, 6);
   const maxPaths = 20;
+
+  // Same node: no meaningful path
+  if (sourceNodeId === targetNodeId) {
+    return [];
+  }
 
   // Build adjacency list from all edges (or filtered edges)
   let edgeRows: KnowledgeEdge[];
@@ -542,70 +622,195 @@ export function findPaths(
     });
   }
 
+  // Bidirectional BFS state
+  // Each direction stores partial paths reaching each node
+  interface PartialPath {
+    nodePath: string[];
+    edgePath: string[];
+  }
+
+  // Forward: paths from source. Key = frontier node, value = all partial paths reaching it
+  const forwardVisited = new Map<string, PartialPath[]>();
+  forwardVisited.set(sourceNodeId, [{ nodePath: [sourceNodeId], edgePath: [] }]);
+  let forwardFrontier = new Set<string>([sourceNodeId]);
+
+  // Backward: paths from target (stored in reverse). Key = frontier node
+  const backwardVisited = new Map<string, PartialPath[]>();
+  backwardVisited.set(targetNodeId, [{ nodePath: [targetNodeId], edgePath: [] }]);
+  let backwardFrontier = new Set<string>([targetNodeId]);
+
   const results: Array<{
     length: number;
     node_ids: string[];
     edge_ids: string[];
   }> = [];
+  const resultKeys = new Set<string>();
 
-  // BFS with path tracking
-  // Each queue entry carries its own visited set to allow multiple paths through same node
-  interface QueueEntry {
-    nodeId: string;
-    nodePath: string[];
-    edgePath: string[];
-    visited: Set<string>;
-  }
+  // Check for direct meeting point at start (source == neighbor of target or vice versa)
+  // This is handled by the BFS loop below.
 
-  const initialVisited = new Set<string>([sourceNodeId]);
-  const queue: QueueEntry[] = [{
-    nodeId: sourceNodeId,
-    nodePath: [sourceNodeId],
-    edgePath: [],
-    visited: initialVisited,
-  }];
+  // Expand layer by layer, alternating forward/backward
+  let forwardDepth = 0;
+  let backwardDepth = 0;
 
-  while (queue.length > 0 && results.length < maxPaths) {
-    const entry = queue.shift()!;
+  while (
+    (forwardFrontier.size > 0 || backwardFrontier.size > 0) &&
+    results.length < maxPaths &&
+    forwardDepth + backwardDepth < maxHops
+  ) {
+    // Expand the smaller frontier for efficiency
+    const expandForward = forwardFrontier.size <= backwardFrontier.size
+      ? forwardFrontier.size > 0
+      : backwardFrontier.size === 0;
 
-    // Stop expanding if we've reached max hops
-    if (entry.edgePath.length >= maxHops) {
-      continue;
-    }
+    if (expandForward && forwardFrontier.size > 0) {
+      const nextFrontier = new Set<string>();
+      forwardDepth++;
 
-    const neighbors = adjacency.get(entry.nodeId);
-    if (!neighbors) continue;
+      for (const nodeId of forwardFrontier) {
+        const neighbors = adjacency.get(nodeId);
+        if (!neighbors) continue;
 
-    for (const { neighbor, edgeId } of neighbors) {
-      if (entry.visited.has(neighbor)) continue;
+        const currentPaths = forwardVisited.get(nodeId) ?? [];
 
-      const newNodePath = [...entry.nodePath, neighbor];
-      const newEdgePath = [...entry.edgePath, edgeId];
+        for (const { neighbor, edgeId } of neighbors) {
+          for (const partial of currentPaths) {
+            // Avoid cycles within this path
+            if (partial.nodePath.includes(neighbor)) continue;
 
-      if (neighbor === targetNodeId) {
-        results.push({
-          length: newEdgePath.length,
-          node_ids: newNodePath,
-          edge_ids: newEdgePath,
-        });
+            const newNodePath = [...partial.nodePath, neighbor];
+            const newEdgePath = [...partial.edgePath, edgeId];
+
+            // Check if backward search has reached this node
+            if (backwardVisited.has(neighbor)) {
+              // Combine forward + backward paths at meeting node
+              const backwardPaths = backwardVisited.get(neighbor)!;
+              for (const bPath of backwardPaths) {
+                // bPath.nodePath = [target, ..., meetingNode] (backward walk order)
+                // Reverse to get [meetingNode, ..., target], skip meetingNode (already in forward)
+                const reversedBackNodes = [...bPath.nodePath].reverse().slice(1);
+                const reversedBackEdges = [...bPath.edgePath].reverse();
+                const fullNodePath = [...newNodePath, ...reversedBackNodes];
+                const fullEdgePath = [...newEdgePath, ...reversedBackEdges];
+
+                // Check total length within max_hops
+                if (fullEdgePath.length > maxHops) continue;
+
+                // Check for cycles in combined path
+                const nodeSet = new Set(fullNodePath);
+                if (nodeSet.size !== fullNodePath.length) continue;
+
+                const pathKey = fullNodePath.join('->');
+                if (!resultKeys.has(pathKey)) {
+                  resultKeys.add(pathKey);
+                  results.push({
+                    length: fullEdgePath.length,
+                    node_ids: fullNodePath,
+                    edge_ids: fullEdgePath,
+                  });
+                  if (results.length >= maxPaths) break;
+                }
+              }
+              if (results.length >= maxPaths) break;
+            }
+
+            // Store this partial path for future expansion
+            if (!forwardVisited.has(neighbor)) {
+              forwardVisited.set(neighbor, []);
+              nextFrontier.add(neighbor);
+            }
+            // Only store path if we haven't exceeded max paths and depth is within budget
+            if (forwardDepth + backwardDepth < maxHops) {
+              forwardVisited.get(neighbor)!.push({
+                nodePath: newNodePath,
+                edgePath: newEdgePath,
+              });
+              nextFrontier.add(neighbor);
+            }
+          }
+          if (results.length >= maxPaths) break;
+        }
         if (results.length >= maxPaths) break;
-      } else {
-        // Continue BFS with a new visited set for this path branch
-        const newVisited = new Set(entry.visited);
-        newVisited.add(neighbor);
-        queue.push({
-          nodeId: neighbor,
-          nodePath: newNodePath,
-          edgePath: newEdgePath,
-          visited: newVisited,
-        });
       }
+
+      forwardFrontier = nextFrontier;
+    } else if (backwardFrontier.size > 0) {
+      const nextFrontier = new Set<string>();
+      backwardDepth++;
+
+      for (const nodeId of backwardFrontier) {
+        const neighbors = adjacency.get(nodeId);
+        if (!neighbors) continue;
+
+        const currentPaths = backwardVisited.get(nodeId) ?? [];
+
+        for (const { neighbor, edgeId } of neighbors) {
+          for (const partial of currentPaths) {
+            // Avoid cycles within this path
+            if (partial.nodePath.includes(neighbor)) continue;
+
+            const newNodePath = [...partial.nodePath, neighbor];
+            const newEdgePath = [...partial.edgePath, edgeId];
+
+            // Check if forward search has reached this node
+            if (forwardVisited.has(neighbor)) {
+              const forwardPaths = forwardVisited.get(neighbor)!;
+              for (const fPath of forwardPaths) {
+                // fPath.nodePath = [source, ..., meetingNode] (forward walk order)
+                // newNodePath = [target, ..., meetingNode] (backward walk order)
+                // Reverse backward to get [meetingNode, ..., target], skip meetingNode
+                const reversedBackNodes = [...newNodePath].reverse().slice(1);
+                const reversedBackEdges = [...newEdgePath].reverse();
+                const fullNodePath = [...fPath.nodePath, ...reversedBackNodes];
+                const fullEdgePath = [...fPath.edgePath, ...reversedBackEdges];
+
+                if (fullEdgePath.length > maxHops) continue;
+
+                // Check for cycles in combined path
+                const nodeSet = new Set(fullNodePath);
+                if (nodeSet.size !== fullNodePath.length) continue;
+
+                const pathKey = fullNodePath.join('->');
+                if (!resultKeys.has(pathKey)) {
+                  resultKeys.add(pathKey);
+                  results.push({
+                    length: fullEdgePath.length,
+                    node_ids: fullNodePath,
+                    edge_ids: fullEdgePath,
+                  });
+                  if (results.length >= maxPaths) break;
+                }
+              }
+              if (results.length >= maxPaths) break;
+            }
+
+            // Store this partial path for future expansion
+            if (!backwardVisited.has(neighbor)) {
+              backwardVisited.set(neighbor, []);
+              nextFrontier.add(neighbor);
+            }
+            if (forwardDepth + backwardDepth < maxHops) {
+              backwardVisited.get(neighbor)!.push({
+                nodePath: newNodePath,
+                edgePath: newEdgePath,
+              });
+              nextFrontier.add(neighbor);
+            }
+          }
+          if (results.length >= maxPaths) break;
+        }
+        if (results.length >= maxPaths) break;
+      }
+
+      backwardFrontier = nextFrontier;
+    } else {
+      break;
     }
   }
 
   // Sort by path length (shortest first)
   results.sort((a, b) => a.length - b.length);
-  return results;
+  return results.slice(0, maxPaths);
 }
 
 /**
@@ -649,13 +854,11 @@ export function getGraphStats(db: Database.Database): {
     'SELECT COUNT(*) as cnt FROM knowledge_nodes WHERE document_count > 1',
   ).get() as { cnt: number };
 
-  // Most connected nodes (by edge count)
+  // Most connected nodes (by stored edge_count column)
   const mostConnected = db.prepare(
-    `SELECT kn.id, kn.canonical_name, kn.entity_type, kn.document_count,
-            (SELECT COUNT(*) FROM knowledge_edges
-             WHERE source_node_id = kn.id OR target_node_id = kn.id) as edge_count
+    `SELECT kn.id, kn.canonical_name, kn.entity_type, kn.document_count, kn.edge_count
      FROM knowledge_nodes kn
-     ORDER BY edge_count DESC, kn.document_count DESC
+     ORDER BY kn.edge_count DESC, kn.document_count DESC
      LIMIT 10`,
   ).all() as Array<{
     id: string;
@@ -700,14 +903,12 @@ export function getKnowledgeNodeSummariesByDocument(
   edge_count: number;
 }> {
   return db.prepare(
-    `SELECT kn.id as node_id, kn.canonical_name, kn.entity_type, kn.document_count,
-            (SELECT COUNT(*) FROM knowledge_edges
-             WHERE source_node_id = kn.id OR target_node_id = kn.id) as edge_count
+    `SELECT kn.id as node_id, kn.canonical_name, kn.entity_type, kn.document_count, kn.edge_count
      FROM knowledge_nodes kn
      JOIN node_entity_links nel ON nel.node_id = kn.id
      WHERE nel.document_id = ?
      GROUP BY kn.id
-     ORDER BY edge_count DESC, kn.document_count DESC`,
+     ORDER BY kn.edge_count DESC, kn.document_count DESC`,
   ).all(documentId) as Array<{
     node_id: string;
     canonical_name: string;
@@ -833,6 +1034,127 @@ export function deleteAllGraphData(db: Database.Database): {
     edges_deleted: edgesResult.changes,
     links_deleted: linksResult.changes,
   };
+}
+
+/**
+ * Get knowledge graph entities mentioned in specific chunks.
+ * Used to enrich search results with entity context.
+ *
+ * @param db - Database connection
+ * @param chunkIds - Array of chunk IDs to look up
+ * @returns Map of chunk_id -> array of entity info
+ */
+export function getEntitiesForChunks(
+  db: Database.Database,
+  chunkIds: string[],
+): Map<string, Array<{ node_id: string; entity_type: string; canonical_name: string; confidence: number; document_count: number }>> {
+  if (chunkIds.length === 0) return new Map();
+
+  const placeholders = chunkIds.map(() => '?').join(',');
+  const rows = db.prepare(`
+    SELECT em.chunk_id, kn.id as node_id, kn.entity_type, kn.canonical_name,
+           kn.avg_confidence as confidence, kn.document_count
+    FROM entity_mentions em
+    JOIN entities e ON em.entity_id = e.id
+    JOIN node_entity_links nel ON nel.entity_id = e.id
+    JOIN knowledge_nodes kn ON nel.node_id = kn.id
+    WHERE em.chunk_id IN (${placeholders})
+  `).all(...chunkIds) as Array<{ chunk_id: string; node_id: string; entity_type: string; canonical_name: string; confidence: number; document_count: number }>;
+
+  const result = new Map<string, Array<{ node_id: string; entity_type: string; canonical_name: string; confidence: number; document_count: number }>>();
+  for (const row of rows) {
+    if (!result.has(row.chunk_id)) result.set(row.chunk_id, []);
+    result.get(row.chunk_id)!.push({
+      node_id: row.node_id,
+      entity_type: row.entity_type,
+      canonical_name: row.canonical_name,
+      confidence: row.confidence,
+      document_count: row.document_count,
+    });
+  }
+  return result;
+}
+
+/**
+ * Get document IDs containing specified entities.
+ * Used for entity-filtered search.
+ *
+ * @param db - Database connection
+ * @param entityNames - Optional array of canonical entity names to match
+ * @param entityTypes - Optional array of entity types to match
+ * @returns Array of matching document IDs
+ */
+export function getDocumentIdsForEntities(
+  db: Database.Database,
+  entityNames?: string[],
+  entityTypes?: string[],
+): string[] {
+  const conditions: string[] = [];
+  const params: string[] = [];
+
+  if (entityNames && entityNames.length > 0) {
+    const namePlaceholders = entityNames.map(() => '?').join(',');
+    conditions.push(`LOWER(kn.canonical_name) IN (${namePlaceholders})`);
+    params.push(...entityNames.map(n => n.toLowerCase()));
+  }
+
+  if (entityTypes && entityTypes.length > 0) {
+    const typePlaceholders = entityTypes.map(() => '?').join(',');
+    conditions.push(`kn.entity_type IN (${typePlaceholders})`);
+    params.push(...entityTypes);
+  }
+
+  if (conditions.length === 0) return [];
+
+  const rows = db.prepare(`
+    SELECT DISTINCT nel.document_id
+    FROM knowledge_nodes kn
+    JOIN node_entity_links nel ON nel.node_id = kn.id
+    WHERE ${conditions.join(' AND ')}
+  `).all(...params) as Array<{ document_id: string }>;
+
+  return rows.map(r => r.document_id);
+}
+
+/**
+ * Search knowledge nodes using FTS5 full-text search on canonical_name.
+ * Uses the knowledge_nodes_fts virtual table created in schema v17.
+ *
+ * @param db - Database connection
+ * @param query - Search query string
+ * @param limit - Maximum results (default 20)
+ * @returns Matching nodes with FTS rank scores (lower rank = better match)
+ */
+export function searchKnowledgeNodesFTS(
+  db: Database.Database,
+  query: string,
+  limit: number = 20,
+): Array<{ id: string; entity_type: string; canonical_name: string; document_count: number; edge_count: number; rank: number }> {
+  if (!query || query.trim().length === 0) return [];
+
+  // Sanitize query for FTS5: remove quotes and special FTS operators
+  const sanitized = query.replace(/['"]/g, '').trim();
+  if (sanitized.length === 0) return [];
+
+  try {
+    const rows = db.prepare(`
+      SELECT kn.id, kn.entity_type, kn.canonical_name, kn.document_count, kn.edge_count,
+             rank as rank
+      FROM knowledge_nodes_fts fts
+      JOIN knowledge_nodes kn ON kn.rowid = fts.rowid
+      WHERE knowledge_nodes_fts MATCH ?
+      ORDER BY rank
+      LIMIT ?
+    `).all(sanitized, limit) as Array<{
+      id: string; entity_type: string; canonical_name: string;
+      document_count: number; edge_count: number; rank: number;
+    }>;
+
+    return rows.map(r => ({ ...r, rank: Math.abs(r.rank) }));
+  } catch {
+    // FTS table may not exist in older schemas - fall back to LIKE
+    return [];
+  }
 }
 
 /**

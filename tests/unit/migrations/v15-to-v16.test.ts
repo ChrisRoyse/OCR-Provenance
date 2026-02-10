@@ -482,7 +482,7 @@ describe('Migration v15 to v16 (Knowledge Graph)', () => {
     expect(columns).toContain('provenance_id');
     expect(columns).toContain('created_at');
     expect(columns).toContain('updated_at');
-    expect(columns.length).toBe(12);
+    expect(columns.length).toBe(13);
   });
 
   it.skipIf(!sqliteVecAvailable)('knowledge_edges table has correct columns', () => {
@@ -514,7 +514,7 @@ describe('Migration v15 to v16 (Knowledge Graph)', () => {
     expect(columns).toContain('document_id');
     expect(columns).toContain('similarity_score');
     expect(columns).toContain('created_at');
-    expect(columns.length).toBe(6);
+    expect(columns.length).toBe(7);
   });
 
   it.skipIf(!sqliteVecAvailable)('KNOWLEDGE_GRAPH type accepted in provenance after migration', () => {
@@ -571,7 +571,7 @@ describe('Migration v15 to v16 (Knowledge Graph)', () => {
     migrateToLatest(db);
 
     const version = (db.prepare('SELECT version FROM schema_version').get() as { version: number }).version;
-    expect(version).toBe(16);
+    expect(version).toBe(17);
   });
 
   it.skipIf(!sqliteVecAvailable)('FK integrity clean after migration', () => {
@@ -637,7 +637,7 @@ describe('Migration v15 to v16 (Knowledge Graph)', () => {
     expect(() => migrateToLatest(db)).not.toThrow();
 
     const version = (db.prepare('SELECT version FROM schema_version').get() as { version: number }).version;
-    expect(version).toBe(16);
+    expect(version).toBe(17);
   });
 
   it.skipIf(!sqliteVecAvailable)('FK relationships work for knowledge_nodes', () => {
@@ -799,7 +799,7 @@ describe('Migration v15 to v16 (Knowledge Graph)', () => {
     expect(tables).toContain('node_entity_links');
 
     const version = (db.prepare('SELECT version FROM schema_version').get() as { version: number }).version;
-    expect(version).toBe(16);
+    expect(version).toBe(17);
 
     const indexes = getIndexNames(db);
     expect(indexes).toContain('idx_kn_entity_type');

@@ -21,6 +21,8 @@ import {
   CREATE_VLM_FTS_TRIGGERS,
   CREATE_EXTRACTIONS_FTS_TABLE,
   CREATE_EXTRACTIONS_FTS_TRIGGERS,
+  CREATE_KNOWLEDGE_NODES_FTS_TABLE,
+  CREATE_KNOWLEDGE_NODES_FTS_TRIGGERS,
   CREATE_INDEXES,
   TABLE_DEFINITIONS,
   SCHEMA_VERSION,
@@ -174,6 +176,12 @@ export function createFTSTables(db: Database.Database): void {
       INSERT OR IGNORE INTO fts_index_metadata (id, last_rebuild_at, chunks_indexed, tokenizer, schema_version, content_hash)
       VALUES (3, ?, 0, 'porter unicode61', ${SCHEMA_VERSION}, NULL)
     `).run(now);
+
+    // Knowledge Nodes FTS5
+    db.exec(CREATE_KNOWLEDGE_NODES_FTS_TABLE);
+    for (const trigger of CREATE_KNOWLEDGE_NODES_FTS_TRIGGERS) {
+      db.exec(trigger);
+    }
   } catch (error) {
     throw new MigrationError(
       'Failed to create FTS5 tables',

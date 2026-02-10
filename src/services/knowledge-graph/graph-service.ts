@@ -21,7 +21,8 @@ import {
 import { ProvenanceType } from '../../models/provenance.js';
 import type { SourceType } from '../../models/provenance.js';
 import { getProvenanceTracker } from '../provenance/tracker.js';
-import { resolveEntities, type ResolutionMode } from './resolution-service.js';
+import { resolveEntities, type ResolutionMode, type ClusterContext } from './resolution-service.js';
+import { classifyByRules, classifyByExtractionSchema, classifyByClusterHint } from './rule-classifier.js';
 import { v4 as uuidv4 } from 'uuid';
 import { computeHash } from '../../utils/hash.js';
 import {
@@ -39,6 +40,7 @@ import {
   getLinksForNode,
   findPaths as findPathsFromDb,
   countKnowledgeNodes,
+  searchKnowledgeNodesFTS,
 } from '../storage/database/knowledge-graph-operations.js';
 import {
   getEntitiesByDocument,
@@ -243,16 +245,56 @@ export async function buildKnowledgeGraph(
     },
   });
 
-  // Step 4: Resolve entities into nodes
+  // Step 4: Build cluster context for resolution boost
+  const clusterContext: ClusterContext = { clusterMap: new Map() };
+  if (documentIds.length > 0) {
+    try {
+      const clusterPlaceholders = documentIds.map(() => '?').join(',');
+      const clusterRows = conn.prepare(`
+        SELECT document_id, cluster_id FROM document_clusters WHERE document_id IN (${clusterPlaceholders})
+      `).all(...documentIds) as Array<{ document_id: string; cluster_id: string }>;
+      for (const row of clusterRows) {
+        clusterContext.clusterMap.set(row.document_id, row.cluster_id);
+      }
+    } catch {
+      // Cluster tables may not exist in older schemas - skip
+    }
+  }
+
+  // Step 5: Resolve entities into nodes
   const resolutionResult = await resolveEntities(
     allEntities,
     resolutionMode,
     provenanceId,
+    undefined, // geminiClassifier
+    clusterContext,
   );
 
-  // Step 5: Store nodes and links
+  // Step 5: Store nodes and links with per-node provenance (P1.1)
   for (const node of resolutionResult.nodes) {
     insertKnowledgeNode(conn, node);
+
+    // Count entity links for this node
+    const nodeLinks = resolutionResult.links.filter(l => l.node_id === node.id);
+    const resolutionAlgorithm = nodeLinks.length > 0 && nodeLinks[0].resolution_method
+      ? nodeLinks[0].resolution_method
+      : 'exact';
+
+    tracker.createProvenance({
+      type: ProvenanceType.KNOWLEDGE_GRAPH,
+      source_type: 'KNOWLEDGE_GRAPH' as SourceType,
+      source_id: provenanceId,
+      root_document_id: firstDoc?.provenance_id ?? documentIds[0],
+      content_hash: computeHash(JSON.stringify({ node_id: node.id, canonical_name: node.canonical_name })),
+      input_hash: computeHash(JSON.stringify({ entity_count: nodeLinks.length })),
+      processor: 'entity-resolution',
+      processor_version: '1.0.0',
+      processing_params: {
+        resolution_mode: resolutionMode,
+        matched_by: resolutionAlgorithm,
+        node_id: node.id,
+      },
+    });
   }
 
   for (const link of resolutionResult.links) {
@@ -262,26 +304,128 @@ export async function buildKnowledgeGraph(
   // Step 6: Build co-occurrence edges
   buildCoOccurrenceEdges(db, resolutionResult.nodes, provenanceId);
 
-  // Step 7: Optionally classify relationships with Gemini
+  // Step 7: Optionally classify relationships (rule-based first, then Gemini)
   if (classifyRelationships) {
-    const geminiApiKey = process.env.GEMINI_API_KEY;
-    if (geminiApiKey) {
-      // Collect co_located edges for classification
-      const coLocatedEdges: KnowledgeEdge[] = [];
-      for (const node of resolutionResult.nodes) {
-        const nodeEdges = getEdgesForNode(conn, node.id, { relationship_type: 'co_located' });
-        for (const edge of nodeEdges) {
-          // Avoid duplicates (edges appear in both directions)
-          if (!coLocatedEdges.some(e => e.id === edge.id)) {
-            coLocatedEdges.push(edge);
-          }
+    // Collect co_located edges for classification
+    const coLocatedEdges: KnowledgeEdge[] = [];
+    for (const node of resolutionResult.nodes) {
+      const nodeEdges = getEdgesForNode(conn, node.id, { relationship_type: 'co_located' });
+      for (const edge of nodeEdges) {
+        // Avoid duplicates (edges appear in both directions)
+        if (!coLocatedEdges.some(e => e.id === edge.id)) {
+          coLocatedEdges.push(edge);
         }
       }
-      if (coLocatedEdges.length > 0) {
-        await classifyRelationshipsWithGemini(db, coLocatedEdges);
+    }
+
+    if (coLocatedEdges.length > 0) {
+      // P4.1: Apply rule-based classification BEFORE Gemini
+      // Query cluster context for document-level hints
+      const clusterTagMap = new Map<string, string | null>();
+      try {
+        const allDocIds = [...new Set(documentIds)];
+        if (allDocIds.length > 0) {
+          const placeholders = allDocIds.map(() => '?').join(',');
+          const clusterRows = conn.prepare(
+            `SELECT dc.document_id, c.classification_tag
+             FROM document_clusters dc
+             JOIN clusters c ON dc.cluster_id = c.id
+             WHERE dc.document_id IN (${placeholders})`,
+          ).all(...allDocIds) as { document_id: string; classification_tag: string | null }[];
+          for (const row of clusterRows) {
+            clusterTagMap.set(row.document_id, row.classification_tag);
+          }
+        }
+      } catch {
+        // Cluster tables may not exist in older schemas - skip
       }
-    } else {
-      console.error('[KnowledgeGraph] classify_relationships=true but GEMINI_API_KEY not set, skipping');
+
+      const unclassifiedEdges: KnowledgeEdge[] = [];
+
+      for (const edge of coLocatedEdges) {
+        const sourceNode = getKnowledgeNode(conn, edge.source_node_id);
+        const targetNode = getKnowledgeNode(conn, edge.target_node_id);
+        if (!sourceNode || !targetNode) {
+          unclassifiedEdges.push(edge);
+          continue;
+        }
+
+        const srcType = sourceNode.entity_type;
+        const tgtType = targetNode.entity_type;
+
+        // Try rule-based classification in priority order
+        // (a) Extraction schema context
+        let ruleResult = classifyByExtractionSchema(
+          sourceNode.metadata, targetNode.metadata, srcType, tgtType,
+        );
+        let ruleType = 'extraction_schema';
+
+        // (b) Cluster hint context
+        if (!ruleResult) {
+          // Find shared cluster tag between source and target documents
+          const srcLinks = getLinksForNode(conn, sourceNode.id);
+          const tgtLinks = getLinksForNode(conn, targetNode.id);
+          const srcDocIds = new Set(srcLinks.map(l => l.document_id));
+          let sharedClusterTag: string | null = null;
+          for (const tgtLink of tgtLinks) {
+            if (srcDocIds.has(tgtLink.document_id)) {
+              const tag = clusterTagMap.get(tgtLink.document_id);
+              if (tag) {
+                sharedClusterTag = tag;
+                break;
+              }
+            }
+          }
+          ruleResult = classifyByClusterHint(sharedClusterTag, srcType, tgtType);
+          ruleType = 'cluster_hint';
+        }
+
+        // (c) Type-pair rule matrix
+        if (!ruleResult) {
+          ruleResult = classifyByRules(srcType, tgtType);
+          ruleType = 'type_rule';
+        }
+
+        if (ruleResult) {
+          // Apply rule-based classification
+          const existingMeta = edge.metadata ? JSON.parse(edge.metadata) : {};
+          updateKnowledgeEdge(conn, edge.id, {
+            metadata: JSON.stringify({
+              ...existingMeta,
+              classified_by: 'rule',
+              rule_type: ruleType,
+              confidence: ruleResult.confidence,
+              classification_history: [{
+                original_type: 'co_located',
+                classified_type: ruleResult.type,
+                classified_by: 'rule',
+                rule_type: ruleType,
+                confidence: ruleResult.confidence,
+                classified_at: new Date().toISOString(),
+              }],
+            }),
+          });
+          conn.prepare(
+            'UPDATE knowledge_edges SET relationship_type = ? WHERE id = ?',
+          ).run(ruleResult.type, edge.id);
+        } else {
+          unclassifiedEdges.push(edge);
+        }
+      }
+
+      // P4.2: Only pass unclassified edges to Gemini
+      if (unclassifiedEdges.length > 0) {
+        const geminiApiKey = process.env.GEMINI_API_KEY;
+        if (geminiApiKey) {
+          await classifyRelationshipsWithGemini(db, unclassifiedEdges);
+        } else {
+          console.error('[KnowledgeGraph] classify_relationships=true but GEMINI_API_KEY not set, skipping AI classification');
+        }
+      }
+
+      console.error(
+        `[KnowledgeGraph] Classification: ${coLocatedEdges.length - unclassifiedEdges.length} rule-based, ${unclassifiedEdges.length} sent to Gemini`,
+      );
     }
   }
 
@@ -465,6 +609,185 @@ function buildCoOccurrenceEdges(
 }
 
 // ============================================================
+// buildTemporalEdges - Date-based temporal relationships
+// ============================================================
+
+/**
+ * Parse a date string into a Date object.
+ * Handles ISO, US (MM/DD/YYYY), and EU (DD.MM.YYYY) formats.
+ *
+ * @param dateStr - Date string to parse
+ * @returns Parsed Date or null if unparseable
+ */
+function parseDateValue(dateStr: string): Date | null {
+  // Try ISO format first
+  const isoDate = new Date(dateStr);
+  if (!isNaN(isoDate.getTime())) return isoDate;
+
+  // Try US format MM/DD/YYYY
+  const usMatch = dateStr.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+  if (usMatch) {
+    return new Date(parseInt(usMatch[3]), parseInt(usMatch[1]) - 1, parseInt(usMatch[2]));
+  }
+
+  // Try EU format DD.MM.YYYY
+  const euMatch = dateStr.match(/^(\d{1,2})\.(\d{1,2})\.(\d{4})$/);
+  if (euMatch) {
+    return new Date(parseInt(euMatch[3]), parseInt(euMatch[2]) - 1, parseInt(euMatch[1]));
+  }
+
+  return null;
+}
+
+/**
+ * Build temporal edges between date-type nodes.
+ * - 'precedes': Between consecutive dates within 90 days
+ * - 'occurred_at': Between date nodes and non-date entities in same chunk
+ *
+ * @param conn - Database connection
+ * @param provenanceId - Provenance ID for edge creation
+ * @param documentIds - Optional document filter
+ * @returns Number of temporal edges created by type
+ */
+export function buildTemporalEdges(
+  conn: ReturnType<DatabaseService['getConnection']>,
+  provenanceId: string,
+  documentIds?: string[],
+): { precedes_edges: number; occurred_at_edges: number } {
+  const now = new Date().toISOString();
+  let precedesEdges = 0;
+  let occurredAtEdges = 0;
+
+  // Query date-type knowledge nodes (with optional document filter)
+  let dateNodes: KnowledgeNode[];
+  if (documentIds && documentIds.length > 0) {
+    const placeholders = documentIds.map(() => '?').join(',');
+    dateNodes = conn.prepare(`
+      SELECT DISTINCT kn.* FROM knowledge_nodes kn
+      JOIN node_entity_links nel ON nel.node_id = kn.id
+      WHERE kn.entity_type = 'date' AND nel.document_id IN (${placeholders})
+    `).all(...documentIds) as KnowledgeNode[];
+  } else {
+    dateNodes = conn.prepare(
+      "SELECT * FROM knowledge_nodes WHERE entity_type = 'date'",
+    ).all() as KnowledgeNode[];
+  }
+
+  if (dateNodes.length < 2) {
+    return { precedes_edges: 0, occurred_at_edges: 0 };
+  }
+
+  // Parse dates and sort
+  const parsedNodes: Array<{ node: KnowledgeNode; date: Date }> = [];
+  for (const node of dateNodes) {
+    const parsed = parseDateValue(node.canonical_name) ?? parseDateValue(node.normalized_name);
+    if (parsed) {
+      parsedNodes.push({ node, date: parsed });
+    }
+  }
+
+  parsedNodes.sort((a, b) => a.date.getTime() - b.date.getTime());
+
+  // Create 'precedes' edges between consecutive dates within 90 days
+  const MAX_DAYS_BETWEEN = 90;
+  for (let i = 0; i < parsedNodes.length - 1; i++) {
+    const current = parsedNodes[i];
+    const next = parsedNodes[i + 1];
+
+    const daysBetween = Math.round(
+      (next.date.getTime() - current.date.getTime()) / (1000 * 60 * 60 * 24),
+    );
+
+    if (daysBetween > 0 && daysBetween <= MAX_DAYS_BETWEEN) {
+      // Direction convention: earlier date is source
+      const sourceId = current.node.id;
+      const targetId = next.node.id;
+
+      // Check for existing edge
+      const existing = findEdge(conn, sourceId, targetId, 'precedes');
+      if (!existing) {
+        const edge: KnowledgeEdge = {
+          id: uuidv4(),
+          source_node_id: sourceId,
+          target_node_id: targetId,
+          relationship_type: 'precedes',
+          weight: Math.round((1 - daysBetween / MAX_DAYS_BETWEEN) * 10000) / 10000,
+          evidence_count: 1,
+          document_ids: JSON.stringify([]),
+          metadata: JSON.stringify({ days_between: daysBetween }),
+          provenance_id: provenanceId,
+          created_at: now,
+        };
+        insertKnowledgeEdge(conn, edge);
+        precedesEdges++;
+      }
+    }
+  }
+
+  // Build 'occurred_at' edges: date nodes that share chunks with non-date entities
+  const dateNodeIds = new Set(dateNodes.map(n => n.id));
+
+  for (const dateNode of dateNodes) {
+    // Get chunks associated with this date node via entity_mentions
+    const dateLinks = conn.prepare(
+      'SELECT entity_id FROM node_entity_links WHERE node_id = ?',
+    ).all(dateNode.id) as Array<{ entity_id: string }>;
+
+    const dateChunkIds = new Set<string>();
+    for (const link of dateLinks) {
+      const mentions = conn.prepare(
+        'SELECT chunk_id FROM entity_mentions WHERE entity_id = ? AND chunk_id IS NOT NULL',
+      ).all(link.entity_id) as Array<{ chunk_id: string }>;
+      for (const m of mentions) {
+        dateChunkIds.add(m.chunk_id);
+      }
+    }
+
+    if (dateChunkIds.size === 0) continue;
+
+    // Find non-date knowledge nodes that share these chunks
+    const chunkPlaceholders = [...dateChunkIds].map(() => '?').join(',');
+    const coLocatedNodes = conn.prepare(`
+      SELECT DISTINCT kn.id FROM knowledge_nodes kn
+      JOIN node_entity_links nel ON nel.node_id = kn.id
+      JOIN entity_mentions em ON em.entity_id = nel.entity_id
+      WHERE em.chunk_id IN (${chunkPlaceholders})
+        AND kn.entity_type != 'date'
+        AND kn.id != ?
+    `).all(...dateChunkIds, dateNode.id) as Array<{ id: string }>;
+
+    for (const targetRow of coLocatedNodes) {
+      if (dateNodeIds.has(targetRow.id)) continue;
+
+      // Direction convention: sort node IDs alphabetically
+      const [sourceId, targetId] = dateNode.id < targetRow.id
+        ? [dateNode.id, targetRow.id]
+        : [targetRow.id, dateNode.id];
+
+      const existing = findEdge(conn, sourceId, targetId, 'occurred_at');
+      if (!existing) {
+        const edge: KnowledgeEdge = {
+          id: uuidv4(),
+          source_node_id: sourceId,
+          target_node_id: targetId,
+          relationship_type: 'occurred_at',
+          weight: 0.8,
+          evidence_count: 1,
+          document_ids: JSON.stringify([]),
+          metadata: JSON.stringify({ shared_chunks: [...dateChunkIds] }),
+          provenance_id: provenanceId,
+          created_at: now,
+        };
+        insertKnowledgeEdge(conn, edge);
+        occurredAtEdges++;
+      }
+    }
+  }
+
+  return { precedes_edges: precedesEdges, occurred_at_edges: occurredAtEdges };
+}
+
+// ============================================================
 // classifyRelationshipsWithGemini - Optional Gemini classification
 // ============================================================
 
@@ -545,11 +868,22 @@ Respond with ONLY the relationship type, nothing else.`;
 
       // Validate the classified type against the canonical list
       if (RELATIONSHIP_TYPES.includes(classifiedType) && classifiedType !== 'co_located') {
+        const existingMeta = edge.metadata ? JSON.parse(edge.metadata) : {};
         updateKnowledgeEdge(conn, edge.id, {
           metadata: JSON.stringify({
-            ...(edge.metadata ? JSON.parse(edge.metadata) : {}),
+            ...existingMeta,
             classified_by: 'gemini',
             original_type: 'co_located',
+            classification_history: [
+              ...(existingMeta.classification_history ?? []),
+              {
+                original_type: 'co_located',
+                classified_type: classifiedType,
+                classified_by: 'gemini',
+                model: 'gemini-2.5-flash',
+                classified_at: new Date().toISOString(),
+              },
+            ],
           }),
         });
         // Update the relationship_type directly
@@ -558,7 +892,17 @@ Respond with ONLY the relationship type, nothing else.`;
         ).run(classifiedType, edge.id);
       }
     } catch (error) {
-      // On failure, keep the edge as co_located and log warning
+      // On failure, keep the edge as co_located and store error info
+      const existingMeta = edge.metadata ? (() => { try { return JSON.parse(edge.metadata!); } catch { return {}; } })() : {};
+      updateKnowledgeEdge(conn, edge.id, {
+        metadata: JSON.stringify({
+          ...existingMeta,
+          classification_failed: {
+            error: error instanceof Error ? error.message : String(error),
+            attempted_at: new Date().toISOString(),
+          },
+        }),
+      });
       console.error(
         `[KnowledgeGraph] Failed to classify edge ${edge.id}:`,
         error instanceof Error ? error.message : String(error),
@@ -917,7 +1261,7 @@ export function findGraphPaths(
  * Resolve a node reference that can be either a UUID or an entity name.
  *
  * If the input looks like a UUID (contains hyphens and is 36 chars), looks up by ID.
- * Otherwise, searches by canonical_name using LIKE match.
+ * Otherwise, searches using FTS5 first for performance, falling back to LIKE match.
  *
  * @param conn - Raw database connection
  * @param reference - Node ID or entity name
@@ -933,7 +1277,13 @@ function resolveNodeReference(
     return getKnowledgeNode(conn, reference);
   }
 
-  // Search by canonical_name using LIKE match
+  // Try FTS5 search first for performance
+  const ftsResults = searchKnowledgeNodesFTS(conn, reference, 1);
+  if (ftsResults.length > 0) {
+    return getKnowledgeNode(conn, ftsResults[0].id);
+  }
+
+  // Fall back to LIKE match
   const nodes = listKnowledgeNodes(conn, {
     entity_name: reference,
     limit: 1,

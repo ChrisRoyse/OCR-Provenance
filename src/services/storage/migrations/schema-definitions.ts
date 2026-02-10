@@ -8,7 +8,7 @@
  */
 
 /** Current schema version */
-export const SCHEMA_VERSION = 16;
+export const SCHEMA_VERSION = 17;
 
 /**
  * Database configuration pragmas for optimal performance and safety
@@ -547,6 +547,7 @@ CREATE TABLE IF NOT EXISTS knowledge_nodes (
   aliases TEXT,
   document_count INTEGER NOT NULL DEFAULT 1,
   mention_count INTEGER NOT NULL DEFAULT 0,
+  edge_count INTEGER NOT NULL DEFAULT 0,
   avg_confidence REAL NOT NULL DEFAULT 0.0,
   metadata TEXT,
   provenance_id TEXT NOT NULL,
@@ -565,7 +566,7 @@ CREATE TABLE IF NOT EXISTS knowledge_edges (
   id TEXT PRIMARY KEY,
   source_node_id TEXT NOT NULL,
   target_node_id TEXT NOT NULL,
-  relationship_type TEXT NOT NULL CHECK (relationship_type IN ('co_mentioned', 'co_located', 'works_at', 'represents', 'located_in', 'filed_in', 'cites', 'references', 'party_to', 'related_to')),
+  relationship_type TEXT NOT NULL CHECK (relationship_type IN ('co_mentioned', 'co_located', 'works_at', 'represents', 'located_in', 'filed_in', 'cites', 'references', 'party_to', 'related_to', 'precedes', 'occurred_at')),
   weight REAL NOT NULL DEFAULT 1.0,
   evidence_count INTEGER NOT NULL DEFAULT 1,
   document_ids TEXT NOT NULL,
@@ -588,12 +589,42 @@ CREATE TABLE IF NOT EXISTS node_entity_links (
   entity_id TEXT NOT NULL UNIQUE,
   document_id TEXT NOT NULL,
   similarity_score REAL NOT NULL DEFAULT 1.0,
+  resolution_method TEXT,
   created_at TEXT NOT NULL,
   FOREIGN KEY (node_id) REFERENCES knowledge_nodes(id),
   FOREIGN KEY (entity_id) REFERENCES entities(id),
   FOREIGN KEY (document_id) REFERENCES documents(id)
 )
 `;
+
+/**
+ * FTS5 table for knowledge node full-text search
+ * External content mode: references knowledge_nodes table
+ */
+export const CREATE_KNOWLEDGE_NODES_FTS_TABLE = `
+CREATE VIRTUAL TABLE IF NOT EXISTS knowledge_nodes_fts USING fts5(
+  canonical_name,
+  content='knowledge_nodes',
+  content_rowid='rowid',
+  tokenize='porter unicode61'
+)
+`;
+
+/**
+ * FTS5 sync triggers for knowledge_nodes
+ */
+export const CREATE_KNOWLEDGE_NODES_FTS_TRIGGERS = [
+  `CREATE TRIGGER IF NOT EXISTS knowledge_nodes_fts_ai AFTER INSERT ON knowledge_nodes BEGIN
+    INSERT INTO knowledge_nodes_fts(rowid, canonical_name) VALUES (new.rowid, new.canonical_name);
+  END`,
+  `CREATE TRIGGER IF NOT EXISTS knowledge_nodes_fts_ad AFTER DELETE ON knowledge_nodes BEGIN
+    INSERT INTO knowledge_nodes_fts(knowledge_nodes_fts, rowid, canonical_name) VALUES ('delete', old.rowid, old.canonical_name);
+  END`,
+  `CREATE TRIGGER IF NOT EXISTS knowledge_nodes_fts_au AFTER UPDATE OF canonical_name ON knowledge_nodes BEGIN
+    INSERT INTO knowledge_nodes_fts(knowledge_nodes_fts, rowid, canonical_name) VALUES ('delete', old.rowid, old.canonical_name);
+    INSERT INTO knowledge_nodes_fts(rowid, canonical_name) VALUES (new.rowid, new.canonical_name);
+  END`,
+];
 
 /**
  * All required indexes for query performance
@@ -677,6 +708,10 @@ export const CREATE_INDEXES = [
   'CREATE INDEX IF NOT EXISTS idx_ke_relationship_type ON knowledge_edges(relationship_type)',
   'CREATE INDEX IF NOT EXISTS idx_nel_node_id ON node_entity_links(node_id)',
   'CREATE INDEX IF NOT EXISTS idx_nel_document_id ON node_entity_links(document_id)',
+
+  // Knowledge graph optimization indexes (v17)
+  'CREATE INDEX IF NOT EXISTS idx_knowledge_nodes_canonical_lower ON knowledge_nodes(canonical_name COLLATE NOCASE)',
+  'CREATE INDEX IF NOT EXISTS idx_entity_mentions_chunk_id ON entity_mentions(chunk_id)',
 ] as const;
 
 /**
@@ -731,6 +766,7 @@ export const REQUIRED_TABLES = [
   'knowledge_nodes',
   'knowledge_edges',
   'node_entity_links',
+  'knowledge_nodes_fts',
 ] as const;
 
 /**
@@ -788,4 +824,6 @@ export const REQUIRED_INDEXES = [
   'idx_ke_relationship_type',
   'idx_nel_node_id',
   'idx_nel_document_id',
+  'idx_knowledge_nodes_canonical_lower',
+  'idx_entity_mentions_chunk_id',
 ] as const;

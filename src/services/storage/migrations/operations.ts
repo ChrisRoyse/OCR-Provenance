@@ -29,6 +29,8 @@ import {
   CREATE_KNOWLEDGE_NODES_TABLE,
   CREATE_KNOWLEDGE_EDGES_TABLE,
   CREATE_NODE_ENTITY_LINKS_TABLE,
+  CREATE_KNOWLEDGE_NODES_FTS_TABLE,
+  CREATE_KNOWLEDGE_NODES_FTS_TRIGGERS,
 } from './schema-definitions.js';
 import {
   configurePragmas,
@@ -1036,6 +1038,11 @@ export function migrateToLatest(db: Database.Database): void {
     migrateV15ToV16(db);
     bumpVersion(16);
   }
+
+  if (currentVersion < 17) {
+    migrateV16ToV17(db);
+    bumpVersion(17);
+  }
 }
 
 /**
@@ -1706,6 +1713,130 @@ function migrateV14ToV15(db: Database.Database): void {
       `Failed to migrate from v14 to v15 (document clustering): ${cause}`,
       'migrate',
       'provenance',
+      error
+    );
+  }
+}
+
+/**
+ * Migrate from schema version 16 to version 17
+ *
+ * Changes in v17 (knowledge graph optimization):
+ * - knowledge_nodes.edge_count: New column tracking edge count per node
+ * - node_entity_links.resolution_method: New column tracking how entity was resolved
+ * - knowledge_edges: Expanded CHECK constraint with 'precedes', 'occurred_at' relationship types
+ * - knowledge_nodes_fts: New FTS5 virtual table for knowledge node full-text search
+ * - knowledge_nodes_fts_ai/ad/au: FTS5 sync triggers for knowledge_nodes
+ * - idx_knowledge_nodes_canonical_lower: Case-insensitive index on canonical_name
+ * - idx_entity_mentions_chunk_id: Index on entity_mentions.chunk_id for chunk-based lookups
+ *
+ * @param db - Database instance from better-sqlite3
+ * @throws MigrationError if migration fails
+ */
+function migrateV16ToV17(db: Database.Database): void {
+  try {
+    db.exec('PRAGMA foreign_keys = OFF');
+    db.exec('BEGIN TRANSACTION');
+
+    // Step 1: Add resolution_method column to node_entity_links (if not already present from fresh schema)
+    const nelColumns = db.pragma('table_info(node_entity_links)') as Array<{ name: string }>;
+    if (!nelColumns.some(c => c.name === 'resolution_method')) {
+      db.exec('ALTER TABLE node_entity_links ADD COLUMN resolution_method TEXT');
+    }
+
+    // Step 2: Add edge_count column to knowledge_nodes (if not already present from fresh schema)
+    const knColumns = db.pragma('table_info(knowledge_nodes)') as Array<{ name: string }>;
+    if (!knColumns.some(c => c.name === 'edge_count')) {
+      db.exec('ALTER TABLE knowledge_nodes ADD COLUMN edge_count INTEGER NOT NULL DEFAULT 0');
+    }
+
+    // Step 3: Recreate knowledge_edges with expanded CHECK constraint
+    db.exec(`
+      CREATE TABLE knowledge_edges_new (
+        id TEXT PRIMARY KEY,
+        source_node_id TEXT NOT NULL,
+        target_node_id TEXT NOT NULL,
+        relationship_type TEXT NOT NULL CHECK (relationship_type IN (
+          'co_mentioned', 'co_located', 'works_at', 'represents',
+          'located_in', 'filed_in', 'cites', 'references',
+          'party_to', 'related_to', 'precedes', 'occurred_at'
+        )),
+        weight REAL NOT NULL DEFAULT 1.0,
+        evidence_count INTEGER NOT NULL DEFAULT 1,
+        document_ids TEXT NOT NULL,
+        metadata TEXT,
+        provenance_id TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        FOREIGN KEY (source_node_id) REFERENCES knowledge_nodes(id),
+        FOREIGN KEY (target_node_id) REFERENCES knowledge_nodes(id),
+        FOREIGN KEY (provenance_id) REFERENCES provenance(id)
+      )
+    `);
+
+    // Step 4: Copy existing edges
+    db.exec('INSERT INTO knowledge_edges_new SELECT * FROM knowledge_edges');
+
+    // Step 5: Drop old edges table
+    db.exec('DROP TABLE knowledge_edges');
+
+    // Step 6: Rename new table
+    db.exec('ALTER TABLE knowledge_edges_new RENAME TO knowledge_edges');
+
+    // Step 7: Recreate indexes on knowledge_edges (dropped with old table)
+    db.exec('CREATE INDEX IF NOT EXISTS idx_ke_source_node ON knowledge_edges(source_node_id)');
+    db.exec('CREATE INDEX IF NOT EXISTS idx_ke_target_node ON knowledge_edges(target_node_id)');
+    db.exec('CREATE INDEX IF NOT EXISTS idx_ke_relationship_type ON knowledge_edges(relationship_type)');
+
+    // Step 8: Create new optimization indexes
+    db.exec('CREATE INDEX IF NOT EXISTS idx_knowledge_nodes_canonical_lower ON knowledge_nodes(canonical_name COLLATE NOCASE)');
+    db.exec('CREATE INDEX IF NOT EXISTS idx_entity_mentions_chunk_id ON entity_mentions(chunk_id)');
+
+    // Step 9: Backfill edge_count from existing edges
+    db.exec(`
+      UPDATE knowledge_nodes SET edge_count = (
+        SELECT COUNT(*) FROM knowledge_edges
+        WHERE source_node_id = knowledge_nodes.id OR target_node_id = knowledge_nodes.id
+      )
+    `);
+
+    // Step 10: Create knowledge_nodes_fts FTS5 table
+    db.exec(CREATE_KNOWLEDGE_NODES_FTS_TABLE);
+
+    // Step 11: Create FTS triggers
+    for (const trigger of CREATE_KNOWLEDGE_NODES_FTS_TRIGGERS) {
+      db.exec(trigger);
+    }
+
+    // Step 12: Populate FTS from existing knowledge_nodes
+    const nodeCount = db.prepare('SELECT COUNT(*) as cnt FROM knowledge_nodes').get() as { cnt: number };
+    if (nodeCount.cnt > 0) {
+      db.exec(`
+        INSERT INTO knowledge_nodes_fts(rowid, canonical_name)
+        SELECT rowid, canonical_name FROM knowledge_nodes
+      `);
+    }
+
+    db.exec('COMMIT');
+    db.exec('PRAGMA foreign_keys = ON');
+
+    // FK integrity check
+    const fkViolations = db.pragma('foreign_key_check') as unknown[];
+    if (fkViolations.length > 0) {
+      throw new Error(
+        `Foreign key integrity check failed after v16->v17 migration: ${fkViolations.length} violation(s). ` +
+        `First: ${JSON.stringify(fkViolations[0])}`
+      );
+    }
+  } catch (error) {
+    try {
+      db.exec('ROLLBACK');
+      db.exec('PRAGMA foreign_keys = ON');
+    } catch { /* ignore rollback errors */ }
+    const cause = error instanceof Error ? error.message : String(error);
+    throw new MigrationError(
+      `Failed to migrate from v16 to v17 (knowledge graph optimization): ${cause}`,
+      'migrate',
+      'knowledge_edges',
       error
     );
   }

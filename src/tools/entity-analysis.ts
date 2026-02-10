@@ -28,6 +28,8 @@ import {
 } from '../services/storage/database/entity-operations.js';
 import { getClusterSummariesForDocument } from '../services/storage/database/cluster-operations.js';
 import { getKnowledgeNodeSummariesByDocument } from '../services/storage/database/knowledge-graph-operations.js';
+import { extractEntitiesFromVLM } from '../services/knowledge-graph/vlm-entity-extractor.js';
+import { mapExtractionEntitiesToDB } from '../services/knowledge-graph/extraction-entity-mapper.js';
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // INPUT SCHEMAS
@@ -60,6 +62,14 @@ const WitnessAnalysisInput = z.object({
   document_ids: z.array(z.string().min(1)).min(1).describe('Document IDs to analyze'),
   focus_area: z.string().optional().describe('Specific area to focus analysis on'),
   include_images: z.boolean().default(false).describe('Include VLM image descriptions in analysis'),
+});
+
+const VLMEntityExtractInput = z.object({
+  document_id: z.string().min(1).describe('Document ID with VLM-processed images'),
+});
+
+const ExtractionEntityExtractInput = z.object({
+  document_id: z.string().min(1).describe('Document ID with structured extractions'),
 });
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -604,6 +614,132 @@ async function handleWitnessAnalysis(params: Record<string, unknown>) {
   }
 }
 
+/**
+ * ocr_entity_extract_from_vlm - Extract entities from VLM image descriptions
+ */
+async function handleEntityExtractFromVLM(params: Record<string, unknown>) {
+  try {
+    const input = validateInput(VLMEntityExtractInput, params);
+    const { db } = requireDatabase();
+    const conn = db.getConnection();
+
+    // Verify document exists
+    const doc = db.getDocument(input.document_id);
+    if (!doc) {
+      return formatResponse({ error: `Document not found: ${input.document_id}` });
+    }
+
+    // Create provenance record for VLM entity extraction
+    const now = new Date().toISOString();
+    const entityProvId = uuidv4();
+    const entityHash = computeHash(JSON.stringify({ document_id: input.document_id, source: 'vlm' }));
+
+    db.insertProvenance({
+      id: entityProvId,
+      type: ProvenanceType.ENTITY_EXTRACTION,
+      created_at: now,
+      processed_at: now,
+      source_file_created_at: null,
+      source_file_modified_at: null,
+      source_type: 'ENTITY_EXTRACTION',
+      source_path: doc.file_path,
+      source_id: doc.provenance_id,
+      root_document_id: doc.provenance_id,
+      location: null,
+      content_hash: entityHash,
+      input_hash: computeHash(input.document_id),
+      file_hash: doc.file_hash,
+      processor: 'vlm-entity-extraction',
+      processor_version: '1.0.0',
+      processing_params: { source: 'vlm' },
+      processing_duration_ms: null,
+      processing_quality_score: null,
+      parent_id: doc.provenance_id,
+      parent_ids: JSON.stringify([doc.provenance_id]),
+      chain_depth: 2,
+      chain_path: JSON.stringify(['DOCUMENT', 'OCR_RESULT', 'ENTITY_EXTRACTION']),
+    });
+
+    const startTime = Date.now();
+    const result = await extractEntitiesFromVLM(conn, input.document_id, entityProvId);
+    const processingDurationMs = Date.now() - startTime;
+
+    return formatResponse({
+      document_id: input.document_id,
+      entities_created: result.entities_created,
+      descriptions_processed: result.descriptions_processed,
+      source: 'vlm',
+      provenance_id: entityProvId,
+      processing_duration_ms: processingDurationMs,
+    });
+  } catch (error) {
+    return handleError(error);
+  }
+}
+
+/**
+ * ocr_entity_extract_from_extractions - Create entities from structured extraction fields
+ */
+async function handleEntityExtractFromExtractions(params: Record<string, unknown>) {
+  try {
+    const input = validateInput(ExtractionEntityExtractInput, params);
+    const { db } = requireDatabase();
+    const conn = db.getConnection();
+
+    // Verify document exists
+    const doc = db.getDocument(input.document_id);
+    if (!doc) {
+      return formatResponse({ error: `Document not found: ${input.document_id}` });
+    }
+
+    // Create provenance record for extraction entity mapping
+    const now = new Date().toISOString();
+    const entityProvId = uuidv4();
+    const entityHash = computeHash(JSON.stringify({ document_id: input.document_id, source: 'extraction' }));
+
+    db.insertProvenance({
+      id: entityProvId,
+      type: ProvenanceType.ENTITY_EXTRACTION,
+      created_at: now,
+      processed_at: now,
+      source_file_created_at: null,
+      source_file_modified_at: null,
+      source_type: 'ENTITY_EXTRACTION',
+      source_path: doc.file_path,
+      source_id: doc.provenance_id,
+      root_document_id: doc.provenance_id,
+      location: null,
+      content_hash: entityHash,
+      input_hash: computeHash(input.document_id),
+      file_hash: doc.file_hash,
+      processor: 'extraction-entity-mapper',
+      processor_version: '1.0.0',
+      processing_params: { source: 'extraction' },
+      processing_duration_ms: null,
+      processing_quality_score: null,
+      parent_id: doc.provenance_id,
+      parent_ids: JSON.stringify([doc.provenance_id]),
+      chain_depth: 2,
+      chain_path: JSON.stringify(['DOCUMENT', 'OCR_RESULT', 'ENTITY_EXTRACTION']),
+    });
+
+    const startTime = Date.now();
+    const result = mapExtractionEntitiesToDB(conn, input.document_id, entityProvId);
+    const processingDurationMs = Date.now() - startTime;
+
+    return formatResponse({
+      document_id: input.document_id,
+      entities_created: result.entities_created,
+      extractions_processed: result.extractions_processed,
+      source: 'extraction',
+      provenance_id: entityProvId,
+      processing_duration_ms: processingDurationMs,
+    });
+  } catch (error) {
+    return handleError(error);
+  }
+}
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // TOOL DEFINITIONS
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -628,5 +764,15 @@ export const entityAnalysisTools: Record<string, ToolDefinition> = {
     description: 'Generate expert witness analysis of documents using Gemini AI thinking mode, including findings, timeline, conclusions, and reliability assessment',
     inputSchema: WitnessAnalysisInput.shape,
     handler: handleWitnessAnalysis,
+  },
+  'ocr_entity_extract_from_vlm': {
+    description: 'Extract named entities from VLM (Vision-Language Model) image descriptions for a document. Requires images to have been processed with VLM first.',
+    inputSchema: VLMEntityExtractInput.shape,
+    handler: handleEntityExtractFromVLM,
+  },
+  'ocr_entity_extract_from_extractions': {
+    description: 'Create entities from structured extraction fields (e.g., vendor_name -> organization, filing_date -> date). Requires ocr_extract_structured to have been run first.',
+    inputSchema: ExtractionEntityExtractInput.shape,
+    handler: handleEntityExtractFromExtractions,
   },
 };
