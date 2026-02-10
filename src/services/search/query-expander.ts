@@ -3,11 +3,14 @@
  *
  * Expands search queries with domain-specific synonyms.
  * When enabled, the query "injury" also searches for "wound", "trauma", etc.
+ * Also supports dynamic expansion via knowledge graph aliases.
  *
  * CRITICAL: NEVER use console.log() - stdout is reserved for JSON-RPC protocol.
  *
  * @module services/search/query-expander
  */
+
+import type Database from 'better-sqlite3';
 
 const SYNONYM_MAP: Record<string, string[]> = {
   // Legal terms
@@ -87,4 +90,49 @@ export function getExpandedTerms(query: string): {
  */
 export function getSynonymMap(): Record<string, string[]> {
   return { ...SYNONYM_MAP };
+}
+
+/**
+ * Expand query using both static synonyms AND knowledge graph aliases.
+ * Queries knowledge_nodes table for matching canonical names and aliases.
+ * Caps at 5 aliases per term to prevent query explosion.
+ *
+ * @param query - Original search query
+ * @param db - better-sqlite3 database connection
+ * @returns OR-joined expanded query string
+ */
+export function expandQueryWithKG(query: string, db: Database.Database): string {
+  const words = query.toLowerCase().split(/\s+/).filter(w => w.length > 0);
+  const expanded = new Set<string>(words);
+
+  // Static synonyms (existing behavior)
+  for (const word of words) {
+    const synonyms = SYNONYM_MAP[word];
+    if (synonyms) {
+      for (const syn of synonyms) expanded.add(syn);
+    }
+  }
+
+  // Dynamic KG aliases - look up each word in knowledge_nodes
+  const stmt = db.prepare(
+    'SELECT aliases, canonical_name FROM knowledge_nodes WHERE LOWER(canonical_name) = LOWER(?) OR LOWER(normalized_name) = LOWER(?)'
+  );
+  for (const word of words) {
+    const rows = stmt.all(word, word) as Array<{ aliases: string | null; canonical_name: string }>;
+    for (const row of rows) {
+      expanded.add(row.canonical_name.toLowerCase());
+      if (row.aliases) {
+        try {
+          const aliases = JSON.parse(row.aliases) as string[];
+          for (const alias of aliases.slice(0, 5)) {
+            expanded.add(alias.toLowerCase());
+          }
+        } catch {
+          // Malformed aliases JSON - skip
+        }
+      }
+    }
+  }
+
+  return [...expanded].join(' OR ');
 }

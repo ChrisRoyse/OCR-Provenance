@@ -23,7 +23,7 @@ import {
 import { v4 as uuidv4 } from 'uuid';
 
 /** Maximum entities per type group for fuzzy comparison (fail fast) */
-const MAX_FUZZY_GROUP_SIZE = 1000;
+const MAX_FUZZY_GROUP_SIZE = 5000;
 
 /** Minimum Sorensen-Dice score for automatic fuzzy merge */
 const FUZZY_MERGE_THRESHOLD = 0.85;
@@ -129,6 +129,15 @@ class UnionFind {
 }
 
 /**
+ * Cluster context for entity resolution boost.
+ * Maps document_id to cluster_id. Entities from the same cluster
+ * get a similarity boost since they are more likely to refer to the same entity.
+ */
+export interface ClusterContext {
+  clusterMap: Map<string, string>; // document_id -> cluster_id
+}
+
+/**
  * Compute type-specific similarity between two entities
  *
  * Uses different strategies depending on entity type:
@@ -139,50 +148,78 @@ class UnionFind {
  * - location: locationContains check (0 or 1) plus sorensenDice
  * - others: sorensenDice on normalized_text
  *
+ * Optionally applies a cluster boost (+0.08) when both entities come from
+ * documents in the same cluster.
+ *
  * @param a - First entity
  * @param b - Second entity
+ * @param clusterContext - Optional cluster context for same-cluster boost
  * @returns Similarity score between 0 and 1
  */
-function computeTypeSimilarity(a: Entity, b: Entity): number {
+export function computeTypeSimilarity(
+  a: Entity,
+  b: Entity,
+  clusterContext?: ClusterContext,
+): number {
   const textA = a.normalized_text;
   const textB = b.normalized_text;
+
+  let score: number;
 
   switch (a.entity_type) {
     case 'person': {
       const tokenSim = tokenSortedSimilarity(textA, textB);
       if (initialMatch(textA, textB)) {
         // Initial match gets a boost: at least 0.90
-        return Math.max(tokenSim, 0.90);
+        score = Math.max(tokenSim, 0.90);
+      } else {
+        score = tokenSim;
       }
-      return tokenSim;
+      break;
     }
 
     case 'organization': {
       const expandedA = expandAbbreviations(textA);
       const expandedB = expandAbbreviations(textB);
-      return sorensenDice(expandedA, expandedB);
+      score = sorensenDice(expandedA, expandedB);
+      break;
     }
 
     case 'case_number': {
       const normA = normalizeCaseNumber(textA);
       const normB = normalizeCaseNumber(textB);
-      return normA === normB ? 1.0 : 0.0;
+      score = normA === normB ? 1.0 : 0.0;
+      break;
     }
 
     case 'amount': {
-      return amountsMatch(textA, textB, 0.01) ? 1.0 : 0.0;
+      score = amountsMatch(textA, textB, 0.01) ? 1.0 : 0.0;
+      break;
     }
 
     case 'location': {
       if (locationContains(textA, textB)) {
-        return Math.max(sorensenDice(textA, textB), 0.85);
+        score = Math.max(sorensenDice(textA, textB), 0.85);
+      } else {
+        score = sorensenDice(textA, textB);
       }
-      return sorensenDice(textA, textB);
+      break;
     }
 
     default:
-      return sorensenDice(textA, textB);
+      score = sorensenDice(textA, textB);
   }
+
+  // Cluster boost: entities from same cluster are more likely to be the same entity
+  if (clusterContext) {
+    const clusterA = clusterContext.clusterMap.get(a.document_id);
+    const clusterB = clusterContext.clusterMap.get(b.document_id);
+    if (clusterA && clusterB && clusterA === clusterB) {
+      score = Math.min(1.0, score + 0.08);
+    }
+  }
+
+  return score;
 }
 
 /**
@@ -200,6 +237,50 @@ function groupByEntityType(entities: Entity[]): Map<EntityType, Entity[]> {
     groups.get(entity.entity_type)!.push(entity);
   }
   return groups;
+}
+
+/**
+ * Sub-block entity groups within a type for more efficient pairwise comparison.
+ *
+ * Instead of comparing all N exact groups pairwise (O(N^2)), partition them
+ * into blocks by prefix (first 3 chars of normalized_text) and, for persons,
+ * additionally by each name token. This ensures that "john smith" and
+ * "smith, john" land in the same block via the shared token "smith" or "john".
+ *
+ * @param exactGroupList - Array of exact match groups (each group is Entity[])
+ * @returns Map of block key to array of indices into exactGroupList
+ */
+function subBlockEntities(
+  exactGroupList: Entity[][],
+): Map<string, Set<number>> {
+  const blocks = new Map<string, Set<number>>();
+
+  for (let idx = 0; idx < exactGroupList.length; idx++) {
+    const representative = exactGroupList[idx][0];
+    const normalized = representative.normalized_text;
+
+    // Primary block: first 3 chars (lowercased)
+    const prefix = normalized.slice(0, 3).toLowerCase();
+
+    // Add to prefix block
+    if (!blocks.has(prefix)) blocks.set(prefix, new Set());
+    blocks.get(prefix)!.add(idx);
+
+    // Secondary blocking for persons: add a block for each name token.
+    // This handles "john smith" vs "smith, john" (share token blocks "john" and "smith")
+    if (representative.entity_type === 'person') {
+      // Remove punctuation like commas before tokenizing
+      const cleaned = normalized.replace(/[,.']/g, ' ').trim();
+      const tokens = cleaned.split(/\s+/).filter(t => t.length > 1);
+      for (const token of tokens) {
+        const tokenKey = `token:${token.toLowerCase()}`;
+        if (!blocks.has(tokenKey)) blocks.set(tokenKey, new Set());
+        blocks.get(tokenKey)!.add(idx);
+      }
+    }
+  }
+
+  return blocks;
 }
 
 /**
@@ -239,6 +320,7 @@ function buildNode(groupEntities: Entity[], provenanceId: string): KnowledgeNode
     aliases,
     document_count: uniqueDocs.size,
     mention_count: groupEntities.length,
+    edge_count: 0,
     avg_confidence: Math.round(avgConfidence * 10000) / 10000,
     metadata: null,
     provenance_id: provenanceId,
@@ -253,12 +335,14 @@ function buildNode(groupEntities: Entity[], provenanceId: string): KnowledgeNode
  * @param node - The knowledge node
  * @param groupEntities - Entities linked to this node
  * @param similarityScores - Map of entity ID to similarity score (1.0 for exact matches)
+ * @param resolutionMethod - The method used to resolve these entities ('exact', 'fuzzy', 'ai', 'singleton')
  * @returns Array of NodeEntityLink records
  */
 function buildLinks(
   node: KnowledgeNode,
   groupEntities: Entity[],
   similarityScores: Map<string, number>,
+  resolutionMethod: string,
 ): NodeEntityLink[] {
   const now = new Date().toISOString();
   return groupEntities.map(entity => ({
@@ -267,6 +351,7 @@ function buildLinks(
     entity_id: entity.id,
     document_id: entity.document_id,
     similarity_score: similarityScores.get(entity.id) ?? 1.0,
+    resolution_method: resolutionMethod,
     created_at: now,
   }));
 }
@@ -296,6 +381,7 @@ export async function resolveEntities(
   geminiClassifier?: (
     candidates: Array<{ entityA: Entity; entityB: Entity }>
   ) => Promise<Array<{ same_entity: boolean; confidence: number }>>,
+  clusterContext?: ClusterContext,
 ): Promise<ResolutionResult> {
   const allNodes: KnowledgeNode[] = [];
   const allLinks: NodeEntityLink[] = [];
@@ -336,12 +422,15 @@ export async function resolveEntities(
     if (mode === 'exact') {
       // In exact mode, each exact group becomes a node
       for (const [, group] of exactGroups) {
+        const resMethod = group.length === 1 ? 'singleton' : 'exact';
         const node = buildNode(group, provenanceId);
+        // Store resolution algorithm in node metadata
+        node.metadata = JSON.stringify({ resolution_algorithm: resMethod });
         const scores = new Map<string, number>();
         for (const e of group) {
           scores.set(e.id, 1.0);
         }
-        const links = buildLinks(node, group, scores);
+        const links = buildLinks(node, group, scores, resMethod);
         allNodes.push(node);
         allLinks.push(...links);
       }
@@ -367,22 +456,39 @@ export async function resolveEntities(
     // Use the first entity of each group as representative
     const aiCandidates: Array<{ i: number; j: number; entityA: Entity; entityB: Entity }> = [];
 
-    for (let i = 0; i < exactGroupList.length; i++) {
-      for (let j = i + 1; j < exactGroupList.length; j++) {
-        // Already in same group? Skip
-        if (uf.find(i) === uf.find(j)) continue;
+    // Sub-block entities for efficient comparison (avoids full O(N^2))
+    const blocks = subBlockEntities(exactGroupList);
 
-        const repA = exactGroupList[i][0];
-        const repB = exactGroupList[j][0];
+    // Collect unique pairs to compare from overlapping blocks
+    const comparedPairs = new Set<string>();
 
-        const sim = computeTypeSimilarity(repA, repB);
+    for (const [, blockIndices] of blocks) {
+      const indices = [...blockIndices];
+      for (let a = 0; a < indices.length; a++) {
+        for (let b = a + 1; b < indices.length; b++) {
+          const i = indices[a];
+          const j = indices[b];
 
-        if (sim >= FUZZY_MERGE_THRESHOLD) {
-          uf.union(i, j);
-          // Count all entities in both groups as fuzzy matched
-          stats.fuzzy_matches += exactGroupList[i].length + exactGroupList[j].length;
-        } else if (mode === 'ai' && sim >= AI_LOWER_THRESHOLD && sim < FUZZY_MERGE_THRESHOLD) {
-          aiCandidates.push({ i, j, entityA: repA, entityB: repB });
+          // Canonical ordering for dedup
+          const pairKey = i < j ? `${i}:${j}` : `${j}:${i}`;
+          if (comparedPairs.has(pairKey)) continue;
+          comparedPairs.add(pairKey);
+
+          // Already in same group? Skip
+          if (uf.find(i) === uf.find(j)) continue;
+
+          const repA = exactGroupList[i][0];
+          const repB = exactGroupList[j][0];
+
+          const sim = computeTypeSimilarity(repA, repB, clusterContext);
+
+          if (sim >= FUZZY_MERGE_THRESHOLD) {
+            uf.union(i, j);
+            // Count all entities in both groups as fuzzy matched
+            stats.fuzzy_matches += exactGroupList[i].length + exactGroupList[j].length;
+          } else if (mode === 'ai' && sim >= AI_LOWER_THRESHOLD && sim < FUZZY_MERGE_THRESHOLD) {
+            aiCandidates.push({ i, j, entityA: repA, entityB: repB });
+          }
         }
       }
     }
@@ -412,16 +518,51 @@ export async function resolveEntities(
     }
 
     // Build final merged groups from Union-Find
+    // Track which groups were merged by fuzzy or AI for resolution_method
+    const fuzzyMergedRoots = new Set<number>();
+    const aiMergedRoots = new Set<number>();
+
+    // Re-check pairwise to determine which merge method was used
+    for (let i = 0; i < exactGroupList.length; i++) {
+      for (let j = i + 1; j < exactGroupList.length; j++) {
+        if (uf.find(i) === uf.find(j)) {
+          const repA = exactGroupList[i][0];
+          const repB = exactGroupList[j][0];
+          const sim = computeTypeSimilarity(repA, repB, clusterContext);
+          const root = uf.find(i);
+          if (sim >= FUZZY_MERGE_THRESHOLD) {
+            fuzzyMergedRoots.add(root);
+          } else if (sim >= AI_LOWER_THRESHOLD) {
+            aiMergedRoots.add(root);
+          }
+        }
+      }
+    }
+
     const mergedGroups = uf.getGroups();
 
-    for (const [, memberIndices] of mergedGroups) {
+    for (const [rootIdx, memberIndices] of mergedGroups) {
       // Flatten all entities from merged exact groups
       const groupEntities: Entity[] = [];
       for (const idx of memberIndices) {
         groupEntities.push(...exactGroupList[idx]);
       }
 
+      // Determine resolution method: ai > fuzzy > exact > singleton
+      let resMethod: string;
+      if (aiMergedRoots.has(rootIdx)) {
+        resMethod = 'ai';
+      } else if (fuzzyMergedRoots.has(rootIdx)) {
+        resMethod = 'fuzzy';
+      } else if (memberIndices.length > 1 || groupEntities.length > 1) {
+        resMethod = 'exact';
+      } else {
+        resMethod = 'singleton';
+      }
+
       const node = buildNode(groupEntities, provenanceId);
+      // Store resolution algorithm in node metadata
+      node.metadata = JSON.stringify({ resolution_algorithm: resMethod });
 
       // Compute similarity scores for each entity relative to the canonical
       const scores = new Map<string, number>();
@@ -433,11 +574,12 @@ export async function resolveEntities(
             // Use a proxy with the canonical normalized_text
             { ...entity, normalized_text: node.normalized_name } as Entity,
             entity,
+            clusterContext,
           ));
         }
       }
 
-      const links = buildLinks(node, groupEntities, scores);
+      const links = buildLinks(node, groupEntities, scores, resMethod);
       allNodes.push(node);
       allLinks.push(...links);
     }

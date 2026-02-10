@@ -277,6 +277,8 @@ export const SearchSemanticInput = z.object({
   limit: z.number().int().min(1).max(100).default(10),
   similarity_threshold: z.number().min(0).max(1).default(0.7),
   include_provenance: z.boolean().default(false),
+  include_entities: z.boolean().default(false)
+    .describe('Include knowledge graph entities for each result'),
   document_filter: z.array(z.string()).optional(),
   metadata_filter: MetadataFilter,
   min_quality_score: z.number().min(0).max(5).optional()
@@ -292,6 +294,8 @@ export const SearchInput = z.object({
   phrase_search: z.boolean().default(false),
   include_highlight: z.boolean().default(true),
   include_provenance: z.boolean().default(false),
+  include_entities: z.boolean().default(false)
+    .describe('Include knowledge graph entities for each result'),
   document_filter: z.array(z.string()).optional(),
   metadata_filter: MetadataFilter,
   min_quality_score: z.number().min(0).max(5).optional()
@@ -308,6 +312,8 @@ export const SearchHybridInput = z.object({
   semantic_weight: z.number().min(0).max(2).default(1.0),
   rrf_k: z.number().int().min(1).max(100).default(60),
   include_provenance: z.boolean().default(false),
+  include_entities: z.boolean().default(false)
+    .describe('Include knowledge graph entities for each result'),
   document_filter: z.array(z.string()).optional(),
   metadata_filter: MetadataFilter,
   min_quality_score: z.number().min(0).max(5).optional()
@@ -316,6 +322,10 @@ export const SearchHybridInput = z.object({
     .describe('Expand query with domain-specific legal/medical synonyms'),
   rerank: z.boolean().default(false)
     .describe('Re-rank results using Gemini AI for contextual relevance scoring'),
+  entity_filter: z.object({
+    entity_names: z.array(z.string()).optional(),
+    entity_types: z.array(z.string()).optional(),
+  }).optional().describe('Filter results by knowledge graph entities'),
 });
 
 /**

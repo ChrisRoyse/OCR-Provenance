@@ -45,12 +45,14 @@ const RERANK_SCHEMA = {
  * @param query - The original search query
  * @param results - Search results with original_text field
  * @param maxResults - Maximum results to return after re-ranking (default: 10)
+ * @param entityContext - Optional map of result index -> entity info for enriched prompts
  * @returns Re-ranked results with scores and reasoning
  */
 export async function rerankResults(
   query: string,
   results: Array<{ original_text: string; [key: string]: unknown }>,
-  maxResults: number = 10
+  maxResults: number = 10,
+  entityContext?: Map<number, Array<{ entity_type: string; canonical_name: string; document_count: number }>>,
 ): Promise<Array<{ original_index: number; relevance_score: number; reasoning: string }>> {
   if (results.length === 0) return [];
 
@@ -58,7 +60,7 @@ export async function rerankResults(
   const toRerank = results.slice(0, Math.min(results.length, 20));
 
   const excerpts = toRerank.map(r => String(r.original_text));
-  const prompt = buildRerankPrompt(query, excerpts);
+  const prompt = buildRerankPrompt(query, excerpts, entityContext);
 
   const client = new GeminiClient();
   const response = await client.fast(prompt, RERANK_SCHEMA);
@@ -83,18 +85,31 @@ export async function rerankResults(
  *
  * @param query - Search query
  * @param excerpts - Array of text excerpts
+ * @param entityContext - Optional map of excerpt index -> entity info for enriched prompts
  * @returns Formatted prompt string
  */
 export function buildRerankPrompt(
   query: string,
-  excerpts: string[]
+  excerpts: string[],
+  entityContext?: Map<number, Array<{ entity_type: string; canonical_name: string; document_count: number }>>,
 ): string {
+  const formattedExcerpts = excerpts.map((text, i) => {
+    let entry = `[${i}] ${text.slice(0, 500)}`;
+    if (entityContext) {
+      const entities = entityContext.get(i);
+      if (entities && entities.length > 0) {
+        entry += `\n  Entities: ${entities.map(e => `${e.entity_type}: "${e.canonical_name}" (${e.document_count} docs)`).join(', ')}`;
+      }
+    }
+    return entry;
+  }).join('\n\n');
+
   return `You are a legal document search relevance expert. Given a search query and a list of document excerpts, score each excerpt's relevance to the query on a scale of 0-10.
 
 Query: "${query}"
 
 Excerpts:
-${excerpts.map((text, i) => `[${i}] ${text.slice(0, 500)}`).join('\n\n')}
+${formattedExcerpts}
 
 Score each excerpt's relevance to the query. Return a JSON object with a "rankings" array containing objects with "index" (number), "relevance_score" (0-10), and "reasoning" (string).`;
 }

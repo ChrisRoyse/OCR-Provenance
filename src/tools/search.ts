@@ -32,8 +32,9 @@ import {
 } from './shared.js';
 import { BM25SearchService } from '../services/search/bm25.js';
 import { RRFFusion } from '../services/search/fusion.js';
-import { expandQuery, getExpandedTerms } from '../services/search/query-expander.js';
+import { expandQueryWithKG, getExpandedTerms } from '../services/search/query-expander.js';
 import { rerankResults } from '../services/search/reranker.js';
+import { getEntitiesForChunks, getDocumentIdsForEntities } from '../services/storage/database/knowledge-graph-operations.js';
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // TYPE DEFINITIONS
@@ -149,6 +150,15 @@ export async function handleSearchSemantic(
       documentFilter,
     });
 
+    // Entity enrichment: collect chunk IDs and fetch entities if requested
+    let entityMap: Map<string, Array<{ node_id: string; entity_type: string; canonical_name: string; confidence: number; document_count: number }>> | undefined;
+    if (input.include_entities) {
+      const chunkIds = results.map(r => r.chunk_id).filter((id): id is string => id != null);
+      if (chunkIds.length > 0) {
+        entityMap = getEntitiesForChunks(db.getConnection(), chunkIds);
+      }
+    }
+
     // Format results with optional provenance
     const formattedResults = results.map(r => {
       // L-7 fix: Include source_file_hash, content_hash, provenance_id from VectorSearchResult.
@@ -176,6 +186,10 @@ export async function handleSearchSemantic(
 
       if (input.include_provenance) {
         result.provenance = formatProvenanceChain(db, r.provenance_id);
+      }
+
+      if (entityMap && r.chunk_id) {
+        result.entities_mentioned = entityMap.get(r.chunk_id) ?? [];
       }
 
       return result;
@@ -249,9 +263,24 @@ export async function handleSearch(
     // Re-rank after merge
     const rankedResults = allResults.map((r, i) => ({ ...r, rank: i + 1 }));
 
+    // Entity enrichment: collect chunk IDs and fetch entities if requested
+    let bm25EntityMap: Map<string, Array<{ node_id: string; entity_type: string; canonical_name: string; confidence: number; document_count: number }>> | undefined;
+    if (input.include_entities) {
+      const chunkIds = rankedResults.map(r => r.chunk_id).filter((id): id is string => id != null);
+      if (chunkIds.length > 0) {
+        bm25EntityMap = getEntitiesForChunks(db.getConnection(), chunkIds);
+      }
+    }
+
     const results = rankedResults.map(r => {
-      if (!input.include_provenance) return r;
-      return { ...r, provenance_chain: formatProvenanceChain(db, r.provenance_id) };
+      const base: Record<string, unknown> = { ...r };
+      if (input.include_provenance) {
+        base.provenance_chain = formatProvenanceChain(db, r.provenance_id);
+      }
+      if (bm25EntityMap && r.chunk_id) {
+        base.entities_mentioned = bm25EntityMap.get(r.chunk_id) ?? [];
+      }
+      return base;
     });
 
     // Compute source counts from final merged results (not pre-merge candidates)
@@ -291,13 +320,64 @@ export async function handleSearchHybrid(
     const input = validateInput(SearchHybridInput, params);
     const { db, vector } = requireDatabase();
     const limit = input.limit ?? 10;
+    const conn = db.getConnection();
 
     // Resolve metadata filter to document IDs, then chain through quality filter
-    const documentFilter = resolveQualityFilter(db, input.min_quality_score,
+    let documentFilter = resolveQualityFilter(db, input.min_quality_score,
       resolveMetadataFilter(db, input.metadata_filter, input.document_filter));
 
+    // P2.4: Entity filter - resolve entity names/types to document IDs
+    if (input.entity_filter) {
+      const entityDocIds = getDocumentIdsForEntities(
+        conn,
+        input.entity_filter.entity_names,
+        input.entity_filter.entity_types,
+      );
+      if (entityDocIds.length === 0) {
+        // Entity filter matched no documents - return empty results
+        return formatResponse(successResult({
+          query: input.query,
+          search_type: 'rrf_hybrid',
+          config: {
+            bm25_weight: input.bm25_weight,
+            semantic_weight: input.semantic_weight,
+            rrf_k: input.rrf_k,
+          },
+          results: [],
+          total: 0,
+          sources: { bm25_chunk_count: 0, bm25_vlm_count: 0, bm25_extraction_count: 0, semantic_count: 0 },
+          entity_filter_applied: true,
+          entity_filter_document_count: 0,
+        }));
+      }
+      // Intersect with existing document filter
+      if (documentFilter && documentFilter.length > 0) {
+        const entitySet = new Set(entityDocIds);
+        documentFilter = documentFilter.filter(id => entitySet.has(id));
+        if (documentFilter.length === 0) {
+          return formatResponse(successResult({
+            query: input.query,
+            search_type: 'rrf_hybrid',
+            config: {
+              bm25_weight: input.bm25_weight,
+              semantic_weight: input.semantic_weight,
+              rrf_k: input.rrf_k,
+            },
+            results: [],
+            total: 0,
+            sources: { bm25_chunk_count: 0, bm25_vlm_count: 0, bm25_extraction_count: 0, semantic_count: 0 },
+            entity_filter_applied: true,
+            entity_filter_document_count: 0,
+          }));
+        }
+      } else {
+        documentFilter = entityDocIds;
+      }
+    }
+
     // SE-1: Expand query with domain synonyms if requested (BM25 only -- semantic handles meaning natively)
-    const bm25Query = input.expand_query ? expandQuery(input.query) : input.query;
+    // P2.1: Use KG-powered expansion when available for richer alias coverage
+    const bm25Query = input.expand_query ? expandQueryWithKG(input.query, conn) : input.query;
     const expansionInfo = input.expand_query ? getExpandedTerms(input.query) : undefined;
 
     // Get BM25 results (chunks + VLM + extractions)
@@ -396,14 +476,39 @@ export async function handleSearchHybrid(
     const fusionLimit = input.rerank ? Math.max(limit * 2, 20) : limit;
     const rawResults = fusion.fuse(bm25Ranked, semanticRanked, fusionLimit);
 
+    // P2.2: Entity enrichment - collect chunk IDs and fetch entities
+    let hybridEntityMap: Map<string, Array<{ node_id: string; entity_type: string; canonical_name: string; confidence: number; document_count: number }>> | undefined;
+    if (input.include_entities || input.rerank) {
+      const chunkIds = rawResults.map(r => r.chunk_id).filter((id): id is string => id != null);
+      if (chunkIds.length > 0) {
+        hybridEntityMap = getEntitiesForChunks(conn, chunkIds);
+      }
+    }
+
     // SE-2: Re-rank results using Gemini AI if requested
     let finalResults: Array<Record<string, unknown>>;
     let rerankInfo: Record<string, unknown> | undefined;
 
     if (input.rerank && rawResults.length > 0) {
+      // P2.3: Build entity context map for reranking (index-based for the reranker)
+      let entityContextForRerank: Map<number, Array<{ entity_type: string; canonical_name: string; document_count: number }>> | undefined;
+      if (hybridEntityMap) {
+        entityContextForRerank = new Map();
+        rawResults.forEach((r, i) => {
+          if (r.chunk_id && hybridEntityMap!.has(r.chunk_id)) {
+            const entities = hybridEntityMap!.get(r.chunk_id)!;
+            entityContextForRerank!.set(i, entities.map(e => ({
+              entity_type: e.entity_type,
+              canonical_name: e.canonical_name,
+              document_count: e.document_count,
+            })));
+          }
+        });
+      }
+
       // Cast rawResults to the shape rerankResults expects (spread drops the index signature issue)
       const rerankInput = rawResults.map(r => ({ ...r }));
-      const reranked = await rerankResults(input.query, rerankInput, limit);
+      const reranked = await rerankResults(input.query, rerankInput, limit, entityContextForRerank);
       finalResults = reranked.map(r => {
         const original = rawResults[r.original_index];
         const base: Record<string, unknown> = {
@@ -414,10 +519,14 @@ export async function handleSearchHybrid(
         if (input.include_provenance) {
           base.provenance_chain = formatProvenanceChain(db, original.provenance_id);
         }
+        if (input.include_entities && hybridEntityMap && original.chunk_id) {
+          base.entities_mentioned = hybridEntityMap.get(original.chunk_id) ?? [];
+        }
         return base;
       });
       rerankInfo = {
         reranked: true,
+        entity_aware: !!entityContextForRerank && entityContextForRerank.size > 0,
         candidates_evaluated: Math.min(rawResults.length, 20),
         results_returned: finalResults.length,
       };
@@ -426,6 +535,9 @@ export async function handleSearchHybrid(
         const base: Record<string, unknown> = { ...r };
         if (input.include_provenance) {
           base.provenance_chain = formatProvenanceChain(db, r.provenance_id);
+        }
+        if (input.include_entities && hybridEntityMap && r.chunk_id) {
+          base.entities_mentioned = hybridEntityMap.get(r.chunk_id) ?? [];
         }
         return base;
       });
@@ -698,6 +810,7 @@ export const searchTools: Record<string, ToolDefinition> = {
       phrase_search: z.boolean().default(false).describe('Treat as exact phrase'),
       include_highlight: z.boolean().default(true).describe('Include highlighted snippets'),
       include_provenance: z.boolean().default(false).describe('Include provenance chain'),
+      include_entities: z.boolean().default(false).describe('Include knowledge graph entities for each result'),
       document_filter: z.array(z.string()).optional().describe('Filter by document IDs'),
       metadata_filter: z.object({
         doc_title: z.string().optional(),
@@ -716,6 +829,7 @@ export const searchTools: Record<string, ToolDefinition> = {
       limit: z.number().int().min(1).max(100).default(10).describe('Maximum results to return'),
       similarity_threshold: z.number().min(0).max(1).default(0.7).describe('Minimum similarity score (0-1)'),
       include_provenance: z.boolean().default(false).describe('Include provenance chain in results'),
+      include_entities: z.boolean().default(false).describe('Include knowledge graph entities for each result'),
       document_filter: z.array(z.string()).optional().describe('Filter by document IDs'),
       metadata_filter: z.object({
         doc_title: z.string().optional(),
@@ -736,6 +850,7 @@ export const searchTools: Record<string, ToolDefinition> = {
       semantic_weight: z.number().min(0).max(2).default(1.0).describe('Semantic result weight'),
       rrf_k: z.number().int().min(1).max(100).default(60).describe('RRF smoothing constant'),
       include_provenance: z.boolean().default(false).describe('Include provenance chain'),
+      include_entities: z.boolean().default(false).describe('Include knowledge graph entities for each result'),
       document_filter: z.array(z.string()).optional().describe('Filter by document IDs'),
       metadata_filter: z.object({
         doc_title: z.string().optional(),
@@ -745,9 +860,13 @@ export const searchTools: Record<string, ToolDefinition> = {
       min_quality_score: z.number().min(0).max(5).optional()
         .describe('Minimum OCR quality score (0-5)'),
       expand_query: z.boolean().default(false)
-        .describe('Expand query with domain-specific legal/medical synonyms'),
+        .describe('Expand query with domain-specific legal/medical synonyms and knowledge graph aliases'),
       rerank: z.boolean().default(false)
-        .describe('Re-rank results using Gemini AI for contextual relevance scoring'),
+        .describe('Re-rank results using Gemini AI for contextual relevance scoring (entity-aware when KG data available)'),
+      entity_filter: z.object({
+        entity_names: z.array(z.string()).optional(),
+        entity_types: z.array(z.string()).optional(),
+      }).optional().describe('Filter results by knowledge graph entities'),
     },
     handler: handleSearchHybrid,
   },

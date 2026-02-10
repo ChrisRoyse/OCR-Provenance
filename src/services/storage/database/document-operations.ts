@@ -6,6 +6,7 @@
  */
 
 import Database from 'better-sqlite3';
+import { v4 as uuidv4 } from 'uuid';
 import { Document, DocumentStatus } from '../../../models/document.js';
 import {
   DatabaseError,
@@ -15,7 +16,8 @@ import {
 } from './types.js';
 import { runWithForeignKeyCheck } from './helpers.js';
 import { rowToDocument } from './converters.js';
-import { cleanupGraphForDocument } from './knowledge-graph-operations.js';
+import { cleanupGraphForDocument, updateKnowledgeNode } from './knowledge-graph-operations.js';
+import { computeHash } from '../../../utils/hash.js';
 
 /**
  * Insert a new document
@@ -370,6 +372,45 @@ function deleteDerivedRecords(db: Database.Database, documentId: string, caller:
 }
 
 /**
+ * Get or create the synthetic ORPHANED_ROOT provenance record.
+ * Used to re-parent provenance records when their original document is deleted
+ * but surviving KG nodes or clusters still reference them (P1.4).
+ *
+ * @param db - Database connection
+ * @returns The ID of the ORPHANED_ROOT provenance record
+ */
+function getOrCreateOrphanedRoot(db: Database.Database): string {
+  const existing = db.prepare(
+    "SELECT id FROM provenance WHERE root_document_id = 'ORPHANED_ROOT' AND type = 'DOCUMENT' LIMIT 1",
+  ).get() as { id: string } | undefined;
+
+  if (existing) {
+    return existing.id;
+  }
+
+  // Create synthetic orphaned root provenance
+  const id = uuidv4();
+  const now = new Date().toISOString();
+  const contentHash = computeHash('ORPHANED_ROOT');
+
+  db.prepare(`
+    INSERT INTO provenance (
+      id, type, created_at, processed_at, source_type, source_id,
+      root_document_id, content_hash, input_hash, processor,
+      processor_version, processing_params, parent_id, parent_ids,
+      chain_depth, chain_path
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    id, 'DOCUMENT', now, now, 'FILE', null,
+    'ORPHANED_ROOT', contentHash, null, 'system',
+    '1.0.0', '{}', null, '[]',
+    0, '["DOCUMENT"]',
+  );
+
+  return id;
+}
+
+/**
  * Delete a document and all related data (CASCADE DELETE)
  *
  * @param db - Database connection
@@ -405,19 +446,43 @@ export function deleteDocument(
     )
     .all(doc.provenance_id) as { id: string }[];
 
+  // P1.4: Get or create orphaned root provenance for re-parenting
+  const orphanedRootId = getOrCreateOrphanedRoot(db);
+
   const deleteProvStmt = db.prepare('DELETE FROM provenance WHERE id = ?');
   const clusterRefCheck = db.prepare('SELECT COUNT(*) as cnt FROM clusters WHERE provenance_id = ?');
   const kgNodeRefCheck = db.prepare('SELECT COUNT(*) as cnt FROM knowledge_nodes WHERE provenance_id = ?');
-  const detachProvStmt = db.prepare('UPDATE provenance SET source_id = NULL, parent_id = NULL WHERE id = ?');
+  const reparentProvStmt = db.prepare('UPDATE provenance SET source_id = NULL, parent_id = ?, root_document_id = ? WHERE id = ?');
+  const getKgNodesForProv = db.prepare('SELECT id, metadata FROM knowledge_nodes WHERE provenance_id = ?');
   for (const { id: provId } of provenanceIds) {
     // Skip CLUSTERING provenance still referenced by clusters (NOT NULL FK).
     // Skip KNOWLEDGE_GRAPH provenance still referenced by surviving knowledge_nodes (NOT NULL FK).
-    // Detach from parent chain so remaining deletes don't hit FK violations.
+    // Re-parent to orphaned root so provenance chain is preserved (P1.4).
     // These are cleaned up when the cluster run / knowledge graph is deleted.
     const clusterRefs = (clusterRefCheck.get(provId) as { cnt: number }).cnt;
     const kgNodeRefs = (kgNodeRefCheck.get(provId) as { cnt: number }).cnt;
     if (clusterRefs > 0 || kgNodeRefs > 0) {
-      detachProvStmt.run(provId);
+      reparentProvStmt.run(orphanedRootId, 'ORPHANED_ROOT', provId);
+
+      // Store re-parenting info in KG node metadata
+      if (kgNodeRefs > 0) {
+        const kgNodes = getKgNodesForProv.all(provId) as { id: string; metadata: string | null }[];
+        for (const kgNode of kgNodes) {
+          const existingMeta = kgNode.metadata ? (() => { try { return JSON.parse(kgNode.metadata!); } catch { return {}; } })() : {};
+          updateKnowledgeNode(db, kgNode.id, {
+            metadata: JSON.stringify({
+              ...existingMeta,
+              reparented: {
+                original_document_id: id,
+                original_root_document_id: doc.provenance_id,
+                orphaned_root_id: orphanedRootId,
+                reparented_at: new Date().toISOString(),
+              },
+            }),
+            updated_at: new Date().toISOString(),
+          });
+        }
+      }
       continue;
     }
     deleteProvStmt.run(provId);

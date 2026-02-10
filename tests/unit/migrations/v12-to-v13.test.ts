@@ -433,7 +433,7 @@ describe('Migration v12 to v13', () => {
     migrateToLatest(db);
 
     const version = (db.prepare('SELECT version FROM schema_version').get() as { version: number }).version;
-    expect(version).toBe(16);
+    expect(version).toBe(17);
   });
 
   it.skipIf(!sqliteVecAvailable)('preserves existing provenance data', () => {
@@ -463,7 +463,7 @@ describe('Migration v12 to v13', () => {
     expect(() => migrateToLatest(db)).not.toThrow();
 
     const version = (db.prepare('SELECT version FROM schema_version').get() as { version: number }).version;
-    expect(version).toBe(16);
+    expect(version).toBe(17);
   });
 
   it.skipIf(!sqliteVecAvailable)('enforces entity_type CHECK constraint', () => {

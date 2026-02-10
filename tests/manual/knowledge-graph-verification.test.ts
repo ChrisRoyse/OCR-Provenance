@@ -774,12 +774,17 @@ describe('Knowledge Graph Manual Verification', () => {
       }
 
       expect(provRecords.length).toBeGreaterThanOrEqual(1);
+      // Main provenance uses 'knowledge-graph-builder', per-node provenance uses 'entity-resolution'
+      const validProcessors = ['knowledge-graph-builder', 'entity-resolution'];
       for (const prov of provRecords) {
-        expect(prov.processor).toBe('knowledge-graph-builder');
+        expect(validProcessors).toContain(prov.processor);
         expect(prov.processor_version).toBe('1.0.0');
         expect(prov.source_type).toBe('KNOWLEDGE_GRAPH');
         expect(prov.content_hash).toBeTruthy();
       }
+      // At least one main provenance record must exist
+      const mainRecords = provRecords.filter((p: Record<string, unknown>) => p.processor === 'knowledge-graph-builder');
+      expect(mainRecords.length).toBeGreaterThanOrEqual(1);
     });
 
     it('all knowledge_nodes should reference valid provenance', () => {
