@@ -63,8 +63,7 @@ import { incrementalBuildGraph } from '../services/knowledge-graph/incremental-b
 import { buildKnowledgeGraph } from '../services/knowledge-graph/graph-service.js';
 import {
   normalizeEntity,
-  callGeminiForEntities,
-  splitWithOverlap,
+  extractEntitiesFromText,
   mapEntityToChunk,
   MAX_CHARS_PER_CALL,
   SEGMENT_OVERLAP_CHARS,
@@ -846,21 +845,8 @@ async function autoExtractEntitiesForDocument(
   const client = new GeminiClient();
   const startTime = Date.now();
 
-  const typeFilter = `Extract all entity types: ${ENTITY_TYPES.join(', ')}.`;
   const text = ocrResult.extracted_text;
-
-  let allRawEntities: Array<{ type: string; raw_text: string; confidence: number }>;
-  if (text.length <= MAX_CHARS_PER_CALL) {
-    allRawEntities = await callGeminiForEntities(client, text, typeFilter);
-  } else {
-    console.error(`[INFO] Auto-pipeline: document ${docId} too large (${text.length} chars), using adaptive batching`);
-    const batches = splitWithOverlap(text, MAX_CHARS_PER_CALL, SEGMENT_OVERLAP_CHARS);
-    allRawEntities = [];
-    for (const batch of batches) {
-      const entities = await callGeminiForEntities(client, batch, typeFilter);
-      allRawEntities.push(...entities);
-    }
-  }
+  const allRawEntities = await extractEntitiesFromText(client, text, []);
 
   const textLength = text.length;
   const apiCalls = textLength <= MAX_CHARS_PER_CALL

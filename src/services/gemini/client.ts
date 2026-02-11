@@ -94,23 +94,12 @@ export class GeminiClient {
    * @param schema - Optional JSON response schema
    * @param options - Optional overrides (e.g. maxOutputTokens for large entity extraction)
    */
-  async fast(prompt: string, schema?: object, options?: { maxOutputTokens?: number }): Promise<GeminiResponse> {
+  async fast(prompt: string, schema?: object, options?: { maxOutputTokens?: number; requestTimeout?: number }): Promise<GeminiResponse> {
     return this.generate([{ text: prompt }], {
       ...GENERATION_PRESETS.fast,
       maxOutputTokens: options?.maxOutputTokens ?? GENERATION_PRESETS.fast.maxOutputTokens,
       responseSchema: schema,
-    });
-  }
-
-  /**
-   * Fast text mode: temperature 0.0, plain text output (no JSON schema constraint).
-   * Use when schema-constrained JSON causes excessive thinking time on Gemini 3.
-   * Caller is responsible for parsing JSON from the response text.
-   */
-  async fastText(prompt: string, options?: { maxOutputTokens?: number }): Promise<GeminiResponse> {
-    return this.generate([{ text: prompt }], {
-      temperature: 0.0,
-      maxOutputTokens: options?.maxOutputTokens ?? GENERATION_PRESETS.fast.maxOutputTokens,
+      requestTimeout: options?.requestTimeout,
     });
   }
 
@@ -218,10 +207,18 @@ export class GeminiClient {
 
     for (let attempt = 0; attempt < maxAttempts; attempt++) {
       try {
-        const result = await this.model.generateContent({
-          contents: [{ role: 'user', parts }],
-          generationConfig: this.buildGenerationConfig(options),
-        });
+        // Estimate input size for logging
+        const inputChars = parts.reduce((sum, p) => sum + ('text' in p ? (p.text?.length ?? 0) : 0), 0);
+        console.error(`[GeminiClient] Attempt ${attempt + 1}/${maxAttempts}: ${inputChars} input chars, maxOutputTokens=${options.maxOutputTokens ?? 'default'}`);
+
+        const timeoutMs = options.requestTimeout ?? 120_000;
+        const result = await this.model.generateContent(
+          {
+            contents: [{ role: 'user', parts }],
+            generationConfig: this.buildGenerationConfig(options),
+          },
+          { timeout: timeoutMs },
+        );
 
         const text = result.response.text();
         const usageMetadata = result.response.usageMetadata;
@@ -248,7 +245,11 @@ export class GeminiClient {
         lastError = error as Error;
         const errorMessage = lastError.message || String(error);
 
-        console.warn(`[GeminiClient] Attempt ${attempt + 1}/${maxAttempts} failed: ${errorMessage}`);
+        // Log detailed cause chain for network errors
+        const cause = (error as { cause?: Error })?.cause;
+        const causeMsg = cause ? ` cause=${cause.message || cause.constructor?.name}` : '';
+        const causeCode = (cause as { code?: string })?.code ? ` code=${(cause as { code?: string }).code}` : '';
+        console.error(`[GeminiClient] Attempt ${attempt + 1}/${maxAttempts} failed: ${errorMessage}${causeMsg}${causeCode}`);
 
         // Check for rate limit error (429)
         if (errorMessage.includes('429') || errorMessage.toLowerCase().includes('rate limit')) {
@@ -264,10 +265,15 @@ export class GeminiClient {
           throw new Error('Context length exceeded. Consider batching the request.');
         }
 
-        // For other errors, use exponential backoff
+        // Network errors get longer retry delays
+        const isNetworkError = /fetch failed|ECONNRESET|ETIMEDOUT|ENOTFOUND|socket hang up/i.test(
+          `${errorMessage} ${cause?.message ?? ''}`
+        );
+
         if (attempt < maxAttempts - 1) {
-          const delay = Math.min(baseDelayMs * Math.pow(2, attempt), maxDelayMs);
-          console.error(`[GeminiClient] Retrying in ${delay}ms`);
+          const multiplier = isNetworkError ? 3 : 1;
+          const delay = Math.min(baseDelayMs * Math.pow(2, attempt) * multiplier, maxDelayMs);
+          console.error(`[GeminiClient] ${isNetworkError ? 'Network error, ' : ''}retrying in ${delay}ms`);
           await this.sleep(delay);
         }
       }
@@ -512,4 +518,6 @@ interface GenerationOptions {
   responseSchema?: object;
   thinkingConfig?: { thinkingLevel: ThinkingLevel };
   mediaResolution?: MediaResolution;
+  /** Per-request timeout in ms. Default: 120_000 (2 min). Entity extraction uses 300_000 (5 min). */
+  requestTimeout?: number;
 }
