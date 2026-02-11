@@ -89,11 +89,28 @@ export class GeminiClient {
   /**
    * Fast mode: <2s target, temperature 0.0, JSON output
    * Use for quick analysis tasks
+   *
+   * @param prompt - Text prompt
+   * @param schema - Optional JSON response schema
+   * @param options - Optional overrides (e.g. maxOutputTokens for large entity extraction)
    */
-  async fast(prompt: string, schema?: object): Promise<GeminiResponse> {
+  async fast(prompt: string, schema?: object, options?: { maxOutputTokens?: number }): Promise<GeminiResponse> {
     return this.generate([{ text: prompt }], {
       ...GENERATION_PRESETS.fast,
+      maxOutputTokens: options?.maxOutputTokens ?? GENERATION_PRESETS.fast.maxOutputTokens,
       responseSchema: schema,
+    });
+  }
+
+  /**
+   * Fast text mode: temperature 0.0, plain text output (no JSON schema constraint).
+   * Use when schema-constrained JSON causes excessive thinking time on Gemini 3.
+   * Caller is responsible for parsing JSON from the response text.
+   */
+  async fastText(prompt: string, options?: { maxOutputTokens?: number }): Promise<GeminiResponse> {
+    return this.generate([{ text: prompt }], {
+      temperature: 0.0,
+      maxOutputTokens: options?.maxOutputTokens ?? GENERATION_PRESETS.fast.maxOutputTokens,
     });
   }
 
