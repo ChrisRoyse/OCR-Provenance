@@ -7,7 +7,7 @@
  */
 
 import Database from 'better-sqlite3';
-import type { KnowledgeNode, KnowledgeEdge, NodeEntityLink } from '../../../models/knowledge-graph.js';
+import type { KnowledgeNode, KnowledgeEdge, NodeEntityLink, RelationshipType } from '../../../models/knowledge-graph.js';
 import { runWithForeignKeyCheck } from './helpers.js';
 
 // ============================================================
@@ -343,6 +343,18 @@ export function updateKnowledgeEdge(
   db.prepare(
     `UPDATE knowledge_edges SET ${setClauses.join(', ')} WHERE id = ?`,
   ).run(...params);
+}
+
+/**
+ * Update just the relationship_type on an edge.
+ * Used by the semantic relationship classifier.
+ */
+export function updateEdgeRelationshipType(
+  db: Database.Database,
+  edgeId: string,
+  newType: RelationshipType,
+): void {
+  db.prepare('UPDATE knowledge_edges SET relationship_type = ? WHERE id = ?').run(newType, edgeId);
 }
 
 /**
@@ -1112,15 +1124,21 @@ export function getEntitiesForChunks(
  *   2. FTS5 MATCH on knowledge_nodes_fts (handles partial/multi-word)
  *   3. Alias JSON LIKE match
  *
+ * When includeRelated is true, performs 1-hop edge traversal to also find
+ * documents containing entities related to the matched entities (e.g.,
+ * co-defendants, colleagues, related cases).
+ *
  * @param db - Database connection
  * @param entityNames - Optional array of entity names to match (fuzzy)
  * @param entityTypes - Optional array of entity types to match
+ * @param includeRelated - When true, traverse 1-hop KG edges to include related entity documents
  * @returns Array of matching document IDs
  */
 export function getDocumentIdsForEntities(
   db: Database.Database,
   entityNames?: string[],
   entityTypes?: string[],
+  includeRelated?: boolean,
 ): string[] {
   if (!entityNames?.length && !entityTypes?.length) return [];
 
@@ -1196,7 +1214,46 @@ export function getDocumentIdsForEntities(
      WHERE nel.node_id IN (${nodePlaceholders})`
   ).all(...nodeIdArray) as Array<{ document_id: string }>;
 
-  return docRows.map(r => r.document_id);
+  const documentIds = new Set(docRows.map(r => r.document_id));
+
+  // OPT-6: 1-hop edge traversal for related entities
+  if (includeRelated) {
+    // Find related node IDs via edges (1-hop neighbors)
+    const relatedNodeIds = new Set<string>();
+    const edgeRows = db.prepare(
+      `SELECT DISTINCT CASE
+        WHEN source_node_id IN (${nodePlaceholders}) THEN target_node_id
+        ELSE source_node_id
+       END as related_node_id
+       FROM knowledge_edges
+       WHERE source_node_id IN (${nodePlaceholders}) OR target_node_id IN (${nodePlaceholders})`
+    ).all(...nodeIdArray, ...nodeIdArray, ...nodeIdArray) as Array<{ related_node_id: string }>;
+
+    for (const row of edgeRows) {
+      // Exclude nodes already in the initial set (they're already covered)
+      if (!nodeIds.has(row.related_node_id)) {
+        relatedNodeIds.add(row.related_node_id);
+      }
+    }
+
+    // Look up document IDs for related nodes
+    if (relatedNodeIds.size > 0) {
+      const relatedArray = [...relatedNodeIds];
+      const relatedPlaceholders = relatedArray.map(() => '?').join(',');
+      const relatedDocRows = db.prepare(
+        `SELECT DISTINCT e.document_id
+         FROM node_entity_links nel
+         JOIN entities e ON nel.entity_id = e.id
+         WHERE nel.node_id IN (${relatedPlaceholders})`
+      ).all(...relatedArray) as Array<{ document_id: string }>;
+
+      for (const row of relatedDocRows) {
+        documentIds.add(row.document_id);
+      }
+    }
+  }
+
+  return [...documentIds];
 }
 
 /**

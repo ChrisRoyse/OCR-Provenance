@@ -513,10 +513,16 @@ describe('handleDocumentCompare', () => {
       .get(compId) as Record<string, unknown>;
 
     // Recompute the hash using same formula as comparison.ts
+    // entity_diff_json stores entity diff with embedded contradictions
+    const storedEntityDiff = JSON.parse(row.entity_diff_json as string);
+    // The content hash is computed from entity_diff (without contradictions key)
+    // and contradictions as a separate top-level key
+    const { contradictions: storedContradictions, ...entityDiffOnly } = storedEntityDiff;
     const diffContent = JSON.stringify({
       text_diff: JSON.parse(row.text_diff_json as string),
       structural_diff: JSON.parse(row.structural_diff_json as string),
-      entity_diff: JSON.parse(row.entity_diff_json as string),
+      entity_diff: entityDiffOnly,
+      contradictions: storedContradictions ?? null,
     });
     const expectedHash = computeHash(diffContent);
 

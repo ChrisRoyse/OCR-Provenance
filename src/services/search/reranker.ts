@@ -64,7 +64,7 @@ export async function rerankResults(
   query: string,
   results: Array<{ original_text: string; [key: string]: unknown }>,
   maxResults: number = 10,
-  entityContext?: Map<number, Array<{ entity_type: string; canonical_name: string; document_count: number }>>,
+  entityContext?: Map<number, Array<{ entity_type: string; canonical_name: string; document_count: number; aliases?: string[] }>>,
   edgeContext?: EdgeInfo[],
 ): Promise<Array<{ original_index: number; relevance_score: number; reasoning: string }>> {
   if (results.length === 0) return [];
@@ -105,7 +105,7 @@ export async function rerankResults(
 export function buildRerankPrompt(
   query: string,
   excerpts: string[],
-  entityContext?: Map<number, Array<{ entity_type: string; canonical_name: string; document_count: number }>>,
+  entityContext?: Map<number, Array<{ entity_type: string; canonical_name: string; document_count: number; aliases?: string[] }>>,
   edgeContext?: EdgeInfo[],
 ): string {
   const formattedExcerpts = excerpts.map((text, i) => {
@@ -113,7 +113,7 @@ export function buildRerankPrompt(
     if (entityContext) {
       const entities = entityContext.get(i);
       if (entities && entities.length > 0) {
-        entry += `\n  Entities: ${entities.map(e => `${e.entity_type}: "${e.canonical_name}" (${e.document_count} docs)`).join(', ')}`;
+        entry += `\n  Entities: ${entities.map(e => `${e.entity_type}: "${e.canonical_name}" (${e.document_count} docs, aliases: ${e.aliases?.join(', ') || 'none'})`).join(', ')}`;
       }
     }
     return entry;

@@ -201,6 +201,10 @@ export const ProcessPendingInput = z.object({
     .describe('Additional Datalab config: keep_pageheader_in_output, keep_pagefooter_in_output, keep_spreadsheet_formatting'),
   chunking_strategy: z.enum(['fixed', 'page_aware']).default('fixed')
     .describe('Chunking strategy: fixed-size or page-boundary-aware'),
+  auto_extract_entities: z.boolean().default(false)
+    .describe('Auto-extract entities after OCR+embed completes'),
+  auto_build_kg: z.boolean().default(false)
+    .describe('Auto-build/update knowledge graph after entity extraction (requires auto_extract_entities=true)'),
 });
 
 /**
@@ -244,6 +248,8 @@ export const SearchSemanticInput = z.object({
   entity_filter: z.object({
     entity_names: z.array(z.string()).optional(),
     entity_types: z.array(z.string()).optional(),
+    include_related: z.boolean().default(false)
+      .describe('Include documents from 1-hop related entities via KG edges'),
   }).optional().describe('Filter results by knowledge graph entities'),
   rerank: z.boolean().default(false)
     .describe('Re-rank results using Gemini AI for contextual relevance scoring'),
@@ -269,6 +275,8 @@ export const SearchInput = z.object({
   entity_filter: z.object({
     entity_names: z.array(z.string()).optional(),
     entity_types: z.array(z.string()).optional(),
+    include_related: z.boolean().default(false)
+      .describe('Include documents from 1-hop related entities via KG edges'),
   }).optional().describe('Filter results by knowledge graph entities'),
   rerank: z.boolean().default(false)
     .describe('Re-rank results using Gemini AI for contextual relevance scoring'),
@@ -297,6 +305,8 @@ export const SearchHybridInput = z.object({
   entity_filter: z.object({
     entity_names: z.array(z.string()).optional(),
     entity_types: z.array(z.string()).optional(),
+    include_related: z.boolean().default(false)
+      .describe('Include documents from 1-hop related entities via KG edges'),
   }).optional().describe('Filter results by knowledge graph entities'),
 });
 

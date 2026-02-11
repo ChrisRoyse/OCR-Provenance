@@ -25,12 +25,13 @@ import time
 import numpy as np
 
 
-def validate_inputs(data: dict) -> tuple[np.ndarray, list[str], str, dict]:
+def validate_inputs(data: dict) -> tuple[np.ndarray, list[str], str, dict, np.ndarray | None]:
     """
     Validate and extract inputs from the parsed JSON data.
 
     Returns:
-        Tuple of (embeddings, document_ids, algorithm, params)
+        Tuple of (embeddings, document_ids, algorithm, params, distance_matrix)
+        distance_matrix is None when not provided (use cosine on embeddings).
 
     Raises:
         ValueError: On invalid inputs
@@ -76,11 +77,23 @@ def validate_inputs(data: dict) -> tuple[np.ndarray, list[str], str, dict]:
         "linkage": data.get("linkage", "average"),
     }
 
-    return embeddings, document_ids, algorithm, params
+    # Validate optional precomputed distance matrix
+    distance_matrix: np.ndarray | None = None
+    if "distance_matrix" in data:
+        distance_matrix = np.array(data["distance_matrix"], dtype=np.float64)
+        if distance_matrix.shape != (n_docs, n_docs):
+            raise ValueError(
+                f"distance_matrix shape {distance_matrix.shape} does not match "
+                f"document count ({n_docs}, {n_docs})"
+            )
+
+    return embeddings, document_ids, algorithm, params, distance_matrix
 
 
 def cluster_hdbscan(
-    embeddings: np.ndarray, min_cluster_size: int
+    embeddings: np.ndarray,
+    min_cluster_size: int,
+    distance_matrix: np.ndarray | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
     """
     Cluster using HDBSCAN with cosine distance matrix.
@@ -88,6 +101,7 @@ def cluster_hdbscan(
     Args:
         embeddings: (N, D) float32 array
         min_cluster_size: Minimum points to form a cluster
+        distance_matrix: Optional precomputed distance matrix (N, N)
 
     Returns:
         Tuple of (labels, probabilities)
@@ -95,7 +109,10 @@ def cluster_hdbscan(
     from sklearn.cluster import HDBSCAN
     from sklearn.metrics.pairwise import cosine_distances
 
-    dist_matrix = cosine_distances(embeddings)
+    if distance_matrix is not None:
+        dist_matrix = distance_matrix
+    else:
+        dist_matrix = cosine_distances(embeddings)
 
     clusterer = HDBSCAN(
         min_cluster_size=min_cluster_size,
@@ -116,6 +133,7 @@ def cluster_agglomerative(
     n_clusters: int | None,
     distance_threshold: float,
     linkage: str,
+    distance_matrix: np.ndarray | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
     """
     Cluster using Agglomerative Clustering with cosine metric.
@@ -125,37 +143,41 @@ def cluster_agglomerative(
         n_clusters: Number of clusters (None to use distance_threshold)
         distance_threshold: Max linkage distance (used when n_clusters is None)
         linkage: Linkage criterion ('average', 'complete', 'single')
+        distance_matrix: Optional precomputed distance matrix (N, N)
 
     Returns:
         Tuple of (labels, probabilities)
 
     Raises:
-        ValueError: If ward linkage is requested (incompatible with cosine)
+        ValueError: If ward linkage is requested (incompatible with cosine/precomputed)
     """
     from sklearn.cluster import AgglomerativeClustering
 
-    # CRITICAL: ward linkage is INCOMPATIBLE with cosine metric
+    # CRITICAL: ward linkage is INCOMPATIBLE with cosine/precomputed metric
     if linkage == "ward":
         raise ValueError(
             "Ward linkage is incompatible with cosine distance. "
             "Use 'average', 'complete', or 'single' instead."
         )
 
+    metric = "precomputed" if distance_matrix is not None else "cosine"
+    fit_data = distance_matrix if distance_matrix is not None else embeddings
+
     if n_clusters is not None:
         clusterer = AgglomerativeClustering(
             n_clusters=n_clusters,
-            metric="cosine",
+            metric=metric,
             linkage=linkage,
         )
     else:
         clusterer = AgglomerativeClustering(
             n_clusters=None,
-            metric="cosine",
+            metric=metric,
             linkage=linkage,
             distance_threshold=distance_threshold,
         )
 
-    labels = clusterer.fit_predict(embeddings)
+    labels = clusterer.fit_predict(fit_data)
     # Agglomerative does not produce probabilities
     probabilities = np.ones(len(labels), dtype=np.float64)
 
@@ -163,14 +185,22 @@ def cluster_agglomerative(
 
 
 def cluster_kmeans(
-    embeddings: np.ndarray, n_clusters: int | None
+    embeddings: np.ndarray,
+    n_clusters: int | None,
+    distance_matrix: np.ndarray | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
     """
     Cluster using K-Means.
 
+    When a precomputed distance_matrix is provided, K-Means cannot be used
+    directly (it requires feature vectors). In this case we fall back to
+    spectral embedding of the distance matrix into n_clusters dimensions,
+    then run K-Means on the spectral features.
+
     Args:
         embeddings: (N, D) float32 array
         n_clusters: Number of clusters (defaults to sqrt(N) if None)
+        distance_matrix: Optional precomputed distance matrix (N, N)
 
     Returns:
         Tuple of (labels, probabilities)
@@ -181,8 +211,23 @@ def cluster_kmeans(
         # Reasonable default: sqrt(N), clamped to [2, N-1]
         n_clusters = max(2, min(int(np.sqrt(len(embeddings))), len(embeddings) - 1))
 
-    clusterer = KMeans(n_clusters=n_clusters, n_init="auto")
-    labels = clusterer.fit_predict(embeddings)
+    if distance_matrix is not None:
+        # K-Means needs feature vectors; convert distance matrix via MDS
+        from sklearn.manifold import MDS
+
+        mds = MDS(
+            n_components=min(n_clusters, len(embeddings) - 1),
+            dissimilarity="precomputed",
+            random_state=42,
+            normalized_stress=False,
+        )
+        feature_vectors = mds.fit_transform(distance_matrix)
+        clusterer = KMeans(n_clusters=n_clusters, n_init="auto", random_state=42)
+        labels = clusterer.fit_predict(feature_vectors)
+    else:
+        clusterer = KMeans(n_clusters=n_clusters, n_init="auto")
+        labels = clusterer.fit_predict(embeddings)
+
     # K-Means does not produce probabilities
     probabilities = np.ones(len(labels), dtype=np.float64)
 
@@ -299,12 +344,12 @@ def run_clustering(data: dict) -> dict:
     start_time = time.perf_counter()
 
     # Validate inputs
-    embeddings, document_ids, algorithm, params = validate_inputs(data)
+    embeddings, document_ids, algorithm, params, distance_matrix = validate_inputs(data)
 
     # Dispatch to algorithm
     if algorithm == "hdbscan":
         labels, probabilities = cluster_hdbscan(
-            embeddings, params["min_cluster_size"]
+            embeddings, params["min_cluster_size"], distance_matrix
         )
     elif algorithm == "agglomerative":
         labels, probabilities = cluster_agglomerative(
@@ -312,10 +357,11 @@ def run_clustering(data: dict) -> dict:
             params["n_clusters"],
             params["distance_threshold"],
             params["linkage"],
+            distance_matrix,
         )
     elif algorithm == "kmeans":
         labels, probabilities = cluster_kmeans(
-            embeddings, params["n_clusters"]
+            embeddings, params["n_clusters"], distance_matrix
         )
 
     # Compute metrics
