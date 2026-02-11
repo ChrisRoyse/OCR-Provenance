@@ -26,6 +26,34 @@ export const ENTITY_EXTRACTION_MAX_OUTPUT_TOKENS = 65_536;
 /** Overlap characters between segments for adaptive batching */
 export const SEGMENT_OVERLAP_CHARS = 2_000;
 
+/** Request timeout for entity extraction (large docs + 65K output tokens) */
+export const ENTITY_EXTRACTION_TIMEOUT_MS = 300_000;
+
+/**
+ * JSON schema for Gemini entity extraction response.
+ * Using responseMimeType: 'application/json' with a schema guarantees
+ * clean JSON output — no markdown code blocks, no parsing failures.
+ * Same pattern as RERANK_SCHEMA in reranker.ts.
+ */
+export const ENTITY_EXTRACTION_SCHEMA = {
+  type: 'object' as const,
+  properties: {
+    entities: {
+      type: 'array' as const,
+      items: {
+        type: 'object' as const,
+        properties: {
+          type: { type: 'string' as const },
+          raw_text: { type: 'string' as const },
+          confidence: { type: 'number' as const },
+        },
+        required: ['type', 'raw_text', 'confidence'],
+      },
+    },
+  },
+  required: ['entities'],
+};
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // ENTITY NORMALIZATION
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -104,11 +132,27 @@ export function splitWithOverlap(text: string, maxChars: number, overlapChars: n
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /**
+ * Parse a Gemini entity extraction response, filtering to valid entity types.
+ */
+function parseEntityResponse(
+  responseText: string,
+): Array<{ type: string; raw_text: string; confidence: number }> {
+  const parsed = JSON.parse(responseText) as {
+    entities?: Array<{ type: string; raw_text: string; confidence: number }>;
+  };
+  if (parsed.entities && Array.isArray(parsed.entities)) {
+    return parsed.entities.filter(
+      entity => ENTITY_TYPES.includes(entity.type as EntityType)
+    );
+  }
+  return [];
+}
+
+/**
  * Make a single Gemini API call to extract entities from text.
  *
- * Uses fastText() (no JSON schema constraint) because Gemini 3's thinking mode
- * combined with responseMimeType:'application/json' causes excessive latency
- * on prompts over ~3K chars. Prompt-based JSON with manual parsing is 5-10x faster.
+ * Uses fast() with ENTITY_EXTRACTION_SCHEMA for guaranteed clean JSON output.
+ * If the primary model fails after all retries, falls back to gemini-2.0-flash.
  */
 export async function callGeminiForEntities(
   client: GeminiClient,
@@ -116,30 +160,36 @@ export async function callGeminiForEntities(
   typeFilter: string,
 ): Promise<Array<{ type: string; raw_text: string; confidence: number }>> {
   const prompt =
-    `Extract named entities as JSON. ${typeFilter} ` +
-    `Format: {"entities":[{"type":"...","raw_text":"exact text","confidence":0.0-1.0}]}\n\n` +
+    `Extract named entities from the following text. ${typeFilter}\n\n` +
     `${text}`;
 
-  const response = await client.fastText(prompt, {
-    maxOutputTokens: ENTITY_EXTRACTION_MAX_OUTPUT_TOKENS,
-  });
-
+  // Primary attempt with the provided client
   try {
-    let jsonText = response.text.trim();
-    if (jsonText.startsWith('```')) {
-      jsonText = jsonText.replace(/^```json?\n?/, '').replace(/\n?```$/, '').trim();
-    }
-
-    const parsed = JSON.parse(jsonText) as { entities?: Array<{ type: string; raw_text: string; confidence: number }> };
-    if (parsed.entities && Array.isArray(parsed.entities)) {
-      return parsed.entities.filter(
-        entity => ENTITY_TYPES.includes(entity.type as EntityType)
-      );
-    }
-  } catch (parseError) {
-    const errMsg = parseError instanceof Error ? parseError.message : String(parseError);
-    console.error(`[WARN] Failed to parse Gemini entity response: ${errMsg}`);
+    const response = await client.fast(prompt, ENTITY_EXTRACTION_SCHEMA, {
+      maxOutputTokens: ENTITY_EXTRACTION_MAX_OUTPUT_TOKENS,
+      requestTimeout: ENTITY_EXTRACTION_TIMEOUT_MS,
+    });
+    return parseEntityResponse(response.text);
+  } catch (primaryError) {
+    const errMsg = primaryError instanceof Error ? primaryError.message : String(primaryError);
+    console.error(`[WARN] Primary entity extraction failed: ${errMsg}`);
   }
+
+  // Fallback to gemini-2.0-flash
+  try {
+    console.error(`[INFO] Falling back to gemini-2.0-flash for entity extraction`);
+    const fallbackClient = new GeminiClient({ model: 'gemini-2.0-flash' });
+    const response = await fallbackClient.fast(prompt, ENTITY_EXTRACTION_SCHEMA, {
+      maxOutputTokens: ENTITY_EXTRACTION_MAX_OUTPUT_TOKENS,
+      requestTimeout: ENTITY_EXTRACTION_TIMEOUT_MS,
+    });
+    console.error(`[INFO] Fallback model gemini-2.0-flash succeeded`);
+    return parseEntityResponse(response.text);
+  } catch (fallbackError) {
+    const errMsg = fallbackError instanceof Error ? fallbackError.message : String(fallbackError);
+    console.error(`[WARN] Fallback entity extraction also failed: ${errMsg}`);
+  }
+
   return [];
 }
 
