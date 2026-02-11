@@ -144,20 +144,30 @@ export function searchEntities(
  * Delete all entities and their mentions for a document
  *
  * Cascade order:
- *   1. entity_mentions (entity_mentions.entity_id -> entities.id)
- *   2. entities
+ *   1. node_entity_links (node_entity_links.entity_id -> entities.id)
+ *   2. entity_mentions (entity_mentions.entity_id -> entities.id)
+ *   3. entities
+ *
+ * Note: Knowledge graph nodes/edges are NOT deleted here — they persist as
+ * the KG may reference entities from other documents. Use cleanupGraphForDocument()
+ * for full document deletion cleanup.
  *
  * @param db - Database connection
  * @param documentId - Document ID
  * @returns number - Number of entities deleted
  */
 export function deleteEntitiesByDocument(db: Database.Database, documentId: string): number {
-  // Step 1: Delete mentions for all entities of this document
+  // Step 1: Delete KG node-entity links for entities of this document
+  db.prepare(
+    'DELETE FROM node_entity_links WHERE entity_id IN (SELECT id FROM entities WHERE document_id = ?)'
+  ).run(documentId);
+
+  // Step 2: Delete mentions for all entities of this document
   db.prepare(
     'DELETE FROM entity_mentions WHERE entity_id IN (SELECT id FROM entities WHERE document_id = ?)'
   ).run(documentId);
 
-  // Step 2: Delete the entities themselves
+  // Step 3: Delete the entities themselves
   const result = db.prepare('DELETE FROM entities WHERE document_id = ?').run(documentId);
   return result.changes;
 }

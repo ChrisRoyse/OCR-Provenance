@@ -116,10 +116,18 @@ function normalizeEntity(rawText: string, entityType: string): string {
 }
 
 /**
- * Chunk text into segments of approximately maxChars characters
+ * Split text into overlapping segments for adaptive batching.
+ * Used only for very large documents (> maxCharsPerCall) that exceed
+ * a single Gemini call. Splits at sentence boundaries with overlap
+ * to avoid losing entities at segment borders.
+ *
+ * @param text - Full document text
+ * @param maxChars - Maximum characters per segment
+ * @param overlapChars - Characters of overlap between segments
+ * @returns Array of text segments
  */
-function splitTextIntoSegments(text: string, maxChars: number): string[] {
-  const chunks: string[] = [];
+function splitWithOverlap(text: string, maxChars: number, overlapChars: number): string[] {
+  const segments: string[] = [];
   let start = 0;
   while (start < text.length) {
     let end = start + maxChars;
@@ -130,10 +138,100 @@ function splitTextIntoSegments(text: string, maxChars: number): string[] {
         end = lastPeriod + 1;
       }
     }
-    chunks.push(text.slice(start, end));
-    start = end;
+    segments.push(text.slice(start, end));
+    // Advance by (segment length - overlap) to create overlap region
+    start = end - overlapChars;
+    if (start <= (end - maxChars + overlapChars)) {
+      // Prevent infinite loop if overlap is larger than progress
+      start = end;
+    }
   }
-  return chunks;
+  return segments;
+}
+
+/** Maximum characters per single Gemini call for entity extraction */
+const MAX_CHARS_PER_CALL = 500_000;
+
+/** Output token limit for entity extraction (Flash 3 supports 65K) */
+const ENTITY_EXTRACTION_MAX_OUTPUT_TOKENS = 65_536;
+
+/** Overlap characters between segments for adaptive batching */
+const SEGMENT_OVERLAP_CHARS = 2_000;
+
+/**
+ * Extract entities from text using a single Gemini call (or adaptive batching
+ * for very large documents). Most documents fit in one call since Gemini Flash 3
+ * has a 1M token (~4M char) context window.
+ *
+ * @param client - GeminiClient instance
+ * @param text - Full OCR extracted text
+ * @param entityTypes - Entity types to extract (empty = all)
+ * @returns Array of raw extracted entities
+ */
+async function extractEntitiesFromText(
+  client: GeminiClient,
+  text: string,
+  entityTypes: string[],
+): Promise<Array<{ type: string; raw_text: string; confidence: number }>> {
+  const typeFilter = entityTypes.length > 0
+    ? `Only extract entities of these types: ${entityTypes.join(', ')}.`
+    : `Extract all entity types: ${ENTITY_TYPES.join(', ')}.`;
+
+  // Single call for most documents (< 500K chars / ~125K tokens)
+  if (text.length <= MAX_CHARS_PER_CALL) {
+    return callGeminiForEntities(client, text, typeFilter);
+  }
+
+  // Adaptive batching for very large documents (> 500K chars)
+  console.error(`[INFO] Document too large for single call (${text.length} chars), using adaptive batching`);
+  const batches = splitWithOverlap(text, MAX_CHARS_PER_CALL, SEGMENT_OVERLAP_CHARS);
+  const allEntities: Array<{ type: string; raw_text: string; confidence: number }> = [];
+  for (const batch of batches) {
+    const entities = await callGeminiForEntities(client, batch, typeFilter);
+    allEntities.push(...entities);
+  }
+  return allEntities;
+}
+
+/**
+ * Make a single Gemini API call to extract entities from text.
+ *
+ * Uses fastText() (no JSON schema constraint) because Gemini 3's thinking mode
+ * combined with responseMimeType:'application/json' causes excessive latency
+ * on prompts over ~3K chars. Prompt-based JSON with manual parsing is 5-10x faster.
+ */
+async function callGeminiForEntities(
+  client: GeminiClient,
+  text: string,
+  typeFilter: string,
+): Promise<Array<{ type: string; raw_text: string; confidence: number }>> {
+  const prompt =
+    `Extract named entities as JSON. ${typeFilter} ` +
+    `Format: {"entities":[{"type":"...","raw_text":"exact text","confidence":0.0-1.0}]}\n\n` +
+    `${text}`;
+
+  const response = await client.fastText(prompt, {
+    maxOutputTokens: ENTITY_EXTRACTION_MAX_OUTPUT_TOKENS,
+  });
+
+  try {
+    // Strip markdown code fences if present
+    let jsonText = response.text.trim();
+    if (jsonText.startsWith('```')) {
+      jsonText = jsonText.replace(/^```json?\n?/, '').replace(/\n?```$/, '').trim();
+    }
+
+    const parsed = JSON.parse(jsonText) as { entities?: Array<{ type: string; raw_text: string; confidence: number }> };
+    if (parsed.entities && Array.isArray(parsed.entities)) {
+      return parsed.entities.filter(
+        entity => ENTITY_TYPES.includes(entity.type as EntityType)
+      );
+    }
+  } catch (parseError) {
+    const errMsg = parseError instanceof Error ? parseError.message : String(parseError);
+    console.error(`[WARN] Failed to parse Gemini entity response: ${errMsg}`);
+  }
+  return [];
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -203,29 +301,6 @@ function mapEntityToChunk(
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// GEMINI ENTITY EXTRACTION SCHEMA
-// ═══════════════════════════════════════════════════════════════════════════════
-
-const ENTITY_SCHEMA = {
-  type: 'object',
-  properties: {
-    entities: {
-      type: 'array',
-      items: {
-        type: 'object',
-        properties: {
-          type: { type: 'string' },
-          raw_text: { type: 'string' },
-          confidence: { type: 'number' },
-        },
-        required: ['type', 'raw_text', 'confidence'],
-      },
-    },
-  },
-  required: ['entities'],
-};
-
-// ═══════════════════════════════════════════════════════════════════════════════
 // TOOL HANDLERS
 // ═══════════════════════════════════════════════════════════════════════════════
 
@@ -260,42 +335,21 @@ async function handleEntityExtract(params: Record<string, unknown>) {
       console.error(`[INFO] Deleted ${existingCount} existing entities for document ${doc.id} before re-extraction`);
     }
 
-    // Chunk OCR text into ~4000 char segments for Gemini
-    const textChunks = splitTextIntoSegments(ocrResult.extracted_text, 4000);
-
-    // Build type filter instruction
-    const typeFilter = input.entity_types && input.entity_types.length > 0
-      ? `Only extract entities of these types: ${input.entity_types.join(', ')}.`
-      : `Extract all entity types: ${ENTITY_TYPES.join(', ')}.`;
-
-    // Call Gemini for each chunk
+    // Extract entities using single Gemini call (or adaptive batching for very large docs)
     const client = new GeminiClient();
-    const allRawEntities: Array<{ type: string; raw_text: string; confidence: number }> = [];
     const startTime = Date.now();
 
-    for (const chunk of textChunks) {
-      const prompt =
-        `Extract all named entities from this text. Return a JSON object with an "entities" array. ` +
-        `Each entity should have: type (one of: ${ENTITY_TYPES.join(', ')}), raw_text (exact text from document), ` +
-        `and confidence (0-1 indicating certainty). ${typeFilter}\n\nText:\n${chunk}`;
+    const allRawEntities = await extractEntitiesFromText(
+      client,
+      ocrResult.extracted_text,
+      input.entity_types ?? [],
+    );
 
-      const response = await client.fast(prompt, ENTITY_SCHEMA);
-
-      try {
-        const parsed = JSON.parse(response.text) as { entities?: Array<{ type: string; raw_text: string; confidence: number }> };
-        if (parsed.entities && Array.isArray(parsed.entities)) {
-          for (const entity of parsed.entities) {
-            // Validate entity type
-            if (ENTITY_TYPES.includes(entity.type as EntityType)) {
-              allRawEntities.push(entity);
-            }
-          }
-        }
-      } catch (parseError) {
-        const errMsg = parseError instanceof Error ? parseError.message : String(parseError);
-        console.error(`[WARN] Failed to parse Gemini entity response: ${errMsg}`);
-      }
-    }
+    // Track how many API calls were made (1 for most docs, 2-3 for >500K chars)
+    const textLength = ocrResult.extracted_text.length;
+    const apiCalls = textLength <= MAX_CHARS_PER_CALL
+      ? 1
+      : Math.ceil((textLength - SEGMENT_OVERLAP_CHARS) / (MAX_CHARS_PER_CALL - SEGMENT_OVERLAP_CHARS));
 
     const processingDurationMs = Date.now() - startTime;
 
@@ -335,7 +389,8 @@ async function handleEntityExtract(params: Record<string, unknown>) {
       processor_version: '1.0.0',
       processing_params: {
         entity_types: input.entity_types ?? ENTITY_TYPES,
-        text_chunks: textChunks.length,
+        api_calls: apiCalls,
+        text_length: textLength,
       },
       processing_duration_ms: processingDurationMs,
       processing_quality_score: null,
@@ -405,7 +460,8 @@ async function handleEntityExtract(params: Record<string, unknown>) {
       total_db_chunks: dbChunks.length,
       provenance_id: entityProvId,
       processing_duration_ms: processingDurationMs,
-      text_chunks_processed: textChunks.length,
+      text_length: textLength,
+      api_calls: apiCalls,
     });
   } catch (error) {
     return handleError(error);
