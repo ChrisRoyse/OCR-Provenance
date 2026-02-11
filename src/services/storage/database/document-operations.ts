@@ -7,6 +7,8 @@
 
 import Database from 'better-sqlite3';
 import { v4 as uuidv4 } from 'uuid';
+import { mkdirSync, writeFileSync } from 'fs';
+import { join } from 'path';
 import { Document, DocumentStatus } from '../../../models/document.js';
 import {
   DatabaseError,
@@ -305,9 +307,6 @@ function deleteDerivedRecords(db: Database.Database, documentId: string, caller:
   // Delete from images (safe: embeddings.image_id references gone)
   db.prepare('DELETE FROM images WHERE document_id = ?').run(documentId);
 
-  // Delete from chunks
-  db.prepare('DELETE FROM chunks WHERE document_id = ?').run(documentId);
-
   // Decrement cluster document_count before removing assignments
   db.prepare(
     `UPDATE clusters SET document_count = document_count - 1
@@ -322,7 +321,9 @@ function deleteDerivedRecords(db: Database.Database, documentId: string, caller:
   // Clean up knowledge graph data (must come before entities deletion since links reference entities)
   cleanupGraphForDocument(db, documentId);
 
-  // Delete entity mentions and entities (entity_mentions.entity_id -> entities.id)
+  // Delete entity mentions and entities BEFORE chunks
+  // (entity_mentions.chunk_id REFERENCES chunks(id) — must remove child FK first)
+  // (entity_mentions.entity_id -> entities.id — mentions before entities)
   try {
     db.prepare(
       'DELETE FROM entity_mentions WHERE entity_id IN (SELECT id FROM entities WHERE document_id = ?)'
@@ -332,6 +333,9 @@ function deleteDerivedRecords(db: Database.Database, documentId: string, caller:
     const msg = e instanceof Error ? e.message : String(e);
     if (!msg.includes('no such table')) throw e;
   }
+
+  // Delete from chunks (safe: entity_mentions.chunk_id references now gone)
+  db.prepare('DELETE FROM chunks WHERE document_id = ?').run(documentId);
 
   // Delete from extractions (BEFORE ocr_results: extractions.ocr_result_id REFERENCES ocr_results(id))
   db.prepare('DELETE FROM extractions WHERE document_id = ?').run(documentId);
@@ -410,6 +414,161 @@ function getOrCreateOrphanedRoot(db: Database.Database): string {
   return id;
 }
 
+// ============================================================
+// KG Snapshot Archival
+// ============================================================
+
+/**
+ * Row type for knowledge node archive query
+ */
+interface ArchiveNodeRow {
+  id: string;
+  entity_type: string;
+  canonical_name: string;
+  normalized_name: string;
+  aliases: string | null;
+  document_count: number;
+  mention_count: number;
+  edge_count: number;
+  avg_confidence: number;
+  metadata: string | null;
+  provenance_id: string;
+  created_at: string;
+  updated_at: string;
+}
+
+/**
+ * Row type for knowledge edge archive query
+ */
+interface ArchiveEdgeRow {
+  id: string;
+  source_node_id: string;
+  target_node_id: string;
+  relationship_type: string;
+  weight: number;
+  evidence_count: number;
+  document_ids: string;
+  metadata: string | null;
+  provenance_id: string;
+  created_at: string;
+}
+
+/**
+ * Row type for node_entity_links archive query
+ */
+interface ArchiveLinkRow {
+  id: string;
+  node_id: string;
+  entity_id: string;
+  document_id: string;
+  similarity_score: number;
+  resolution_method: string | null;
+  created_at: string;
+}
+
+/**
+ * Row type for entities archive query
+ */
+interface ArchiveEntityRow {
+  id: string;
+  document_id: string;
+  entity_type: string;
+  raw_text: string;
+  normalized_text: string;
+  confidence: number;
+  metadata: string | null;
+  provenance_id: string;
+  created_at: string;
+}
+
+/**
+ * Result of a KG snapshot archival operation
+ */
+export interface KGArchiveResult {
+  archived: boolean;
+  archive_path: string | null;
+  nodes_archived: number;
+  edges_archived: number;
+}
+
+/**
+ * Archive the knowledge graph subgraph linked to a document before cascade deletion.
+ *
+ * Queries all knowledge_nodes connected via node_entity_links -> entities for the
+ * given document, plus all edges between those nodes, and writes a JSON snapshot
+ * to the archive directory.
+ *
+ * @param conn - Database connection
+ * @param documentId - The document being deleted
+ * @param archiveDir - Directory to write the archive file into
+ * @returns Archive result with path and counts
+ */
+export function archiveKGSubgraphForDocument(
+  conn: Database.Database,
+  documentId: string,
+  archiveDir: string,
+): KGArchiveResult {
+  // Find all knowledge nodes linked to this document
+  const nodes = conn.prepare(`
+    SELECT DISTINCT kn.*
+    FROM knowledge_nodes kn
+    JOIN node_entity_links nel ON nel.node_id = kn.id
+    WHERE nel.document_id = ?
+  `).all(documentId) as ArchiveNodeRow[];
+
+  if (nodes.length === 0) {
+    return { archived: false, archive_path: null, nodes_archived: 0, edges_archived: 0 };
+  }
+
+  const nodeIds = nodes.map(n => n.id);
+  const placeholders = nodeIds.map(() => '?').join(',');
+
+  // Find all edges between the affected nodes
+  const edges = conn.prepare(`
+    SELECT * FROM knowledge_edges
+    WHERE source_node_id IN (${placeholders})
+       OR target_node_id IN (${placeholders})
+  `).all(...nodeIds, ...nodeIds) as ArchiveEdgeRow[];
+
+  // Get the node_entity_links for this document
+  const links = conn.prepare(
+    'SELECT * FROM node_entity_links WHERE document_id = ?',
+  ).all(documentId) as ArchiveLinkRow[];
+
+  // Get the entities for this document
+  const entities = conn.prepare(
+    'SELECT * FROM entities WHERE document_id = ?',
+  ).all(documentId) as ArchiveEntityRow[];
+
+  // Build the archive payload
+  const archive = {
+    archive_type: 'kg_snapshot',
+    document_id: documentId,
+    archived_at: new Date().toISOString(),
+    nodes,
+    edges,
+    node_entity_links: links,
+    entities,
+  };
+
+  // Write to disk
+  mkdirSync(archiveDir, { recursive: true });
+  const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+  const archivePath = join(archiveDir, `kg-archive-${documentId}-${timestamp}.json`);
+  writeFileSync(archivePath, JSON.stringify(archive, null, 2), 'utf-8');
+
+  console.error(
+    `[INFO] KG snapshot archived for document ${documentId}: ${nodes.length} nodes, ${edges.length} edges -> ${archivePath}`,
+  );
+
+  return {
+    archived: true,
+    archive_path: archivePath,
+    nodes_archived: nodes.length,
+    edges_archived: edges.length,
+  };
+}
+
 /**
  * Delete a document and all related data (CASCADE DELETE)
  *
@@ -448,6 +607,14 @@ export function deleteDocument(
 
   // P1.4: Get or create orphaned root provenance for re-parenting
   const orphanedRootId = getOrCreateOrphanedRoot(db);
+
+  // Pre-clear self-referencing FKs (parent_id, source_id) on provenance records being deleted.
+  // Within the same chain_depth, parent provenance may appear before child provenance in the
+  // iteration order, causing FK violations. NULLing these first breaks the circular references.
+  const clearSelfRefStmt = db.prepare('UPDATE provenance SET parent_id = NULL, source_id = NULL WHERE id = ?');
+  for (const { id: provId } of provenanceIds) {
+    clearSelfRefStmt.run(provId);
+  }
 
   const deleteProvStmt = db.prepare('DELETE FROM provenance WHERE id = ?');
   const clusterRefCheck = db.prepare('SELECT COUNT(*) as cnt FROM clusters WHERE provenance_id = ?');

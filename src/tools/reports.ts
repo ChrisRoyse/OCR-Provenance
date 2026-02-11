@@ -25,7 +25,96 @@ import {
 import { getComparisonSummariesByDocument } from '../services/storage/database/comparison-operations.js';
 import { getClusteringStats, getClusterSummariesForDocument } from '../services/storage/database/cluster-operations.js';
 import { getKnowledgeNodeSummariesByDocument } from '../services/storage/database/knowledge-graph-operations.js';
+import type Database from 'better-sqlite3';
 
+
+// ===============================================================================
+// KNOWLEDGE GRAPH QUALITY METRICS
+// ===============================================================================
+
+interface KGQualityMetrics {
+  total_nodes: number;
+  total_edges: number;
+  avg_document_count: number | null;
+  max_document_count: number | null;
+  avg_edge_count: number | null;
+  max_edge_count: number | null;
+  orphaned_nodes: number;
+  entity_extraction_coverage: {
+    docs_with_entities: number;
+    total_complete_docs: number;
+    coverage_pct: number;
+  };
+  resolution_method_distribution: Array<{ method: string; count: number }>;
+  relationship_type_distribution: Array<{ type: string; count: number }>;
+  entity_type_distribution: Array<{ type: string; count: number }>;
+}
+
+/**
+ * Gather detailed KG health metrics from the database.
+ * Queries knowledge_nodes, knowledge_edges, entities, and documents tables.
+ */
+function getKnowledgeGraphQualityMetrics(conn: Database.Database): KGQualityMetrics {
+  const nodeTotals = conn.prepare(`
+    SELECT
+      COUNT(*) as total_nodes,
+      AVG(document_count) as avg_doc_count,
+      MAX(document_count) as max_doc_count,
+      AVG(edge_count) as avg_edge_count,
+      MAX(edge_count) as max_edge_count,
+      SUM(CASE WHEN edge_count = 0 THEN 1 ELSE 0 END) as orphaned_nodes
+    FROM knowledge_nodes
+  `).get() as {
+    total_nodes: number;
+    avg_doc_count: number | null;
+    max_doc_count: number | null;
+    avg_edge_count: number | null;
+    max_edge_count: number | null;
+    orphaned_nodes: number;
+  };
+
+  const totalEdges = (conn.prepare('SELECT COUNT(*) as cnt FROM knowledge_edges').get() as { cnt: number }).cnt;
+
+  const coverage = conn.prepare(`
+    SELECT
+      (SELECT COUNT(DISTINCT document_id) FROM entities) as docs_with_entities,
+      (SELECT COUNT(*) FROM documents WHERE status = 'complete') as total_complete
+  `).get() as { docs_with_entities: number; total_complete: number };
+
+  const resolutionDist = conn.prepare(
+    "SELECT COALESCE(resolution_method, 'unknown') as method, COUNT(*) as count FROM node_entity_links GROUP BY resolution_method ORDER BY count DESC"
+  ).all() as Array<{ method: string; count: number }>;
+
+  const relTypeDist = conn.prepare(
+    'SELECT relationship_type as type, COUNT(*) as count FROM knowledge_edges GROUP BY relationship_type ORDER BY count DESC'
+  ).all() as Array<{ type: string; count: number }>;
+
+  const entityTypeDist = conn.prepare(
+    'SELECT entity_type as type, COUNT(*) as count FROM knowledge_nodes GROUP BY entity_type ORDER BY count DESC'
+  ).all() as Array<{ type: string; count: number }>;
+
+  const coveragePct = coverage.total_complete > 0
+    ? (coverage.docs_with_entities / coverage.total_complete) * 100
+    : 0;
+
+  return {
+    total_nodes: nodeTotals.total_nodes,
+    total_edges: totalEdges,
+    avg_document_count: nodeTotals.total_nodes > 0 ? nodeTotals.avg_doc_count : null,
+    max_document_count: nodeTotals.total_nodes > 0 ? nodeTotals.max_doc_count : null,
+    avg_edge_count: nodeTotals.total_nodes > 0 ? nodeTotals.avg_edge_count : null,
+    max_edge_count: nodeTotals.total_nodes > 0 ? nodeTotals.max_edge_count : null,
+    orphaned_nodes: nodeTotals.orphaned_nodes,
+    entity_extraction_coverage: {
+      docs_with_entities: coverage.docs_with_entities,
+      total_complete_docs: coverage.total_complete,
+      coverage_pct: coveragePct,
+    },
+    resolution_method_distribution: resolutionDist,
+    relationship_type_distribution: relTypeDist,
+    entity_type_distribution: entityTypeDist,
+  };
+}
 
 // ===============================================================================
 // VALIDATION SCHEMAS
@@ -180,9 +269,8 @@ export async function handleEvaluationReport(
     // Clustering statistics
     const clusteringStats = getClusteringStats(db.getConnection());
 
-    // Knowledge graph statistics
-    const knowledgeNodeCount = (db.getConnection().prepare('SELECT COUNT(*) as cnt FROM knowledge_nodes').get() as { cnt: number }).cnt;
-    const knowledgeEdgeCount = (db.getConnection().prepare('SELECT COUNT(*) as cnt FROM knowledge_edges').get() as { cnt: number }).cnt;
+    // Knowledge graph quality metrics
+    const kgMetrics = getKnowledgeGraphQualityMetrics(db.getConnection());
 
     // Generate markdown report
     const report = generateMarkdownReport({
@@ -195,7 +283,7 @@ export async function handleEvaluationReport(
       confidenceThreshold,
       comparisonStats: { total: comparisonCount, avg_similarity: avgComparisonSimilarity },
       clusteringStats,
-      knowledgeGraphStats: { total_nodes: knowledgeNodeCount, total_edges: knowledgeEdgeCount },
+      kgMetrics,
     });
 
     // Save to file if path provided
@@ -223,8 +311,19 @@ export async function handleEvaluationReport(
         total_clusters: clusteringStats.total_clusters,
         total_cluster_runs: clusteringStats.total_runs,
         avg_coherence: clusteringStats.avg_coherence,
-        total_knowledge_nodes: knowledgeNodeCount,
-        total_knowledge_edges: knowledgeEdgeCount,
+        knowledge_graph: {
+          total_nodes: kgMetrics.total_nodes,
+          total_edges: kgMetrics.total_edges,
+          avg_document_count: kgMetrics.avg_document_count,
+          max_document_count: kgMetrics.max_document_count,
+          avg_edge_count: kgMetrics.avg_edge_count,
+          max_edge_count: kgMetrics.max_edge_count,
+          orphaned_nodes: kgMetrics.orphaned_nodes,
+          entity_extraction_coverage_pct: kgMetrics.entity_extraction_coverage.coverage_pct,
+          resolution_method_distribution: kgMetrics.resolution_method_distribution,
+          relationship_type_distribution: kgMetrics.relationship_type_distribution,
+          entity_type_distribution: kgMetrics.entity_type_distribution,
+        },
       },
       image_type_distribution: imageTypeDistribution,
       output_path: outputPath || null,
@@ -522,10 +621,22 @@ export async function handleQualitySummary(
         const conn = db.getConnection();
         const totalEntities = (conn.prepare('SELECT COUNT(*) as cnt FROM entities').get() as { cnt: number }).cnt;
         const linkedEntities = (conn.prepare('SELECT COUNT(*) as cnt FROM node_entity_links').get() as { cnt: number }).cnt;
+        const kgMetrics = getKnowledgeGraphQualityMetrics(conn);
         return {
           entities_resolved: linkedEntities,
           total_entities: totalEntities,
           resolution_coverage: totalEntities > 0 ? linkedEntities / totalEntities : 0,
+          total_nodes: kgMetrics.total_nodes,
+          total_edges: kgMetrics.total_edges,
+          avg_document_count: kgMetrics.avg_document_count,
+          max_document_count: kgMetrics.max_document_count,
+          avg_edge_count: kgMetrics.avg_edge_count,
+          max_edge_count: kgMetrics.max_edge_count,
+          orphaned_nodes: kgMetrics.orphaned_nodes,
+          entity_extraction_coverage: kgMetrics.entity_extraction_coverage,
+          resolution_method_distribution: kgMetrics.resolution_method_distribution,
+          relationship_type_distribution: kgMetrics.relationship_type_distribution,
+          entity_type_distribution: kgMetrics.entity_type_distribution,
         };
       })(),
     }));
@@ -645,7 +756,7 @@ interface ReportParams {
   confidenceThreshold: number;
   comparisonStats: { total: number; avg_similarity: number | null };
   clusteringStats: { total_clusters: number; total_runs: number; avg_coherence: number | null };
-  knowledgeGraphStats: { total_nodes: number; total_edges: number };
+  kgMetrics: KGQualityMetrics;
 }
 
 function generateMarkdownReport(params: ReportParams): string {
@@ -754,13 +865,52 @@ These images may need manual review or reprocessing.
 - **Form Fills**: ${dbStats.total_form_fills} form fills
 - **Comparisons**: ${params.comparisonStats.total} document comparisons
 - **Clusters**: ${params.clusteringStats.total_clusters} clusters across ${params.clusteringStats.total_runs} runs${params.clusteringStats.avg_coherence !== null ? ` (avg coherence: ${(params.clusteringStats.avg_coherence * 100).toFixed(1)}%)` : ''}
-- **Knowledge Graph**: ${params.knowledgeGraphStats.total_nodes} nodes, ${params.knowledgeGraphStats.total_edges} edges
+- **Knowledge Graph**: ${params.kgMetrics.total_nodes} nodes, ${params.kgMetrics.total_edges} edges
 
 ### VLM Processing Rate
 
 \`\`\`
 ${imageStats.total > 0 ? `Processed: ${'█'.repeat(Math.round((imageStats.processed / imageStats.total) * 40))}${'░'.repeat(40 - Math.round((imageStats.processed / imageStats.total) * 40))} ${((imageStats.processed / imageStats.total) * 100).toFixed(1)}%` : 'No images to process.'}
 \`\`\`
+
+---
+
+## Knowledge Graph Health
+
+| Metric | Value |
+|--------|-------|
+| Total Nodes | ${params.kgMetrics.total_nodes} |
+| Total Edges | ${params.kgMetrics.total_edges} |
+| Avg Document Count per Node | ${params.kgMetrics.avg_document_count !== null ? params.kgMetrics.avg_document_count.toFixed(2) : 'N/A'} |
+| Max Document Count | ${params.kgMetrics.max_document_count ?? 'N/A'} |
+| Avg Edge Count per Node | ${params.kgMetrics.avg_edge_count !== null ? params.kgMetrics.avg_edge_count.toFixed(2) : 'N/A'} |
+| Max Edge Count | ${params.kgMetrics.max_edge_count ?? 'N/A'} |
+| Orphaned Nodes (no edges) | ${params.kgMetrics.orphaned_nodes} |
+| Entity Extraction Coverage | ${params.kgMetrics.entity_extraction_coverage.coverage_pct.toFixed(1)}% (${params.kgMetrics.entity_extraction_coverage.docs_with_entities}/${params.kgMetrics.entity_extraction_coverage.total_complete_docs} docs) |
+
+### Resolution Method Distribution
+
+| Method | Count |
+|--------|-------|
+${params.kgMetrics.resolution_method_distribution.length > 0
+  ? params.kgMetrics.resolution_method_distribution.map(r => `| ${r.method} | ${r.count} |`).join('\n')
+  : '| (none) | 0 |'}
+
+### Entity Type Distribution
+
+| Type | Count |
+|------|-------|
+${params.kgMetrics.entity_type_distribution.length > 0
+  ? params.kgMetrics.entity_type_distribution.map(r => `| ${r.type} | ${r.count} |`).join('\n')
+  : '| (none) | 0 |'}
+
+### Relationship Type Distribution
+
+| Type | Count |
+|------|-------|
+${params.kgMetrics.relationship_type_distribution.length > 0
+  ? params.kgMetrics.relationship_type_distribution.map(r => `| ${r.type} | ${r.count} |`).join('\n')
+  : '| (none) | 0 |'}
 
 ---
 

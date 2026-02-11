@@ -51,6 +51,24 @@ import { insertImageBatch, updateImageProvenance } from '../services/storage/dat
 import { getProvenanceTracker } from '../services/provenance/index.js';
 import { createVLMPipeline } from '../services/vlm/pipeline.js';
 import { ImageExtractor } from '../services/images/extractor.js';
+import { GeminiClient } from '../services/gemini/client.js';
+import { ENTITY_TYPES, type EntityType } from '../models/entity.js';
+import {
+  insertEntity,
+  insertEntityMention,
+  deleteEntitiesByDocument,
+} from '../services/storage/database/entity-operations.js';
+import { getChunksByDocumentId } from '../services/storage/database/chunk-operations.js';
+import { incrementalBuildGraph } from '../services/knowledge-graph/incremental-builder.js';
+import { buildKnowledgeGraph } from '../services/knowledge-graph/graph-service.js';
+import {
+  normalizeEntity,
+  callGeminiForEntities,
+  splitWithOverlap,
+  mapEntityToChunk,
+  MAX_CHARS_PER_CALL,
+  SEGMENT_OVERLAP_CHARS,
+} from '../utils/entity-extraction-helpers.js';
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // TYPE DEFINITIONS
@@ -781,10 +799,195 @@ export async function handleIngestFiles(
   }
 }
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// AUTO-PIPELINE: ENTITY EXTRACTION + KNOWLEDGE GRAPH
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// Entity normalization, text splitting, Gemini extraction, and chunk mapping
+// functions are imported from ../utils/entity-extraction-helpers.js above.
+
+/**
+ * Result of auto-entity extraction for a single document
+ */
+interface AutoEntityResult {
+  document_id: string;
+  total_entities: number;
+  entities_by_type: Record<string, number>;
+  chunk_mapped: number;
+  processing_duration_ms: number;
+}
+
+/**
+ * Extract entities from a single completed document and store them in DB.
+ * This is the core extraction logic used by the auto-pipeline.
+ * Returns entity stats for the response.
+ */
+async function autoExtractEntitiesForDocument(
+  db: DatabaseService,
+  docId: string,
+): Promise<AutoEntityResult> {
+  const conn = db.getConnection();
+  const doc = db.getDocument(docId);
+  if (!doc) {
+    throw new Error(`Document not found: ${docId}`);
+  }
+
+  const ocrResult = db.getOCRResultByDocumentId(docId);
+  if (!ocrResult) {
+    throw new Error(`No OCR result found for document ${docId}`);
+  }
+
+  // Delete existing entities before re-extracting
+  const existingCount = deleteEntitiesByDocument(conn, docId);
+  if (existingCount > 0) {
+    console.error(`[INFO] Auto-pipeline: deleted ${existingCount} existing entities for document ${docId}`);
+  }
+
+  const client = new GeminiClient();
+  const startTime = Date.now();
+
+  const typeFilter = `Extract all entity types: ${ENTITY_TYPES.join(', ')}.`;
+  const text = ocrResult.extracted_text;
+
+  let allRawEntities: Array<{ type: string; raw_text: string; confidence: number }>;
+  if (text.length <= MAX_CHARS_PER_CALL) {
+    allRawEntities = await callGeminiForEntities(client, text, typeFilter);
+  } else {
+    console.error(`[INFO] Auto-pipeline: document ${docId} too large (${text.length} chars), using adaptive batching`);
+    const batches = splitWithOverlap(text, MAX_CHARS_PER_CALL, SEGMENT_OVERLAP_CHARS);
+    allRawEntities = [];
+    for (const batch of batches) {
+      const entities = await callGeminiForEntities(client, batch, typeFilter);
+      allRawEntities.push(...entities);
+    }
+  }
+
+  const textLength = text.length;
+  const apiCalls = textLength <= MAX_CHARS_PER_CALL
+    ? 1
+    : Math.ceil((textLength - SEGMENT_OVERLAP_CHARS) / (MAX_CHARS_PER_CALL - SEGMENT_OVERLAP_CHARS));
+  const processingDurationMs = Date.now() - startTime;
+
+  // Deduplicate by normalized_text + entity_type
+  const dedupMap = new Map<string, { type: string; raw_text: string; confidence: number }>();
+  for (const entity of allRawEntities) {
+    const normalized = normalizeEntity(entity.raw_text, entity.type);
+    const key = `${entity.type}::${normalized}`;
+    const existing = dedupMap.get(key);
+    if (!existing || entity.confidence > existing.confidence) {
+      dedupMap.set(key, entity);
+    }
+  }
+
+  // Create ENTITY_EXTRACTION provenance record
+  const now = new Date().toISOString();
+  const entityProvId = uuidv4();
+  const entityContent = JSON.stringify([...dedupMap.values()]);
+  const entityHash = computeHash(entityContent);
+
+  db.insertProvenance({
+    id: entityProvId,
+    type: ProvenanceType.ENTITY_EXTRACTION,
+    created_at: now,
+    processed_at: now,
+    source_file_created_at: null,
+    source_file_modified_at: null,
+    source_type: 'ENTITY_EXTRACTION',
+    source_path: doc.file_path,
+    source_id: ocrResult.provenance_id,
+    root_document_id: doc.provenance_id,
+    location: null,
+    content_hash: entityHash,
+    input_hash: ocrResult.content_hash,
+    file_hash: doc.file_hash,
+    processor: 'gemini-entity-extraction',
+    processor_version: '1.0.0',
+    processing_params: {
+      entity_types: ENTITY_TYPES,
+      api_calls: apiCalls,
+      text_length: textLength,
+      source: 'auto-pipeline',
+    },
+    processing_duration_ms: processingDurationMs,
+    processing_quality_score: null,
+    parent_id: ocrResult.provenance_id,
+    parent_ids: JSON.stringify([doc.provenance_id, ocrResult.provenance_id]),
+    chain_depth: 2,
+    chain_path: JSON.stringify(['DOCUMENT', 'OCR_RESULT', 'ENTITY_EXTRACTION']),
+  });
+
+  // Load DB chunks for chunk_id mapping
+  const dbChunks = getChunksByDocumentId(conn, docId);
+  const ocrText = ocrResult.extracted_text;
+  let chunkMappedCount = 0;
+
+  const typeCounts: Record<string, number> = {};
+  let totalInserted = 0;
+
+  for (const [, entityData] of dedupMap) {
+    const normalized = normalizeEntity(entityData.raw_text, entityData.type);
+    const entityId = uuidv4();
+
+    insertEntity(conn, {
+      id: entityId,
+      document_id: docId,
+      entity_type: entityData.type as EntityType,
+      raw_text: entityData.raw_text,
+      normalized_text: normalized,
+      confidence: entityData.confidence,
+      metadata: null,
+      provenance_id: entityProvId,
+      created_at: now,
+    });
+
+    const mapping = mapEntityToChunk(entityData.raw_text, ocrText, dbChunks);
+    if (mapping.chunk_id) {
+      chunkMappedCount++;
+    }
+
+    const mentionId = uuidv4();
+    insertEntityMention(conn, {
+      id: mentionId,
+      entity_id: entityId,
+      document_id: docId,
+      chunk_id: mapping.chunk_id,
+      page_number: mapping.page_number,
+      character_start: mapping.character_start,
+      character_end: mapping.character_end,
+      context_text: entityData.raw_text,
+      created_at: now,
+    });
+
+    typeCounts[entityData.type] = (typeCounts[entityData.type] ?? 0) + 1;
+    totalInserted++;
+  }
+
+  // Auto-merge into existing KG (from OPT-1 pattern)
+  const kgNodeCount = (conn.prepare('SELECT COUNT(*) as cnt FROM knowledge_nodes').get() as { cnt: number }).cnt;
+  if (kgNodeCount > 0) {
+    console.error(`[INFO] Auto-pipeline: KG detected (${kgNodeCount} nodes), auto-merging entities for document ${docId}`);
+    await incrementalBuildGraph(db, {
+      document_ids: [docId],
+      resolution_mode: 'fuzzy',
+    });
+  }
+
+  console.error(`[INFO] Auto-pipeline: entity extraction complete for ${docId}: ${totalInserted} entities, ${chunkMappedCount} chunk-mapped`);
+
+  return {
+    document_id: docId,
+    total_entities: totalInserted,
+    entities_by_type: typeCounts,
+    chunk_mapped: chunkMappedCount,
+    processing_duration_ms: processingDurationMs,
+  };
+}
+
 /**
  * Handle ocr_process_pending - Process pending documents through full OCR pipeline
  *
  * Pipeline: OCR -> Extract Images -> Chunk -> Embed -> VLM Process Images -> Complete
+ * Optional: -> Entity Extraction -> Knowledge Graph Build
  * Provenance chain: DOCUMENT(0) -> OCR_RESULT(1) -> CHUNK(2)/IMAGE(2) -> EMBEDDING(3)/VLM_DESC(3)
  */
 export async function handleProcessPending(
@@ -793,6 +996,14 @@ export async function handleProcessPending(
   try {
     const input = validateInput(ProcessPendingInput, params);
     const { db, vector } = requireDatabase();
+
+    // Validate auto-pipeline parameters upfront
+    if (input.auto_build_kg && !input.auto_extract_entities) {
+      throw new Error('auto_build_kg requires auto_extract_entities=true');
+    }
+    if (input.auto_extract_entities && !process.env.GEMINI_API_KEY) {
+      throw new Error('auto_extract_entities requires GEMINI_API_KEY environment variable to be set');
+    }
 
     // Get pending documents - CRITICAL: use 'status' not 'statusFilter'
     const pendingDocs = db.listDocuments({ status: 'pending', limit: input.max_concurrent ?? 3 });
@@ -821,6 +1032,8 @@ export async function handleProcessPending(
       failed: 0,
       errors: [] as Array<{ document_id: string; error: string }>,
     };
+    const entityResults: AutoEntityResult[] = [];
+    const successfulDocIds: string[] = [];
 
     // Default images output directory
     const imagesBaseDir = resolve(state.config.defaultStoragePath, 'images');
@@ -1080,11 +1293,27 @@ export async function handleProcessPending(
           });
         }
 
-        // Step 6: Mark document complete
+        // Step 6: Mark document complete (OCR + chunks + embeddings succeeded)
         db.updateDocumentStatus(doc.id, 'complete');
         results.processed++;
+        successfulDocIds.push(doc.id);
 
         console.error(`[INFO] Document ${doc.id} processing complete`);
+
+        // Step 7: Auto-extract entities if enabled
+        // Wrapped in its own try-catch: entity extraction failure must NOT
+        // revert a successfully OCR'd/chunked/embedded document to 'failed'.
+        if (input.auto_extract_entities) {
+          try {
+            console.error(`[INFO] Auto-pipeline: extracting entities for document ${doc.id}`);
+            const entityResult = await autoExtractEntitiesForDocument(db, doc.id);
+            entityResults.push(entityResult);
+          } catch (entityError) {
+            const entityMsg = entityError instanceof Error ? entityError.message : String(entityError);
+            console.error(`[WARN] Entity extraction failed for ${doc.id}: ${entityMsg}`);
+            results.errors.push({ document_id: doc.id, error: `Entity extraction failed: ${entityMsg}` });
+          }
+        }
 
       } catch (error) {
         const errorMsg = error instanceof Error ? error.message : String(error);
@@ -1095,15 +1324,72 @@ export async function handleProcessPending(
       }
     }
 
+    // Step 8: Auto-build knowledge graph if enabled and no KG exists yet
+    // Wrapped in try-catch: KG build failure must not crash the pipeline response.
+    let kgBuildResult: Record<string, unknown> | undefined;
+    if (input.auto_build_kg && successfulDocIds.length > 0 && entityResults.length > 0) {
+      try {
+        const conn = db.getConnection();
+        const kgNodeCount = (conn.prepare('SELECT COUNT(*) as cnt FROM knowledge_nodes').get() as { cnt: number }).cnt;
+        if (kgNodeCount === 0) {
+          // No KG exists yet -- incremental merges in autoExtractEntitiesForDocument were no-ops.
+          // Do an initial full build across all documents that have entities.
+          console.error(`[INFO] Auto-pipeline: no KG exists, running initial knowledge graph build`);
+          const kgResult = await buildKnowledgeGraph(db, {
+            resolution_mode: 'fuzzy',
+          });
+          kgBuildResult = {
+            auto_built: true,
+            nodes: kgResult.total_nodes,
+            edges: kgResult.total_edges,
+            entities_resolved: kgResult.entities_resolved,
+            cross_document_nodes: kgResult.cross_document_nodes,
+            documents_covered: kgResult.documents_covered,
+            provenance_id: kgResult.provenance_id,
+            processing_duration_ms: kgResult.processing_duration_ms,
+          };
+          console.error(`[INFO] Auto-pipeline: KG built with ${kgResult.total_nodes} nodes, ${kgResult.total_edges} edges`);
+        } else {
+          // KG already existed -- incremental merges already ran in autoExtractEntitiesForDocument
+          kgBuildResult = {
+            auto_built: false,
+            message: 'Knowledge graph already existed; entities were incrementally merged during extraction',
+            nodes: kgNodeCount,
+          };
+        }
+      } catch (kgError) {
+        const kgMsg = kgError instanceof Error ? kgError.message : String(kgError);
+        console.error(`[WARN] Knowledge graph build failed: ${kgMsg}`);
+        kgBuildResult = { auto_built: false, error: `KG build failed: ${kgMsg}` };
+      }
+    }
+
     // Get remaining count - CRITICAL: use 'status' not 'statusFilter'
     const remaining = db.listDocuments({ status: 'pending' }).length;
 
-    return formatResponse(successResult({
+    // Build response
+    const response: Record<string, unknown> = {
       processed: results.processed,
       failed: results.failed,
       remaining,
       errors: results.errors.length > 0 ? results.errors : undefined,
-    }));
+    };
+
+    if (input.auto_extract_entities && entityResults.length > 0) {
+      response.entity_extraction = {
+        documents_extracted: entityResults.length,
+        total_entities: entityResults.reduce((sum, r) => sum + r.total_entities, 0),
+        total_chunk_mapped: entityResults.reduce((sum, r) => sum + r.chunk_mapped, 0),
+        total_processing_duration_ms: entityResults.reduce((sum, r) => sum + r.processing_duration_ms, 0),
+        per_document: entityResults,
+      };
+    }
+
+    if (kgBuildResult) {
+      response.knowledge_graph = kgBuildResult;
+    }
+
+    return formatResponse(successResult(response));
 
   } catch (error) {
     return handleError(error);
@@ -1448,7 +1734,7 @@ export const ingestionTools: Record<string, ToolDefinition> = {
     handler: handleIngestFiles,
   },
   'ocr_process_pending': {
-    description: 'Process pending documents through OCR pipeline (OCR -> Chunk -> Embed -> Vector)',
+    description: 'Process pending documents through OCR pipeline (OCR -> Chunk -> Embed -> Vector). Optionally auto-extract entities and build/update knowledge graph.',
     inputSchema: {
       max_concurrent: z.number().int().min(1).max(10).default(3).describe('Maximum concurrent OCR operations'),
       ocr_mode: z.enum(['fast', 'balanced', 'accurate']).optional().describe('OCR processing mode override'),
@@ -1461,6 +1747,10 @@ export const ingestionTools: Record<string, ToolDefinition> = {
       additional_config: z.record(z.unknown()).optional().describe('Additional Datalab config: keep_pageheader_in_output, keep_pagefooter_in_output, keep_spreadsheet_formatting'),
       chunking_strategy: z.enum(['fixed', 'page_aware']).default('fixed')
         .describe('Chunking strategy: fixed-size or page-boundary-aware (no chunks span pages)'),
+      auto_extract_entities: z.boolean().default(false)
+        .describe('Auto-extract entities after OCR+embed completes'),
+      auto_build_kg: z.boolean().default(false)
+        .describe('Auto-build/update knowledge graph after entity extraction (requires auto_extract_entities=true)'),
     },
     handler: handleProcessPending,
   },

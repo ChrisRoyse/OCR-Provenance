@@ -121,6 +121,78 @@ function formatProvenanceChain(db: ReturnType<typeof requireDatabase>['db'], pro
   }));
 }
 
+/**
+ * Build edge context from entity map for reranking.
+ * Collects unique node IDs from all entities in the results, queries edges between
+ * those nodes, and returns a capped list sorted by weight for the reranker prompt.
+ *
+ * @param conn - Database connection
+ * @param entityMap - Map of chunk_id -> entity info from getEntitiesForChunks()
+ * @returns Array of EdgeInfo for reranking, or undefined if no edges found
+ */
+function buildEdgeContext(
+  conn: ReturnType<ReturnType<typeof requireDatabase>['db']['getConnection']>,
+  entityMap: Map<string, ChunkEntityInfo[]>,
+): EdgeInfo[] | undefined {
+  // Collect unique node IDs from all entities in the results
+  const nodeIdSet = new Set<string>();
+  for (const entities of entityMap.values()) {
+    for (const e of entities) {
+      nodeIdSet.add(e.node_id);
+    }
+  }
+
+  if (nodeIdSet.size === 0) return undefined;
+
+  // Build a map of node_id -> canonical_name for resolving edge endpoints
+  const nodeNameMap = new Map<string, string>();
+  for (const entities of entityMap.values()) {
+    for (const e of entities) {
+      nodeNameMap.set(e.node_id, e.canonical_name);
+    }
+  }
+
+  // Query edges between these nodes (limit per node to avoid explosion)
+  const edgesSeen = new Set<string>();
+  const edgeInfoList: EdgeInfo[] = [];
+  for (const nodeId of nodeIdSet) {
+    const edges = getEdgesForNode(conn, nodeId, { limit: 20 });
+    for (const edge of edges) {
+      // Only include edges where BOTH endpoints are in our result set
+      if (!nodeIdSet.has(edge.source_node_id) || !nodeIdSet.has(edge.target_node_id)) continue;
+      // Deduplicate edges
+      if (edgesSeen.has(edge.id)) continue;
+      edgesSeen.add(edge.id);
+
+      // Resolve node names (from map or DB lookup)
+      let sourceName = nodeNameMap.get(edge.source_node_id);
+      if (!sourceName) {
+        const sourceNode = getKnowledgeNode(conn, edge.source_node_id);
+        sourceName = sourceNode?.canonical_name ?? edge.source_node_id;
+        nodeNameMap.set(edge.source_node_id, sourceName);
+      }
+      let targetName = nodeNameMap.get(edge.target_node_id);
+      if (!targetName) {
+        const targetNode = getKnowledgeNode(conn, edge.target_node_id);
+        targetName = targetNode?.canonical_name ?? edge.target_node_id;
+        nodeNameMap.set(edge.target_node_id, targetName);
+      }
+
+      edgeInfoList.push({
+        source_name: sourceName,
+        target_name: targetName,
+        relationship_type: edge.relationship_type,
+        weight: edge.weight,
+      });
+    }
+  }
+
+  // Cap at 30 edges to stay within token limits, sorted by weight descending
+  if (edgeInfoList.length === 0) return undefined;
+  edgeInfoList.sort((a, b) => b.weight - a.weight);
+  return edgeInfoList.slice(0, 30);
+}
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // SEARCH TOOL HANDLERS
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -141,11 +213,13 @@ export async function handleSearchSemantic(
       resolveMetadataFilter(db, input.metadata_filter, input.document_filter));
 
     // PAR-1: Entity filter - resolve entity names/types to document IDs
+    // OPT-6: Pass include_related for 1-hop multi-hop entity traversal
     if (input.entity_filter) {
       const entityDocIds = getDocumentIdsForEntities(
         conn,
         input.entity_filter.entity_names,
         input.entity_filter.entity_types,
+        input.entity_filter.include_related,
       );
       if (entityDocIds.length === 0) {
         return formatResponse(successResult({
@@ -155,6 +229,7 @@ export async function handleSearchSemantic(
           threshold: input.similarity_threshold,
           entity_filter_applied: true,
           entity_filter_document_count: 0,
+          related_entities_included: input.entity_filter.include_related ?? false,
         }));
       }
       if (documentFilter && documentFilter.length > 0) {
@@ -168,6 +243,7 @@ export async function handleSearchSemantic(
             threshold: input.similarity_threshold,
             entity_filter_applied: true,
             entity_filter_document_count: 0,
+            related_entities_included: input.entity_filter.include_related ?? false,
           }));
         }
       } else {
@@ -204,8 +280,8 @@ export async function handleSearchSemantic(
     let rerankInfo: Record<string, unknown> | undefined;
 
     if (input.rerank && results.length > 0) {
-      // Build entity context map for reranking
-      let entityContextForRerank: Map<number, Array<{ entity_type: string; canonical_name: string; document_count: number }>> | undefined;
+      // Build entity context map for reranking (with aliases for OPT-4)
+      let entityContextForRerank: Map<number, Array<{ entity_type: string; canonical_name: string; document_count: number; aliases?: string[] }>> | undefined;
       if (entityMap) {
         entityContextForRerank = new Map();
         results.forEach((r, i) => {
@@ -215,10 +291,14 @@ export async function handleSearchSemantic(
               entity_type: e.entity_type,
               canonical_name: e.canonical_name,
               document_count: e.document_count,
+              aliases: e.aliases,
             })));
           }
         });
       }
+
+      // OPT-3: Build edge context for reranking (same as hybrid search)
+      const edgeContextForRerank = entityMap ? buildEdgeContext(conn, entityMap) : undefined;
 
       const rerankInput = results.map(r => ({
         chunk_id: r.chunk_id,
@@ -241,7 +321,7 @@ export async function handleSearchSemantic(
         score: r.similarity_score,
       }));
 
-      const reranked = await rerankResults(input.query, rerankInput, limit, entityContextForRerank);
+      const reranked = await rerankResults(input.query, rerankInput, limit, entityContextForRerank, edgeContextForRerank);
       finalResults = reranked.map(r => {
         const original = results[r.original_index];
         const result: Record<string, unknown> = {
@@ -277,6 +357,8 @@ export async function handleSearchSemantic(
       rerankInfo = {
         reranked: true,
         entity_aware: !!entityContextForRerank && entityContextForRerank.size > 0,
+        edge_aware: !!edgeContextForRerank && edgeContextForRerank.length > 0,
+        edge_count: edgeContextForRerank?.length ?? 0,
         candidates_evaluated: Math.min(results.length, 20),
         results_returned: finalResults.length,
       };
@@ -330,6 +412,7 @@ export async function handleSearchSemantic(
     if (input.entity_filter) {
       responseData.entity_filter_applied = true;
       responseData.entity_filter_document_count = documentFilter?.length ?? 0;
+      responseData.related_entities_included = input.entity_filter.include_related ?? false;
     }
 
     return formatResponse(successResult(responseData));
@@ -355,11 +438,13 @@ export async function handleSearch(
       resolveMetadataFilter(db, input.metadata_filter, input.document_filter));
 
     // PAR-1: Entity filter - resolve entity names/types to document IDs
+    // OPT-6: Pass include_related for 1-hop multi-hop entity traversal
     if (input.entity_filter) {
       const entityDocIds = getDocumentIdsForEntities(
         conn,
         input.entity_filter.entity_names,
         input.entity_filter.entity_types,
+        input.entity_filter.include_related,
       );
       if (entityDocIds.length === 0) {
         return formatResponse(successResult({
@@ -370,6 +455,7 @@ export async function handleSearch(
           sources: { chunk_count: 0, vlm_count: 0, extraction_count: 0 },
           entity_filter_applied: true,
           entity_filter_document_count: 0,
+          related_entities_included: input.entity_filter.include_related ?? false,
         }));
       }
       if (documentFilter && documentFilter.length > 0) {
@@ -384,6 +470,7 @@ export async function handleSearch(
             sources: { chunk_count: 0, vlm_count: 0, extraction_count: 0 },
             entity_filter_applied: true,
             entity_filter_document_count: 0,
+            related_entities_included: input.entity_filter.include_related ?? false,
           }));
         }
       } else {
@@ -452,8 +539,8 @@ export async function handleSearch(
     let rerankInfo: Record<string, unknown> | undefined;
 
     if (input.rerank && rankedResults.length > 0) {
-      // Build entity context map for reranking
-      let entityContextForRerank: Map<number, Array<{ entity_type: string; canonical_name: string; document_count: number }>> | undefined;
+      // Build entity context map for reranking (with aliases for OPT-4)
+      let entityContextForRerank: Map<number, Array<{ entity_type: string; canonical_name: string; document_count: number; aliases?: string[] }>> | undefined;
       if (bm25EntityMap) {
         entityContextForRerank = new Map();
         rankedResults.forEach((r, i) => {
@@ -463,13 +550,17 @@ export async function handleSearch(
               entity_type: e.entity_type,
               canonical_name: e.canonical_name,
               document_count: e.document_count,
+              aliases: e.aliases,
             })));
           }
         });
       }
 
+      // OPT-3: Build edge context for reranking (same as hybrid search)
+      const edgeContextForRerank = bm25EntityMap ? buildEdgeContext(conn, bm25EntityMap) : undefined;
+
       const rerankInput = rankedResults.map(r => ({ ...r }));
-      const reranked = await rerankResults(input.query, rerankInput, limit, entityContextForRerank);
+      const reranked = await rerankResults(input.query, rerankInput, limit, entityContextForRerank, edgeContextForRerank);
       finalResults = reranked.map(r => {
         const original = rankedResults[r.original_index];
         const base: Record<string, unknown> = {
@@ -488,6 +579,8 @@ export async function handleSearch(
       rerankInfo = {
         reranked: true,
         entity_aware: !!entityContextForRerank && entityContextForRerank.size > 0,
+        edge_aware: !!edgeContextForRerank && edgeContextForRerank.length > 0,
+        edge_count: edgeContextForRerank?.length ?? 0,
         candidates_evaluated: Math.min(rankedResults.length, 20),
         results_returned: finalResults.length,
       };
@@ -537,6 +630,7 @@ export async function handleSearch(
     if (input.entity_filter) {
       responseData.entity_filter_applied = true;
       responseData.entity_filter_document_count = documentFilter?.length ?? 0;
+      responseData.related_entities_included = input.entity_filter.include_related ?? false;
     }
 
     return formatResponse(successResult(responseData));
@@ -563,11 +657,13 @@ export async function handleSearchHybrid(
       resolveMetadataFilter(db, input.metadata_filter, input.document_filter));
 
     // P2.4: Entity filter - resolve entity names/types to document IDs
+    // OPT-6: Pass include_related for 1-hop multi-hop entity traversal
     if (input.entity_filter) {
       const entityDocIds = getDocumentIdsForEntities(
         conn,
         input.entity_filter.entity_names,
         input.entity_filter.entity_types,
+        input.entity_filter.include_related,
       );
       if (entityDocIds.length === 0) {
         // Entity filter matched no documents - return empty results
@@ -584,6 +680,7 @@ export async function handleSearchHybrid(
           sources: { bm25_chunk_count: 0, bm25_vlm_count: 0, bm25_extraction_count: 0, semantic_count: 0 },
           entity_filter_applied: true,
           entity_filter_document_count: 0,
+          related_entities_included: input.entity_filter.include_related ?? false,
         }));
       }
       // Intersect with existing document filter
@@ -604,6 +701,7 @@ export async function handleSearchHybrid(
             sources: { bm25_chunk_count: 0, bm25_vlm_count: 0, bm25_extraction_count: 0, semantic_count: 0 },
             entity_filter_applied: true,
             entity_filter_document_count: 0,
+            related_entities_included: input.entity_filter.include_related ?? false,
           }));
         }
       } else {
@@ -727,8 +825,8 @@ export async function handleSearchHybrid(
     let rerankInfo: Record<string, unknown> | undefined;
 
     if (input.rerank && rawResults.length > 0) {
-      // P2.3: Build entity context map for reranking (index-based for the reranker)
-      let entityContextForRerank: Map<number, Array<{ entity_type: string; canonical_name: string; document_count: number }>> | undefined;
+      // P2.3: Build entity context map for reranking (index-based for the reranker, with aliases for OPT-4)
+      let entityContextForRerank: Map<number, Array<{ entity_type: string; canonical_name: string; document_count: number; aliases?: string[] }>> | undefined;
       if (hybridEntityMap) {
         entityContextForRerank = new Map();
         rawResults.forEach((r, i) => {
@@ -738,73 +836,14 @@ export async function handleSearchHybrid(
               entity_type: e.entity_type,
               canonical_name: e.canonical_name,
               document_count: e.document_count,
+              aliases: e.aliases,
             })));
           }
         });
       }
 
-      // ENH-4: Build edge context from entity nodes found in search results
-      let edgeContextForRerank: EdgeInfo[] | undefined;
-      if (hybridEntityMap) {
-        // Collect unique node IDs from all entities in the results
-        const nodeIdSet = new Set<string>();
-        for (const entities of hybridEntityMap.values()) {
-          for (const e of entities) {
-            nodeIdSet.add(e.node_id);
-          }
-        }
-
-        if (nodeIdSet.size > 0) {
-          // Build a map of node_id -> canonical_name for resolving edge endpoints
-          const nodeNameMap = new Map<string, string>();
-          for (const entities of hybridEntityMap.values()) {
-            for (const e of entities) {
-              nodeNameMap.set(e.node_id, e.canonical_name);
-            }
-          }
-
-          // Query edges between these nodes (limit per node to avoid explosion)
-          const edgesSeen = new Set<string>();
-          const edgeInfoList: EdgeInfo[] = [];
-          for (const nodeId of nodeIdSet) {
-            const edges = getEdgesForNode(conn, nodeId, { limit: 20 });
-            for (const edge of edges) {
-              // Only include edges where BOTH endpoints are in our result set
-              if (!nodeIdSet.has(edge.source_node_id) || !nodeIdSet.has(edge.target_node_id)) continue;
-              // Deduplicate edges
-              if (edgesSeen.has(edge.id)) continue;
-              edgesSeen.add(edge.id);
-
-              // Resolve node names (from map or DB lookup)
-              let sourceName = nodeNameMap.get(edge.source_node_id);
-              if (!sourceName) {
-                const sourceNode = getKnowledgeNode(conn, edge.source_node_id);
-                sourceName = sourceNode?.canonical_name ?? edge.source_node_id;
-                nodeNameMap.set(edge.source_node_id, sourceName);
-              }
-              let targetName = nodeNameMap.get(edge.target_node_id);
-              if (!targetName) {
-                const targetNode = getKnowledgeNode(conn, edge.target_node_id);
-                targetName = targetNode?.canonical_name ?? edge.target_node_id;
-                nodeNameMap.set(edge.target_node_id, targetName);
-              }
-
-              edgeInfoList.push({
-                source_name: sourceName,
-                target_name: targetName,
-                relationship_type: edge.relationship_type,
-                weight: edge.weight,
-              });
-            }
-          }
-
-          // Cap at 30 edges to stay within token limits, sorted by weight descending
-          if (edgeInfoList.length > 0) {
-            edgeInfoList.sort((a, b) => b.weight - a.weight);
-            edgeContextForRerank = edgeInfoList.slice(0, 30);
-          }
-        }
-      }
+      // ENH-4/OPT-3: Build edge context using shared helper
+      const edgeContextForRerank = hybridEntityMap ? buildEdgeContext(conn, hybridEntityMap) : undefined;
 
       // Cast rawResults to the shape rerankResults expects (spread drops the index signature issue)
       const rerankInput = rawResults.map(r => ({ ...r }));
@@ -871,6 +910,12 @@ export async function handleSearchHybrid(
     // Include rerank info when rerank is true
     if (rerankInfo) {
       responseData.rerank = rerankInfo;
+    }
+
+    if (input.entity_filter) {
+      responseData.entity_filter_applied = true;
+      responseData.entity_filter_document_count = documentFilter?.length ?? 0;
+      responseData.related_entities_included = input.entity_filter.include_related ?? false;
     }
 
     return formatResponse(successResult(responseData));
@@ -1163,6 +1208,8 @@ export const searchTools: Record<string, ToolDefinition> = {
       entity_filter: z.object({
         entity_names: z.array(z.string()).optional(),
         entity_types: z.array(z.string()).optional(),
+        include_related: z.boolean().default(false)
+          .describe('Include documents from 1-hop related entities via KG edges'),
       }).optional().describe('Filter results by knowledge graph entities'),
       rerank: z.boolean().default(false)
         .describe('Re-rank results using Gemini AI for contextual relevance scoring'),
@@ -1188,6 +1235,8 @@ export const searchTools: Record<string, ToolDefinition> = {
       entity_filter: z.object({
         entity_names: z.array(z.string()).optional(),
         entity_types: z.array(z.string()).optional(),
+        include_related: z.boolean().default(false)
+          .describe('Include documents from 1-hop related entities via KG edges'),
       }).optional().describe('Filter results by knowledge graph entities'),
       rerank: z.boolean().default(false)
         .describe('Re-rank results using Gemini AI for contextual relevance scoring'),
@@ -1219,6 +1268,8 @@ export const searchTools: Record<string, ToolDefinition> = {
       entity_filter: z.object({
         entity_names: z.array(z.string()).optional(),
         entity_types: z.array(z.string()).optional(),
+        include_related: z.boolean().default(false)
+          .describe('Include documents from 1-hop related entities via KG edges'),
       }).optional().describe('Filter results by knowledge graph entities'),
     },
     handler: handleSearchHybrid,

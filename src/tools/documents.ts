@@ -26,6 +26,7 @@ import { formatResponse, handleError, type ToolResponse, type ToolDefinition } f
 import { getComparisonSummariesByDocument } from '../services/storage/database/comparison-operations.js';
 import { getClusterSummariesForDocument } from '../services/storage/database/cluster-operations.js';
 import { getKnowledgeNodeSummariesByDocument } from '../services/storage/database/knowledge-graph-operations.js';
+import { archiveKGSubgraphForDocument } from '../services/storage/database/document-operations.js';
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // DOCUMENT TOOL HANDLERS
@@ -218,6 +219,10 @@ export async function handleDocumentDelete(
     const embeddings = db.getEmbeddingsByDocumentId(doc.id);
     const provenance = db.getProvenanceByRootDocument(doc.provenance_id);
 
+    // Archive KG subgraph BEFORE any deletions (data must still exist)
+    const archiveDir = resolve(getDefaultStoragePath(), 'archives');
+    const archiveResult = archiveKGSubgraphForDocument(db.getConnection(), doc.id, archiveDir);
+
     // Delete vectors first
     const vectorsDeleted = vector.deleteVectorsByDocumentId(doc.id);
 
@@ -240,6 +245,7 @@ export async function handleDocumentDelete(
       vectors_deleted: vectorsDeleted,
       provenance_deleted: provenance.length,
       images_directory_cleaned: imagesCleanedUp,
+      kg_archive: archiveResult,
     }));
   } catch (error) {
     return handleError(error);

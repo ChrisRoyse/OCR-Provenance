@@ -39,6 +39,7 @@ import {
 } from '../services/storage/database/knowledge-graph-operations.js';
 import { exportGraphML, exportCSV, exportJSONLD } from '../services/knowledge-graph/export-service.js';
 import { incrementalBuildGraph } from '../services/knowledge-graph/incremental-builder.js';
+import { classifyEdgesWithGemini } from '../services/knowledge-graph/rule-classifier.js';
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // INPUT SCHEMAS
@@ -137,6 +138,15 @@ const IncrementalBuildInput = z.object({
     .describe('Resolution mode for matching against existing nodes'),
   classify_relationships: z.boolean().default(false)
     .describe('Use Gemini AI for relationship type classification'),
+});
+
+const ClassifyRelationshipsInput = z.object({
+  edge_ids: z.array(z.string()).optional()
+    .describe('Specific edge IDs to classify (default: all co_mentioned/co_located edges)'),
+  limit: z.number().int().min(1).max(1000).default(100)
+    .describe('Maximum edges to classify'),
+  batch_size: z.number().int().min(1).max(50).default(20)
+    .describe('Edges per Gemini API call'),
 });
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -898,6 +908,29 @@ async function handleKnowledgeGraphIncrementalBuild(
   }
 }
 
+/**
+ * Handle ocr_knowledge_graph_classify_relationships - Semantic edge classification via Gemini
+ */
+async function handleKnowledgeGraphClassifyRelationships(
+  params: Record<string, unknown>
+): Promise<ToolResponse> {
+  try {
+    const input = validateInput(ClassifyRelationshipsInput, params);
+    const { db } = requireDatabase();
+    const conn = db.getConnection();
+
+    const result = await classifyEdgesWithGemini(conn, {
+      edge_ids: input.edge_ids,
+      limit: input.limit,
+      batch_size: input.batch_size,
+    });
+
+    return formatResponse(successResult(result));
+  } catch (error) {
+    return handleError(error);
+  }
+}
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // TOOL DEFINITIONS FOR MCP REGISTRATION
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -957,5 +990,10 @@ export const knowledgeGraphTools: Record<string, ToolDefinition> = {
     description: 'Incrementally add new documents to the existing knowledge graph without rebuilding. Matches entities against existing nodes.',
     inputSchema: IncrementalBuildInput.shape,
     handler: handleKnowledgeGraphIncrementalBuild,
+  },
+  'ocr_knowledge_graph_classify_relationships': {
+    description: 'Classify knowledge graph edge relationships using Gemini semantic analysis. Analyzes text context where entities co-occur to assign specific relationship types (works_at, represents, located_in, etc.) instead of generic co_mentioned/co_located.',
+    inputSchema: ClassifyRelationshipsInput.shape,
+    handler: handleKnowledgeGraphClassifyRelationships,
   },
 };

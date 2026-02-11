@@ -31,7 +31,14 @@ import { getClusterSummariesForDocument } from '../services/storage/database/clu
 import { getKnowledgeNodeSummariesByDocument } from '../services/storage/database/knowledge-graph-operations.js';
 import { extractEntitiesFromVLM } from '../services/knowledge-graph/vlm-entity-extractor.js';
 import { mapExtractionEntitiesToDB } from '../services/knowledge-graph/extraction-entity-mapper.js';
-import type { Chunk } from '../models/chunk.js';
+import { incrementalBuildGraph } from '../services/knowledge-graph/incremental-builder.js';
+import {
+  normalizeEntity,
+  extractEntitiesFromText,
+  mapEntityToChunk,
+  MAX_CHARS_PER_CALL,
+  SEGMENT_OVERLAP_CHARS,
+} from '../utils/entity-extraction-helpers.js';
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // INPUT SCHEMAS
@@ -74,229 +81,51 @@ const ExtractionEntityExtractInput = z.object({
   document_id: z.string().min(1).describe('Document ID with structured extractions'),
 });
 
+// Entity normalization, text splitting, Gemini extraction, and chunk mapping
+// functions are imported from ../utils/entity-extraction-helpers.js above.
+
 // ═══════════════════════════════════════════════════════════════════════════════
-// ENTITY NORMALIZATION
+// KNOWLEDGE GRAPH AUTO-MERGE
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /**
- * Normalize entity text based on type
- */
-function normalizeEntity(rawText: string, entityType: string): string {
-  const trimmed = rawText.trim();
-
-  switch (entityType) {
-    case 'date': {
-      // Try to parse to ISO format
-      const parsed = Date.parse(trimmed);
-      if (!isNaN(parsed)) {
-        const d = new Date(parsed);
-        const year = d.getFullYear();
-        const month = String(d.getMonth() + 1).padStart(2, '0');
-        const day = String(d.getDate()).padStart(2, '0');
-        return `${year}-${month}-${day}`;
-      }
-      return trimmed.toLowerCase();
-    }
-    case 'amount': {
-      // Strip $, commas, convert to number string
-      const cleaned = trimmed.replace(/[$,]/g, '').trim();
-      const num = parseFloat(cleaned);
-      if (!isNaN(num)) {
-        return String(num);
-      }
-      return trimmed.toLowerCase();
-    }
-    case 'case_number': {
-      // Strip # prefix, lowercase
-      return trimmed.replace(/^#/, '').toLowerCase().trim();
-    }
-    default:
-      return trimmed.toLowerCase();
-  }
-}
-
-/**
- * Split text into overlapping segments for adaptive batching.
- * Used only for very large documents (> maxCharsPerCall) that exceed
- * a single Gemini call. Splits at sentence boundaries with overlap
- * to avoid losing entities at segment borders.
+ * Check if a knowledge graph exists in the database and, if so, incrementally
+ * merge newly extracted entities into it. Called after successful entity extraction.
  *
- * @param text - Full document text
- * @param maxChars - Maximum characters per segment
- * @param overlapChars - Characters of overlap between segments
- * @returns Array of text segments
+ * @param db - DatabaseService instance
+ * @param documentId - Document ID whose entities were just extracted
+ * @returns KG merge result if KG exists and merge succeeded, or null if no KG exists
  */
-function splitWithOverlap(text: string, maxChars: number, overlapChars: number): string[] {
-  const segments: string[] = [];
-  let start = 0;
-  while (start < text.length) {
-    let end = start + maxChars;
-    // Try to break at a sentence boundary
-    if (end < text.length) {
-      const lastPeriod = text.lastIndexOf('.', end);
-      if (lastPeriod > start + maxChars * 0.5) {
-        end = lastPeriod + 1;
-      }
-    }
-    segments.push(text.slice(start, end));
-    // Advance by (segment length - overlap) to create overlap region
-    start = end - overlapChars;
-    if (start <= (end - maxChars + overlapChars)) {
-      // Prevent infinite loop if overlap is larger than progress
-      start = end;
-    }
-  }
-  return segments;
-}
+async function autoMergeIntoKnowledgeGraph(
+  db: import('../services/storage/database/index.js').DatabaseService,
+  documentId: string,
+): Promise<Record<string, unknown> | null> {
+  const conn = db.getConnection();
 
-/** Maximum characters per single Gemini call for entity extraction */
-const MAX_CHARS_PER_CALL = 500_000;
-
-/** Output token limit for entity extraction (Flash 3 supports 65K) */
-const ENTITY_EXTRACTION_MAX_OUTPUT_TOKENS = 65_536;
-
-/** Overlap characters between segments for adaptive batching */
-const SEGMENT_OVERLAP_CHARS = 2_000;
-
-/**
- * Extract entities from text using a single Gemini call (or adaptive batching
- * for very large documents). Most documents fit in one call since Gemini Flash 3
- * has a 1M token (~4M char) context window.
- *
- * @param client - GeminiClient instance
- * @param text - Full OCR extracted text
- * @param entityTypes - Entity types to extract (empty = all)
- * @returns Array of raw extracted entities
- */
-async function extractEntitiesFromText(
-  client: GeminiClient,
-  text: string,
-  entityTypes: string[],
-): Promise<Array<{ type: string; raw_text: string; confidence: number }>> {
-  const typeFilter = entityTypes.length > 0
-    ? `Only extract entities of these types: ${entityTypes.join(', ')}.`
-    : `Extract all entity types: ${ENTITY_TYPES.join(', ')}.`;
-
-  // Single call for most documents (< 500K chars / ~125K tokens)
-  if (text.length <= MAX_CHARS_PER_CALL) {
-    return callGeminiForEntities(client, text, typeFilter);
+  // Check if knowledge graph exists (has any nodes)
+  const row = conn.prepare('SELECT COUNT(*) as cnt FROM knowledge_nodes').get() as { cnt: number };
+  if (row.cnt === 0) {
+    return null;
   }
 
-  // Adaptive batching for very large documents (> 500K chars)
-  console.error(`[INFO] Document too large for single call (${text.length} chars), using adaptive batching`);
-  const batches = splitWithOverlap(text, MAX_CHARS_PER_CALL, SEGMENT_OVERLAP_CHARS);
-  const allEntities: Array<{ type: string; raw_text: string; confidence: number }> = [];
-  for (const batch of batches) {
-    const entities = await callGeminiForEntities(client, batch, typeFilter);
-    allEntities.push(...entities);
-  }
-  return allEntities;
-}
+  console.error(`[INFO] Knowledge graph detected (${row.cnt} nodes), auto-merging entities for document ${documentId}`);
 
-/**
- * Make a single Gemini API call to extract entities from text.
- *
- * Uses fastText() (no JSON schema constraint) because Gemini 3's thinking mode
- * combined with responseMimeType:'application/json' causes excessive latency
- * on prompts over ~3K chars. Prompt-based JSON with manual parsing is 5-10x faster.
- */
-async function callGeminiForEntities(
-  client: GeminiClient,
-  text: string,
-  typeFilter: string,
-): Promise<Array<{ type: string; raw_text: string; confidence: number }>> {
-  const prompt =
-    `Extract named entities as JSON. ${typeFilter} ` +
-    `Format: {"entities":[{"type":"...","raw_text":"exact text","confidence":0.0-1.0}]}\n\n` +
-    `${text}`;
-
-  const response = await client.fastText(prompt, {
-    maxOutputTokens: ENTITY_EXTRACTION_MAX_OUTPUT_TOKENS,
+  const kgResult = await incrementalBuildGraph(db, {
+    document_ids: [documentId],
+    resolution_mode: 'fuzzy',
   });
 
-  try {
-    // Strip markdown code fences if present
-    let jsonText = response.text.trim();
-    if (jsonText.startsWith('```')) {
-      jsonText = jsonText.replace(/^```json?\n?/, '').replace(/\n?```$/, '').trim();
-    }
-
-    const parsed = JSON.parse(jsonText) as { entities?: Array<{ type: string; raw_text: string; confidence: number }> };
-    if (parsed.entities && Array.isArray(parsed.entities)) {
-      return parsed.entities.filter(
-        entity => ENTITY_TYPES.includes(entity.type as EntityType)
-      );
-    }
-  } catch (parseError) {
-    const errMsg = parseError instanceof Error ? parseError.message : String(parseError);
-    console.error(`[WARN] Failed to parse Gemini entity response: ${errMsg}`);
-  }
-  return [];
-}
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// CHUNK MAPPING HELPERS
-// ═══════════════════════════════════════════════════════════════════════════════
-
-/**
- * Find which DB chunk contains a given character position in the OCR text.
- * Chunks have character_start (inclusive) and character_end (exclusive).
- *
- * @param dbChunks - Chunks ordered by chunk_index (from getChunksByDocumentId)
- * @param position - Character offset in the OCR text
- * @returns The matching chunk, or null if no chunk covers that position
- */
-function findChunkForPosition(dbChunks: Chunk[], position: number): Chunk | null {
-  for (const chunk of dbChunks) {
-    if (position >= chunk.character_start && position < chunk.character_end) {
-      return chunk;
-    }
-  }
-  return null;
-}
-
-/**
- * Find the position of an entity's raw_text in the OCR text, then map to a DB chunk.
- * Uses case-insensitive search. Returns chunk info including chunk_id, character offsets,
- * and page_number.
- *
- * @param entityRawText - The raw entity text from Gemini extraction
- * @param ocrText - The full OCR extracted text
- * @param dbChunks - DB chunks ordered by chunk_index
- * @returns Object with chunk_id, character_start, character_end, page_number or nulls
- */
-function mapEntityToChunk(
-  entityRawText: string,
-  ocrText: string,
-  dbChunks: Chunk[],
-): { chunk_id: string | null; character_start: number | null; character_end: number | null; page_number: number | null } {
-  if (dbChunks.length === 0 || !entityRawText || entityRawText.trim().length === 0) {
-    return { chunk_id: null, character_start: null, character_end: null, page_number: null };
-  }
-
-  // Case-insensitive search for the entity text in the OCR text
-  const lowerOcr = ocrText.toLowerCase();
-  const lowerEntity = entityRawText.toLowerCase().trim();
-  const pos = lowerOcr.indexOf(lowerEntity);
-
-  if (pos === -1) {
-    return { chunk_id: null, character_start: null, character_end: null, page_number: null };
-  }
-
-  const charStart = pos;
-  const charEnd = pos + entityRawText.trim().length;
-
-  const chunk = findChunkForPosition(dbChunks, pos);
-  if (!chunk) {
-    // Position found in OCR text but no chunk covers it (edge case with overlap gaps)
-    return { chunk_id: null, character_start: charStart, character_end: charEnd, page_number: null };
-  }
-
   return {
-    chunk_id: chunk.id,
-    character_start: charStart,
-    character_end: charEnd,
-    page_number: chunk.page_number,
+    kg_auto_merged: true,
+    kg_documents_processed: kgResult.documents_processed,
+    kg_new_entities_found: kgResult.new_entities_found,
+    kg_entities_matched_to_existing: kgResult.entities_matched_to_existing,
+    kg_new_nodes_created: kgResult.new_nodes_created,
+    kg_existing_nodes_updated: kgResult.existing_nodes_updated,
+    kg_new_edges_created: kgResult.new_edges_created,
+    kg_existing_edges_updated: kgResult.existing_edges_updated,
+    kg_provenance_id: kgResult.provenance_id,
+    kg_processing_duration_ms: kgResult.processing_duration_ms,
   };
 }
 
@@ -449,6 +278,9 @@ async function handleEntityExtract(params: Record<string, unknown>) {
       totalInserted++;
     }
 
+    // Auto-merge into knowledge graph if one exists
+    const kgMergeResult = await autoMergeIntoKnowledgeGraph(db, doc.id);
+
     return formatResponse({
       document_id: doc.id,
       total_entities: totalInserted,
@@ -462,6 +294,7 @@ async function handleEntityExtract(params: Record<string, unknown>) {
       processing_duration_ms: processingDurationMs,
       text_length: textLength,
       api_calls: apiCalls,
+      ...kgMergeResult,
     });
   } catch (error) {
     return handleError(error);
@@ -879,6 +712,9 @@ async function handleEntityExtractFromVLM(params: Record<string, unknown>) {
     const result = await extractEntitiesFromVLM(conn, input.document_id, entityProvId);
     const processingDurationMs = Date.now() - startTime;
 
+    // Auto-merge into knowledge graph if one exists
+    const kgMergeResult = await autoMergeIntoKnowledgeGraph(db, input.document_id);
+
     return formatResponse({
       document_id: input.document_id,
       entities_created: result.entities_created,
@@ -886,6 +722,7 @@ async function handleEntityExtractFromVLM(params: Record<string, unknown>) {
       source: 'vlm',
       provenance_id: entityProvId,
       processing_duration_ms: processingDurationMs,
+      ...kgMergeResult,
     });
   } catch (error) {
     return handleError(error);
@@ -942,6 +779,9 @@ async function handleEntityExtractFromExtractions(params: Record<string, unknown
     const result = mapExtractionEntitiesToDB(conn, input.document_id, entityProvId);
     const processingDurationMs = Date.now() - startTime;
 
+    // Auto-merge into knowledge graph if one exists
+    const kgMergeResult = await autoMergeIntoKnowledgeGraph(db, input.document_id);
+
     return formatResponse({
       document_id: input.document_id,
       entities_created: result.entities_created,
@@ -949,6 +789,7 @@ async function handleEntityExtractFromExtractions(params: Record<string, unknown
       source: 'extraction',
       provenance_id: entityProvId,
       processing_duration_ms: processingDurationMs,
+      ...kgMergeResult,
     });
   } catch (error) {
     return handleError(error);

@@ -48,6 +48,8 @@ const ClusterDocumentsInput = z.object({
     .describe('Agglomerative linkage. Ward excluded (incompatible with cosine).'),
   document_filter: z.array(z.string()).optional()
     .describe('Cluster only these document IDs. Default: all documents with embeddings.'),
+  entity_weight: z.number().min(0).max(1.0).default(0)
+    .describe('Weight for KG entity overlap in similarity (0=embedding only, 0.3=recommended blend)'),
 });
 
 const ClusterListInput = z.object({
@@ -98,6 +100,7 @@ async function handleClusterDocuments(
       min_cluster_size: input.min_cluster_size ?? 3,
       distance_threshold: input.distance_threshold ?? null,
       linkage: input.linkage ?? 'average',
+      entity_weight: input.entity_weight ?? 0,
     };
 
     const result = await runClustering(db, vector, config, input.document_filter);
@@ -105,6 +108,7 @@ async function handleClusterDocuments(
     return formatResponse(successResult({
       run_id: result.run_id,
       algorithm: result.algorithm,
+      entity_weight: config.entity_weight,
       n_clusters: result.n_clusters,
       total_documents: result.total_documents,
       noise_count: result.noise_document_ids.length,
@@ -353,7 +357,7 @@ async function handleClusterDelete(
 
 export const clusteringTools: Record<string, ToolDefinition> = {
   'ocr_cluster_documents': {
-    description: 'Cluster documents by semantic similarity using HDBSCAN, agglomerative, or k-means algorithms',
+    description: 'Cluster documents by semantic similarity using HDBSCAN, agglomerative, or k-means algorithms. Set entity_weight > 0 to blend KG entity overlap with embedding similarity.',
     inputSchema: ClusterDocumentsInput.shape,
     handler: handleClusterDocuments,
   },

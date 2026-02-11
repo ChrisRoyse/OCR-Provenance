@@ -16,7 +16,7 @@ import { validateInput } from '../utils/validation.js';
 import { requireDatabase } from '../server/state.js';
 import { computeHash } from '../utils/hash.js';
 import { MCPError } from '../server/errors.js';
-import { compareText, compareEntities, compareStructure, generateSummary } from '../services/comparison/diff-service.js';
+import { compareText, compareEntities, compareStructure, generateSummary, detectKGContradictions } from '../services/comparison/diff-service.js';
 import { insertComparison, getComparison, listComparisons } from '../services/storage/database/comparison-operations.js';
 import { getEntitiesByDocument } from '../services/storage/database/entity-operations.js';
 import { getProvenanceTracker } from '../services/provenance/index.js';
@@ -157,11 +157,15 @@ async function handleDocumentCompare(params: Record<string, unknown>): Promise<T
 
     // Entity diff (KG-aware: resolves entities through knowledge graph canonical names)
     let entityDiff = null;
+    let contradictionResult = null;
     if (input.include_entity_diff) {
       try {
         const entities1 = getEntitiesByDocument(conn, input.document_id_1);
         const entities2 = getEntitiesByDocument(conn, input.document_id_2);
         entityDiff = compareEntities(entities1, entities2, conn);
+
+        // OPT-10: KG-aware contradiction detection
+        contradictionResult = detectKGContradictions(conn, entities1, entities2);
       } catch (e: unknown) {
         // If entities table doesn't exist (no entities extracted yet), return empty
         const msg = e instanceof Error ? e.message : String(e);
@@ -174,7 +178,7 @@ async function handleDocumentCompare(params: Record<string, unknown>): Promise<T
     }
 
     // Generate summary
-    const summary = generateSummary(
+    let summary = generateSummary(
       textDiff,
       structuralDiff,
       entityDiff,
@@ -182,14 +186,27 @@ async function handleDocumentCompare(params: Record<string, unknown>): Promise<T
       String(doc2.file_name)
     );
 
+    // Append contradiction summary if any found
+    if (contradictionResult && contradictionResult.contradictions.length > 0) {
+      const highCount = contradictionResult.contradictions.filter(c => c.severity === 'high').length;
+      const medCount = contradictionResult.contradictions.filter(c => c.severity === 'medium').length;
+      const lowCount = contradictionResult.contradictions.filter(c => c.severity === 'low').length;
+      const parts: string[] = [];
+      if (highCount > 0) parts.push(`${highCount} high`);
+      if (medCount > 0) parts.push(`${medCount} medium`);
+      if (lowCount > 0) parts.push(`${lowCount} low`);
+      summary += ` KG contradictions detected: ${parts.join(', ')}.`;
+    }
+
     // Compute similarity from text diff or default to structural comparison
     const similarityRatio = textDiff ? textDiff.similarity_ratio : 0;
 
-    // Compute content hash
+    // Compute content hash (includes contradiction data for integrity)
     const diffContent = JSON.stringify({
       text_diff: textDiff,
       structural_diff: structuralDiff,
       entity_diff: entityDiff,
+      contradictions: contradictionResult,
     });
     const contentHash = computeHash(diffContent);
 
@@ -218,6 +235,11 @@ async function handleDocumentCompare(params: Record<string, unknown>): Promise<T
     // Update provenance with actual duration (not known at creation time)
     conn.prepare('UPDATE provenance SET processing_duration_ms = ? WHERE id = ?').run(processingDurationMs, provId);
 
+    // Build entity diff JSON including contradiction data for storage
+    const entityDiffStorage = entityDiff
+      ? { ...entityDiff, contradictions: contradictionResult }
+      : {};
+
     // Insert comparison record
     const comparison: Comparison = {
       id: comparisonId,
@@ -226,7 +248,7 @@ async function handleDocumentCompare(params: Record<string, unknown>): Promise<T
       similarity_ratio: similarityRatio,
       text_diff_json: JSON.stringify(textDiff ?? {}),
       structural_diff_json: JSON.stringify(structuralDiff),
-      entity_diff_json: JSON.stringify(entityDiff ?? {}),
+      entity_diff_json: JSON.stringify(entityDiffStorage),
       summary,
       content_hash: contentHash,
       provenance_id: provId,
@@ -245,6 +267,7 @@ async function handleDocumentCompare(params: Record<string, unknown>): Promise<T
       text_diff: textDiff,
       structural_diff: structuralDiff,
       entity_diff: entityDiff,
+      contradictions: contradictionResult,
       provenance_id: provId,
       processing_duration_ms: processingDurationMs,
     });
@@ -312,7 +335,7 @@ async function handleComparisonGet(params: Record<string, unknown>): Promise<Too
 
 export const comparisonTools: Record<string, ToolDefinition> = {
   'ocr_document_compare': {
-    description: 'Compare two OCR-processed documents to find differences in text, structure, and entities. Returns similarity ratio, text diff operations, structural metadata comparison, and entity differences.',
+    description: 'Compare two OCR-processed documents to find differences in text, structure, and entities. Returns similarity ratio, text diff operations, structural metadata comparison, entity differences, and KG-aware contradiction detection (conflicting relationships across documents).',
     inputSchema: DocumentCompareInput.shape,
     handler: handleDocumentCompare,
   },
