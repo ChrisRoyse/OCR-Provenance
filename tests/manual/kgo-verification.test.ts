@@ -75,7 +75,6 @@ import {
 } from '../../src/services/knowledge-graph/export-service.js';
 import {
   expandQueryWithKG,
-  expandQuery,
 } from '../../src/services/search/query-expander.js';
 import { knowledgeGraphTools } from '../../src/tools/knowledge-graph.js';
 import type { EntityType } from '../../src/models/entity.js';
@@ -713,15 +712,11 @@ describe('KGO Comprehensive Manual Verification', () => {
       const conn = db.getConnection();
       await buildKnowledgeGraph(db, { resolution_mode: 'exact' });
 
-      // Plain expansion (no KG)
-      const plainExpanded = expandQuery('john');
-
       // KG expansion
       const kgExpanded = expandQueryWithKG('john', conn);
 
       console.error('=== VERIFICATION: Query Expansion with KG ===');
-      console.error(`  ACTION: expandQuery('john') vs expandQueryWithKG('john', conn)`);
-      console.error(`  PLAIN: "${plainExpanded}"`);
+      console.error(`  ACTION: expandQueryWithKG('john', conn)`);
       console.error(`  KG:    "${kgExpanded}"`);
 
       // "john" alone won't match a knowledge node exact match, but let's also test with "john smith"
@@ -729,8 +724,8 @@ describe('KGO Comprehensive Manual Verification', () => {
       console.error(`  KG (full name): "${kgExpandedFull}"`);
 
       // The KG should find the "John Smith" node when queried with exact match
-      console.error(`  EXPECTED: KG expansion >= plain expansion terms`);
-      console.error(`  ACTUAL: plain terms=${plainExpanded.split(' OR ').length}, KG terms=${kgExpanded.split(' OR ').length}`);
+      console.error(`  EXPECTED: KG expansion returns non-empty string`);
+      console.error(`  ACTUAL: KG terms=${kgExpanded.split(' OR ').length}`);
       console.error(`  VERDICT: PASS (function executed without error)`);
 
       // The function should not crash
@@ -738,19 +733,20 @@ describe('KGO Comprehensive Manual Verification', () => {
       expect(kgExpandedFull).toBeTruthy();
     });
 
-    it('expandQueryWithKG on empty KG returns same as static expansion', () => {
+    it('expandQueryWithKG on empty KG still returns expanded query', () => {
       const conn = db.getConnection();
       // No graph built - KG tables exist but are empty
 
       const result = expandQueryWithKG('injury', conn);
-      const staticResult = expandQuery('injury');
 
       console.error('=== VERIFICATION: Empty KG expansion ===');
       console.error(`  KG result: "${result}"`);
-      console.error(`  Static result: "${staticResult}"`);
-      console.error(`  VERDICT: ${result === staticResult ? 'PASS' : 'FAIL'}`);
+      console.error(`  VERDICT: ${result.includes('injury') ? 'PASS' : 'FAIL'}`);
 
-      expect(result).toBe(staticResult);
+      // Should contain original term and synonyms even without KG data
+      expect(result).toContain('injury');
+      expect(result).toContain('wound');
+      expect(result).toContain('trauma');
     });
   });
 
@@ -1105,19 +1101,21 @@ describe('KGO Comprehensive Manual Verification', () => {
   // =========================================================================
 
   describe('Test 12: Edge Cases', () => {
-    it('expandQueryWithKG on empty DB returns same as static expansion', () => {
+    it('expandQueryWithKG on empty DB still returns expanded query', () => {
       const conn = db.getConnection();
       // No graph built
 
       const result = expandQueryWithKG('injury', conn);
-      const staticResult = expandQuery('injury');
 
       console.error('=== VERIFICATION: Empty KG expansion edge case ===');
-      console.error(`  EXPECTED: same as static`);
-      console.error(`  ACTUAL: KG="${result}", static="${staticResult}"`);
-      console.error(`  VERDICT: ${result === staticResult ? 'PASS' : 'FAIL'}`);
+      console.error(`  EXPECTED: contains injury and synonyms`);
+      console.error(`  ACTUAL: KG="${result}"`);
+      console.error(`  VERDICT: ${result.includes('injury') ? 'PASS' : 'FAIL'}`);
 
-      expect(result).toBe(staticResult);
+      // Should contain original term and synonyms even without KG data
+      expect(result).toContain('injury');
+      expect(result).toContain('wound');
+      expect(result).toContain('trauma');
     });
 
     it('duplicate build fails with "already exists" error', async () => {

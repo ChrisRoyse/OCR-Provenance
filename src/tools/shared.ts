@@ -21,7 +21,7 @@ import { MCPError, formatErrorResponse } from '../server/errors.js';
 export type ToolResponse = { content: Array<{ type: 'text'; text: string }> };
 
 /** Tool handler function signature */
-export type ToolHandler = (params: Record<string, unknown>) => Promise<ToolResponse>;
+type ToolHandler = (params: Record<string, unknown>) => Promise<ToolResponse>;
 
 /** Tool definition with description, schema, and handler */
 export interface ToolDefinition {

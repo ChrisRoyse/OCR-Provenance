@@ -54,14 +54,14 @@ import { GeminiClient } from '../gemini/client.js';
 /** Maximum entities per document for co-occurrence to avoid O(n^2) blowup */
 const MAX_COOCCURRENCE_ENTITIES = 200;
 
-export interface BuildGraphOptions {
+interface BuildGraphOptions {
   document_filter?: string[];
   resolution_mode?: ResolutionMode;
   classify_relationships?: boolean;
   rebuild?: boolean;
 }
 
-export interface BuildGraphResult {
+interface BuildGraphResult {
   total_nodes: number;
   total_edges: number;
   entities_resolved: number;
@@ -74,7 +74,7 @@ export interface BuildGraphResult {
   processing_duration_ms: number;
 }
 
-export interface QueryGraphOptions {
+interface QueryGraphOptions {
   entity_name?: string;
   entity_type?: string;
   document_filter?: string[];
@@ -85,7 +85,7 @@ export interface QueryGraphOptions {
   limit?: number;
 }
 
-export interface QueryGraphResult {
+interface QueryGraphResult {
   query: Record<string, unknown>;
   total_nodes: number;
   total_edges: number;
@@ -110,7 +110,7 @@ export interface QueryGraphResult {
   }>;
 }
 
-export interface NodeDetailsResult {
+interface NodeDetailsResult {
   node: KnowledgeNode;
   member_entities: Array<{
     entity_id: string;
@@ -131,7 +131,7 @@ export interface NodeDetailsResult {
   provenance?: unknown;
 }
 
-export interface PathResult {
+interface PathResult {
   source: { id: string; canonical_name: string; entity_type: string };
   target: { id: string; canonical_name: string; entity_type: string };
   paths: Array<{

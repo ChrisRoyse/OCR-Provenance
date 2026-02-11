@@ -415,31 +415,6 @@ describe.skipIf(!sqliteVecAvailable)('VALUE ENHANCEMENT VERIFICATION: Phases 1-5
 
   describe('Phase 4: Search Enhancement', () => {
 
-    it('should expand queries with domain synonyms', async () => {
-      const { expandQuery } = await import('../../src/services/search/query-expander.js');
-
-      const expanded = expandQuery('injury treatment');
-      // Original terms preserved
-      expect(expanded).toContain('injury');
-      expect(expanded).toContain('treatment');
-      // Synonyms added
-      expect(expanded).toContain('wound');
-      expect(expanded).toContain('trauma');
-      expect(expanded).toContain('harm');
-      expect(expanded).toContain('damage');
-      expect(expanded).toContain('therapy');
-      expect(expanded).toContain('care');
-      // OR-joined format
-      expect(expanded).toContain(' OR ');
-    });
-
-    it('should not expand unknown terms', async () => {
-      const { expandQuery } = await import('../../src/services/search/query-expander.js');
-
-      const expanded = expandQuery('foobar');
-      expect(expanded).toBe('foobar');
-    });
-
     it('should return expansion metadata', async () => {
       const { getExpandedTerms } = await import('../../src/services/search/query-expander.js');
 
@@ -837,10 +812,10 @@ describe.skipIf(!sqliteVecAvailable)('VALUE ENHANCEMENT VERIFICATION: Phases 1-5
     });
 
     it('should handle query expansion of empty string', async () => {
-      const { expandQuery } = await import('../../src/services/search/query-expander.js');
+      const { getExpandedTerms } = await import('../../src/services/search/query-expander.js');
 
-      const expanded = expandQuery('');
-      expect(expanded).toBe('');
+      const result = getExpandedTerms('');
+      expect(result.expanded).toEqual([]);
     });
 
     it('should chunk empty text to empty array', async () => {

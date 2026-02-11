@@ -27,7 +27,7 @@ import type { Chunk } from '../../models/chunk.js';
 import type { Embedding } from '../../models/embedding.js';
 import type { ProvenanceRecord, ProvenanceType, SourceType, ProvenanceLocation } from '../../models/provenance.js';
 
-export interface DocumentInfo {
+interface DocumentInfo {
   documentId: string;
   filePath: string;
   fileName: string;
@@ -35,7 +35,7 @@ export interface DocumentInfo {
   documentProvenanceId: string;
 }
 
-export interface EmbedResult {
+interface EmbedResult {
   success: boolean;
   embeddingIds: string[];
   provenanceIds: string[];

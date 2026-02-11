@@ -15,7 +15,7 @@ import type { DatabaseService } from '../services/storage/database/index.js';
 /**
  * Successful tool result
  */
-export interface ToolResultSuccess<T = unknown> {
+interface ToolResultSuccess<T = unknown> {
   success: true;
   data: T;
 }

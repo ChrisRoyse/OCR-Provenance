@@ -9,7 +9,7 @@
 import { describe, it, expect, beforeAll } from 'vitest';
 import { resolve } from 'path';
 import { existsSync } from 'fs';
-import { DatalabClient } from '../../../src/services/ocr/index.js';
+import { DatalabClient } from '../../../src/services/ocr/datalab.js';
 
 // Test files from ./data/bench/
 const TEST_PDF = resolve('./data/bench/doc_0005.pdf');

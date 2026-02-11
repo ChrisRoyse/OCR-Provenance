@@ -13,7 +13,7 @@ import {
   chunkWithPageTracking,
   createChunkProvenance,
   ChunkProvenanceParams,
-} from '../../../src/services/chunking/index.js';
+} from '../../../src/services/chunking/chunker.js';
 import {
   DEFAULT_CHUNKING_CONFIG,
   getOverlapCharacters,

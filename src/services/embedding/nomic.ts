@@ -10,7 +10,7 @@
 import { PythonShell, Options as PythonShellOptions } from 'python-shell';
 import path from 'path';
 
-export type EmbeddingErrorCode =
+type EmbeddingErrorCode =
   | 'GPU_NOT_AVAILABLE'
   | 'EMBEDDING_FAILED'
   | 'PARSE_ERROR'
@@ -30,7 +30,7 @@ export class EmbeddingError extends Error {
 }
 
 /** Result from batch embedding (matches Python EmbeddingResult dataclass) */
-export interface EmbeddingResult {
+interface EmbeddingResult {
   success: boolean;
   embeddings: number[][]; // (n, 768) as nested array
   count: number;
@@ -45,7 +45,7 @@ export interface EmbeddingResult {
 }
 
 /** Result from single query embedding (matches Python QueryEmbeddingResult dataclass) */
-export interface QueryEmbeddingResult {
+interface QueryEmbeddingResult {
   success: boolean;
   embedding: number[]; // (768,) as array
   elapsed_ms: number;
@@ -321,6 +321,3 @@ export function getEmbeddingClient(): NomicEmbeddingClient {
   return _client;
 }
 
-export function resetEmbeddingClient(): void {
-  _client = null;
-}

@@ -12,7 +12,7 @@ import { DatabaseService } from '../storage/database/index.js';
 import type { Document, OCRResult, PageOffset } from '../../models/document.js';
 import { ProvenanceType, type ProvenanceRecord } from '../../models/provenance.js';
 
-export interface ProcessorConfig extends DatalabClientConfig {
+interface ProcessorConfig extends DatalabClientConfig {
   maxConcurrent?: number;
   defaultMode?: 'fast' | 'balanced' | 'accurate';
 }

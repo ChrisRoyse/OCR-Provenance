@@ -33,7 +33,7 @@ const AI_LOWER_THRESHOLD = 0.70;
 
 export type ResolutionMode = 'exact' | 'fuzzy' | 'ai';
 
-export interface ResolutionResult {
+interface ResolutionResult {
   nodes: KnowledgeNode[];
   links: NodeEntityLink[];
   stats: {

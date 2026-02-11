@@ -14,16 +14,12 @@ export {
   type VLMAnalysisResult,
   type ImageAnalysis,
   type ImageClassification,
-  type DeepAnalysisResult,
-  type DescribeImageOptions,
 } from './service.js';
 
 // Pipeline
 export {
   VLMPipeline,
   createVLMPipeline,
-  type PipelineConfig,
-  type ProcessingResult,
   type BatchResult,
 } from './pipeline.js';
 

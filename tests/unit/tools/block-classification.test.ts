@@ -14,8 +14,17 @@ import { createHash } from 'crypto';
 import {
   parseBlockTypeFromFilename,
   buildPageBlockClassification,
-  type PageImageClassification,
 } from '../../../src/tools/ingestion.js';
+
+/** Local type matching the internal PageImageClassification from ingestion.ts */
+interface PageImageClassification {
+  page: number;
+  images: Array<{
+    block_type: string;
+    is_header_footer: boolean;
+    content_hash: string;
+  }>;
+}
 
 function computeContentHash(buffer: Buffer): string {
   return `sha256:${createHash('sha256').update(buffer).digest('hex')}`;

@@ -26,7 +26,7 @@ import {
 /**
  * Parameters for creating chunk provenance record
  */
-export interface ChunkProvenanceParams {
+interface ChunkProvenanceParams {
   /** The chunk result containing text and position info */
   chunk: ChunkResult;
   /** Pre-computed hash of chunk.text (sha256:...) */

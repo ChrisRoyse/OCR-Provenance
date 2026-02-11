@@ -60,7 +60,7 @@ export const state: ServerState = {
 /**
  * Services returned from requireDatabase
  */
-export interface DatabaseServices {
+interface DatabaseServices {
   db: DatabaseService;
   vector: VectorService;
   /** Generation counter for detecting stale references */

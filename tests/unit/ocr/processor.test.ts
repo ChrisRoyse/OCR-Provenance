@@ -14,7 +14,7 @@ import { existsSync, mkdtempSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { v4 as uuidv4 } from 'uuid';
-import { OCRProcessor, type ProcessResult } from '../../../src/services/ocr/index.js';
+import { OCRProcessor, type ProcessResult } from '../../../src/services/ocr/processor.js';
 import { DatabaseService } from '../../../src/services/storage/database/index.js';
 import { ProvenanceType } from '../../../src/models/provenance.js';
 import { computeHash } from '../../../src/utils/hash.js';

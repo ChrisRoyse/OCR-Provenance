@@ -23,7 +23,7 @@ import {
   computeHash,
   uuidv4,
 } from './helpers.js';
-import { deleteExtractionsByDocument } from '../../../src/services/storage/database/extraction-operations.js';
+
 
 describe('Extraction Embeddings', () => {
   let testDir: string;
@@ -221,68 +221,6 @@ describe('Extraction Embeddings', () => {
     const db = dbService!;
     const result = db.getEmbeddingByExtractionId('nonexistent-extraction-id');
     expect(result).toBeNull();
-  });
-
-  it.skipIf(!sqliteVecAvailable)('cascade delete removes extraction embeddings', () => {
-    const db = dbService!;
-    const { docProv, doc, extProv, extractionId } = createExtractionChain(db);
-
-    // Create embedding provenance
-    const embProv = createTestProvenance({
-      type: ProvenanceType.EMBEDDING,
-      source_type: 'EMBEDDING',
-      source_id: extProv.id,
-      root_document_id: docProv.id,
-      parent_id: extProv.id,
-      parent_ids: JSON.stringify([docProv.id, extProv.id]),
-      chain_depth: 3,
-    });
-    db.insertProvenance(embProv);
-
-    const embeddingId = uuidv4();
-    db.insertEmbedding({
-      id: embeddingId,
-      chunk_id: null,
-      image_id: null,
-      extraction_id: extractionId,
-      document_id: doc.id,
-      original_text: 'will be deleted',
-      original_text_length: 15,
-      source_file_path: doc.file_path,
-      source_file_name: doc.file_name,
-      source_file_hash: doc.file_hash,
-      page_number: 1,
-      page_range: null,
-      character_start: 0,
-      character_end: 15,
-      chunk_index: 0,
-      total_chunks: 1,
-      model_name: 'nomic-embed-text-v1.5',
-      model_version: '1.5.0',
-      task_type: 'search_document',
-      inference_mode: 'local',
-      gpu_device: 'cuda:0',
-      provenance_id: embProv.id,
-      content_hash: computeHash('will be deleted'),
-      generation_duration_ms: 30,
-    });
-
-    // Verify embedding exists before delete
-    const before = db.getEmbeddingByExtractionId(extractionId);
-    expect(before).not.toBeNull();
-
-    // Cascade delete extractions for the document
-    const conn = db.getConnection();
-    const deleted = deleteExtractionsByDocument(conn, doc.id);
-    expect(deleted).toBe(1);
-
-    // Verify embedding is gone
-    const after = db.getEmbeddingByExtractionId(extractionId);
-    expect(after).toBeNull();
-
-    // Verify extraction is gone
-    const extractions = db.getExtractionsByDocument(doc.id);
-    expect(extractions).toHaveLength(0);
   });
 
   it.skipIf(!sqliteVecAvailable)('batch insert includes extraction_id', () => {

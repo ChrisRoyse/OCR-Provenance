@@ -15,7 +15,7 @@ import {
   OCRAuthenticationError,
   mapPythonError,
   type OCRErrorCategory,
-} from '../../../src/services/ocr/index.js';
+} from '../../../src/services/ocr/errors.js';
 
 describe('OCR Errors', () => {
   describe('OCRError', () => {

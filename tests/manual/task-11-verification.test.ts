@@ -19,7 +19,7 @@ import { join, resolve } from 'path';
 import { v4 as uuidv4 } from 'uuid';
 
 import { DatabaseService } from '../../src/services/storage/database/index.js';
-import { OCRProcessor } from '../../src/services/ocr/index.js';
+import { OCRProcessor } from '../../src/services/ocr/processor.js';
 import { ProvenanceType } from '../../src/models/provenance.js';
 import { computeHash, hashFile } from '../../src/utils/hash.js';
 

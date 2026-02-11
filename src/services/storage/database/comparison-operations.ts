@@ -74,7 +74,7 @@ export function listComparisons(
 /**
  * Summary of a comparison (excludes large JSON diff fields)
  */
-export interface ComparisonSummary {
+interface ComparisonSummary {
   id: string;
   document_id_1: string;
   document_id_2: string;

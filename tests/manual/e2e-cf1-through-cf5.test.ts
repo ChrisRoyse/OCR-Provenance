@@ -56,7 +56,7 @@ import {
 import { DEFAULT_FILE_TYPES, ProcessPendingInput } from '../../src/utils/validation.js';
 import { SUPPORTED_FILE_TYPES } from '../../src/models/document.js';
 import { ProvenanceType, PROVENANCE_CHAIN_DEPTH } from '../../src/models/provenance.js';
-import { insertExtraction, getExtractionsByDocument, deleteExtractionsByDocument } from '../../src/services/storage/database/extraction-operations.js';
+import { insertExtraction, getExtractionsByDocument } from '../../src/services/storage/database/extraction-operations.js';
 import { insertFormFill, getFormFill, listFormFills, deleteFormFill } from '../../src/services/storage/database/form-fill-operations.js';
 import { computeHash } from '../../src/utils/hash.js';
 
@@ -598,7 +598,7 @@ describe('E2E-4: CF-3 Structured Extraction CRUD + Provenance', () => {
     expect(PROVENANCE_CHAIN_DEPTH[ProvenanceType.EXTRACTION]).toBe(2);
   });
 
-  it('deleteExtractionsByDocument removes extractions', () => {
+  it('direct DELETE removes extractions from database', () => {
     // Insert another extraction to delete
     const extId = uuidv4();
     const extProvId = uuidv4();
@@ -626,8 +626,9 @@ describe('E2E-4: CF-3 Structured Extraction CRUD + Provenance', () => {
     const before = getExtractionsByDocument(db, docId);
     expect(before.length).toBeGreaterThanOrEqual(2);
 
-    const deleted = deleteExtractionsByDocument(db, docId);
-    expect(deleted).toBeGreaterThanOrEqual(2);
+    // Delete extractions directly via SQL
+    const result = db.prepare('DELETE FROM extractions WHERE document_id = ?').run(docId);
+    expect(result.changes).toBeGreaterThanOrEqual(2);
 
     const after = getExtractionsByDocument(db, docId);
     expect(after).toHaveLength(0);

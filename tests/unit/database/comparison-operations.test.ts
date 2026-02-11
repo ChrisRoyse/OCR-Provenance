@@ -25,8 +25,6 @@ import {
   insertComparison,
   getComparison,
   listComparisons,
-  deleteComparison,
-  deleteComparisonsByDocument,
 } from '../../../src/services/storage/database/comparison-operations.js';
 import type { Comparison } from '../../../src/models/comparison.js';
 
@@ -385,80 +383,6 @@ describe('Comparison Operations', () => {
 
     const results = listComparisons(db);
     expect(results).toEqual([]);
-  });
-
-  // ═══════════════════════════════════════════════════════════════════════════
-  // DELETE
-  // ═══════════════════════════════════════════════════════════════════════════
-
-  it.skipIf(!sqliteVecAvailable)('delete comparison - row gone from DB', () => {
-    const db = dbService!.getConnection();
-    const comp = buildComparison();
-    insertComparison(db, comp);
-
-    // Verify it exists first
-    expect(getComparison(db, comp.id)).not.toBeNull();
-
-    const deleted = deleteComparison(db, comp.id);
-    expect(deleted).toBe(true);
-
-    // Verify row is gone via direct SELECT
-    const row = db.prepare('SELECT * FROM comparisons WHERE id = ?').get(comp.id);
-    expect(row).toBeUndefined();
-  });
-
-  it.skipIf(!sqliteVecAvailable)('delete non-existent comparison returns false', () => {
-    const db = dbService!.getConnection();
-    const deleted = deleteComparison(db, 'nonexistent-id');
-    expect(deleted).toBe(false);
-  });
-
-  it.skipIf(!sqliteVecAvailable)('delete by document - all comparisons for doc gone', () => {
-    const db = dbService!.getConnection();
-
-    // Create two comparisons involving doc1
-    const comp1 = buildComparison();
-    insertComparison(db, comp1);
-
-    const comp2 = buildComparison({ created_at: '2026-03-01T00:00:00.000Z' });
-    insertComparison(db, comp2);
-
-    // Create a third document and a comparison NOT involving doc1
-    const prov3 = createTestProvenance();
-    dbService!.insertProvenance(prov3);
-    const doc3 = createTestDocument(prov3.id, { status: 'complete' });
-    dbService!.insertDocument(doc3);
-
-    const compProv3 = createComparisonProvenance(prov3.id);
-    const comp3: Comparison = {
-      id: uuidv4(),
-      document_id_1: doc3.id,
-      document_id_2: docId2,
-      similarity_ratio: 0.3,
-      text_diff_json: '{}',
-      structural_diff_json: '{}',
-      entity_diff_json: '{}',
-      summary: 'Not involving doc1',
-      content_hash: computeHash('comp3-unrelated'),
-      provenance_id: compProv3,
-      created_at: new Date().toISOString(),
-      processing_duration_ms: 80,
-    };
-    insertComparison(db, comp3);
-
-    // Delete all comparisons involving doc1
-    const deletedCount = deleteComparisonsByDocument(db, docId1);
-    expect(deletedCount).toBe(2);
-
-    // Verify doc1's comparisons are gone
-    const row1 = db.prepare('SELECT * FROM comparisons WHERE id = ?').get(comp1.id);
-    expect(row1).toBeUndefined();
-    const row2 = db.prepare('SELECT * FROM comparisons WHERE id = ?').get(comp2.id);
-    expect(row2).toBeUndefined();
-
-    // Verify unrelated comparison still exists
-    const row3 = db.prepare('SELECT * FROM comparisons WHERE id = ?').get(comp3.id);
-    expect(row3).toBeDefined();
   });
 
   // ═══════════════════════════════════════════════════════════════════════════
