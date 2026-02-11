@@ -180,9 +180,6 @@ function insertTestDocument(
 // PHASE 1: SOURCE OF TRUTH VERIFICATION - TOOL COUNTS
 // ═══════════════════════════════════════════════════════════════════════════════
 
-describe('FORENSIC VERIFICATION - Phase 1: Source of Truth', () => {
-  // Tool count and export tests removed - these are TS-guaranteed and brittle against tool additions
-});
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // PHASE 2: PHYSICAL DATABASE VERIFICATION

@@ -750,10 +750,7 @@ describe('Database Tools - Edge Cases', () => {
     }
   });
 
-  it('recovers after failed operations', () => {
-    // Create a valid database
-    if (!sqliteVecAvailable) return;
-
+  it.skipIf(!sqliteVecAvailable)('recovers after failed operations', () => {
     const name = createUniqueName('recovery');
     createDatabase(name, undefined, tempDir, true);
 

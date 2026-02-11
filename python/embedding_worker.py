@@ -66,7 +66,6 @@ PREFIX_QUERY = "search_query: "
 # Batch configuration
 DEFAULT_BATCH_SIZE = 512
 MIN_BATCH_SIZE = 1  # Must support single-item batches for VLM descriptions
-MAX_BATCH_SIZE = 1024
 
 # Device configuration
 DEFAULT_DEVICE = "cuda:0"

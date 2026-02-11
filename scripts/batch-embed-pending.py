@@ -7,7 +7,6 @@ Processes in batches of 500 to prevent CUDA OOM.
 import json
 import sqlite3
 import subprocess
-import sys
 import hashlib
 import uuid
 import struct

@@ -7,7 +7,6 @@
 export {
   GeminiClient,
   type GeminiResponse,
-  type TokenUsage,
   type FileRef,
   CircuitBreakerOpenError,
 } from './client.js';
@@ -15,31 +14,23 @@ export {
 // Configuration
 export {
   type GeminiConfig,
-  GeminiConfigSchema,
   loadGeminiConfig,
   GEMINI_MODELS,
   RATE_LIMITS,
   GENERATION_PRESETS,
   ALLOWED_MIME_TYPES,
   MAX_FILE_SIZE,
-  type GeminiModelId,
   type SubscriptionTier,
   type ThinkingLevel,
-  type GeminiMode,
-  type AllowedMimeType,
-  type MediaResolution,
 } from './config.js';
 
 // Rate Limiter
 export {
   GeminiRateLimiter,
   estimateTokens,
-  type RateLimiterStatus,
 } from './rate-limiter.js';
 
 // Circuit Breaker
 export {
   CircuitBreaker,
-  type CircuitBreakerConfig,
-  type CircuitBreakerStatus,
 } from './circuit-breaker.js';

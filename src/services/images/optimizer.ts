@@ -20,7 +20,7 @@ import * as os from 'os';
 /**
  * Image category classification
  */
-export type ImageCategory =
+type ImageCategory =
   | 'photo'
   | 'chart'
   | 'document'
@@ -32,7 +32,7 @@ export type ImageCategory =
 /**
  * Result of image relevance analysis
  */
-export interface ImageAnalysisResult {
+interface ImageAnalysisResult {
   success: true;
   path: string;
   width: number;
@@ -51,7 +51,7 @@ export interface ImageAnalysisResult {
 /**
  * Result of resize operation
  */
-export interface ResizeResult {
+interface ResizeResult {
   success: true;
   resized: boolean;
   original_width: number;
@@ -65,36 +65,12 @@ export interface ResizeResult {
 /**
  * Result when image is skipped (too small)
  */
-export interface SkipResult {
+interface SkipResult {
   success: true;
   skipped: true;
   skip_reason: string;
   original_width: number;
   original_height: number;
-}
-
-/**
- * Directory analysis result
- */
-export interface DirectoryAnalysisResult {
-  success: true;
-  directory: string;
-  total: number;
-  should_vlm: number;
-  skip_too_small: number;
-  skip_logo_icon: number;
-  skip_decorative: number;
-  skip_low_relevance: number;
-  images: Array<{
-    path: string;
-    width?: number;
-    height?: number;
-    category?: ImageCategory;
-    relevance?: number;
-    should_vlm: boolean;
-    skip_reason?: string;
-    error?: string;
-  }>;
 }
 
 /**
@@ -108,13 +84,11 @@ interface ErrorResult {
 /**
  * Configuration for the image optimizer
  */
-export interface ImageOptimizerConfig {
+interface ImageOptimizerConfig {
   /** Path to Python executable */
   pythonPath: string;
   /** Timeout in milliseconds */
   timeout: number;
-  /** Maximum width for OCR resize (default: 4800) */
-  ocrMaxWidth: number;
   /** Maximum dimension for VLM resize (default: 2048) */
   vlmMaxDimension: number;
   /** Minimum size to skip for VLM (default: 50) */
@@ -129,7 +103,6 @@ const MAX_STDERR_LENGTH = 10_240;
 const DEFAULT_CONFIG: ImageOptimizerConfig = {
   pythonPath: 'python3',
   timeout: 60000, // 1 minute
-  ocrMaxWidth: 4800,
   vlmMaxDimension: 2048,
   vlmSkipBelowSize: 50,
   minRelevanceScore: 0.3,
@@ -166,28 +139,6 @@ export class ImageOptimizer {
   }
 
   /**
-   * Resize an image for OCR processing (Datalab API).
-   *
-   * @param inputPath - Path to input image
-   * @param outputPath - Path for output (optional, creates temp file if not provided)
-   * @returns Resize result
-   */
-  async resizeForOCR(
-    inputPath: string,
-    outputPath?: string
-  ): Promise<ResizeResult | ErrorResult> {
-    const output = outputPath ?? this.createTempPath(inputPath, 'ocr');
-    return this.runPython([
-      '--resize-for-ocr',
-      inputPath,
-      '--output',
-      output,
-      '--max-width',
-      String(this.config.ocrMaxWidth),
-    ]);
-  }
-
-  /**
    * Resize an image for VLM processing (Gemini).
    *
    * @param inputPath - Path to input image
@@ -206,23 +157,6 @@ export class ImageOptimizer {
       output,
       '--max-dimension',
       String(this.config.vlmMaxDimension),
-    ]);
-  }
-
-  /**
-   * Analyze all images in a directory.
-   *
-   * @param dirPath - Path to directory
-   * @returns Analysis summary with per-image results
-   */
-  async analyzeDirectory(
-    dirPath: string
-  ): Promise<DirectoryAnalysisResult | ErrorResult> {
-    return this.runPython([
-      '--analyze-dir',
-      dirPath,
-      '--min-relevance',
-      String(this.config.minRelevanceScore),
     ]);
   }
 

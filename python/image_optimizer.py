@@ -72,14 +72,11 @@ class ImageAnalysis:
 # Thresholds for heuristic filtering
 MIN_DIMENSION_VLM = 50           # Skip images smaller than this
 MIN_RELEVANCE_SCORE = 0.35       # Below this = definitely skip VLM
-HIGH_RELEVANCE_SCORE = 0.6       # Above this = definitely process
 LOGO_COLOR_THRESHOLD = 48        # Images with fewer colors likely logos
-ICON_MAX_DIMENSION = 180         # Images this small are likely icons
 EXTREME_ASPECT_RATIO = 3.5       # Ratios > this are likely banners/decorative
 
 # OCR and VLM size limits
 VLM_MAX_DIMENSION = 2048         # Gemini optimal size
-VLM_MAX_FILE_SIZE = 20_000_000   # 20MB Gemini limit
 
 
 def get_color_diversity(img: Image.Image, sample_size: int = 10000) -> tuple[int, float]:

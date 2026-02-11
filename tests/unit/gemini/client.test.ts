@@ -7,12 +7,18 @@ import {
   GeminiClient,
   GeminiRateLimiter,
   CircuitBreaker,
-  CircuitState,
   loadGeminiConfig,
   GEMINI_MODELS,
   RATE_LIMITS,
   estimateTokens,
 } from '../../../src/services/gemini/index.js';
+
+// CircuitState is not exported; use string literals matching the enum values
+const CircuitState = {
+  CLOSED: 'CLOSED' as const,
+  OPEN: 'OPEN' as const,
+  HALF_OPEN: 'HALF_OPEN' as const,
+};
 
 describe('Gemini Config', () => {
   it('should have correct model IDs', () => {

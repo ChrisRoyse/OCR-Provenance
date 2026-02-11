@@ -157,7 +157,7 @@ export function getClusterDocuments(
 /**
  * Lightweight cluster summary (excludes large JSON fields)
  */
-export interface ClusterSummary {
+interface ClusterSummary {
   id: string;
   run_id: string;
   cluster_index: number;

@@ -24,8 +24,6 @@ import {
   getEntityMentions,
   searchEntities,
   deleteEntitiesByDocument,
-  getEntityStats,
-  countEntitiesByDocument,
 } from '../../../src/services/storage/database/entity-operations.js';
 import type { Entity, EntityMention } from '../../../src/models/entity.js';
 
@@ -476,85 +474,6 @@ describe('Entity Operations', () => {
     });
   });
 
-  describe('getEntityStats', () => {
-    it.skipIf(!sqliteVecAvailable)('returns count by type', () => {
-      const now = new Date().toISOString();
-      insertEntity(db, {
-        id: 'ent-st1',
-        document_id: 'doc-1',
-        entity_type: 'person',
-        raw_text: 'Person A',
-        normalized_text: 'person a',
-        confidence: 0.9,
-        metadata: null,
-        provenance_id: 'prov-entity-ext-1',
-        created_at: now,
-      });
-      insertEntity(db, {
-        id: 'ent-st2',
-        document_id: 'doc-1',
-        entity_type: 'person',
-        raw_text: 'Person B',
-        normalized_text: 'person b',
-        confidence: 0.85,
-        metadata: null,
-        provenance_id: 'prov-entity-ext-1',
-        created_at: now,
-      });
-      insertEntity(db, {
-        id: 'ent-st3',
-        document_id: 'doc-1',
-        entity_type: 'date',
-        raw_text: 'January 1, 2025',
-        normalized_text: '2025-01-01',
-        confidence: 0.95,
-        metadata: null,
-        provenance_id: 'prov-entity-ext-1',
-        created_at: now,
-      });
-
-      const stats = getEntityStats(db);
-      expect(stats['person']).toBe(2);
-      expect(stats['date']).toBe(1);
-    });
-
-    it.skipIf(!sqliteVecAvailable)('returns empty object when no entities', () => {
-      const stats = getEntityStats(db);
-      expect(Object.keys(stats).length).toBe(0);
-    });
-  });
-
-  describe('countEntitiesByDocument', () => {
-    it.skipIf(!sqliteVecAvailable)('counts entities for a document', () => {
-      const now = new Date().toISOString();
-      insertEntity(db, {
-        id: 'ent-cnt1',
-        document_id: 'doc-1',
-        entity_type: 'person',
-        raw_text: 'Count Me',
-        normalized_text: 'count me',
-        confidence: 0.9,
-        metadata: null,
-        provenance_id: 'prov-entity-ext-1',
-        created_at: now,
-      });
-      insertEntity(db, {
-        id: 'ent-cnt2',
-        document_id: 'doc-1',
-        entity_type: 'location',
-        raw_text: 'Somewhere',
-        normalized_text: 'somewhere',
-        confidence: 0.8,
-        metadata: null,
-        provenance_id: 'prov-entity-ext-1',
-        created_at: now,
-      });
-
-      expect(countEntitiesByDocument(db, 'doc-1')).toBe(2);
-      expect(countEntitiesByDocument(db, 'doc-2')).toBe(0);
-    });
-  });
-
   describe('all entity types', () => {
     it.skipIf(!sqliteVecAvailable)('accepts all valid entity types', () => {
       const now = new Date().toISOString();
@@ -576,8 +495,8 @@ describe('Entity Operations', () => {
         }).not.toThrow();
       }
 
-      const count = countEntitiesByDocument(db, 'doc-1');
-      expect(count).toBe(types.length);
+      const entities = getEntitiesByDocument(db, 'doc-1');
+      expect(entities.length).toBe(types.length);
     });
   });
 });

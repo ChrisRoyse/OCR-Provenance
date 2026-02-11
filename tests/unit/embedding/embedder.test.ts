@@ -17,12 +17,12 @@ import { join } from 'path';
 import { tmpdir } from 'os';
 import { v4 as uuidv4 } from 'uuid';
 
+import { EmbeddingService } from '../../../src/services/embedding/embedder.js';
 import {
-  EmbeddingService,
   EMBEDDING_DIM,
   MODEL_NAME,
   MODEL_VERSION,
-} from '../../../src/services/embedding/index.js';
+} from '../../../src/services/embedding/nomic.js';
 import { DatabaseService } from '../../../src/services/storage/database/index.js';
 import { VectorService } from '../../../src/services/storage/vector.js';
 import { ProvenanceType } from '../../../src/models/provenance.js';

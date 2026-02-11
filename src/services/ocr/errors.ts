@@ -5,7 +5,7 @@
  * Must match Python error categories in python/ocr_worker.py lines 34-94.
  */
 
-export type OCRErrorCategory =
+type OCRErrorCategory =
   | 'OCR_API_ERROR'
   | 'OCR_SERVER_ERROR'
   | 'OCR_RATE_LIMIT'

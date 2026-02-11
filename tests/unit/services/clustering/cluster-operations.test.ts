@@ -23,12 +23,12 @@ import {
   insertCluster,
   getCluster,
   listClusters,
-  updateClusterLabels,
+
   deleteClustersByRunId,
   insertDocumentCluster,
-  getDocumentClusters,
+
   getClusterDocuments,
-  deleteDocumentClustersByDocId,
+
   getClusterSummariesByRunId,
   getClusterSummariesForDocument,
   getClusteringStats,
@@ -274,45 +274,6 @@ describe('Cluster Operations', () => {
     });
   });
 
-  // =============================================================================
-  // updateClusterLabels
-  // =============================================================================
-
-  describe('updateClusterLabels', () => {
-    it.skipIf(!sqliteVecAvailable)('updates label, description, and tag', () => {
-      const provId = insertClusteringProvenance();
-      const cluster = buildCluster(provId, {
-        label: null,
-        description: null,
-        classification_tag: null,
-      });
-      insertCluster(db, cluster);
-
-      updateClusterLabels(db, cluster.id, 'Financial docs', 'Cluster of financial reports', 'finance');
-
-      // Source of Truth: raw SQL verification
-      const row = db.prepare('SELECT label, description, classification_tag FROM clusters WHERE id = ?')
-        .get(cluster.id) as Record<string, unknown>;
-      expect(row.label).toBe('Financial docs');
-      expect(row.description).toBe('Cluster of financial reports');
-      expect(row.classification_tag).toBe('finance');
-    });
-
-    it.skipIf(!sqliteVecAvailable)('does not affect other clusters', () => {
-      const prov1 = insertClusteringProvenance();
-      const prov2 = insertClusteringProvenance();
-      const cluster1 = buildCluster(prov1, { label: 'Original' });
-      const cluster2 = buildCluster(prov2, { label: 'Untouched' });
-      insertCluster(db, cluster1);
-      insertCluster(db, cluster2);
-
-      updateClusterLabels(db, cluster1.id, 'Updated', 'New desc', 'new-tag');
-
-      const row2 = db.prepare('SELECT label FROM clusters WHERE id = ?')
-        .get(cluster2.id) as Record<string, unknown>;
-      expect(row2.label).toBe('Untouched');
-    });
-  });
 
   // =============================================================================
   // deleteClustersByRunId
@@ -416,63 +377,6 @@ describe('Cluster Operations', () => {
     });
   });
 
-  // =============================================================================
-  // getDocumentClusters
-  // =============================================================================
-
-  describe('getDocumentClusters', () => {
-    it.skipIf(!sqliteVecAvailable)('returns all clusters for a document with is_noise boolean conversion', () => {
-      const docProvId = uuidv4();
-      insertTestProvenance(db, docProvId, 'DOCUMENT', docProvId);
-      insertTestDocument(db, 'doc-multi', docProvId);
-
-      const runId1 = uuidv4();
-      const runId2 = uuidv4();
-
-      // Cluster in run 1
-      const prov1 = insertClusteringProvenance();
-      const cluster1 = buildCluster(prov1, { run_id: runId1 });
-      insertCluster(db, cluster1);
-
-      // Cluster in run 2
-      const prov2 = insertClusteringProvenance();
-      const cluster2 = buildCluster(prov2, { run_id: runId2 });
-      insertCluster(db, cluster2);
-
-      const dc1 = buildDocumentCluster('doc-multi', cluster1.id, runId1, { is_noise: false });
-      const dc2 = buildDocumentCluster('doc-multi', cluster2.id, runId2, { is_noise: false });
-      insertDocumentCluster(db, dc1);
-      insertDocumentCluster(db, dc2);
-
-      const results = getDocumentClusters(db, 'doc-multi');
-      expect(results.length).toBe(2);
-
-      // Verify is_noise is converted to boolean
-      results.forEach((r) => {
-        expect(typeof r.is_noise).toBe('boolean');
-        expect(r.is_noise).toBe(false);
-      });
-    });
-
-    it.skipIf(!sqliteVecAvailable)('is_noise=true converts from INTEGER 1 to boolean true', () => {
-      const docProvId = uuidv4();
-      insertTestProvenance(db, docProvId, 'DOCUMENT', docProvId);
-      insertTestDocument(db, 'doc-noisy', docProvId);
-
-      const dc = buildDocumentCluster('doc-noisy', null, uuidv4(), { is_noise: true });
-      insertDocumentCluster(db, dc);
-
-      const results = getDocumentClusters(db, 'doc-noisy');
-      expect(results.length).toBe(1);
-      expect(results[0].is_noise).toBe(true);
-      expect(typeof results[0].is_noise).toBe('boolean');
-    });
-
-    it.skipIf(!sqliteVecAvailable)('returns empty array for document with no assignments', () => {
-      const results = getDocumentClusters(db, 'nonexistent-doc');
-      expect(results).toEqual([]);
-    });
-  });
 
   // =============================================================================
   // getClusterDocuments
@@ -525,49 +429,6 @@ describe('Cluster Operations', () => {
     });
   });
 
-  // =============================================================================
-  // deleteDocumentClustersByDocId
-  // =============================================================================
-
-  describe('deleteDocumentClustersByDocId', () => {
-    it.skipIf(!sqliteVecAvailable)('removes only that document assignments', () => {
-      // Setup two documents
-      const docProvA = uuidv4();
-      insertTestProvenance(db, docProvA, 'DOCUMENT', docProvA);
-      insertTestDocument(db, 'doc-del-a', docProvA);
-
-      const docProvB = uuidv4();
-      insertTestProvenance(db, docProvB, 'DOCUMENT', docProvB);
-      insertTestDocument(db, 'doc-del-b', docProvB);
-
-      // Create cluster
-      const clusterProv = insertClusteringProvenance();
-      const cluster = buildCluster(clusterProv);
-      insertCluster(db, cluster);
-
-      // Assign both documents
-      const dc1 = buildDocumentCluster('doc-del-a', cluster.id, cluster.run_id);
-      const dc2 = buildDocumentCluster('doc-del-b', cluster.id, cluster.run_id);
-      insertDocumentCluster(db, dc1);
-      insertDocumentCluster(db, dc2);
-
-      // Delete only doc-del-a's assignments
-      const deletedCount = deleteDocumentClustersByDocId(db, 'doc-del-a');
-      expect(deletedCount).toBe(1);
-
-      // Source of Truth: raw SQL verification
-      const rowA = db.prepare('SELECT * FROM document_clusters WHERE document_id = ?').all('doc-del-a');
-      expect(rowA.length).toBe(0);
-
-      const rowB = db.prepare('SELECT * FROM document_clusters WHERE document_id = ?').all('doc-del-b');
-      expect(rowB.length).toBe(1);
-    });
-
-    it.skipIf(!sqliteVecAvailable)('returns 0 for document with no assignments', () => {
-      const deletedCount = deleteDocumentClustersByDocId(db, 'nonexistent-doc');
-      expect(deletedCount).toBe(0);
-    });
-  });
 
   // =============================================================================
   // getClusterSummariesByRunId

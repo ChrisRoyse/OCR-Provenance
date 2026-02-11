@@ -15,8 +15,17 @@ import { v4 as uuidv4 } from 'uuid';
 import {
   VectorService,
   VectorError,
-  VectorErrorCode,
 } from '../../../src/services/storage/vector.js';
+
+// VectorErrorCode is not exported; use string literals matching the enum values
+const VectorErrorCode = {
+  INVALID_VECTOR_DIMENSIONS: 'INVALID_VECTOR_DIMENSIONS' as const,
+  EMBEDDING_NOT_FOUND: 'EMBEDDING_NOT_FOUND' as const,
+  VEC_EXTENSION_NOT_LOADED: 'VEC_EXTENSION_NOT_LOADED' as const,
+  STORE_FAILED: 'STORE_FAILED' as const,
+  SEARCH_FAILED: 'SEARCH_FAILED' as const,
+  DELETE_FAILED: 'DELETE_FAILED' as const,
+};
 import { DatabaseService } from '../../../src/services/storage/database.js';
 import { ProvenanceType } from '../../../src/models/provenance.js';
 import { computeHash } from '../../../src/utils/hash.js';

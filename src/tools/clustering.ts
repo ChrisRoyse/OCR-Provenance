@@ -111,7 +111,7 @@ async function handleClusterDocuments(
       noise_document_ids: result.noise_document_ids,
       silhouette_score: result.silhouette_score,
       processing_duration_ms: result.processing_duration_ms,
-      clusters: result.clusters.map((c) => ({
+      clusters: result.clusters.map((c: { cluster_index: number; document_count: number; coherence_score: number; document_ids: string[] }) => ({
         cluster_index: c.cluster_index,
         document_count: c.document_count,
         coherence_score: c.coherence_score,

@@ -9,7 +9,7 @@ import crypto from 'crypto';
 import type Database from 'better-sqlite3';
 import { SCHEMA_VERSION } from '../storage/migrations/schema-definitions.js';
 
-export interface BM25SearchOptions {
+interface BM25SearchOptions {
   query: string;
   limit?: number;
   phraseSearch?: boolean;
@@ -17,7 +17,7 @@ export interface BM25SearchOptions {
   includeHighlight?: boolean;
 }
 
-export interface BM25SearchResult {
+interface BM25SearchResult {
   chunk_id: string | null;
   image_id: string | null;
   embedding_id: string | null;

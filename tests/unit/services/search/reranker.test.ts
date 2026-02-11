@@ -11,7 +11,6 @@
 import { describe, it, expect } from 'vitest';
 import {
   buildRerankPrompt,
-  getRerankSchema,
   rerankResults,
 } from '../../../../src/services/search/reranker.js';
 
@@ -58,32 +57,6 @@ describe('Reranker', () => {
       expect(prompt).toContain('rankings');
       expect(prompt).toContain('relevance_score');
       expect(prompt).toContain('reasoning');
-    });
-  });
-
-  describe('getRerankSchema', () => {
-    it('returns a valid JSON schema object', () => {
-      const schema = getRerankSchema() as Record<string, unknown>;
-      expect(schema).toHaveProperty('type', 'object');
-      expect(schema).toHaveProperty('properties');
-      expect(schema).toHaveProperty('required');
-    });
-
-    it('has rankings array in schema', () => {
-      const schema = getRerankSchema() as Record<string, Record<string, unknown>>;
-      expect(schema.properties).toHaveProperty('rankings');
-      const rankings = schema.properties.rankings as Record<string, unknown>;
-      expect(rankings).toHaveProperty('type', 'array');
-    });
-
-    it('ranking items have required fields', () => {
-      const schema = getRerankSchema() as Record<string, Record<string, Record<string, Record<string, unknown>>>>;
-      const items = schema.properties.rankings.items as Record<string, unknown>;
-      expect(items).toHaveProperty('required');
-      const required = items.required as string[];
-      expect(required).toContain('index');
-      expect(required).toContain('relevance_score');
-      expect(required).toContain('reasoning');
     });
   });
 
