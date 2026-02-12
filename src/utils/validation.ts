@@ -205,6 +205,8 @@ export const ProcessPendingInput = z.object({
     .describe('Auto-extract entities after OCR+embed completes'),
   auto_build_kg: z.boolean().default(false)
     .describe('Auto-build/update knowledge graph after entity extraction (requires auto_extract_entities=true)'),
+  auto_extract_vlm_entities: z.boolean().default(false)
+    .describe('Auto-extract entities from VLM image descriptions after VLM processing. Requires GEMINI_API_KEY.'),
 });
 
 /**
@@ -220,9 +222,6 @@ export const OCRStatusInput = z.object({
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /**
- * Schema for semantic search
- */
-/**
  * Metadata filter for filtering search results by document metadata
  */
 export const MetadataFilter = z.object({
@@ -230,6 +229,16 @@ export const MetadataFilter = z.object({
   doc_author: z.string().optional(),
   doc_subject: z.string().optional(),
 }).optional();
+
+/**
+ * Entity filter for filtering search results by KG entities (shared across all search schemas)
+ */
+export const EntityFilter = z.object({
+  entity_names: z.array(z.string()).optional(),
+  entity_types: z.array(z.string()).optional(),
+  include_related: z.boolean().default(false)
+    .describe('Include documents from 1-hop related entities via KG edges'),
+}).optional().describe('Filter results by knowledge graph entities');
 
 /**
  * Schema for semantic search
@@ -245,12 +254,9 @@ export const SearchSemanticInput = z.object({
   metadata_filter: MetadataFilter,
   min_quality_score: z.number().min(0).max(5).optional()
     .describe('Minimum OCR quality score (0-5). Filters documents with low-quality OCR results.'),
-  entity_filter: z.object({
-    entity_names: z.array(z.string()).optional(),
-    entity_types: z.array(z.string()).optional(),
-    include_related: z.boolean().default(false)
-      .describe('Include documents from 1-hop related entities via KG edges'),
-  }).optional().describe('Filter results by knowledge graph entities'),
+  expand_query: z.boolean().default(false)
+    .describe('Expand query with domain-specific legal/medical synonyms and knowledge graph aliases'),
+  entity_filter: EntityFilter,
   rerank: z.boolean().default(false)
     .describe('Re-rank results using Gemini AI for contextual relevance scoring'),
 });
@@ -272,12 +278,7 @@ export const SearchInput = z.object({
     .describe('Minimum OCR quality score (0-5). Filters documents with low-quality OCR results.'),
   expand_query: z.boolean().default(false)
     .describe('Expand query with domain-specific legal/medical synonyms and knowledge graph aliases'),
-  entity_filter: z.object({
-    entity_names: z.array(z.string()).optional(),
-    entity_types: z.array(z.string()).optional(),
-    include_related: z.boolean().default(false)
-      .describe('Include documents from 1-hop related entities via KG edges'),
-  }).optional().describe('Filter results by knowledge graph entities'),
+  entity_filter: EntityFilter,
   rerank: z.boolean().default(false)
     .describe('Re-rank results using Gemini AI for contextual relevance scoring'),
 });
@@ -302,12 +303,9 @@ export const SearchHybridInput = z.object({
     .describe('Expand query with domain-specific legal/medical synonyms'),
   rerank: z.boolean().default(false)
     .describe('Re-rank results using Gemini AI for contextual relevance scoring'),
-  entity_filter: z.object({
-    entity_names: z.array(z.string()).optional(),
-    entity_types: z.array(z.string()).optional(),
-    include_related: z.boolean().default(false)
-      .describe('Include documents from 1-hop related entities via KG edges'),
-  }).optional().describe('Filter results by knowledge graph entities'),
+  entity_filter: EntityFilter,
+  entity_boost: z.number().min(0).max(2).default(0)
+    .describe('Entity boost factor: results containing entities matching query terms get score boost in RRF fusion'),
 });
 
 /**

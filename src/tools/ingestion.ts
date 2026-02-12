@@ -61,6 +61,7 @@ import {
 import { getChunksByDocumentId } from '../services/storage/database/chunk-operations.js';
 import { incrementalBuildGraph } from '../services/knowledge-graph/incremental-builder.js';
 import { buildKnowledgeGraph } from '../services/knowledge-graph/graph-service.js';
+import { extractEntitiesFromVLM } from '../services/knowledge-graph/vlm-entity-extractor.js';
 import {
   normalizeEntity,
   extractEntitiesFromText,
@@ -990,6 +991,9 @@ export async function handleProcessPending(
     if (input.auto_extract_entities && !process.env.GEMINI_API_KEY) {
       throw new Error('auto_extract_entities requires GEMINI_API_KEY environment variable to be set');
     }
+    if (input.auto_extract_vlm_entities && !process.env.GEMINI_API_KEY) {
+      throw new Error('auto_extract_vlm_entities requires GEMINI_API_KEY environment variable to be set');
+    }
 
     // Get pending documents - CRITICAL: use 'status' not 'statusFilter'
     const pendingDocs = db.listDocuments({ status: 'pending', limit: input.max_concurrent ?? 3 });
@@ -1019,6 +1023,7 @@ export async function handleProcessPending(
       errors: [] as Array<{ document_id: string; error: string }>,
     };
     const entityResults: AutoEntityResult[] = [];
+    const vlmEntityResults: Array<{ document_id: string; entities_created: number; descriptions_processed: number }> = [];
     const successfulDocIds: string[] = [];
 
     // Default images output directory
@@ -1213,6 +1218,61 @@ export async function handleProcessPending(
               `[WARN] Document ${doc.id}: ${vlmResult.failed}/${vlmResult.total} VLM image processing failures`
             );
           }
+
+          // Step 5.1: Auto-extract entities from VLM descriptions if enabled
+          if (input.auto_extract_vlm_entities && vlmResult.successful > 0) {
+            try {
+              console.error(`[INFO] Auto-pipeline: extracting entities from VLM descriptions for document ${doc.id}`);
+              const conn = db.getConnection();
+
+              // Create VLM entity extraction provenance record
+              const vlmEntityProvId = uuidv4();
+              const vlmEntityNow = new Date().toISOString();
+              db.insertProvenance({
+                id: vlmEntityProvId,
+                type: ProvenanceType.ENTITY_EXTRACTION,
+                created_at: vlmEntityNow,
+                processed_at: vlmEntityNow,
+                source_file_created_at: null,
+                source_file_modified_at: null,
+                source_type: 'ENTITY_EXTRACTION',
+                source_path: doc.file_path,
+                source_id: ocrResult.provenance_id,
+                root_document_id: doc.provenance_id,
+                location: null,
+                content_hash: computeHash(`vlm-entities-${doc.id}-${vlmEntityNow}`),
+                input_hash: ocrResult.content_hash,
+                file_hash: doc.file_hash,
+                processor: 'gemini-vlm-entity-extraction',
+                processor_version: '1.0.0',
+                processing_params: {
+                  source: 'auto-pipeline-vlm',
+                  vlm_images_processed: vlmResult.successful,
+                },
+                processing_duration_ms: null,
+                processing_quality_score: null,
+                parent_id: ocrResult.provenance_id,
+                parent_ids: JSON.stringify([doc.provenance_id, ocrResult.provenance_id]),
+                chain_depth: 2,
+                chain_path: JSON.stringify(['DOCUMENT', 'OCR_RESULT', 'ENTITY_EXTRACTION']),
+              });
+
+              const vlmEntityResult = await extractEntitiesFromVLM(conn, doc.id, vlmEntityProvId);
+              vlmEntityResults.push({
+                document_id: doc.id,
+                entities_created: vlmEntityResult.entities_created,
+                descriptions_processed: vlmEntityResult.descriptions_processed,
+              });
+              console.error(
+                `[INFO] Auto-pipeline: VLM entity extraction complete for ${doc.id}: ` +
+                `${vlmEntityResult.entities_created} entities from ${vlmEntityResult.descriptions_processed} descriptions`
+              );
+            } catch (vlmEntityError) {
+              const vlmEntityMsg = vlmEntityError instanceof Error ? vlmEntityError.message : String(vlmEntityError);
+              console.error(`[WARN] VLM entity extraction failed for ${doc.id}: ${vlmEntityMsg}`);
+              results.errors.push({ document_id: doc.id, error: `VLM entity extraction failed: ${vlmEntityMsg}` });
+            }
+          }
         }
 
         // Step 5.5: Store structured extraction if present
@@ -1312,8 +1372,10 @@ export async function handleProcessPending(
 
     // Step 8: Auto-build knowledge graph if enabled and no KG exists yet
     // Wrapped in try-catch: KG build failure must not crash the pipeline response.
+    // Include documents with VLM entity extraction in KG build consideration.
+    const hasEntities = entityResults.length > 0 || vlmEntityResults.some(r => r.entities_created > 0);
     let kgBuildResult: Record<string, unknown> | undefined;
-    if (input.auto_build_kg && successfulDocIds.length > 0 && entityResults.length > 0) {
+    if (input.auto_build_kg && successfulDocIds.length > 0 && hasEntities) {
       try {
         const conn = db.getConnection();
         const kgNodeCount = (conn.prepare('SELECT COUNT(*) as cnt FROM knowledge_nodes').get() as { cnt: number }).cnt;
@@ -1368,6 +1430,15 @@ export async function handleProcessPending(
         total_chunk_mapped: entityResults.reduce((sum, r) => sum + r.chunk_mapped, 0),
         total_processing_duration_ms: entityResults.reduce((sum, r) => sum + r.processing_duration_ms, 0),
         per_document: entityResults,
+      };
+    }
+
+    if (input.auto_extract_vlm_entities && vlmEntityResults.length > 0) {
+      response.vlm_entity_extraction = {
+        documents_extracted: vlmEntityResults.length,
+        total_entities_created: vlmEntityResults.reduce((sum, r) => sum + r.entities_created, 0),
+        total_descriptions_processed: vlmEntityResults.reduce((sum, r) => sum + r.descriptions_processed, 0),
+        per_document: vlmEntityResults,
       };
     }
 
@@ -1737,6 +1808,8 @@ export const ingestionTools: Record<string, ToolDefinition> = {
         .describe('Auto-extract entities after OCR+embed completes'),
       auto_build_kg: z.boolean().default(false)
         .describe('Auto-build/update knowledge graph after entity extraction (requires auto_extract_entities=true)'),
+      auto_extract_vlm_entities: z.boolean().default(false)
+        .describe('Auto-extract entities from VLM image descriptions after VLM processing. Requires GEMINI_API_KEY.'),
     },
     handler: handleProcessPending,
   },

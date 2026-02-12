@@ -40,6 +40,7 @@ import {
   findPaths as findPathsFromDb,
   countKnowledgeNodes,
   searchKnowledgeNodesFTS,
+  getEvidenceChunksForEdge,
 } from '../storage/database/knowledge-graph-operations.js';
 import {
   getEntitiesByDocument,
@@ -131,13 +132,26 @@ interface NodeDetailsResult {
   provenance?: unknown;
 }
 
+interface EvidenceChunk {
+  chunk_id: string;
+  document_id: string;
+  text_excerpt: string;
+  page_number: number | null;
+  source_file: string;
+}
+
 interface PathResult {
   source: { id: string; canonical_name: string; entity_type: string };
   target: { id: string; canonical_name: string; entity_type: string };
   paths: Array<{
     length: number;
     nodes: Array<{ id: string; canonical_name: string; entity_type: string }>;
-    edges: Array<{ id: string; relationship_type: string; weight: number }>;
+    edges: Array<{
+      id: string;
+      relationship_type: string;
+      weight: number;
+      evidence_chunks?: EvidenceChunk[];
+    }>;
   }>;
   total_paths: number;
 }
@@ -1001,9 +1015,14 @@ export function findGraphPaths(
   db: DatabaseService,
   sourceEntity: string,
   targetEntity: string,
-  options?: { max_hops?: number; relationship_filter?: string[] },
+  options?: {
+    max_hops?: number;
+    relationship_filter?: string[];
+    include_evidence_chunks?: boolean;
+  },
 ): PathResult {
   const conn = db.getConnection();
+  const includeEvidence = options?.include_evidence_chunks ?? false;
 
   // Resolve source node
   const sourceNode = resolveNodeReference(conn, sourceEntity);
@@ -1039,13 +1058,36 @@ export function findGraphPaths(
       }
     }
 
-    const pathEdges: Array<{ id: string; relationship_type: string; weight: number }> = [];
-    for (const eid of rawPath.edge_ids) {
+    const pathEdges: PathResult['paths'][0]['edges'] = [];
+    for (let i = 0; i < rawPath.edge_ids.length; i++) {
+      const eid = rawPath.edge_ids[i];
       const row = conn.prepare(
-        'SELECT id, relationship_type, weight FROM knowledge_edges WHERE id = ?',
-      ).get(eid) as { id: string; relationship_type: string; weight: number } | undefined;
+        'SELECT id, relationship_type, weight, source_node_id, target_node_id FROM knowledge_edges WHERE id = ?',
+      ).get(eid) as {
+        id: string;
+        relationship_type: string;
+        weight: number;
+        source_node_id: string;
+        target_node_id: string;
+      } | undefined;
+
       if (row) {
-        pathEdges.push(row);
+        const edgeEntry: PathResult['paths'][0]['edges'][0] = {
+          id: row.id,
+          relationship_type: row.relationship_type,
+          weight: row.weight,
+        };
+
+        if (includeEvidence) {
+          edgeEntry.evidence_chunks = getEvidenceChunksForEdge(
+            conn,
+            row.source_node_id,
+            row.target_node_id,
+            5,
+          );
+        }
+
+        pathEdges.push(edgeEntry);
       }
     }
 

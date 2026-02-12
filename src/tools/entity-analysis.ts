@@ -32,6 +32,7 @@ import { getKnowledgeNodeSummariesByDocument } from '../services/storage/databas
 import { extractEntitiesFromVLM } from '../services/knowledge-graph/vlm-entity-extractor.js';
 import { mapExtractionEntitiesToDB } from '../services/knowledge-graph/extraction-entity-mapper.js';
 import { incrementalBuildGraph } from '../services/knowledge-graph/incremental-builder.js';
+import { findGraphPaths } from '../services/knowledge-graph/graph-service.js';
 import {
   normalizeEntity,
   extractEntitiesFromText,
@@ -65,6 +66,12 @@ const EntitySearchInput = z.object({
 const TimelineBuildInput = z.object({
   document_filter: z.array(z.string()).optional().describe('Filter by document IDs'),
   date_format: z.string().optional().default('iso').describe('Date format for output: iso, us, eu'),
+  entity_names: z.array(z.string()).optional()
+    .describe('Filter timeline to only show events involving these entities (searches entity mentions context)'),
+  entity_path_source: z.string().optional()
+    .describe('Show events along the KG path from this entity to entity_path_target'),
+  entity_path_target: z.string().optional()
+    .describe('Show events along the KG path from entity_path_source to this entity'),
 });
 
 const WitnessAnalysisInput = z.object({
@@ -433,6 +440,11 @@ async function handleEntitySearch(params: Record<string, unknown>) {
 
 /**
  * ocr_timeline_build - Build a chronological timeline from date entities
+ *
+ * Supports filtering by:
+ * - document_filter: only show events from specific documents
+ * - entity_names: only show events co-located with specific entities (same chunk)
+ * - entity_path_source + entity_path_target: only show events from documents along a KG path
  */
 async function handleTimelineBuild(params: Record<string, unknown>) {
   try {
@@ -440,12 +452,125 @@ async function handleTimelineBuild(params: Record<string, unknown>) {
     const { db } = requireDatabase();
     const conn = db.getConnection();
 
+    // Validate path filter params: both must be provided or neither
+    if (
+      (input.entity_path_source && !input.entity_path_target) ||
+      (!input.entity_path_source && input.entity_path_target)
+    ) {
+      throw new Error('Both entity_path_source and entity_path_target must be provided for path-based filtering');
+    }
+
+    // If path filtering is requested, find documents along the KG path
+    let pathDocumentIds: Set<string> | null = null;
+    let pathInfo: Record<string, unknown> | null = null;
+
+    if (input.entity_path_source && input.entity_path_target) {
+      const pathResult = findGraphPaths(db, input.entity_path_source, input.entity_path_target, {
+        max_hops: 4,
+      });
+
+      if (pathResult.total_paths === 0) {
+        return formatResponse({
+          total_entries: 0,
+          date_format: input.date_format,
+          document_filter: input.document_filter ?? null,
+          entity_names: input.entity_names ?? null,
+          entity_path_source: input.entity_path_source,
+          entity_path_target: input.entity_path_target,
+          path_info: {
+            source: pathResult.source,
+            target: pathResult.target,
+            total_paths: 0,
+            message: 'No path found between entities; no timeline events to show',
+          },
+          timeline: [],
+        });
+      }
+
+      // Collect all node IDs along all paths
+      const pathNodeIds = new Set<string>();
+      for (const path of pathResult.paths) {
+        for (const node of path.nodes) {
+          pathNodeIds.add(node.id);
+        }
+      }
+
+      // Get document_ids from node_entity_links for those nodes
+      pathDocumentIds = new Set<string>();
+      const nodeIdList = [...pathNodeIds];
+      const placeholders = nodeIdList.map(() => '?').join(',');
+      const docRows = conn.prepare(
+        `SELECT DISTINCT document_id FROM node_entity_links WHERE node_id IN (${placeholders})`,
+      ).all(...nodeIdList) as Array<{ document_id: string }>;
+
+      for (const row of docRows) {
+        pathDocumentIds.add(row.document_id);
+      }
+
+      pathInfo = {
+        source: pathResult.source,
+        target: pathResult.target,
+        total_paths: pathResult.total_paths,
+        path_node_count: pathNodeIds.size,
+        path_document_count: pathDocumentIds.size,
+      };
+
+      console.error(`[INFO] Timeline path filter: ${pathNodeIds.size} nodes -> ${pathDocumentIds.size} documents`);
+    }
+
+    // Build effective document filter (intersection of document_filter and pathDocumentIds)
+    let effectiveDocFilter: string[] | undefined = input.document_filter;
+    if (pathDocumentIds) {
+      if (effectiveDocFilter) {
+        // Intersect: only keep documents in both filters
+        effectiveDocFilter = effectiveDocFilter.filter(id => pathDocumentIds!.has(id));
+      } else {
+        effectiveDocFilter = [...pathDocumentIds];
+      }
+      // If intersection is empty, no results possible
+      if (effectiveDocFilter.length === 0) {
+        return formatResponse({
+          total_entries: 0,
+          date_format: input.date_format,
+          document_filter: input.document_filter ?? null,
+          entity_names: input.entity_names ?? null,
+          entity_path_source: input.entity_path_source ?? null,
+          entity_path_target: input.entity_path_target ?? null,
+          path_info: pathInfo,
+          timeline: [],
+        });
+      }
+    }
+
     // Query date entities, optionally filtered by documents
     const dateEntities = searchEntities(conn, '', {
       entityType: 'date',
-      documentFilter: input.document_filter,
+      documentFilter: effectiveDocFilter,
       limit: 500,
     });
+
+    // If entity_names filter is provided, build a set of chunk_ids that contain
+    // mentions of the requested entities for co-location filtering
+    let entityNameChunkIds: Set<string> | null = null;
+    if (input.entity_names && input.entity_names.length > 0) {
+      entityNameChunkIds = new Set<string>();
+      // Query entity_mentions for entities whose normalized_text or raw_text matches
+      // any of the entity_names (case-insensitive LIKE match)
+      for (const name of input.entity_names) {
+        const likePattern = `%${name}%`;
+        const rows = conn.prepare(`
+          SELECT DISTINCT em.chunk_id
+          FROM entity_mentions em
+          JOIN entities e ON em.entity_id = e.id
+          WHERE em.chunk_id IS NOT NULL
+            AND (e.normalized_text LIKE ? COLLATE NOCASE OR e.raw_text LIKE ? COLLATE NOCASE)
+        `).all(likePattern, likePattern) as Array<{ chunk_id: string }>;
+        for (const row of rows) {
+          entityNameChunkIds.add(row.chunk_id);
+        }
+      }
+      console.error(`[INFO] Timeline entity_names filter: ${input.entity_names.length} names -> ${entityNameChunkIds.size} matching chunks`);
+    }
 
     // Parse dates and build timeline entries
     const timelineEntries: Array<{
@@ -456,9 +581,29 @@ async function handleTimelineBuild(params: Record<string, unknown>) {
       document_id: string;
       document_name: string | null;
       context: string | null;
+      co_located_entities?: string[];
     }> = [];
 
     for (const entity of dateEntities) {
+      const mentions = getEntityMentions(conn, entity.id);
+
+      // If entity_names filter is active, check co-location via chunk_id
+      if (entityNameChunkIds) {
+        // Check if any mention of this date entity shares a chunk with the target entities
+        const hasCoLocated = mentions.some(m => m.chunk_id && entityNameChunkIds!.has(m.chunk_id));
+        if (!hasCoLocated) {
+          // Also check context_text as fallback for entities without chunk mappings
+          const contextMatch = mentions.some(m => {
+            if (!m.context_text) return false;
+            const ctx = m.context_text.toLowerCase();
+            return input.entity_names!.some(name => ctx.includes(name.toLowerCase()));
+          });
+          if (!contextMatch) {
+            continue; // Skip this date entity - not co-located with requested entities
+          }
+        }
+      }
+
       const parsed = Date.parse(entity.normalized_text);
       let dateIso: string;
       let dateDisplay: string;
@@ -480,8 +625,35 @@ async function handleTimelineBuild(params: Record<string, unknown>) {
       }
 
       const document = db.getDocument(entity.document_id);
-      const mentions = getEntityMentions(conn, entity.id);
       const contextText = mentions.length > 0 ? mentions[0].context_text : null;
+
+      // If entity_names filter active, find which co-located entities appear
+      let coLocatedEntities: string[] | undefined;
+      if (entityNameChunkIds && mentions.length > 0) {
+        const coLocated = new Set<string>();
+        for (const m of mentions) {
+          if (!m.chunk_id) continue;
+          // Find other entity mentions in the same chunk
+          const coRows = conn.prepare(`
+            SELECT DISTINCT e.normalized_text
+            FROM entity_mentions em
+            JOIN entities e ON em.entity_id = e.id
+            WHERE em.chunk_id = ?
+              AND e.entity_type != 'date'
+          `).all(m.chunk_id) as Array<{ normalized_text: string }>;
+          for (const row of coRows) {
+            // Only include entities that match the requested entity_names
+            if (input.entity_names!.some(name =>
+              row.normalized_text.toLowerCase().includes(name.toLowerCase()),
+            )) {
+              coLocated.add(row.normalized_text);
+            }
+          }
+        }
+        if (coLocated.size > 0) {
+          coLocatedEntities = [...coLocated];
+        }
+      }
 
       timelineEntries.push({
         date_iso: dateIso,
@@ -491,6 +663,7 @@ async function handleTimelineBuild(params: Record<string, unknown>) {
         document_id: entity.document_id,
         document_name: document?.file_name ?? null,
         context: contextText,
+        ...(coLocatedEntities ? { co_located_entities: coLocatedEntities } : {}),
       });
     }
 
@@ -501,6 +674,10 @@ async function handleTimelineBuild(params: Record<string, unknown>) {
       total_entries: timelineEntries.length,
       date_format: input.date_format,
       document_filter: input.document_filter ?? null,
+      entity_names: input.entity_names ?? null,
+      entity_path_source: input.entity_path_source ?? null,
+      entity_path_target: input.entity_path_target ?? null,
+      ...(pathInfo ? { path_info: pathInfo } : {}),
       timeline: timelineEntries,
     });
   } catch (error) {
@@ -812,7 +989,7 @@ export const entityAnalysisTools: Record<string, ToolDefinition> = {
     handler: handleEntitySearch,
   },
   'ocr_timeline_build': {
-    description: 'Build a chronological timeline from date entities extracted from documents',
+    description: 'Build a chronological timeline from date entities extracted from documents. Optionally filter by entity_names (co-located entities) or entity_path_source/entity_path_target (KG relationship path filtering).',
     inputSchema: TimelineBuildInput.shape,
     handler: handleTimelineBuild,
   },
