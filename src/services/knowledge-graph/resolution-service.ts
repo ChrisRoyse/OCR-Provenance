@@ -25,11 +25,23 @@ import { v4 as uuidv4 } from 'uuid';
 /** Maximum entities per type group for fuzzy comparison (fail fast) */
 const MAX_FUZZY_GROUP_SIZE = 5000;
 
-/** Minimum Sorensen-Dice score for automatic fuzzy merge */
+/** Default minimum similarity score for automatic fuzzy merge */
 const FUZZY_MERGE_THRESHOLD = 0.85;
+
+/** Lower fuzzy threshold for person names to catch OCR variants (e.g., Tynescia/Tyneisha/Tynisha) */
+const PERSON_FUZZY_MERGE_THRESHOLD = 0.75;
 
 /** Lower bound for AI disambiguation range */
 const AI_LOWER_THRESHOLD = 0.70;
+
+/**
+ * Get the fuzzy merge threshold for a given entity type.
+ * Person names use a lower threshold (0.75) to catch OCR name variants.
+ * All other types use the default threshold (0.85).
+ */
+function getFuzzyThreshold(entityType: string): number {
+  return entityType === 'person' ? PERSON_FUZZY_MERGE_THRESHOLD : FUZZY_MERGE_THRESHOLD;
+}
 
 export type ResolutionMode = 'exact' | 'fuzzy' | 'ai';
 
@@ -203,6 +215,34 @@ export function computeTypeSimilarity(
       } else {
         score = sorensenDice(textA, textB);
       }
+      break;
+    }
+
+    case 'medication': {
+      // Medications: use token-sorted similarity to handle reordering
+      // (e.g., "metoprolol 25mg" vs "metoprolol tartrate 25 mg")
+      score = tokenSortedSimilarity(textA, textB);
+      break;
+    }
+
+    case 'diagnosis': {
+      // Diagnoses: standard bigram similarity handles abbreviations and variants
+      score = sorensenDice(textA, textB);
+      break;
+    }
+
+    case 'medical_device': {
+      // Medical devices: token-sorted similarity to handle reordering
+      // (e.g., "PEG tube" vs "percutaneous endoscopic gastrostomy tube")
+      score = tokenSortedSimilarity(textA, textB);
+      break;
+    }
+
+    case 'date': {
+      // Dates: EXACT match only. Fuzzy matching (Dice) is dangerous because
+      // "2024-04-10" vs "2024-04-11" have Dice=0.875 which exceeds the 0.85
+      // threshold, incorrectly merging different dates into one KG node.
+      score = textA === textB ? 1.0 : 0.0;
       break;
     }
 
@@ -481,12 +521,13 @@ export async function resolveEntities(
           const repB = exactGroupList[j][0];
 
           const sim = computeTypeSimilarity(repA, repB, clusterContext);
+          const threshold = getFuzzyThreshold(repA.entity_type);
 
-          if (sim >= FUZZY_MERGE_THRESHOLD) {
+          if (sim >= threshold) {
             uf.union(i, j);
             // Count all entities in both groups as fuzzy matched
             stats.fuzzy_matches += exactGroupList[i].length + exactGroupList[j].length;
-          } else if (mode === 'ai' && sim >= AI_LOWER_THRESHOLD && sim < FUZZY_MERGE_THRESHOLD) {
+          } else if (mode === 'ai' && sim >= AI_LOWER_THRESHOLD && sim < threshold) {
             aiCandidates.push({ i, j, entityA: repA, entityB: repB });
           }
         }
@@ -530,7 +571,7 @@ export async function resolveEntities(
           const repB = exactGroupList[j][0];
           const sim = computeTypeSimilarity(repA, repB, clusterContext);
           const root = uf.find(i);
-          if (sim >= FUZZY_MERGE_THRESHOLD) {
+          if (sim >= getFuzzyThreshold(repA.entity_type)) {
             fuzzyMergedRoots.add(root);
           } else if (sim >= AI_LOWER_THRESHOLD) {
             aiMergedRoots.add(root);
@@ -596,15 +637,6 @@ export async function resolveEntities(
 
   // Unmatched = entities that ended up in single-entity nodes
   stats.unmatched = allNodes.filter(n => n.mention_count === 1).length;
-
-  // Deduplicate exact/fuzzy/ai counts: entities counted in fuzzy may have
-  // already been counted in exact. Adjust exact to only count those NOT
-  // also counted as fuzzy or AI.
-  // Actually, exact_matches counts entities in multi-entity exact groups,
-  // while fuzzy_matches counts entities whose groups were merged by fuzzy.
-  // An entity can be in both counts if its exact group had >1 entity AND
-  // got fuzzy-merged. This is intentional -- the stats show how many
-  // entities benefited from each tier.
 
   return { nodes: allNodes, links: allLinks, stats };
 }

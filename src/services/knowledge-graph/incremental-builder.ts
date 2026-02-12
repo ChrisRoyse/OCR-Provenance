@@ -486,6 +486,21 @@ function buildIncrementalEdges(
     nodeChunkMap.set(nodeId, chunkSet);
   }
 
+  // Detect single-document graph: skip co_mentioned edges when all nodes
+  // share exactly one document (would create a useless complete graph)
+  const allDocumentIds = new Set<string>();
+  for (const docSet of nodeDocMap.values()) {
+    for (const docId of docSet) {
+      allDocumentIds.add(docId);
+    }
+  }
+  const isSingleDocumentGraph = allDocumentIds.size === 1;
+  if (isSingleDocumentGraph) {
+    console.error(
+      `[KnowledgeGraph] Single-document graph detected in incremental build. Skipping co_mentioned edges.`,
+    );
+  }
+
   // Only process pairs where at least one node is touched
   const touchedArr = [...touchedNodeIds];
   const allArr = [...allRelevantNodeIds];
@@ -530,48 +545,51 @@ function buildIncrementalEdges(
           ? [touchedId, otherId]
           : [otherId, touchedId];
 
-      // co_mentioned edge
+      // co_mentioned edge — skip for single-document graphs (useless clique)
       const maxDocCount = Math.max(docsA.size, docsB.size);
-      const coMentionedWeight =
-        maxDocCount > 0
-          ? Math.round((sharedDocs.length / maxDocCount) * 10000) / 10000
-          : 0;
 
-      const existingCoMentioned = findEdge(
-        conn,
-        sourceId,
-        targetId,
-        'co_mentioned',
-      );
-      if (existingCoMentioned) {
-        // Update existing edge with new evidence
-        const existingDocIds: string[] = JSON.parse(
-          existingCoMentioned.document_ids || '[]',
+      if (!isSingleDocumentGraph) {
+        const coMentionedWeight =
+          maxDocCount > 0
+            ? Math.round((sharedDocs.length / maxDocCount) * 10000) / 10000
+            : 0;
+
+        const existingCoMentioned = findEdge(
+          conn,
+          sourceId,
+          targetId,
+          'co_mentioned',
         );
-        const mergedDocIds = [
-          ...new Set([...existingDocIds, ...sharedDocs]),
-        ];
-        updateKnowledgeEdge(conn, existingCoMentioned.id, {
-          weight: coMentionedWeight,
-          evidence_count: mergedDocIds.length,
-          document_ids: JSON.stringify(mergedDocIds),
-        });
-        updatedEdges++;
-      } else {
-        const edge: KnowledgeEdge = {
-          id: uuidv4(),
-          source_node_id: sourceId,
-          target_node_id: targetId,
-          relationship_type: 'co_mentioned',
-          weight: coMentionedWeight,
-          evidence_count: sharedDocs.length,
-          document_ids: JSON.stringify(sharedDocs),
-          metadata: null,
-          provenance_id: provenanceId,
-          created_at: now,
-        };
-        insertKnowledgeEdge(conn, edge);
-        newEdges++;
+        if (existingCoMentioned) {
+          // Update existing edge with new evidence
+          const existingDocIds: string[] = JSON.parse(
+            existingCoMentioned.document_ids || '[]',
+          );
+          const mergedDocIds = [
+            ...new Set([...existingDocIds, ...sharedDocs]),
+          ];
+          updateKnowledgeEdge(conn, existingCoMentioned.id, {
+            weight: coMentionedWeight,
+            evidence_count: mergedDocIds.length,
+            document_ids: JSON.stringify(mergedDocIds),
+          });
+          updatedEdges++;
+        } else {
+          const edge: KnowledgeEdge = {
+            id: uuidv4(),
+            source_node_id: sourceId,
+            target_node_id: targetId,
+            relationship_type: 'co_mentioned',
+            weight: coMentionedWeight,
+            evidence_count: sharedDocs.length,
+            document_ids: JSON.stringify(sharedDocs),
+            metadata: null,
+            provenance_id: provenanceId,
+            created_at: now,
+          };
+          insertKnowledgeEdge(conn, edge);
+          newEdges++;
+        }
       }
 
       // co_located edge (shared chunks)

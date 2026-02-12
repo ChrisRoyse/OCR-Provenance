@@ -31,7 +31,7 @@ import {
   type ToolDefinition,
 } from './shared.js';
 import { BM25SearchService } from '../services/search/bm25.js';
-import { RRFFusion } from '../services/search/fusion.js';
+import { RRFFusion, type RankedResult } from '../services/search/fusion.js';
 import { expandQueryWithKG, expandQueryWithCoMentioned, expandQueryTextForSemantic, findMatchingNodeIds, getExpandedTerms } from '../services/search/query-expander.js';
 import { rerankResults, type EdgeInfo } from '../services/search/reranker.js';
 import { getEntitiesForChunks, getDocumentIdsForEntities, getEdgesForNode, getKnowledgeNode, getEntityMentionFrequencyByDocument, getRelatedDocumentsByEntityOverlap, type ChunkEntityInfo } from '../services/storage/database/knowledge-graph-operations.js';
@@ -285,21 +285,87 @@ function resolveEntityFilter(
  * Converts chunk_id-keyed entity map to result-index-keyed context map.
  */
 function buildEntityContextForRerank(
-  results: Array<{ chunk_id?: string | null }>,
+  results: Array<{ chunk_id?: string | null; image_id?: string | null }>,
   entityMap: Map<string, ChunkEntityInfo[]>,
 ): Map<number, Array<{ entity_type: string; canonical_name: string; document_count: number; aliases?: string[] }>> | undefined {
   const contextMap = new Map<number, Array<{ entity_type: string; canonical_name: string; document_count: number; aliases?: string[] }>>();
-  results.forEach((r, i) => {
-    if (r.chunk_id && entityMap.has(r.chunk_id)) {
-      contextMap.set(i, entityMap.get(r.chunk_id)!.map(e => ({
-        entity_type: e.entity_type,
-        canonical_name: e.canonical_name,
-        document_count: e.document_count,
-        aliases: e.aliases,
-      })));
-    }
-  });
+  for (let i = 0; i < results.length; i++) {
+    const entityKey = results[i].chunk_id ?? results[i].image_id;
+    if (!entityKey) continue;
+    const entities = entityMap.get(entityKey);
+    if (!entities) continue;
+    contextMap.set(i, entities.map(e => ({
+      entity_type: e.entity_type,
+      canonical_name: e.canonical_name,
+      document_count: e.document_count,
+      aliases: e.aliases,
+    })));
+  }
   return contextMap.size > 0 ? contextMap : undefined;
+}
+
+/**
+ * Enrich entity map with page co-occurrence entities for VLM/image results.
+ * For results that have no chunk_id but have image_id and page_number,
+ * queries entities on that page and merges them into the entity map keyed by image_id.
+ * This enables entity enrichment for VLM search results that lack text chunks.
+ */
+function enrichEntityMapWithPageEntities(
+  conn: ReturnType<ReturnType<typeof requireDatabase>['db']['getConnection']>,
+  entityMap: Map<string, ChunkEntityInfo[]>,
+  results: Array<{ chunk_id?: string | null; image_id?: string | null; document_id: string; page_number?: number | null }>,
+): void {
+  const pageRequests = new Map<string, { document_id: string; page_number: number; image_ids: string[] }>();
+
+  for (const r of results) {
+    if (r.chunk_id || !r.image_id || r.page_number == null) continue;
+    const key = `${r.document_id}:${r.page_number}`;
+    const existing = pageRequests.get(key);
+    if (existing) {
+      existing.image_ids.push(r.image_id);
+    } else {
+      pageRequests.set(key, { document_id: r.document_id, page_number: r.page_number, image_ids: [r.image_id] });
+    }
+  }
+
+  if (pageRequests.size === 0) return;
+
+  for (const [, { document_id, page_number, image_ids }] of pageRequests) {
+    const rows = conn.prepare(`
+      SELECT DISTINCT kn.id as node_id, kn.canonical_name, kn.entity_type,
+             kn.aliases, kn.avg_confidence, kn.document_count
+      FROM entity_mentions em
+      JOIN entities e ON e.id = em.entity_id
+      JOIN node_entity_links nel ON nel.entity_id = e.id
+      JOIN knowledge_nodes kn ON kn.id = nel.node_id
+      JOIN chunks c ON c.id = em.chunk_id
+      WHERE c.document_id = ? AND c.page_number = ?
+    `).all(document_id, page_number) as Array<{
+      node_id: string; canonical_name: string; entity_type: string;
+      aliases: string | null; avg_confidence: number; document_count: number;
+    }>;
+
+    const seen = new Set<string>();
+    const entities: ChunkEntityInfo[] = [];
+    for (const r of rows) {
+      if (seen.has(r.node_id)) continue;
+      seen.add(r.node_id);
+      entities.push({
+        node_id: r.node_id,
+        canonical_name: r.canonical_name,
+        entity_type: r.entity_type,
+        aliases: r.aliases ? JSON.parse(r.aliases) : [],
+        confidence: r.avg_confidence,
+        document_count: r.document_count,
+      });
+    }
+
+    if (entities.length > 0) {
+      for (const imageId of image_ids) {
+        entityMap.set(imageId, entities);
+      }
+    }
+  }
 }
 
 /**
@@ -430,6 +496,62 @@ function resolveEntityNodeIds(
   return [...nodeIds];
 }
 
+/**
+ * Convert BM25 results (with bm25_score and rank) to ranked format for RRF fusion.
+ */
+function toBm25Ranked(
+  results: Array<{ chunk_id: string | null; image_id: string | null; extraction_id: string | null; embedding_id: string | null; document_id: string; original_text: string; result_type: 'chunk' | 'vlm' | 'extraction'; source_file_path: string; source_file_name: string; source_file_hash: string; page_number: number | null; character_start: number; character_end: number; chunk_index: number; provenance_id: string; content_hash: string; rank: number; bm25_score: number }>,
+): RankedResult[] {
+  return results.map(r => ({
+    chunk_id: r.chunk_id,
+    image_id: r.image_id,
+    extraction_id: r.extraction_id,
+    embedding_id: r.embedding_id ?? '',
+    document_id: r.document_id,
+    original_text: r.original_text,
+    result_type: r.result_type,
+    source_file_path: r.source_file_path,
+    source_file_name: r.source_file_name,
+    source_file_hash: r.source_file_hash,
+    page_number: r.page_number,
+    character_start: r.character_start,
+    character_end: r.character_end,
+    chunk_index: r.chunk_index,
+    provenance_id: r.provenance_id,
+    content_hash: r.content_hash,
+    rank: r.rank,
+    score: r.bm25_score,
+  }));
+}
+
+/**
+ * Convert semantic search results (with similarity_score) to ranked format for RRF fusion.
+ */
+function toSemanticRanked(
+  results: Array<{ chunk_id: string | null; image_id: string | null; extraction_id: string | null; embedding_id: string; document_id: string; original_text: string; result_type: 'chunk' | 'vlm' | 'extraction'; source_file_path: string; source_file_name: string; source_file_hash: string; page_number: number | null; character_start: number; character_end: number; chunk_index: number; provenance_id: string; content_hash: string; similarity_score: number }>,
+): RankedResult[] {
+  return results.map((r, i) => ({
+    chunk_id: r.chunk_id,
+    image_id: r.image_id,
+    extraction_id: r.extraction_id,
+    embedding_id: r.embedding_id,
+    document_id: r.document_id,
+    original_text: r.original_text,
+    result_type: r.result_type,
+    source_file_path: r.source_file_path,
+    source_file_name: r.source_file_name,
+    source_file_hash: r.source_file_hash,
+    page_number: r.page_number,
+    character_start: r.character_start,
+    character_end: r.character_end,
+    chunk_index: r.chunk_index,
+    provenance_id: r.provenance_id,
+    content_hash: r.content_hash,
+    rank: i + 1,
+    score: r.similarity_score,
+  }));
+}
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // SEARCH TOOL HANDLERS
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -496,6 +618,9 @@ export async function handleSearchSemantic(
       if (chunkIds.length > 0) {
         entityMap = getEntitiesForChunks(conn, chunkIds);
       }
+      // Enrich VLM/image results with page co-occurrence entities
+      if (!entityMap) entityMap = new Map();
+      enrichEntityMapWithPageEntities(conn, entityMap, results);
     }
 
     let finalResults: Array<Record<string, unknown>>;
@@ -554,8 +679,11 @@ export async function handleSearchSemantic(
         if (input.include_provenance) {
           result.provenance = formatProvenanceChain(db, original.provenance_id);
         }
-        if (input.include_entities && entityMap && original.chunk_id) {
-          result.entities_mentioned = entityMap.get(original.chunk_id) ?? [];
+        if (input.include_entities && entityMap) {
+          const entityKey = original.chunk_id ?? original.image_id;
+          if (entityKey) {
+            result.entities_mentioned = entityMap.get(entityKey) ?? [];
+          }
         }
         return result;
       });
@@ -588,8 +716,11 @@ export async function handleSearchSemantic(
           result.provenance = formatProvenanceChain(db, r.provenance_id);
         }
 
-        if (input.include_entities && entityMap && r.chunk_id) {
-          result.entities_mentioned = entityMap.get(r.chunk_id) ?? [];
+        if (input.include_entities && entityMap) {
+          const entityKey = r.chunk_id ?? r.image_id;
+          if (entityKey) {
+            result.entities_mentioned = entityMap.get(entityKey) ?? [];
+          }
         }
 
         return result;
@@ -722,6 +853,9 @@ export async function handleSearch(
       if (chunkIds.length > 0) {
         bm25EntityMap = getEntitiesForChunks(conn, chunkIds);
       }
+      // Enrich VLM/image results with page co-occurrence entities
+      if (!bm25EntityMap) bm25EntityMap = new Map();
+      enrichEntityMapWithPageEntities(conn, bm25EntityMap, rankedResults);
     }
 
     let finalResults: Array<Record<string, unknown>>;
@@ -743,8 +877,11 @@ export async function handleSearch(
         if (input.include_provenance) {
           base.provenance_chain = formatProvenanceChain(db, original.provenance_id);
         }
-        if (input.include_entities && bm25EntityMap && original.chunk_id) {
-          base.entities_mentioned = bm25EntityMap.get(original.chunk_id) ?? [];
+        if (input.include_entities && bm25EntityMap) {
+          const entityKey = original.chunk_id ?? original.image_id;
+          if (entityKey) {
+            base.entities_mentioned = bm25EntityMap.get(entityKey) ?? [];
+          }
         }
         return base;
       });
@@ -755,8 +892,11 @@ export async function handleSearch(
         if (input.include_provenance) {
           base.provenance_chain = formatProvenanceChain(db, r.provenance_id);
         }
-        if (input.include_entities && bm25EntityMap && r.chunk_id) {
-          base.entities_mentioned = bm25EntityMap.get(r.chunk_id) ?? [];
+        if (input.include_entities && bm25EntityMap) {
+          const entityKey = r.chunk_id ?? r.image_id;
+          if (entityKey) {
+            base.entities_mentioned = bm25EntityMap.get(entityKey) ?? [];
+          }
         }
         return base;
       });
@@ -899,57 +1039,16 @@ export async function handleSearchHybrid(
       documentFilter,
     });
 
-    // Convert to ranked format for RRF
-    const bm25Ranked = allBm25.map(r => ({
-      chunk_id: r.chunk_id,
-      image_id: r.image_id,
-      extraction_id: r.extraction_id,
-      embedding_id: r.embedding_id ?? '',
-      document_id: r.document_id,
-      original_text: r.original_text,
-      result_type: r.result_type,
-      source_file_path: r.source_file_path,
-      source_file_name: r.source_file_name,
-      source_file_hash: r.source_file_hash,
-      page_number: r.page_number,
-      character_start: r.character_start,
-      character_end: r.character_end,
-      chunk_index: r.chunk_index,
-      provenance_id: r.provenance_id,
-      content_hash: r.content_hash,
-      rank: r.rank,
-      score: r.bm25_score,
-    }));
+    // Convert to ranked format and fuse with RRF
+    const bm25Ranked = toBm25Ranked(allBm25);
+    const semanticRanked = toSemanticRanked(semanticResults);
 
-    const semanticRanked = semanticResults.map((r, i) => ({
-      chunk_id: r.chunk_id,
-      image_id: r.image_id,
-      extraction_id: r.extraction_id,
-      embedding_id: r.embedding_id,
-      document_id: r.document_id,
-      original_text: r.original_text,
-      result_type: r.result_type,
-      source_file_path: r.source_file_path,
-      source_file_name: r.source_file_name,
-      source_file_hash: r.source_file_hash,
-      page_number: r.page_number,
-      character_start: r.character_start,
-      character_end: r.character_end,
-      chunk_index: r.chunk_index,
-      provenance_id: r.provenance_id,
-      content_hash: r.content_hash,
-      rank: i + 1,
-      score: r.similarity_score,
-    }));
-
-    // Fuse with RRF
     const fusion = new RRFFusion({
       k: input.rrf_k,
       bm25Weight: input.bm25_weight,
       semanticWeight: input.semantic_weight,
     });
 
-    // Fetch more results for reranking if needed
     const fusionLimit = input.rerank ? Math.max(limit * 2, 20) : limit;
     const rawResults = fusion.fuse(bm25Ranked, semanticRanked, fusionLimit);
 
@@ -1000,6 +1099,9 @@ export async function handleSearchHybrid(
       if (chunkIds.length > 0) {
         hybridEntityMap = getEntitiesForChunks(conn, chunkIds);
       }
+      // Enrich VLM/image results with page co-occurrence entities
+      if (!hybridEntityMap) hybridEntityMap = new Map();
+      enrichEntityMapWithPageEntities(conn, hybridEntityMap, rawResults);
     }
 
     let finalResults: Array<Record<string, unknown>>;
@@ -1021,8 +1123,11 @@ export async function handleSearchHybrid(
         if (input.include_provenance) {
           base.provenance_chain = formatProvenanceChain(db, original.provenance_id);
         }
-        if (input.include_entities && hybridEntityMap && original.chunk_id) {
-          base.entities_mentioned = hybridEntityMap.get(original.chunk_id) ?? [];
+        if (input.include_entities && hybridEntityMap) {
+          const entityKey = original.chunk_id ?? original.image_id;
+          if (entityKey) {
+            base.entities_mentioned = hybridEntityMap.get(entityKey) ?? [];
+          }
         }
         return base;
       });
@@ -1033,8 +1138,11 @@ export async function handleSearchHybrid(
         if (input.include_provenance) {
           base.provenance_chain = formatProvenanceChain(db, r.provenance_id);
         }
-        if (input.include_entities && hybridEntityMap && r.chunk_id) {
-          base.entities_mentioned = hybridEntityMap.get(r.chunk_id) ?? [];
+        if (input.include_entities && hybridEntityMap) {
+          const entityKey = r.chunk_id ?? r.image_id;
+          if (entityKey) {
+            base.entities_mentioned = hybridEntityMap.get(entityKey) ?? [];
+          }
         }
         return base;
       });
@@ -1058,12 +1166,10 @@ export async function handleSearchHybrid(
       },
     };
 
-    // Include expansion info when expand_query is true
     if (expansionInfo) {
       responseData.query_expansion = expansionInfo;
     }
 
-    // Include rerank info when rerank is true
     if (rerankInfo) {
       responseData.rerank = rerankInfo;
     }
@@ -1072,7 +1178,6 @@ export async function handleSearchHybrid(
       responseData.entity_boost = entityBoostInfo;
     }
 
-    // Apply entity mention frequency boost when entity_filter is active
     let hybridFreqBoostInfo: { boosted_results: number; max_mention_count: number } | undefined;
     if (input.entity_filter) {
       hybridFreqBoostInfo = applyEntityFrequencyBoost(
@@ -1206,50 +1311,10 @@ async function handleRagContext(
       documentFilter: input.document_filter,
     });
 
-    // Convert to ranked format for RRF
-    const bm25Ranked = allBm25.map(r => ({
-      chunk_id: r.chunk_id,
-      image_id: r.image_id,
-      extraction_id: r.extraction_id,
-      embedding_id: r.embedding_id ?? '',
-      document_id: r.document_id,
-      original_text: r.original_text,
-      result_type: r.result_type,
-      source_file_path: r.source_file_path,
-      source_file_name: r.source_file_name,
-      source_file_hash: r.source_file_hash,
-      page_number: r.page_number,
-      character_start: r.character_start,
-      character_end: r.character_end,
-      chunk_index: r.chunk_index,
-      provenance_id: r.provenance_id,
-      content_hash: r.content_hash,
-      rank: r.rank,
-      score: r.bm25_score,
-    }));
+    // Convert to ranked format and fuse with RRF (default weights)
+    const bm25Ranked = toBm25Ranked(allBm25);
+    const semanticRanked = toSemanticRanked(semanticResults);
 
-    const semanticRanked = semanticResults.map((r, i) => ({
-      chunk_id: r.chunk_id,
-      image_id: r.image_id,
-      extraction_id: r.extraction_id,
-      embedding_id: r.embedding_id,
-      document_id: r.document_id,
-      original_text: r.original_text,
-      result_type: r.result_type,
-      source_file_path: r.source_file_path,
-      source_file_name: r.source_file_name,
-      source_file_hash: r.source_file_hash,
-      page_number: r.page_number,
-      character_start: r.character_start,
-      character_end: r.character_end,
-      chunk_index: r.chunk_index,
-      provenance_id: r.provenance_id,
-      content_hash: r.content_hash,
-      rank: i + 1,
-      score: r.similarity_score,
-    }));
-
-    // Fuse with RRF (default weights)
     const fusion = new RRFFusion({ k: 60, bm25Weight: 1.0, semanticWeight: 1.0 });
     const fusedResults = fusion.fuse(bm25Ranked, semanticRanked, limit);
 
@@ -1280,6 +1345,9 @@ async function handleRagContext(
           console.error(`[RAG] Entity enrichment failed: ${err instanceof Error ? err.message : String(err)}`);
         }
       }
+      // Enrich VLM/image results with page co-occurrence entities
+      if (!entityMap) entityMap = new Map();
+      enrichEntityMapWithPageEntities(conn, entityMap, fusedResults);
     }
 
     // Collect unique entities across all results

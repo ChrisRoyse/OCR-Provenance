@@ -64,8 +64,12 @@ import { buildKnowledgeGraph } from '../services/knowledge-graph/graph-service.j
 import { extractEntitiesFromVLM } from '../services/knowledge-graph/vlm-entity-extractor.js';
 import {
   normalizeEntity,
-  extractEntitiesFromText,
-  mapEntityToChunk,
+  callGeminiForEntities,
+  findAllEntityOccurrences,
+  filterNoiseEntities,
+  extractDatesWithRegex,
+  createExtractionSegments,
+  updateSegmentStatus,
   MAX_CHARS_PER_CALL,
   SEGMENT_OVERLAP_CHARS,
 } from '../utils/entity-extraction-helpers.js';
@@ -812,6 +816,7 @@ export async function handleIngestFiles(
 interface AutoEntityResult {
   document_id: string;
   total_entities: number;
+  total_mentions: number;
   entities_by_type: Record<string, number>;
   chunk_mapped: number;
   processing_duration_ms: number;
@@ -845,32 +850,12 @@ async function autoExtractEntitiesForDocument(
 
   const client = new GeminiClient();
   const startTime = Date.now();
-
   const text = ocrResult.extracted_text;
-  const allRawEntities = await extractEntitiesFromText(client, text, []);
-
   const textLength = text.length;
-  const apiCalls = textLength <= MAX_CHARS_PER_CALL
-    ? 1
-    : Math.ceil((textLength - SEGMENT_OVERLAP_CHARS) / (MAX_CHARS_PER_CALL - SEGMENT_OVERLAP_CHARS));
-  const processingDurationMs = Date.now() - startTime;
-
-  // Deduplicate by normalized_text + entity_type
-  const dedupMap = new Map<string, { type: string; raw_text: string; confidence: number }>();
-  for (const entity of allRawEntities) {
-    const normalized = normalizeEntity(entity.raw_text, entity.type);
-    const key = `${entity.type}::${normalized}`;
-    const existing = dedupMap.get(key);
-    if (!existing || entity.confidence > existing.confidence) {
-      dedupMap.set(key, entity);
-    }
-  }
-
-  // Create ENTITY_EXTRACTION provenance record
   const now = new Date().toISOString();
+
+  // Create ENTITY_EXTRACTION provenance record BEFORE segments
   const entityProvId = uuidv4();
-  const entityContent = JSON.stringify([...dedupMap.values()]);
-  const entityHash = computeHash(entityContent);
 
   db.insertProvenance({
     id: entityProvId,
@@ -884,24 +869,110 @@ async function autoExtractEntitiesForDocument(
     source_id: ocrResult.provenance_id,
     root_document_id: doc.provenance_id,
     location: null,
-    content_hash: entityHash,
+    content_hash: computeHash(`entity-extraction-pending-${docId}-${now}`),
     input_hash: ocrResult.content_hash,
     file_hash: doc.file_hash,
     processor: 'gemini-entity-extraction',
-    processor_version: '1.0.0',
+    processor_version: '2.0.0',
     processing_params: {
       entity_types: ENTITY_TYPES,
-      api_calls: apiCalls,
       text_length: textLength,
+      segment_size: MAX_CHARS_PER_CALL,
+      segment_overlap: SEGMENT_OVERLAP_CHARS,
       source: 'auto-pipeline',
     },
-    processing_duration_ms: processingDurationMs,
+    processing_duration_ms: null,
     processing_quality_score: null,
     parent_id: ocrResult.provenance_id,
     parent_ids: JSON.stringify([doc.provenance_id, ocrResult.provenance_id]),
     chain_depth: 2,
     chain_path: JSON.stringify(['DOCUMENT', 'OCR_RESULT', 'ENTITY_EXTRACTION']),
   });
+
+  // Create and store extraction segments with provenance tracking
+  const typeFilter = `Extract all entity types: ${ENTITY_TYPES.join(', ')}.`;
+  const segments = createExtractionSegments(conn, docId, ocrResult.id, text, entityProvId);
+
+  // Process each segment through Gemini independently
+  const allRawEntities: Array<{ type: string; raw_text: string; confidence: number }> = [];
+  let segmentsComplete = 0;
+  let segmentsFailed = 0;
+
+  for (const segment of segments) {
+    updateSegmentStatus(conn, segment.id, 'processing');
+    try {
+      const entities = await callGeminiForEntities(client, segment.text, typeFilter);
+      allRawEntities.push(...entities);
+      updateSegmentStatus(conn, segment.id, 'complete', entities.length);
+      segmentsComplete++;
+    } catch (segError) {
+      const segMsg = segError instanceof Error ? segError.message : String(segError);
+      console.error(`[WARN] Auto-pipeline segment ${segment.segment_index} failed for ${docId}: ${segMsg}`);
+      updateSegmentStatus(conn, segment.id, 'failed', 0, segMsg);
+      segmentsFailed++;
+    }
+  }
+
+  const apiCalls = segments.length;
+  const processingDurationMs = Date.now() - startTime;
+
+  // Filter noise entities (bare numbers, times, BP readings, SSNs, phone numbers)
+  const filteredEntities = filterNoiseEntities(allRawEntities);
+  const noiseFilteredCount = allRawEntities.length - filteredEntities.length;
+
+  // Extract dates with regex that Gemini often misses (scans full OCR text)
+  const regexDates = extractDatesWithRegex(text);
+  const regexDatesCount = regexDates.length;
+
+  // Merge regex dates into filtered entities before deduplication
+  const mergedEntities: Array<{ type: string; raw_text: string; confidence: number }> = [
+    ...filteredEntities,
+    ...regexDates,
+  ];
+
+  if (noiseFilteredCount > 0 || regexDatesCount > 0) {
+    console.error(
+      `[INFO] Auto-pipeline: noise filtered ${noiseFilteredCount}, regex dates added ${regexDatesCount} for document ${docId}`
+    );
+  }
+
+  // Deduplicate by normalized_text + entity_type
+  // Overlap between segments naturally produces duplicate entities;
+  // the Map keyed by type::normalized handles this cleanly
+  const dedupMap = new Map<string, { type: string; raw_text: string; confidence: number }>();
+  for (const entity of mergedEntities) {
+    const normalized = normalizeEntity(entity.raw_text, entity.type);
+    const key = `${entity.type}::${normalized}`;
+    const existing = dedupMap.get(key);
+    if (!existing || entity.confidence > existing.confidence) {
+      dedupMap.set(key, entity);
+    }
+  }
+
+  // Update provenance with final content hash and processing duration
+  const entityContent = JSON.stringify([...dedupMap.values()]);
+  const entityHash = computeHash(entityContent);
+  conn.prepare(`
+    UPDATE provenance SET content_hash = ?, processed_at = ?, processing_duration_ms = ?,
+      processing_params = ?
+    WHERE id = ?
+  `).run(
+    entityHash,
+    new Date().toISOString(),
+    processingDurationMs,
+    JSON.stringify({
+      entity_types: ENTITY_TYPES,
+      api_calls: apiCalls,
+      text_length: textLength,
+      segment_size: MAX_CHARS_PER_CALL,
+      segment_overlap: SEGMENT_OVERLAP_CHARS,
+      segments_total: segments.length,
+      segments_complete: segmentsComplete,
+      segments_failed: segmentsFailed,
+      source: 'auto-pipeline',
+    }),
+    entityProvId,
+  );
 
   // Load DB chunks for chunk_id mapping
   const dbChunks = getChunksByDocumentId(conn, docId);
@@ -910,6 +981,7 @@ async function autoExtractEntitiesForDocument(
 
   const typeCounts: Record<string, number> = {};
   let totalInserted = 0;
+  let totalMentions = 0;
 
   for (const [, entityData] of dedupMap) {
     const normalized = normalizeEntity(entityData.raw_text, entityData.type);
@@ -927,23 +999,51 @@ async function autoExtractEntitiesForDocument(
       created_at: now,
     });
 
-    const mapping = mapEntityToChunk(entityData.raw_text, ocrText, dbChunks);
-    if (mapping.chunk_id) {
-      chunkMappedCount++;
-    }
+    // Find ALL occurrences of this entity in the OCR text (scans full text,
+    // not segments, so character positions are relative to the original document)
+    const occurrences = findAllEntityOccurrences(entityData.raw_text, ocrText, dbChunks);
 
-    const mentionId = uuidv4();
-    insertEntityMention(conn, {
-      id: mentionId,
-      entity_id: entityId,
-      document_id: docId,
-      chunk_id: mapping.chunk_id,
-      page_number: mapping.page_number,
-      character_start: mapping.character_start,
-      character_end: mapping.character_end,
-      context_text: entityData.raw_text,
-      created_at: now,
-    });
+    if (occurrences.length > 0) {
+      let entityHasChunkMapping = false;
+
+      for (const occ of occurrences) {
+        const mentionId = uuidv4();
+        insertEntityMention(conn, {
+          id: mentionId,
+          entity_id: entityId,
+          document_id: docId,
+          chunk_id: occ.chunk_id,
+          page_number: occ.page_number,
+          character_start: occ.character_start,
+          character_end: occ.character_end,
+          context_text: occ.context_text,
+          created_at: now,
+        });
+        totalMentions++;
+        if (occ.chunk_id) {
+          entityHasChunkMapping = true;
+        }
+      }
+
+      if (entityHasChunkMapping) {
+        chunkMappedCount++;
+      }
+    } else {
+      // No occurrences found -- create 1 fallback mention with null chunk_id
+      const mentionId = uuidv4();
+      insertEntityMention(conn, {
+        id: mentionId,
+        entity_id: entityId,
+        document_id: docId,
+        chunk_id: null,
+        page_number: null,
+        character_start: null,
+        character_end: null,
+        context_text: entityData.raw_text,
+        created_at: now,
+      });
+      totalMentions++;
+    }
 
     typeCounts[entityData.type] = (typeCounts[entityData.type] ?? 0) + 1;
     totalInserted++;
@@ -959,11 +1059,12 @@ async function autoExtractEntitiesForDocument(
     });
   }
 
-  console.error(`[INFO] Auto-pipeline: entity extraction complete for ${docId}: ${totalInserted} entities, ${chunkMappedCount} chunk-mapped`);
+  console.error(`[INFO] Auto-pipeline: entity extraction complete for ${docId}: ${totalInserted} entities, ${totalMentions} mentions, ${chunkMappedCount} chunk-mapped (${segments.length} segments)`);
 
   return {
     document_id: docId,
     total_entities: totalInserted,
+    total_mentions: totalMentions,
     entities_by_type: typeCounts,
     chunk_mapped: chunkMappedCount,
     processing_duration_ms: processingDurationMs,
@@ -1427,6 +1528,7 @@ export async function handleProcessPending(
       response.entity_extraction = {
         documents_extracted: entityResults.length,
         total_entities: entityResults.reduce((sum, r) => sum + r.total_entities, 0),
+        total_mentions: entityResults.reduce((sum, r) => sum + r.total_mentions, 0),
         total_chunk_mapped: entityResults.reduce((sum, r) => sum + r.chunk_mapped, 0),
         total_processing_duration_ms: entityResults.reduce((sum, r) => sum + r.processing_duration_ms, 0),
         per_document: entityResults,

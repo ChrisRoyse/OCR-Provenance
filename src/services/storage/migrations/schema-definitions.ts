@@ -8,7 +8,7 @@
  */
 
 /** Current schema version */
-export const SCHEMA_VERSION = 17;
+export const SCHEMA_VERSION = 19;
 
 /**
  * Database configuration pragmas for optimal performance and safety
@@ -445,7 +445,7 @@ export const CREATE_ENTITIES_TABLE = `
 CREATE TABLE IF NOT EXISTS entities (
   id TEXT PRIMARY KEY NOT NULL,
   document_id TEXT NOT NULL REFERENCES documents(id),
-  entity_type TEXT NOT NULL CHECK (entity_type IN ('person', 'organization', 'date', 'amount', 'case_number', 'location', 'statute', 'exhibit', 'other')),
+  entity_type TEXT NOT NULL CHECK (entity_type IN ('person', 'organization', 'date', 'amount', 'case_number', 'location', 'statute', 'exhibit', 'medication', 'diagnosis', 'medical_device', 'other')),
   raw_text TEXT NOT NULL,
   normalized_text TEXT NOT NULL,
   confidence REAL NOT NULL DEFAULT 0.0,
@@ -541,7 +541,7 @@ CREATE TABLE IF NOT EXISTS document_clusters (
 export const CREATE_KNOWLEDGE_NODES_TABLE = `
 CREATE TABLE IF NOT EXISTS knowledge_nodes (
   id TEXT PRIMARY KEY,
-  entity_type TEXT NOT NULL CHECK (entity_type IN ('person', 'organization', 'date', 'amount', 'case_number', 'location', 'statute', 'exhibit', 'other')),
+  entity_type TEXT NOT NULL CHECK (entity_type IN ('person', 'organization', 'date', 'amount', 'case_number', 'location', 'statute', 'exhibit', 'medication', 'diagnosis', 'medical_device', 'other')),
   canonical_name TEXT NOT NULL,
   normalized_name TEXT NOT NULL,
   aliases TEXT,
@@ -576,6 +576,34 @@ CREATE TABLE IF NOT EXISTS knowledge_edges (
   FOREIGN KEY (source_node_id) REFERENCES knowledge_nodes(id),
   FOREIGN KEY (target_node_id) REFERENCES knowledge_nodes(id),
   FOREIGN KEY (provenance_id) REFERENCES provenance(id)
+)
+`;
+
+/**
+ * Entity extraction segments - text segments used for chunked entity extraction
+ * Each segment stores its exact character range in the OCR text for provenance tracing.
+ * Provenance depth: 2 (parallel to ENTITY_EXTRACTION, after OCR_RESULT)
+ */
+export const CREATE_ENTITY_EXTRACTION_SEGMENTS_TABLE = `
+CREATE TABLE IF NOT EXISTS entity_extraction_segments (
+  id TEXT PRIMARY KEY,
+  document_id TEXT NOT NULL REFERENCES documents(id),
+  ocr_result_id TEXT NOT NULL REFERENCES ocr_results(id),
+  segment_index INTEGER NOT NULL,
+  text TEXT NOT NULL,
+  character_start INTEGER NOT NULL,
+  character_end INTEGER NOT NULL,
+  text_length INTEGER NOT NULL,
+  overlap_previous INTEGER NOT NULL DEFAULT 0,
+  overlap_next INTEGER NOT NULL DEFAULT 0,
+  extraction_status TEXT NOT NULL DEFAULT 'pending'
+    CHECK (extraction_status IN ('pending', 'processing', 'complete', 'failed')),
+  entity_count INTEGER DEFAULT 0,
+  extracted_at TEXT,
+  error_message TEXT,
+  provenance_id TEXT REFERENCES provenance(id),
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  UNIQUE(document_id, segment_index)
 )
 `;
 
@@ -712,6 +740,11 @@ export const CREATE_INDEXES = [
   // Knowledge graph optimization indexes (v17)
   'CREATE INDEX IF NOT EXISTS idx_knowledge_nodes_canonical_lower ON knowledge_nodes(canonical_name COLLATE NOCASE)',
   'CREATE INDEX IF NOT EXISTS idx_entity_mentions_chunk_id ON entity_mentions(chunk_id)',
+
+  // Entity extraction segment indexes (v19)
+  'CREATE INDEX IF NOT EXISTS idx_segments_document ON entity_extraction_segments(document_id)',
+  'CREATE INDEX IF NOT EXISTS idx_segments_status ON entity_extraction_segments(extraction_status)',
+  'CREATE INDEX IF NOT EXISTS idx_segments_doc_status ON entity_extraction_segments(document_id, extraction_status)',
 ] as const;
 
 /**
@@ -736,6 +769,7 @@ export const TABLE_DEFINITIONS = [
   { name: 'knowledge_nodes', sql: CREATE_KNOWLEDGE_NODES_TABLE },
   { name: 'knowledge_edges', sql: CREATE_KNOWLEDGE_EDGES_TABLE },
   { name: 'node_entity_links', sql: CREATE_NODE_ENTITY_LINKS_TABLE },
+  { name: 'entity_extraction_segments', sql: CREATE_ENTITY_EXTRACTION_SEGMENTS_TABLE },
 ] as const;
 
 /**
@@ -767,6 +801,7 @@ export const REQUIRED_TABLES = [
   'knowledge_edges',
   'node_entity_links',
   'knowledge_nodes_fts',
+  'entity_extraction_segments',
 ] as const;
 
 /**
@@ -826,4 +861,7 @@ export const REQUIRED_INDEXES = [
   'idx_nel_document_id',
   'idx_knowledge_nodes_canonical_lower',
   'idx_entity_mentions_chunk_id',
+  'idx_segments_document',
+  'idx_segments_status',
+  'idx_segments_doc_status',
 ] as const;
