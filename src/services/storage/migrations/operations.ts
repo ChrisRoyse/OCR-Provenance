@@ -31,6 +31,7 @@ import {
   CREATE_NODE_ENTITY_LINKS_TABLE,
   CREATE_KNOWLEDGE_NODES_FTS_TABLE,
   CREATE_KNOWLEDGE_NODES_FTS_TRIGGERS,
+  CREATE_ENTITY_EXTRACTION_SEGMENTS_TABLE,
 } from './schema-definitions.js';
 import {
   configurePragmas,
@@ -1043,6 +1044,16 @@ export function migrateToLatest(db: Database.Database): void {
     migrateV16ToV17(db);
     bumpVersion(17);
   }
+
+  if (currentVersion < 18) {
+    migrateV17ToV18(db);
+    bumpVersion(18);
+  }
+
+  if (currentVersion < 19) {
+    migrateV18ToV19(db);
+    bumpVersion(19);
+  }
 }
 
 /**
@@ -1837,6 +1848,164 @@ function migrateV16ToV17(db: Database.Database): void {
       `Failed to migrate from v16 to v17 (knowledge graph optimization): ${cause}`,
       'migrate',
       'knowledge_edges',
+      error
+    );
+  }
+}
+
+/**
+ * Migrate from schema version 17 to version 18
+ *
+ * Changes in v18:
+ * - entities.entity_type: Added 'medication', 'diagnosis' to CHECK constraint
+ * - knowledge_nodes.entity_type: Added 'medication', 'diagnosis' to CHECK constraint
+ *
+ * SQLite CHECK constraints require table recreation to modify.
+ *
+ * @param db - Database instance from better-sqlite3
+ * @throws MigrationError if migration fails
+ */
+function migrateV17ToV18(db: Database.Database): void {
+  const entityTypeCheck = `('person', 'organization', 'date', 'amount', 'case_number', 'location', 'statute', 'exhibit', 'medication', 'diagnosis', 'medical_device', 'other')`;
+
+  try {
+    db.exec('PRAGMA foreign_keys = OFF');
+    db.exec('BEGIN TRANSACTION');
+
+    // Step 1: Recreate entities table with expanded CHECK constraint
+    db.exec(`
+      CREATE TABLE entities_new (
+        id TEXT PRIMARY KEY NOT NULL,
+        document_id TEXT NOT NULL REFERENCES documents(id),
+        entity_type TEXT NOT NULL CHECK (entity_type IN ${entityTypeCheck}),
+        raw_text TEXT NOT NULL,
+        normalized_text TEXT NOT NULL,
+        confidence REAL NOT NULL DEFAULT 0.0,
+        metadata TEXT,
+        provenance_id TEXT NOT NULL REFERENCES provenance(id),
+        created_at TEXT NOT NULL DEFAULT (datetime('now'))
+      )
+    `);
+    db.exec('INSERT INTO entities_new SELECT * FROM entities');
+    db.exec('DROP TABLE entities');
+    db.exec('ALTER TABLE entities_new RENAME TO entities');
+
+    // Recreate entities indexes
+    db.exec('CREATE INDEX IF NOT EXISTS idx_entities_document_id ON entities(document_id)');
+    db.exec('CREATE INDEX IF NOT EXISTS idx_entities_entity_type ON entities(entity_type)');
+    db.exec('CREATE INDEX IF NOT EXISTS idx_entities_normalized_text ON entities(normalized_text)');
+
+    // Step 2: Recreate knowledge_nodes table with expanded CHECK constraint
+    db.exec(`
+      CREATE TABLE knowledge_nodes_new (
+        id TEXT PRIMARY KEY,
+        entity_type TEXT NOT NULL CHECK (entity_type IN ${entityTypeCheck}),
+        canonical_name TEXT NOT NULL,
+        normalized_name TEXT NOT NULL,
+        aliases TEXT,
+        document_count INTEGER NOT NULL DEFAULT 1,
+        mention_count INTEGER NOT NULL DEFAULT 0,
+        edge_count INTEGER NOT NULL DEFAULT 0,
+        avg_confidence REAL NOT NULL DEFAULT 0.0,
+        metadata TEXT,
+        provenance_id TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      )
+    `);
+    db.exec('INSERT INTO knowledge_nodes_new SELECT * FROM knowledge_nodes');
+
+    // Drop FTS table and triggers before dropping knowledge_nodes (FTS references it)
+    db.exec('DROP TRIGGER IF EXISTS knowledge_nodes_fts_insert');
+    db.exec('DROP TRIGGER IF EXISTS knowledge_nodes_fts_delete');
+    db.exec('DROP TRIGGER IF EXISTS knowledge_nodes_fts_update');
+    db.exec('DROP TABLE IF EXISTS knowledge_nodes_fts');
+
+    db.exec('DROP TABLE knowledge_nodes');
+    db.exec('ALTER TABLE knowledge_nodes_new RENAME TO knowledge_nodes');
+
+    // Recreate knowledge_nodes indexes
+    db.exec('CREATE INDEX IF NOT EXISTS idx_kn_entity_type ON knowledge_nodes(entity_type)');
+    db.exec('CREATE INDEX IF NOT EXISTS idx_kn_normalized_name ON knowledge_nodes(normalized_name)');
+    db.exec('CREATE INDEX IF NOT EXISTS idx_kn_document_count ON knowledge_nodes(document_count)');
+    db.exec('CREATE INDEX IF NOT EXISTS idx_knowledge_nodes_canonical_lower ON knowledge_nodes(canonical_name COLLATE NOCASE)');
+
+    // Recreate FTS5 table and triggers
+    db.exec(`CREATE VIRTUAL TABLE IF NOT EXISTS knowledge_nodes_fts USING fts5(canonical_name, content='knowledge_nodes', content_rowid='rowid')`);
+    db.exec(`CREATE TRIGGER IF NOT EXISTS knowledge_nodes_fts_insert AFTER INSERT ON knowledge_nodes BEGIN INSERT INTO knowledge_nodes_fts(rowid, canonical_name) VALUES (new.rowid, new.canonical_name); END`);
+    db.exec(`CREATE TRIGGER IF NOT EXISTS knowledge_nodes_fts_delete AFTER DELETE ON knowledge_nodes BEGIN INSERT INTO knowledge_nodes_fts(knowledge_nodes_fts, rowid, canonical_name) VALUES ('delete', old.rowid, old.canonical_name); END`);
+    db.exec(`CREATE TRIGGER IF NOT EXISTS knowledge_nodes_fts_update AFTER UPDATE ON knowledge_nodes BEGIN INSERT INTO knowledge_nodes_fts(knowledge_nodes_fts, rowid, canonical_name) VALUES ('delete', old.rowid, old.canonical_name); INSERT INTO knowledge_nodes_fts(rowid, canonical_name) VALUES (new.rowid, new.canonical_name); END`);
+
+    // Repopulate FTS from existing data
+    const nodeCount = db.prepare('SELECT COUNT(*) as cnt FROM knowledge_nodes').get() as { cnt: number };
+    if (nodeCount.cnt > 0) {
+      db.exec(`
+        INSERT INTO knowledge_nodes_fts(rowid, canonical_name)
+        SELECT rowid, canonical_name FROM knowledge_nodes
+      `);
+    }
+
+    db.exec('COMMIT');
+    db.exec('PRAGMA foreign_keys = ON');
+
+    // FK integrity check
+    const fkViolations = db.pragma('foreign_key_check') as unknown[];
+    if (fkViolations.length > 0) {
+      throw new Error(
+        `Foreign key integrity check failed after v17->v18 migration: ${fkViolations.length} violation(s). ` +
+        `First: ${JSON.stringify(fkViolations[0])}`
+      );
+    }
+  } catch (error) {
+    try {
+      db.exec('ROLLBACK');
+      db.exec('PRAGMA foreign_keys = ON');
+    } catch { /* ignore rollback errors */ }
+    const cause = error instanceof Error ? error.message : String(error);
+    throw new MigrationError(
+      `Failed to migrate from v17 to v18 (medical entity types): ${cause}`,
+      'migrate',
+      'entities',
+      error
+    );
+  }
+}
+
+/**
+ * Migrate from schema version 18 to version 19
+ *
+ * Changes in v19:
+ * - entity_extraction_segments: New table for chunked entity extraction with provenance
+ *   Stores 250K-character segments with 10% overlap for focused Gemini extraction.
+ *   Each segment records its exact character_start/character_end in the OCR text
+ *   and links to provenance for full traceability.
+ * - 3 new indexes: idx_segments_document, idx_segments_status, idx_segments_doc_status
+ *
+ * @param db - Database instance from better-sqlite3
+ * @throws MigrationError if migration fails
+ */
+function migrateV18ToV19(db: Database.Database): void {
+  try {
+    db.exec('BEGIN TRANSACTION');
+
+    // Step 1: Create entity_extraction_segments table
+    db.exec(CREATE_ENTITY_EXTRACTION_SEGMENTS_TABLE);
+
+    // Step 2: Create indexes
+    db.exec('CREATE INDEX IF NOT EXISTS idx_segments_document ON entity_extraction_segments(document_id)');
+    db.exec('CREATE INDEX IF NOT EXISTS idx_segments_status ON entity_extraction_segments(extraction_status)');
+    db.exec('CREATE INDEX IF NOT EXISTS idx_segments_doc_status ON entity_extraction_segments(document_id, extraction_status)');
+
+    db.exec('COMMIT');
+  } catch (error) {
+    try {
+      db.exec('ROLLBACK');
+    } catch { /* ignore rollback errors */ }
+    const cause = error instanceof Error ? error.message : String(error);
+    throw new MigrationError(
+      `Failed to migrate from v18 to v19 (entity extraction segments): ${cause}`,
+      'migrate',
+      'entity_extraction_segments',
       error
     );
   }

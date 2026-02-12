@@ -50,6 +50,7 @@ import {
   CREATE_NODE_ENTITY_LINKS_TABLE,
   CREATE_KNOWLEDGE_NODES_FTS_TABLE,
   CREATE_KNOWLEDGE_NODES_FTS_TRIGGERS,
+  CREATE_ENTITY_EXTRACTION_SEGMENTS_TABLE,
   CREATE_SCHEMA_VERSION_TABLE,
   DATABASE_PRAGMAS,
 } from '../../src/services/storage/migrations/schema-definitions.js';
@@ -97,6 +98,7 @@ function createFreshDatabase(): Database.Database {
   conn.exec(CREATE_KNOWLEDGE_NODES_TABLE);
   conn.exec(CREATE_KNOWLEDGE_EDGES_TABLE);
   conn.exec(CREATE_NODE_ENTITY_LINKS_TABLE);
+  conn.exec(CREATE_ENTITY_EXTRACTION_SEGMENTS_TABLE);
   conn.exec(CREATE_KNOWLEDGE_NODES_FTS_TABLE);
   conn.exec(CREATE_CHUNKS_FTS_TABLE);
   conn.exec(CREATE_FTS_INDEX_METADATA);
@@ -200,11 +202,11 @@ describe('E2E-1: Schema v10 Physical Verification', () => {
     // WHAT: Verify schema version constant
     // INPUT: SCHEMA_VERSION export
     // EXPECTED: 12
-    expect(SCHEMA_VERSION).toBe(17);
+    expect(SCHEMA_VERSION).toBe(19);
 
     // SOURCE OF TRUTH: schema_version table
     const row = db.prepare('SELECT version FROM schema_version WHERE id = 1').get() as { version: number };
-    expect(row.version).toBe(17);
+    expect(row.version).toBe(19);
   });
 
   it('All 16 required tables exist (minus vec_embeddings without extension)', () => {
@@ -232,7 +234,7 @@ describe('E2E-1: Schema v10 Physical Verification', () => {
     for (const required of REQUIRED_INDEXES) {
       expect(indexes).toContain(required);
     }
-    expect(REQUIRED_INDEXES.length).toBe(53);
+    expect(REQUIRED_INDEXES.length).toBe(56);
   });
 
   it('documents table has metadata columns', () => {

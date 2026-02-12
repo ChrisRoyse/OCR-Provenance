@@ -45,6 +45,11 @@ const RULE_MATRIX: Array<{
   { source_type: 'person', target_type: 'location', result: 'located_in', confidence: 0.70 },
   { source_type: 'organization', target_type: 'case_number', result: 'party_to', confidence: 0.75 },
   { source_type: 'person', target_type: 'case_number', result: 'party_to', confidence: 0.75 },
+  { source_type: 'person', target_type: 'medication', result: 'references', confidence: 0.75 },
+  { source_type: 'person', target_type: 'diagnosis', result: 'references', confidence: 0.75 },
+  { source_type: 'medication', target_type: 'diagnosis', result: 'related_to', confidence: 0.80 },
+  { source_type: 'person', target_type: 'medical_device', result: 'references', confidence: 0.75 },
+  { source_type: 'medical_device', target_type: 'diagnosis', result: 'related_to', confidence: 0.80 },
 ];
 
 /**
@@ -126,12 +131,24 @@ export function classifyByClusterHint(
 
   const tag = clusterTag.toLowerCase();
 
+  // Check if the type pair matches in either ordering
+  function typePairMatches(a: EntityType, b: EntityType): boolean {
+    return (sourceType === a && targetType === b) ||
+           (sourceType === b && targetType === a);
+  }
+
   if (tag.includes('employment') || tag.includes('hr') || tag.includes('personnel')) {
-    if (sourceType === 'person' && targetType === 'organization') {
+    if (typePairMatches('person', 'organization')) {
       return { type: 'works_at', confidence: 0.90 };
     }
-    if (sourceType === 'organization' && targetType === 'person') {
-      return { type: 'works_at', confidence: 0.90 };
+  }
+
+  if (tag.includes('medical') || tag.includes('health') || tag.includes('clinical') || tag.includes('hospice')) {
+    if (typePairMatches('person', 'medication') || typePairMatches('person', 'diagnosis') || typePairMatches('person', 'medical_device')) {
+      return { type: 'references', confidence: 0.85 };
+    }
+    if (typePairMatches('medication', 'diagnosis') || typePairMatches('medical_device', 'diagnosis')) {
+      return { type: 'related_to', confidence: 0.85 };
     }
   }
 
@@ -139,10 +156,7 @@ export function classifyByClusterHint(
     if (sourceType === 'person' && targetType === 'person') {
       return { type: 'party_to', confidence: 0.80 };
     }
-    if ((sourceType === 'person' || sourceType === 'organization') && targetType === 'case_number') {
-      return { type: 'party_to', confidence: 0.85 };
-    }
-    if ((targetType === 'person' || targetType === 'organization') && sourceType === 'case_number') {
+    if (typePairMatches('person', 'case_number') || typePairMatches('organization', 'case_number')) {
       return { type: 'party_to', confidence: 0.85 };
     }
   }

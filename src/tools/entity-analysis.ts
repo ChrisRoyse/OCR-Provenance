@@ -35,8 +35,12 @@ import { incrementalBuildGraph } from '../services/knowledge-graph/incremental-b
 import { findGraphPaths } from '../services/knowledge-graph/graph-service.js';
 import {
   normalizeEntity,
-  extractEntitiesFromText,
-  mapEntityToChunk,
+  callGeminiForEntities,
+  findAllEntityOccurrences,
+  filterNoiseEntities,
+  extractDatesWithRegex,
+  createExtractionSegments,
+  updateSegmentStatus,
   MAX_CHARS_PER_CALL,
   SEGMENT_OVERLAP_CHARS,
 } from '../utils/entity-extraction-helpers.js';
@@ -49,7 +53,7 @@ const EntityExtractInput = z.object({
   document_id: z.string().min(1).describe('Document ID (must be OCR processed)'),
   entity_types: z.array(z.enum([
     'person', 'organization', 'date', 'amount', 'case_number',
-    'location', 'statute', 'exhibit', 'other',
+    'location', 'statute', 'exhibit', 'medication', 'diagnosis', 'medical_device', 'other',
   ])).optional().describe('Entity types to extract (default: all types)'),
 });
 
@@ -57,7 +61,7 @@ const EntitySearchInput = z.object({
   query: z.string().min(1).max(500).describe('Search query for entity names'),
   entity_type: z.enum([
     'person', 'organization', 'date', 'amount', 'case_number',
-    'location', 'statute', 'exhibit', 'other',
+    'location', 'statute', 'exhibit', 'medication', 'diagnosis', 'medical_device', 'other',
   ]).optional().describe('Filter by entity type'),
   document_filter: z.array(z.string()).optional().describe('Filter by document IDs'),
   limit: z.number().int().min(1).max(200).default(50).describe('Maximum results'),
@@ -171,40 +175,15 @@ async function handleEntityExtract(params: Record<string, unknown>) {
       console.error(`[INFO] Deleted ${existingCount} existing entities for document ${doc.id} before re-extraction`);
     }
 
-    // Extract entities using single Gemini call (or adaptive batching for very large docs)
     const client = new GeminiClient();
     const startTime = Date.now();
-
-    const allRawEntities = await extractEntitiesFromText(
-      client,
-      ocrResult.extracted_text,
-      input.entity_types ?? [],
-    );
-
-    // Track how many API calls were made (1 for most docs, 2-3 for >500K chars)
     const textLength = ocrResult.extracted_text.length;
-    const apiCalls = textLength <= MAX_CHARS_PER_CALL
-      ? 1
-      : Math.ceil((textLength - SEGMENT_OVERLAP_CHARS) / (MAX_CHARS_PER_CALL - SEGMENT_OVERLAP_CHARS));
-
-    const processingDurationMs = Date.now() - startTime;
-
-    // Deduplicate by normalized_text + entity_type
-    const dedupMap = new Map<string, { type: string; raw_text: string; confidence: number }>();
-    for (const entity of allRawEntities) {
-      const normalized = normalizeEntity(entity.raw_text, entity.type);
-      const key = `${entity.type}::${normalized}`;
-      const existing = dedupMap.get(key);
-      if (!existing || entity.confidence > existing.confidence) {
-        dedupMap.set(key, entity);
-      }
-    }
-
-    // Create ENTITY_EXTRACTION provenance record
+    const ocrText = ocrResult.extracted_text;
     const now = new Date().toISOString();
+
+    // Create ENTITY_EXTRACTION provenance record BEFORE segments
+    // so segments can reference this provenance chain
     const entityProvId = uuidv4();
-    const entityContent = JSON.stringify([...dedupMap.values()]);
-    const entityHash = computeHash(entityContent);
 
     db.insertProvenance({
       id: entityProvId,
@@ -218,17 +197,18 @@ async function handleEntityExtract(params: Record<string, unknown>) {
       source_id: ocrResult.provenance_id,
       root_document_id: doc.provenance_id,
       location: null,
-      content_hash: entityHash,
+      content_hash: computeHash(`entity-extraction-pending-${doc.id}-${now}`),
       input_hash: ocrResult.content_hash,
       file_hash: doc.file_hash,
       processor: 'gemini-entity-extraction',
-      processor_version: '1.0.0',
+      processor_version: '2.0.0',
       processing_params: {
         entity_types: input.entity_types ?? ENTITY_TYPES,
-        api_calls: apiCalls,
         text_length: textLength,
+        segment_size: MAX_CHARS_PER_CALL,
+        segment_overlap: SEGMENT_OVERLAP_CHARS,
       },
-      processing_duration_ms: processingDurationMs,
+      processing_duration_ms: null,
       processing_quality_score: null,
       parent_id: ocrResult.provenance_id,
       parent_ids: JSON.stringify([doc.provenance_id, ocrResult.provenance_id]),
@@ -236,14 +216,100 @@ async function handleEntityExtract(params: Record<string, unknown>) {
       chain_path: JSON.stringify(['DOCUMENT', 'OCR_RESULT', 'ENTITY_EXTRACTION']),
     });
 
+    // Build type filter prompt fragment
+    const typeFilter = (input.entity_types ?? []).length > 0
+      ? `Only extract entities of these types: ${(input.entity_types ?? []).join(', ')}.`
+      : `Extract all entity types: ${ENTITY_TYPES.join(', ')}.`;
+
+    // Create and store extraction segments with provenance tracking.
+    // Each segment records exact character_start/character_end positions in the
+    // original OCR text so entities can always be traced back to source location.
+    const segments = createExtractionSegments(
+      conn, doc.id, ocrResult.id, ocrText, entityProvId,
+    );
+
+    // Process each segment through Gemini independently
+    const allRawEntities: Array<{ type: string; raw_text: string; confidence: number }> = [];
+    let segmentsComplete = 0;
+    let segmentsFailed = 0;
+
+    for (const segment of segments) {
+      updateSegmentStatus(conn, segment.id, 'processing');
+      try {
+        const entities = await callGeminiForEntities(client, segment.text, typeFilter);
+        allRawEntities.push(...entities);
+        updateSegmentStatus(conn, segment.id, 'complete', entities.length);
+        segmentsComplete++;
+      } catch (segError) {
+        const segMsg = segError instanceof Error ? segError.message : String(segError);
+        console.error(`[WARN] Segment ${segment.segment_index} failed: ${segMsg}`);
+        updateSegmentStatus(conn, segment.id, 'failed', 0, segMsg);
+        segmentsFailed++;
+      }
+    }
+
+    const apiCalls = segments.length;
+    const processingDurationMs = Date.now() - startTime;
+
+    // Filter noise entities (bare numbers, times, BP readings, SSNs, phone numbers)
+    const filteredEntities = filterNoiseEntities(allRawEntities);
+    const noiseFilteredCount = allRawEntities.length - filteredEntities.length;
+
+    // Extract dates with regex that Gemini often misses (scans full OCR text)
+    const regexDates = extractDatesWithRegex(ocrText);
+    const regexDatesCount = regexDates.length;
+
+    // Merge regex dates into filtered entities before deduplication
+    const mergedEntities: Array<{ type: string; raw_text: string; confidence: number }> = [
+      ...filteredEntities,
+      ...regexDates,
+    ];
+
+    // Deduplicate by normalized_text + entity_type
+    // Overlap between segments naturally produces duplicate entities;
+    // the Map keyed by type::normalized handles this cleanly
+    const dedupMap = new Map<string, { type: string; raw_text: string; confidence: number }>();
+    for (const entity of mergedEntities) {
+      const normalized = normalizeEntity(entity.raw_text, entity.type);
+      const key = `${entity.type}::${normalized}`;
+      const existing = dedupMap.get(key);
+      if (!existing || entity.confidence > existing.confidence) {
+        dedupMap.set(key, entity);
+      }
+    }
+
+    // Update provenance with final content hash and processing duration
+    const entityContent = JSON.stringify([...dedupMap.values()]);
+    const entityHash = computeHash(entityContent);
+    conn.prepare(`
+      UPDATE provenance SET content_hash = ?, processed_at = ?, processing_duration_ms = ?,
+        processing_params = ?
+      WHERE id = ?
+    `).run(
+      entityHash,
+      new Date().toISOString(),
+      processingDurationMs,
+      JSON.stringify({
+        entity_types: input.entity_types ?? ENTITY_TYPES,
+        api_calls: apiCalls,
+        text_length: textLength,
+        segment_size: MAX_CHARS_PER_CALL,
+        segment_overlap: SEGMENT_OVERLAP_CHARS,
+        segments_total: segments.length,
+        segments_complete: segmentsComplete,
+        segments_failed: segmentsFailed,
+      }),
+      entityProvId,
+    );
+
     // Load DB chunks for chunk_id mapping (ordered by chunk_index)
     const dbChunks = getChunksByDocumentId(conn, doc.id);
-    const ocrText = ocrResult.extracted_text;
     let chunkMappedCount = 0;
 
     // Store entities and mentions in DB
     const typeCounts: Record<string, number> = {};
     let totalInserted = 0;
+    let totalMentions = 0;
 
     for (const [, entityData] of dedupMap) {
       const normalized = normalizeEntity(entityData.raw_text, entityData.type);
@@ -261,25 +327,51 @@ async function handleEntityExtract(params: Record<string, unknown>) {
         created_at: now,
       });
 
-      // Map entity to its DB chunk via text position in OCR text
-      const mapping = mapEntityToChunk(entityData.raw_text, ocrText, dbChunks);
-      if (mapping.chunk_id) {
-        chunkMappedCount++;
-      }
+      // Find ALL occurrences of this entity in the OCR text
+      const occurrences = findAllEntityOccurrences(entityData.raw_text, ocrText, dbChunks);
 
-      // Create a mention record for the entity with chunk mapping
-      const mentionId = uuidv4();
-      insertEntityMention(conn, {
-        id: mentionId,
-        entity_id: entityId,
-        document_id: doc.id,
-        chunk_id: mapping.chunk_id,
-        page_number: mapping.page_number,
-        character_start: mapping.character_start,
-        character_end: mapping.character_end,
-        context_text: entityData.raw_text,
-        created_at: now,
-      });
+      if (occurrences.length > 0) {
+        // Track whether at least one occurrence has a chunk mapping
+        let entityHasChunkMapping = false;
+
+        for (const occ of occurrences) {
+          const mentionId = uuidv4();
+          insertEntityMention(conn, {
+            id: mentionId,
+            entity_id: entityId,
+            document_id: doc.id,
+            chunk_id: occ.chunk_id,
+            page_number: occ.page_number,
+            character_start: occ.character_start,
+            character_end: occ.character_end,
+            context_text: occ.context_text,
+            created_at: now,
+          });
+          totalMentions++;
+          if (occ.chunk_id) {
+            entityHasChunkMapping = true;
+          }
+        }
+
+        if (entityHasChunkMapping) {
+          chunkMappedCount++;
+        }
+      } else {
+        // No occurrences found -- create 1 fallback mention with null chunk_id
+        const mentionId = uuidv4();
+        insertEntityMention(conn, {
+          id: mentionId,
+          entity_id: entityId,
+          document_id: doc.id,
+          chunk_id: null,
+          page_number: null,
+          character_start: null,
+          character_end: null,
+          context_text: entityData.raw_text,
+          created_at: now,
+        });
+        totalMentions++;
+      }
 
       typeCounts[entityData.type] = (typeCounts[entityData.type] ?? 0) + 1;
       totalInserted++;
@@ -291,8 +383,11 @@ async function handleEntityExtract(params: Record<string, unknown>) {
     return formatResponse({
       document_id: doc.id,
       total_entities: totalInserted,
+      total_mentions: totalMentions,
       total_raw_extracted: allRawEntities.length,
-      deduplicated: allRawEntities.length - totalInserted,
+      noise_filtered: noiseFilteredCount,
+      regex_dates_added: regexDatesCount,
+      deduplicated: mergedEntities.length - totalInserted,
       entities_by_type: typeCounts,
       chunk_mapped: chunkMappedCount,
       chunk_unmapped: totalInserted - chunkMappedCount,
@@ -301,6 +396,11 @@ async function handleEntityExtract(params: Record<string, unknown>) {
       processing_duration_ms: processingDurationMs,
       text_length: textLength,
       api_calls: apiCalls,
+      segments_total: segments.length,
+      segments_complete: segmentsComplete,
+      segments_failed: segmentsFailed,
+      segment_size: MAX_CHARS_PER_CALL,
+      segment_overlap: SEGMENT_OVERLAP_CHARS,
       ...kgMergeResult,
     });
   } catch (error) {
