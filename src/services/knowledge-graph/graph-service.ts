@@ -516,6 +516,24 @@ function buildCoOccurrenceEdges(
     nodeChunkMap.set(node.id, chunkSet);
   }
 
+  // Detect single-document graph: when all nodes share exactly one document,
+  // co_mentioned edges are meaningless (every pair shares that document, creating
+  // a complete graph with n*(n-1)/2 edges and zero information). Only co_located
+  // edges (shared chunks) carry signal in this case.
+  const allDocumentIds = new Set<string>();
+  for (const docSet of nodeDocMap.values()) {
+    for (const docId of docSet) {
+      allDocumentIds.add(docId);
+    }
+  }
+  const isSingleDocumentGraph = allDocumentIds.size === 1;
+  if (isSingleDocumentGraph) {
+    console.error(
+      `[KnowledgeGraph] Single-document graph detected (${allDocumentIds.size} doc, ${nodes.length} nodes). ` +
+      `Skipping co_mentioned edges to avoid complete graph. Only co_located edges will be created.`,
+    );
+  }
+
   // Build co_mentioned and co_located edges between node pairs
   // Cap at MAX_COOCCURRENCE_ENTITIES nodes to avoid O(n^2) blowup
   const nodeList = nodes.length > MAX_COOCCURRENCE_ENTITIES
@@ -555,28 +573,30 @@ function buildCoOccurrenceEdges(
         ? [nodeA.id, nodeB.id]
         : [nodeB.id, nodeA.id];
 
-      // co_mentioned edge
-      const maxDocCount = Math.max(docsA.size, docsB.size);
-      const coMentionedWeight = maxDocCount > 0
-        ? Math.round((sharedDocs.length / maxDocCount) * 10000) / 10000
-        : 0;
+      // co_mentioned edge — skip for single-document graphs (would be a useless clique)
+      if (!isSingleDocumentGraph) {
+        const maxDocCount = Math.max(docsA.size, docsB.size);
+        const coMentionedWeight = maxDocCount > 0
+          ? Math.round((sharedDocs.length / maxDocCount) * 10000) / 10000
+          : 0;
 
-      const existingCoMentioned = findEdge(conn, sourceId, targetId, 'co_mentioned');
-      if (!existingCoMentioned) {
-        const edge: KnowledgeEdge = {
-          id: uuidv4(),
-          source_node_id: sourceId,
-          target_node_id: targetId,
-          relationship_type: 'co_mentioned',
-          weight: coMentionedWeight,
-          evidence_count: sharedDocs.length,
-          document_ids: JSON.stringify(sharedDocs),
-          metadata: null,
-          provenance_id: provenanceId,
-          created_at: now,
-        };
-        insertKnowledgeEdge(conn, edge);
-        edgeCount++;
+        const existingCoMentioned = findEdge(conn, sourceId, targetId, 'co_mentioned');
+        if (!existingCoMentioned) {
+          const edge: KnowledgeEdge = {
+            id: uuidv4(),
+            source_node_id: sourceId,
+            target_node_id: targetId,
+            relationship_type: 'co_mentioned',
+            weight: coMentionedWeight,
+            evidence_count: sharedDocs.length,
+            document_ids: JSON.stringify(sharedDocs),
+            metadata: null,
+            provenance_id: provenanceId,
+            created_at: now,
+          };
+          insertKnowledgeEdge(conn, edge);
+          edgeCount++;
+        }
       }
 
       // Check for shared chunks (co_located)
@@ -588,7 +608,7 @@ function buildCoOccurrenceEdges(
       }
 
       if (sharedChunks.length > 0) {
-        // co_located edge with 1.5x weight boost
+        const maxDocCount = Math.max(docsA.size, docsB.size);
         const baseWeight = maxDocCount > 0
           ? sharedDocs.length / maxDocCount
           : 0;

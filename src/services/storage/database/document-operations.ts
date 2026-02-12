@@ -321,6 +321,14 @@ function deleteDerivedRecords(db: Database.Database, documentId: string, caller:
   // Clean up knowledge graph data (must come before entities deletion since links reference entities)
   cleanupGraphForDocument(db, documentId);
 
+  // Delete extraction segments (no FK children, safe to delete at any point)
+  try {
+    db.prepare('DELETE FROM entity_extraction_segments WHERE document_id = ?').run(documentId);
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : String(e);
+    if (!msg.includes('no such table')) throw e;
+  }
+
   // Delete entity mentions and entities BEFORE chunks
   // (entity_mentions.chunk_id REFERENCES chunks(id) — must remove child FK first)
   // (entity_mentions.entity_id -> entities.id — mentions before entities)

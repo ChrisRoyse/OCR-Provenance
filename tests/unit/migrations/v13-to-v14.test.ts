@@ -444,7 +444,7 @@ describe('Migration v13 to v14 (Document Comparison)', () => {
     migrateToLatest(db);
 
     const version = (db.prepare('SELECT version FROM schema_version').get() as { version: number }).version;
-    expect(version).toBe(17);
+    expect(version).toBe(19);
   });
 
   it.skipIf(!sqliteVecAvailable)('all 3 comparison indexes exist', () => {
@@ -479,7 +479,7 @@ describe('Migration v13 to v14 (Document Comparison)', () => {
     expect(tables).toContain('documents');
 
     const version = (db.prepare('SELECT version FROM schema_version').get() as { version: number }).version;
-    expect(version).toBe(17);
+    expect(version).toBe(19);
 
     const indexes = getIndexNames(db);
     expect(indexes).toContain('idx_comparisons_doc1');
@@ -528,7 +528,7 @@ describe('Migration v13 to v14 (Document Comparison)', () => {
     expect(() => migrateToLatest(db)).not.toThrow();
 
     const version = (db.prepare('SELECT version FROM schema_version').get() as { version: number }).version;
-    expect(version).toBe(17);
+    expect(version).toBe(19);
   });
 
   it.skipIf(!sqliteVecAvailable)('comparisons table enforces document FK constraints', () => {

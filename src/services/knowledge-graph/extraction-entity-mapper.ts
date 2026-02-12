@@ -72,6 +72,25 @@ const FIELD_TO_ENTITY_TYPE: Record<string, EntityType> = {
   country: 'location',
   location: 'location',
   jurisdiction: 'location',
+
+  // Medication fields
+  medication: 'medication',
+  drug: 'medication',
+  drug_name: 'medication',
+  prescription: 'medication',
+  medicine: 'medication',
+
+  // Diagnosis fields
+  diagnosis: 'diagnosis',
+  condition: 'diagnosis',
+  disease: 'diagnosis',
+  medical_condition: 'diagnosis',
+
+  // Medical device fields
+  medical_device: 'medical_device',
+  device: 'medical_device',
+  device_name: 'medical_device',
+  equipment: 'medical_device',
 };
 
 /**

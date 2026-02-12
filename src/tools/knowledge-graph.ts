@@ -60,7 +60,7 @@ const QueryInput = z.object({
   entity_name: z.string().optional().describe('Search by name (LIKE match)'),
   entity_type: z.enum([
     'person', 'organization', 'date', 'amount', 'case_number',
-    'location', 'statute', 'exhibit', 'other',
+    'location', 'statute', 'exhibit', 'medication', 'diagnosis', 'medical_device', 'other',
   ]).optional(),
   document_filter: z.array(z.string()).optional(),
   min_document_count: z.number().int().min(1).default(1),
@@ -99,7 +99,7 @@ const ExportInput = z.object({
   output_path: z.string().min(1).describe('Absolute path for the output file(s)'),
   entity_type_filter: z.array(z.enum([
     'person', 'organization', 'date', 'amount', 'case_number',
-    'location', 'statute', 'exhibit', 'other',
+    'location', 'statute', 'exhibit', 'medication', 'diagnosis', 'medical_device', 'other',
   ])).optional().describe('Only export nodes of these entity types'),
   relationship_type_filter: z.array(z.enum([
     'co_mentioned', 'co_located', 'works_at', 'represents',

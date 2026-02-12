@@ -571,7 +571,7 @@ describe('Migration v15 to v16 (Knowledge Graph)', () => {
     migrateToLatest(db);
 
     const version = (db.prepare('SELECT version FROM schema_version').get() as { version: number }).version;
-    expect(version).toBe(17);
+    expect(version).toBe(19);
   });
 
   it.skipIf(!sqliteVecAvailable)('FK integrity clean after migration', () => {
@@ -637,7 +637,7 @@ describe('Migration v15 to v16 (Knowledge Graph)', () => {
     expect(() => migrateToLatest(db)).not.toThrow();
 
     const version = (db.prepare('SELECT version FROM schema_version').get() as { version: number }).version;
-    expect(version).toBe(17);
+    expect(version).toBe(19);
   });
 
   it.skipIf(!sqliteVecAvailable)('FK relationships work for knowledge_nodes', () => {
@@ -663,7 +663,9 @@ describe('Migration v15 to v16 (Knowledge Graph)', () => {
       `).run(now, now);
     }).not.toThrow();
 
-    // Insert node with invalid FK should fail (FK checks on)
+    // v18 migration recreates knowledge_nodes WITHOUT FK REFERENCES on provenance_id
+    // (knowledge_nodes provenance is intentionally detached), so invalid provenance_id
+    // no longer causes an FK violation.
     db.pragma('foreign_keys = ON');
     expect(() => {
       db.prepare(`
@@ -671,7 +673,7 @@ describe('Migration v15 to v16 (Knowledge Graph)', () => {
           document_count, mention_count, avg_confidence, provenance_id, created_at, updated_at)
         VALUES ('kn-bad', 'person', 'Bad', 'bad', 1, 1, 0.9, 'nonexistent-prov', ?, ?)
       `).run(now, now);
-    }).toThrow();
+    }).not.toThrow();
   });
 
   it.skipIf(!sqliteVecAvailable)('FK relationships work for knowledge_edges', () => {
@@ -799,7 +801,7 @@ describe('Migration v15 to v16 (Knowledge Graph)', () => {
     expect(tables).toContain('node_entity_links');
 
     const version = (db.prepare('SELECT version FROM schema_version').get() as { version: number }).version;
-    expect(version).toBe(17);
+    expect(version).toBe(19);
 
     const indexes = getIndexNames(db);
     expect(indexes).toContain('idx_kn_entity_type');
