@@ -1298,6 +1298,312 @@ export function searchKnowledgeNodesFTS(
 }
 
 /**
+ * Get entity mention frequency by document for a set of entity node IDs.
+ * Returns a Map of document_id -> total mention count across all matching entities.
+ * Used by GAP-5 to boost search results that have higher entity mention density.
+ *
+ * @param conn - Database connection
+ * @param documentIds - Document IDs to check
+ * @param entityNodeIds - KG node IDs to count mentions for
+ * @returns Map<document_id, mention_count>
+ */
+export function getEntityMentionFrequencyByDocument(
+  conn: Database.Database,
+  documentIds: string[],
+  entityNodeIds: string[],
+): Map<string, number> {
+  const result = new Map<string, number>();
+  if (documentIds.length === 0 || entityNodeIds.length === 0) return result;
+
+  const docPlaceholders = documentIds.map(() => '?').join(',');
+  const nodePlaceholders = entityNodeIds.map(() => '?').join(',');
+
+  try {
+    const rows = conn.prepare(`
+      SELECT em.document_id, COUNT(*) as mention_count
+      FROM entity_mentions em
+      JOIN entities e ON em.entity_id = e.id
+      JOIN node_entity_links nel ON nel.entity_id = e.id
+      WHERE em.document_id IN (${docPlaceholders})
+        AND nel.node_id IN (${nodePlaceholders})
+      GROUP BY em.document_id
+    `).all(...documentIds, ...entityNodeIds) as Array<{ document_id: string; mention_count: number }>;
+
+    for (const row of rows) {
+      result.set(row.document_id, row.mention_count);
+    }
+  } catch (error) {
+    console.error(`[KG] Failed to get entity mention frequency: ${error instanceof Error ? error.message : String(error)}`);
+  }
+
+  return result;
+}
+
+/**
+ * Get documents related to a given document by shared knowledge graph entity overlap.
+ * Computes Jaccard overlap between the KG node sets of the source document and every
+ * other document. Returns ranked list sorted by shared_entity_count descending.
+ *
+ * @param conn - Database connection
+ * @param documentId - Source document ID
+ * @param options - Optional limit and minimum shared entity threshold
+ * @returns Ranked array of related documents with overlap details
+ * @throws Error if no KG data exists for the source document
+ */
+export function getRelatedDocumentsByEntityOverlap(
+  conn: Database.Database,
+  documentId: string,
+  options?: { limit?: number; min_shared_entities?: number },
+): Array<{
+  document_id: string;
+  file_name: string;
+  file_path: string;
+  shared_entity_count: number;
+  shared_entities: Array<{ node_id: string; canonical_name: string; entity_type: string }>;
+  total_edge_weight: number;
+  overlap_score: number;
+}> {
+  const limit = options?.limit ?? 10;
+  const minShared = options?.min_shared_entities ?? 1;
+
+  // Get all KG node IDs linked to the source document
+  const sourceNodeRows = conn.prepare(`
+    SELECT DISTINCT nel.node_id
+    FROM node_entity_links nel
+    JOIN entities e ON nel.entity_id = e.id
+    JOIN entity_mentions em ON em.entity_id = e.id
+    WHERE em.document_id = ?
+  `).all(documentId) as Array<{ node_id: string }>;
+
+  if (sourceNodeRows.length === 0) {
+    throw new Error(
+      `No knowledge graph data found for document ${documentId}. Run ocr_entity_extract and ocr_knowledge_graph_build first.`,
+    );
+  }
+
+  const sourceNodeIds = new Set(sourceNodeRows.map(r => r.node_id));
+
+  // For each OTHER document, find which of these source nodes also appear in it
+  const sourceNodeArray = [...sourceNodeIds];
+  const nodePlaceholders = sourceNodeArray.map(() => '?').join(',');
+
+  const otherDocRows = conn.prepare(`
+    SELECT nel.node_id, em.document_id
+    FROM node_entity_links nel
+    JOIN entities e ON nel.entity_id = e.id
+    JOIN entity_mentions em ON em.entity_id = e.id
+    WHERE nel.node_id IN (${nodePlaceholders})
+      AND em.document_id != ?
+    GROUP BY nel.node_id, em.document_id
+  `).all(...sourceNodeArray, documentId) as Array<{ node_id: string; document_id: string }>;
+
+  // Build map: other_document_id -> Set<shared_node_id>
+  const docSharedNodes = new Map<string, Set<string>>();
+  for (const row of otherDocRows) {
+    if (!docSharedNodes.has(row.document_id)) {
+      docSharedNodes.set(row.document_id, new Set());
+    }
+    docSharedNodes.get(row.document_id)!.add(row.node_id);
+  }
+
+  // Get total KG node count for each other document (for Jaccard denominator)
+  const otherDocIds = [...docSharedNodes.keys()];
+  if (otherDocIds.length === 0) {
+    return [];
+  }
+
+  const otherDocPlaceholders = otherDocIds.map(() => '?').join(',');
+  const otherDocNodeCounts = conn.prepare(`
+    SELECT em.document_id, COUNT(DISTINCT nel.node_id) as node_count
+    FROM node_entity_links nel
+    JOIN entities e ON nel.entity_id = e.id
+    JOIN entity_mentions em ON em.entity_id = e.id
+    WHERE em.document_id IN (${otherDocPlaceholders})
+    GROUP BY em.document_id
+  `).all(...otherDocIds) as Array<{ document_id: string; node_count: number }>;
+
+  const otherDocNodeCountMap = new Map<string, number>();
+  for (const row of otherDocNodeCounts) {
+    otherDocNodeCountMap.set(row.document_id, row.node_count);
+  }
+
+  // Get node metadata for shared entities
+  const allSharedNodeIds = new Set<string>();
+  for (const nodeSet of docSharedNodes.values()) {
+    for (const nodeId of nodeSet) {
+      allSharedNodeIds.add(nodeId);
+    }
+  }
+  const sharedNodeArray = [...allSharedNodeIds];
+  const sharedNodePlaceholders = sharedNodeArray.map(() => '?').join(',');
+  const nodeMetadataRows = conn.prepare(`
+    SELECT id, canonical_name, entity_type
+    FROM knowledge_nodes
+    WHERE id IN (${sharedNodePlaceholders})
+  `).all(...sharedNodeArray) as Array<{ id: string; canonical_name: string; entity_type: string }>;
+
+  const nodeMetadataMap = new Map<string, { canonical_name: string; entity_type: string }>();
+  for (const row of nodeMetadataRows) {
+    nodeMetadataMap.set(row.id, { canonical_name: row.canonical_name, entity_type: row.entity_type });
+  }
+
+  // Get document file info
+  const docInfoRows = conn.prepare(`
+    SELECT id, file_name, file_path
+    FROM documents
+    WHERE id IN (${otherDocPlaceholders})
+  `).all(...otherDocIds) as Array<{ id: string; file_name: string; file_path: string }>;
+
+  const docInfoMap = new Map<string, { file_name: string; file_path: string }>();
+  for (const row of docInfoRows) {
+    docInfoMap.set(row.id, { file_name: row.file_name, file_path: row.file_path });
+  }
+
+  // Compute edge weights between shared entities
+  // Get all edges where both endpoints are in the shared entity set
+  let edgeWeightsByPair: Map<string, number>;
+  if (sharedNodeArray.length > 0) {
+    const edgeRows = conn.prepare(`
+      SELECT source_node_id, target_node_id, weight
+      FROM knowledge_edges
+      WHERE source_node_id IN (${sharedNodePlaceholders})
+        AND target_node_id IN (${sharedNodePlaceholders})
+    `).all(...sharedNodeArray, ...sharedNodeArray) as Array<{ source_node_id: string; target_node_id: string; weight: number }>;
+
+    edgeWeightsByPair = new Map();
+    for (const edge of edgeRows) {
+      // Store by both endpoints for easy lookup
+      const key1 = `${edge.source_node_id}:${edge.target_node_id}`;
+      const key2 = `${edge.target_node_id}:${edge.source_node_id}`;
+      edgeWeightsByPair.set(key1, edge.weight);
+      edgeWeightsByPair.set(key2, edge.weight);
+    }
+  } else {
+    edgeWeightsByPair = new Map();
+  }
+
+  // Build results
+  const results: Array<{
+    document_id: string;
+    file_name: string;
+    file_path: string;
+    shared_entity_count: number;
+    shared_entities: Array<{ node_id: string; canonical_name: string; entity_type: string }>;
+    total_edge_weight: number;
+    overlap_score: number;
+  }> = [];
+
+  const sourceNodeCount = sourceNodeIds.size;
+
+  for (const [docId, sharedNodes] of docSharedNodes.entries()) {
+    if (sharedNodes.size < minShared) continue;
+
+    const docInfo = docInfoMap.get(docId);
+    if (!docInfo) continue;
+
+    // Build shared entities list
+    const sharedEntities: Array<{ node_id: string; canonical_name: string; entity_type: string }> = [];
+    for (const nodeId of sharedNodes) {
+      const metadata = nodeMetadataMap.get(nodeId);
+      if (metadata) {
+        sharedEntities.push({ node_id: nodeId, canonical_name: metadata.canonical_name, entity_type: metadata.entity_type });
+      }
+    }
+
+    // Compute total edge weight between shared entities
+    let totalEdgeWeight = 0;
+    const sharedNodeList = [...sharedNodes];
+    const seenEdges = new Set<string>();
+    for (let i = 0; i < sharedNodeList.length; i++) {
+      for (let j = i + 1; j < sharedNodeList.length; j++) {
+        const key = `${sharedNodeList[i]}:${sharedNodeList[j]}`;
+        if (!seenEdges.has(key)) {
+          seenEdges.add(key);
+          const weight = edgeWeightsByPair.get(key);
+          if (weight !== undefined) {
+            totalEdgeWeight += weight;
+          }
+        }
+      }
+    }
+
+    // Jaccard overlap: |intersection| / |union|
+    const otherNodeCount = otherDocNodeCountMap.get(docId) ?? sharedNodes.size;
+    const unionCount = sourceNodeCount + otherNodeCount - sharedNodes.size;
+    const overlapScore = unionCount > 0 ? sharedNodes.size / unionCount : 0;
+
+    results.push({
+      document_id: docId,
+      file_name: docInfo.file_name,
+      file_path: docInfo.file_path,
+      shared_entity_count: sharedNodes.size,
+      shared_entities: sharedEntities,
+      total_edge_weight: Math.round(totalEdgeWeight * 1000) / 1000,
+      overlap_score: Math.round(overlapScore * 10000) / 10000,
+    });
+  }
+
+  // Sort by shared_entity_count descending, then overlap_score descending
+  results.sort((a, b) => b.shared_entity_count - a.shared_entity_count || b.overlap_score - a.overlap_score);
+
+  return results.slice(0, limit);
+}
+
+/**
+ * Get evidence chunks where both entities (from two KG nodes) are mentioned
+ * in the same chunk. Proves that an edge between two nodes has textual support.
+ *
+ * Uses entity_mentions to find chunks shared by entities belonging to each node,
+ * then returns chunk text excerpts with document/page info.
+ *
+ * @param conn - Database connection
+ * @param sourceNodeId - First node ID
+ * @param targetNodeId - Second node ID
+ * @param limit - Maximum chunks to return (default 5)
+ * @returns Array of evidence chunks with text excerpts
+ */
+export function getEvidenceChunksForEdge(
+  conn: Database.Database,
+  sourceNodeId: string,
+  targetNodeId: string,
+  limit: number = 5,
+): Array<{
+  chunk_id: string;
+  document_id: string;
+  text_excerpt: string;
+  page_number: number | null;
+  source_file: string;
+}> {
+  try {
+    const rows = conn.prepare(`
+      SELECT DISTINCT c.id as chunk_id, c.document_id, SUBSTR(c.text, 1, 500) as text_excerpt,
+             c.page_number, d.file_name as source_file
+      FROM entity_mentions em1
+      JOIN entities e1 ON em1.entity_id = e1.id
+      JOIN node_entity_links nel1 ON nel1.entity_id = e1.id AND nel1.node_id = ?
+      JOIN entity_mentions em2 ON em2.chunk_id = em1.chunk_id
+      JOIN entities e2 ON em2.entity_id = e2.id
+      JOIN node_entity_links nel2 ON nel2.entity_id = e2.id AND nel2.node_id = ?
+      JOIN chunks c ON c.id = em1.chunk_id
+      JOIN documents d ON d.id = c.document_id
+      LIMIT ?
+    `).all(sourceNodeId, targetNodeId, limit) as Array<{
+      chunk_id: string;
+      document_id: string;
+      text_excerpt: string;
+      page_number: number | null;
+      source_file: string;
+    }>;
+    return rows;
+  } catch (error) {
+    console.error(
+      `[KG] Failed to get evidence chunks for edge ${sourceNodeId} <-> ${targetNodeId}: ${error instanceof Error ? error.message : String(error)}`,
+    );
+    return [];
+  }
+}
+
+/**
  * Delete graph data for specific documents
  */
 export function deleteGraphDataForDocuments(

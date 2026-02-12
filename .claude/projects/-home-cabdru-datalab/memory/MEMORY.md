@@ -11,6 +11,8 @@
 - `requireDatabase()` returns `{ db, vector }` from server state
 - Provenance chain: DOCUMENT(0) -> OCR_RESULT(1) -> CHUNK(2)/IMAGE(2) -> EMBEDDING(3)/VLM_DESC(3)
 - `hashFile()` in `src/utils/hash.ts` is streaming/async, `computeHash()` is sync for strings
+- `EntityFilter` Zod schema shared across BM25/semantic/hybrid search inputs (validation.ts)
+- `resolveEntityFilter()` helper consolidates entity-to-doc-ID resolution in search.ts
 
 ## Pre-existing Test Failures (not bugs we introduced)
 - `tests/unit/ocr/datalab.test.ts` and `processor.test.ts`: Need real Python3 + Datalab API
@@ -23,3 +25,13 @@
 - Retry-on-timeout (1 retry) added to `processor.ts`
 - File hashing now uses real SHA-256 via `hashFile()` instead of `sha256:pending-*` placeholders
 - New tools: `ocr_chunk_complete`, `ocr_retry_failed`
+
+## GAP Integration (2026-02-11)
+- 9 GAPs implemented from `docs/ENTITY_KG_SEARCH_INTEGRATION_REPORT.md`
+- **New tools**: `ocr_related_documents`, `ocr_rag_context` (total MCP tools: 88)
+- **Search enhancements**: expand_query (semantic), entity_boost (hybrid), mention frequency boost, cross_document_entities
+- **KG enhancements**: evidence_chunks on path edges, timeline entity filtering (co-location + path-based)
+- **Pipeline**: auto_extract_vlm_entities param in process_pending
+- **Manual verification**: 19/19 PASS against entity-opt-verify DB
+- **Code simplifier**: VE-GAP-1 through VE-GAP-8 (~150 lines removed)
+- Coordination: `memory/gap-integration-coordination.md`

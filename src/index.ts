@@ -68,7 +68,7 @@ for (const [name, tool] of Object.entries(ingestionTools)) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// SEARCH TOOLS (5) - Extracted to src/tools/search.ts
+// SEARCH TOOLS (8) - Extracted to src/tools/search.ts
 // ═══════════════════════════════════════════════════════════════════════════════
 
 // Register search tools from extracted module

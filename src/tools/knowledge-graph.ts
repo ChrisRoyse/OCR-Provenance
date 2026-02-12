@@ -81,6 +81,8 @@ const PathsInput = z.object({
   target_entity: z.string().min(1).describe('Target node ID or entity name'),
   max_hops: z.number().int().min(1).max(6).default(3),
   relationship_filter: z.array(z.string()).optional(),
+  include_evidence_chunks: z.boolean().default(false)
+    .describe('Include document chunks that provide evidence for each edge in the path'),
 });
 
 const StatsInput = z.object({});
@@ -237,6 +239,7 @@ async function handleKnowledgeGraphPaths(
     const result = findGraphPaths(db, input.source_entity, input.target_entity, {
       max_hops: input.max_hops,
       relationship_filter: input.relationship_filter,
+      include_evidence_chunks: input.include_evidence_chunks,
     });
 
     return formatResponse(successResult(result));
