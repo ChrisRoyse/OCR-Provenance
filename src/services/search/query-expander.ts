@@ -172,14 +172,65 @@ export function expandQueryWithCoMentioned(query: string, db: Database.Database,
 }
 
 /**
+ * Expand query text for semantic search by prepending matched entity names.
+ * Unlike BM25 expansion (OR-joined keywords), semantic search benefits from
+ * contextual text that enriches the embedding. Returns the query prepended
+ * with matched entity canonical names and aliases as plain text.
+ *
+ * @param query - Original search query
+ * @param db - better-sqlite3 database connection
+ * @returns Expanded query text with entity names prepended (for embedding)
+ */
+export function expandQueryTextForSemantic(query: string, db: Database.Database): string {
+  const entityTerms = new Set<string>();
+
+  // Find matching KG nodes
+  const matchedNodeIds = findMatchingNodeIds(query, db);
+  if (matchedNodeIds.length === 0) return query;
+
+  // Collect canonical names and aliases from matched nodes
+  for (const nodeId of matchedNodeIds.slice(0, 10)) {
+    try {
+      const row = db.prepare(
+        'SELECT canonical_name, aliases FROM knowledge_nodes WHERE id = ?'
+      ).get(nodeId) as { canonical_name: string; aliases: string | null } | undefined;
+
+      if (row) {
+        entityTerms.add(row.canonical_name);
+        if (row.aliases) {
+          try {
+            const aliases = JSON.parse(row.aliases) as string[];
+            for (const alias of aliases.slice(0, 3)) {
+              entityTerms.add(alias);
+            }
+          } catch {
+            // Malformed aliases JSON - skip
+          }
+        }
+      }
+    } catch {
+      // Node lookup failed - skip
+    }
+  }
+
+  if (entityTerms.size === 0) return query;
+
+  // Prepend entity names as contextual text (not OR-joined)
+  const entityPrefix = [...entityTerms].join(' ');
+  return `${entityPrefix} ${query}`;
+}
+
+/**
  * Find KG node IDs that match query terms via FTS5.
  * Reuses the same FTS5 matching strategy as collectKGAliases but returns node IDs.
+ *
+ * Exported for use by entity_boost in hybrid search (GAP-3).
  *
  * @param query - Search query
  * @param db - Database connection
  * @returns Array of matching knowledge node IDs
  */
-function findMatchingNodeIds(query: string, db: Database.Database): string[] {
+export function findMatchingNodeIds(query: string, db: Database.Database): string[] {
   const words = query.toLowerCase().split(/\s+/).filter(w => w.length > 0);
   const nodeIds = new Set<string>();
 
