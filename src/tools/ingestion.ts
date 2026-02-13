@@ -1467,6 +1467,25 @@ export async function handleOCRStatus(
         total_form_fills: stats.total_form_fills,
         ocr_quality: stats.ocr_quality,
         costs: stats.costs,
+        ...(() => {
+          try {
+            const conn = db.getConnection();
+            const entityCount = (conn.prepare('SELECT COUNT(*) as cnt FROM entities').get() as { cnt: number }).cnt;
+            const kgNodeCount = (conn.prepare('SELECT COUNT(*) as cnt FROM knowledge_nodes').get() as { cnt: number }).cnt;
+            const kgEdgeCount = (conn.prepare('SELECT COUNT(*) as cnt FROM knowledge_edges').get() as { cnt: number }).cnt;
+            const docsWithEntities = (conn.prepare('SELECT COUNT(DISTINCT document_id) as cnt FROM entity_mentions').get() as { cnt: number }).cnt;
+            return {
+              total_entities: entityCount,
+              total_kg_nodes: kgNodeCount,
+              total_kg_edges: kgEdgeCount,
+              entity_extraction_coverage_pct: stats.total_documents > 0
+                ? Math.round((docsWithEntities / stats.total_documents) * 100)
+                : 0,
+            };
+          } catch {
+            return {};
+          }
+        })(),
       },
     }));
   } catch (error) {

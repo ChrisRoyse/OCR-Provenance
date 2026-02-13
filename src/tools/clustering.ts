@@ -16,6 +16,7 @@ import { validateInput } from '../utils/validation.js';
 import { requireDatabase } from '../server/state.js';
 import { MCPError } from '../server/errors.js';
 import { successResult } from '../server/types.js';
+import { ProvenanceType } from '../models/provenance.js';
 import {
   runClustering,
   computeDocumentEmbeddings,
@@ -326,6 +327,40 @@ async function handleClusterAssign(
       'UPDATE clusters SET document_count = document_count + 1 WHERE id = ?'
     ).run(bestClusterId);
 
+    // Create provenance record for cluster assignment (PROV-2)
+    const assignProvId = uuidv4();
+    db.insertProvenance({
+      id: assignProvId,
+      type: ProvenanceType.CLUSTERING,
+      created_at: now,
+      processed_at: now,
+      source_file_created_at: null,
+      source_file_modified_at: null,
+      source_type: 'CLUSTERING',
+      source_path: null,
+      source_id: doc.provenance_id,
+      root_document_id: doc.provenance_id,
+      location: null,
+      content_hash: '',
+      input_hash: null,
+      file_hash: null,
+      processor: 'cluster-assign',
+      processor_version: '1.0.0',
+      processing_params: {
+        document_id: input.document_id,
+        cluster_id: bestClusterId,
+        run_id: input.run_id,
+        entity_weight: input.entity_weight,
+        similarity_to_centroid: dc.similarity_to_centroid,
+      },
+      processing_duration_ms: null,
+      processing_quality_score: null,
+      parent_id: doc.provenance_id,
+      parent_ids: JSON.stringify([doc.provenance_id]),
+      chain_depth: 2,
+      chain_path: '["DOCUMENT","CLUSTERING"]',
+    });
+
     return formatResponse(successResult({
       document_id: input.document_id,
       cluster_id: bestClusterId,
@@ -334,6 +369,7 @@ async function handleClusterAssign(
       entity_weight: input.entity_weight,
       run_id: input.run_id,
       assigned: true,
+      provenance_id: assignProvId,
     }));
   } catch (error) {
     return handleError(error);
