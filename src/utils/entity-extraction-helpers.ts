@@ -209,13 +209,18 @@ export async function callGeminiForEntities(
   client: GeminiClient,
   text: string,
   typeFilter: string,
+  entityHints?: string[],
 ): Promise<Array<{ type: string; raw_text: string; confidence: number }>> {
+  const hintsSection = entityHints && entityHints.length > 0
+    ? `\nKNOWN ENTITIES IN THIS CORPUS (use these canonical forms when matching):\n${entityHints.join(', ')}\n\n`
+    : '';
   const prompt =
     `Extract named entities from the following text. ${typeFilter}\n` +
     `IMPORTANT: Use 'medication' for drug names, prescriptions, and pharmaceutical products. ` +
     `Use 'diagnosis' for medical conditions, diseases, symptoms, and clinical diagnoses. ` +
     `Use 'medical_device' for medical devices and equipment (e.g., G-tube, PEG tube, catheter, ventilator, pacemaker, insulin pump, CPAP machine). ` +
-    `Do NOT classify medications, diagnoses, or medical devices as 'other'.\n\n` +
+    `Do NOT classify medications, diagnoses, or medical devices as 'other'.\n` +
+    hintsSection +
     `${text}`;
 
   // Primary attempt - the robust parseEntityResponse recovers entities
@@ -736,6 +741,19 @@ export async function processSegmentsAndStoreEntities(
 
   const segments = createExtractionSegments(conn, documentId, ocrResultId, ocrText, entityProvId);
 
+  // Query top KG entities as hints for better extraction recall
+  let entityHints: string[] | undefined;
+  try {
+    const hintRows = conn.prepare(
+      `SELECT canonical_name FROM knowledge_nodes ORDER BY mention_count DESC LIMIT 50`
+    ).all() as Array<{ canonical_name: string }>;
+    if (hintRows.length > 0) {
+      entityHints = hintRows.map(r => r.canonical_name);
+    }
+  } catch {
+    // KG tables may not exist yet
+  }
+
   // Process segments sequentially with cooldown to avoid API throttling.
   // Gemini aborts requests after ~4 rapid calls; 3s delay prevents this.
   const allRawEntities: Array<{ type: string; raw_text: string; confidence: number }> = [];
@@ -751,7 +769,7 @@ export async function processSegmentsAndStoreEntities(
     }
 
     try {
-      const entities = await callGeminiForEntities(client, segment.text, typeFilter);
+      const entities = await callGeminiForEntities(client, segment.text, typeFilter, entityHints);
       allRawEntities.push(...entities);
       updateSegmentStatus(conn, segment.id, 'complete', entities.length);
       segmentsComplete++;

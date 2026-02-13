@@ -19,6 +19,7 @@ import { validateInput } from '../utils/validation.js';
 import { requireDatabase } from '../server/state.js';
 import { successResult } from '../server/types.js';
 import { v4 as uuidv4 } from 'uuid';
+import { ProvenanceType } from '../models/provenance.js';
 import {
   buildKnowledgeGraph,
   queryGraph,
@@ -614,6 +615,37 @@ async function handleKnowledgeGraphSplit(
         }
       }
 
+      // Create new provenance record for split node (PROV-1)
+      const splitProvId = uuidv4();
+      db.insertProvenance({
+        id: splitProvId,
+        type: ProvenanceType.KNOWLEDGE_GRAPH,
+        created_at: now,
+        processed_at: now,
+        source_file_created_at: null,
+        source_file_modified_at: null,
+        source_type: 'KNOWLEDGE_GRAPH',
+        source_path: null,
+        source_id: node.provenance_id,
+        root_document_id: node.provenance_id,
+        location: null,
+        content_hash: '',
+        input_hash: null,
+        file_hash: null,
+        processor: 'knowledge-graph-split',
+        processor_version: '1.0.0',
+        processing_params: {
+          original_node_id: node.id,
+          entity_ids_moved: splitLinks.map(l => l.entity_id),
+        },
+        processing_duration_ms: null,
+        processing_quality_score: null,
+        parent_id: node.provenance_id,
+        parent_ids: JSON.stringify([node.provenance_id]),
+        chain_depth: 2,
+        chain_path: '["DOCUMENT","KNOWLEDGE_GRAPH","KNOWLEDGE_GRAPH"]',
+      });
+
       insertKnowledgeNode(conn, {
         id: newNodeId,
         entity_type: node.entity_type,
@@ -627,7 +659,7 @@ async function handleKnowledgeGraphSplit(
           ? Math.round((splitTotalConf / splitCount) * 10000) / 10000
           : 0,
         metadata: JSON.stringify({ split_from: node.id }),
-        provenance_id: node.provenance_id,
+        provenance_id: splitProvId,
         created_at: now,
         updated_at: now,
       });
@@ -878,11 +910,43 @@ async function handleKnowledgeGraphEnrich(
       updated_at: now,
     });
 
+    // Create provenance record for enrichment event (PROV-3)
+    const enrichProvId = uuidv4();
+    db.insertProvenance({
+      id: enrichProvId,
+      type: ProvenanceType.KNOWLEDGE_GRAPH,
+      created_at: now,
+      processed_at: now,
+      source_file_created_at: null,
+      source_file_modified_at: null,
+      source_type: 'KNOWLEDGE_GRAPH',
+      source_path: null,
+      source_id: node.provenance_id,
+      root_document_id: node.provenance_id,
+      location: null,
+      content_hash: '',
+      input_hash: null,
+      file_hash: null,
+      processor: 'knowledge-graph-enrich',
+      processor_version: '1.0.0',
+      processing_params: {
+        node_id: node.id,
+        sources: input.sources,
+      },
+      processing_duration_ms: null,
+      processing_quality_score: null,
+      parent_id: node.provenance_id,
+      parent_ids: JSON.stringify([node.provenance_id]),
+      chain_depth: 2,
+      chain_path: '["DOCUMENT","KNOWLEDGE_GRAPH","KNOWLEDGE_GRAPH"]',
+    });
+
     return formatResponse(successResult({
       node_id: node.id,
       canonical_name: node.canonical_name,
       sources_queried: input.sources,
       enrichment,
+      provenance_id: enrichProvId,
     }));
   } catch (error) {
     return handleError(error);

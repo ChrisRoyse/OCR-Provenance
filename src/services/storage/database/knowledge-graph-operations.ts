@@ -1118,33 +1118,31 @@ export function getEntitiesForChunks(
 }
 
 /**
- * Get document IDs containing specified entities.
- * Uses a 3-strategy approach for entity name matching:
+ * Resolve entity names and types to KG node IDs using a multi-strategy approach:
  *   1. Exact case-insensitive canonical_name match
  *   2. FTS5 MATCH on knowledge_nodes_fts (handles partial/multi-word)
- *   3. Alias JSON LIKE match
+ *   3. Alias JSON LIKE match (when includeAliasSearch is true)
  *
- * When includeRelated is true, performs 1-hop edge traversal to also find
- * documents containing entities related to the matched entities (e.g.,
- * co-defendants, colleagues, related cases).
+ * After name matching, applies optional entity type filtering (intersection or type-only).
+ *
+ * Shared core used by getDocumentIdsForEntities and resolveEntityNodeIds (search.ts).
  *
  * @param db - Database connection
- * @param entityNames - Optional array of entity names to match (fuzzy)
- * @param entityTypes - Optional array of entity types to match
- * @param includeRelated - When true, traverse 1-hop KG edges to include related entity documents
- * @returns Array of matching document IDs
+ * @param entityNames - Optional array of entity names to match
+ * @param entityTypes - Optional array of entity types to filter by
+ * @param includeAliasSearch - Whether to include alias JSON LIKE matching (strategy 3)
+ * @returns Set of matching KG node IDs
  */
-export function getDocumentIdsForEntities(
+export function resolveEntityNodeIdsFromKG(
   db: Database.Database,
   entityNames?: string[],
   entityTypes?: string[],
-  includeRelated?: boolean,
-): string[] {
-  if (!entityNames?.length && !entityTypes?.length) return [];
+  includeAliasSearch: boolean = true,
+): Set<string> {
+  if (!entityNames?.length && !entityTypes?.length) return new Set();
 
   const nodeIds = new Set<string>();
 
-  // Collect matching node IDs via multiple strategies
   if (entityNames && entityNames.length > 0) {
     for (const name of entityNames) {
       const lowerName = name.toLowerCase();
@@ -1172,24 +1170,24 @@ export function getDocumentIdsForEntities(
       }
 
       // Strategy 3: Alias JSON LIKE match
-      const aliasRows = db.prepare(
-        'SELECT id FROM knowledge_nodes WHERE aliases LIKE ?'
-      ).all(`%${lowerName}%`) as Array<{ id: string }>;
-      for (const row of aliasRows) nodeIds.add(row.id);
+      if (includeAliasSearch) {
+        const aliasRows = db.prepare(
+          'SELECT id FROM knowledge_nodes WHERE aliases LIKE ?'
+        ).all(`%${lowerName}%`) as Array<{ id: string }>;
+        for (const row of aliasRows) nodeIds.add(row.id);
+      }
     }
   }
 
   // Apply entity type filter
   if (entityTypes && entityTypes.length > 0) {
     if (nodeIds.size === 0 && !entityNames?.length) {
-      // Type-only filter: get nodes matching these types
       const typePlaceholders = entityTypes.map(() => '?').join(',');
       const typeRows = db.prepare(
         `SELECT id FROM knowledge_nodes WHERE entity_type IN (${typePlaceholders})`
       ).all(...entityTypes) as Array<{ id: string }>;
       for (const row of typeRows) nodeIds.add(row.id);
     } else if (nodeIds.size > 0) {
-      // Combined filter: narrow existing nodes by type
       const nodeIdArray = [...nodeIds];
       const nodePlaceholders = nodeIdArray.map(() => '?').join(',');
       const typePlaceholders = entityTypes.map(() => '?').join(',');
@@ -1201,6 +1199,30 @@ export function getDocumentIdsForEntities(
     }
   }
 
+  return nodeIds;
+}
+
+/**
+ * Get document IDs containing specified entities.
+ * Uses resolveEntityNodeIdsFromKG for node resolution (with alias search enabled),
+ * then maps nodes to document IDs via entity links and mentions.
+ *
+ * When includeRelated is true, performs 1-hop edge traversal to also find
+ * documents containing entities related to the matched entities.
+ *
+ * @param db - Database connection
+ * @param entityNames - Optional array of entity names to match (fuzzy)
+ * @param entityTypes - Optional array of entity types to match
+ * @param includeRelated - When true, traverse 1-hop KG edges to include related entity documents
+ * @returns Array of matching document IDs
+ */
+export function getDocumentIdsForEntities(
+  db: Database.Database,
+  entityNames?: string[],
+  entityTypes?: string[],
+  includeRelated?: boolean,
+): string[] {
+  const nodeIds = resolveEntityNodeIdsFromKG(db, entityNames, entityTypes, true);
   if (nodeIds.size === 0) return [];
 
   // Get document IDs from matching nodes via entity links
