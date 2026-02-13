@@ -224,7 +224,7 @@ export function expandQueryTextForSemantic(query: string, db: Database.Database)
  * Find KG node IDs that match query terms via FTS5.
  * Reuses the same FTS5 matching strategy as collectKGAliases but returns node IDs.
  *
- * Exported for use by entity_boost in hybrid search (GAP-3).
+ * Exported for use by entity_boost in hybrid search.
  *
  * @param query - Search query
  * @param db - Database connection
