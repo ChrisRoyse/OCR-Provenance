@@ -220,3 +220,38 @@ export function getClusteringStats(db: Database.Database): {
 
   return row;
 }
+
+/**
+ * Get all KG node IDs linked to documents in a cluster
+ */
+export function getClusterDocumentEntityNodes(
+  db: Database.Database,
+  clusterId: string,
+): Set<string> {
+  const rows = db.prepare(`
+    SELECT DISTINCT nel.node_id
+    FROM document_clusters dc
+    JOIN entity_mentions em ON em.document_id = dc.document_id
+    JOIN entities e ON em.entity_id = e.id
+    JOIN node_entity_links nel ON nel.entity_id = e.id
+    WHERE dc.cluster_id = ?
+  `).all(clusterId) as Array<{ node_id: string }>;
+  return new Set(rows.map(r => r.node_id));
+}
+
+/**
+ * Get all KG node IDs linked to a specific document
+ */
+export function getDocumentEntityNodeIds(
+  db: Database.Database,
+  documentId: string,
+): Set<string> {
+  const rows = db.prepare(`
+    SELECT DISTINCT nel.node_id
+    FROM entity_mentions em
+    JOIN entities e ON em.entity_id = e.id
+    JOIN node_entity_links nel ON nel.entity_id = e.id
+    WHERE em.document_id = ?
+  `).all(documentId) as Array<{ node_id: string }>;
+  return new Set(rows.map(r => r.node_id));
+}

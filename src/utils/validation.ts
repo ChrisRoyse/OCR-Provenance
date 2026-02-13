@@ -259,6 +259,10 @@ export const SearchSemanticInput = z.object({
   entity_filter: EntityFilter,
   rerank: z.boolean().default(false)
     .describe('Re-rank results using Gemini AI for contextual relevance scoring'),
+  entity_rescue: z.boolean().default(false)
+    .describe('Rescue borderline results (within 0.1 of threshold) if they contain entities matching query terms'),
+  deduplicate_by_entity: z.boolean().default(false)
+    .describe('Deduplicate results by primary entity (max 2 results per entity)'),
 });
 
 /**
@@ -281,6 +285,8 @@ export const SearchInput = z.object({
   entity_filter: EntityFilter,
   rerank: z.boolean().default(false)
     .describe('Re-rank results using Gemini AI for contextual relevance scoring'),
+  deduplicate_by_entity: z.boolean().default(false)
+    .describe('Deduplicate results by primary entity (max 2 results per entity)'),
 });
 
 /**
@@ -306,6 +312,8 @@ export const SearchHybridInput = z.object({
   entity_filter: EntityFilter,
   entity_boost: z.number().min(0).max(2).default(0)
     .describe('Entity boost factor: results containing entities matching query terms get score boost in RRF fusion'),
+  deduplicate_by_entity: z.boolean().default(false)
+    .describe('Deduplicate results by primary entity (max 2 results per entity)'),
 });
 
 /**

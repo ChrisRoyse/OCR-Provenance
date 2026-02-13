@@ -284,6 +284,77 @@ export function findMatchingNodeIds(query: string, db: Database.Database): strin
 }
 
 /**
+ * Compute Sorensen-Dice coefficient between two strings.
+ * Uses bigram overlap: 2 * |intersection| / (|A| + |B|).
+ */
+function diceCoefficient(a: string, b: string): number {
+  const bigramsA = new Set<string>();
+  const bigramsB = new Set<string>();
+  for (let i = 0; i < a.length - 1; i++) bigramsA.add(a.slice(i, i + 2));
+  for (let i = 0; i < b.length - 1; i++) bigramsB.add(b.slice(i, i + 2));
+  if (bigramsA.size === 0 && bigramsB.size === 0) return 1.0;
+  if (bigramsA.size === 0 || bigramsB.size === 0) return 0.0;
+  let intersection = 0;
+  for (const bigram of bigramsA) {
+    if (bigramsB.has(bigram)) intersection++;
+  }
+  return (2 * intersection) / (bigramsA.size + bigramsB.size);
+}
+
+/**
+ * Find "did you mean?" suggestions from KG entity names using FTS5 prefix search + Dice similarity.
+ * Returns suggestions sorted by similarity (descending), filtered to [0.5, 1.0) range.
+ *
+ * @param query - Original search query
+ * @param db - Database connection
+ * @param maxSuggestions - Maximum suggestions to return (default 5)
+ * @returns Array of suggestions with original word, suggested entity name, and similarity score
+ */
+export function findQuerySuggestions(
+  query: string,
+  db: Database.Database,
+  maxSuggestions: number = 5,
+): Array<{ original: string; suggested: string; similarity: number }> {
+  const suggestions: Array<{ original: string; suggested: string; similarity: number }> = [];
+  const words = query.toLowerCase().split(/\s+/).filter(w => w.length >= 4);
+  const seen = new Set<string>();
+
+  for (const word of words) {
+    try {
+      const prefix = escapeFTS5(word.slice(0, 3));
+      if (!prefix || prefix.trim().length === 0) continue;
+      const ftsRows = db.prepare(`
+        SELECT kn.canonical_name
+        FROM knowledge_nodes_fts fts
+        JOIN knowledge_nodes kn ON kn.rowid = fts.rowid
+        WHERE knowledge_nodes_fts MATCH ?
+        LIMIT 10
+      `).all(`${prefix}*`) as Array<{ canonical_name: string }>;
+
+      for (const row of ftsRows) {
+        const nameLower = row.canonical_name.toLowerCase();
+        if (seen.has(nameLower)) continue;
+        const sim = diceCoefficient(word, nameLower);
+        if (sim >= 0.5 && sim < 1.0) {
+          suggestions.push({
+            original: word,
+            suggested: row.canonical_name,
+            similarity: Math.round(sim * 1000) / 1000,
+          });
+          seen.add(nameLower);
+        }
+      }
+    } catch {
+      // FTS5 not available - skip
+    }
+  }
+
+  return suggestions
+    .sort((a, b) => b.similarity - a.similarity)
+    .slice(0, maxSuggestions);
+}
+
+/**
  * Escape special FTS5 characters in a query term.
  * Replaces FTS5 metacharacters with spaces to prevent syntax errors.
  */

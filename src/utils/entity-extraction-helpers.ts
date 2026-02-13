@@ -774,13 +774,29 @@ export async function processSegmentsAndStoreEntities(
   const mergedEntities = [...filteredEntities, ...regexDates];
 
   // Deduplicate by type::normalized_text, keeping highest confidence per key
-  const dedupMap = new Map<string, { type: string; raw_text: string; confidence: number }>();
+  // Also count segment occurrences for cross-segment agreement boosting
+  const dedupMap = new Map<string, { type: string; raw_text: string; confidence: number; segment_count: number }>();
   for (const entity of mergedEntities) {
     const normalized = normalizeEntity(entity.raw_text, entity.type);
     const key = `${entity.type}::${normalized}`;
     const existing = dedupMap.get(key);
-    if (!existing || entity.confidence > existing.confidence) {
-      dedupMap.set(key, entity);
+    if (!existing) {
+      dedupMap.set(key, { ...entity, segment_count: 1 });
+    } else {
+      existing.segment_count++;
+      if (entity.confidence > existing.confidence) {
+        existing.raw_text = entity.raw_text;
+        existing.confidence = entity.confidence;
+      }
+    }
+  }
+
+  // Cross-segment agreement boosting: entities found in multiple segments
+  // get a confidence boost (capped at 0.15 total boost, 0.05 per additional segment)
+  for (const [, entityData] of dedupMap) {
+    if (entityData.segment_count > 1) {
+      const boost = Math.min(0.15, (entityData.segment_count - 1) * 0.05);
+      entityData.confidence = Math.min(1.0, entityData.confidence + boost);
     }
   }
 
@@ -829,7 +845,9 @@ export async function processSegmentsAndStoreEntities(
       raw_text: entityData.raw_text,
       normalized_text: normalized,
       confidence: entityData.confidence,
-      metadata: null,
+      metadata: entityData.segment_count > 1
+        ? JSON.stringify({ agreement_count: entityData.segment_count })
+        : null,
       provenance_id: entityProvId,
       created_at: now,
     });
