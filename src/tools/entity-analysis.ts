@@ -23,6 +23,7 @@ import {
   searchEntities,
   getEntityMentions,
   deleteEntitiesByDocument,
+  getEntitiesByDocumentKeyed,
 } from '../services/storage/database/entity-operations.js';
 import { getChunksByDocumentId } from '../services/storage/database/chunk-operations.js';
 import { getClusterSummariesForDocument } from '../services/storage/database/cluster-operations.js';
@@ -47,6 +48,8 @@ const EntityExtractInput = z.object({
     'person', 'organization', 'date', 'amount', 'case_number',
     'location', 'statute', 'exhibit', 'medication', 'diagnosis', 'medical_device', 'other',
   ])).optional().describe('Entity types to extract (default: all types)'),
+  incremental: z.boolean().default(false)
+    .describe('When true, diff new entities against existing instead of deleting all. Preserves KG node_entity_links for unchanged entities.'),
 });
 
 const EntitySearchInput = z.object({
@@ -158,6 +161,29 @@ async function handleEntityExtract(params: Record<string, unknown>) {
       return formatResponse({ error: `No OCR result found for document ${doc.id}` });
     }
 
+    // OPT-9: Incremental mode - capture existing state before deletion
+    let oldKGLinks: Map<string, Array<{ node_id: string; document_id: string; similarity_score: number; resolution_method: string | null; created_at: string }>> | undefined;
+    let oldEntityKeys: Set<string> | undefined;
+    if (input.incremental) {
+      const oldEntities = getEntitiesByDocumentKeyed(conn, doc.id);
+      oldEntityKeys = new Set(oldEntities.keys());
+
+      // Capture existing KG links keyed by entity key (type::normalized_text)
+      oldKGLinks = new Map();
+      for (const [key, entity] of oldEntities) {
+        try {
+          const links = conn.prepare(
+            'SELECT node_id, document_id, similarity_score, resolution_method, created_at FROM node_entity_links WHERE entity_id = ?'
+          ).all(entity.id) as Array<{ node_id: string; document_id: string; similarity_score: number; resolution_method: string | null; created_at: string }>;
+          if (links.length > 0) {
+            oldKGLinks.set(key, links);
+          }
+        } catch { /* node_entity_links table may not exist */ }
+      }
+
+      console.error(`[INFO] Incremental mode: captured ${oldEntities.size} existing entities, ${oldKGLinks.size} with KG links`);
+    }
+
     // Delete existing entities for this document before re-extracting
     const existingCount = deleteEntitiesByDocument(conn, doc.id);
     if (existingCount > 0) {
@@ -217,6 +243,50 @@ async function handleEntityExtract(params: Record<string, unknown>) {
       typeFilter, entityTypes, startTime,
     );
 
+    // OPT-9: Restore KG links for entities that existed before re-extraction
+    let incrementalStats: Record<string, unknown> | undefined;
+    if (input.incremental && oldKGLinks && oldEntityKeys) {
+      const newEntities = getEntitiesByDocumentKeyed(conn, doc.id);
+      const newKeys = new Set(newEntities.keys());
+
+      let kgLinksRestored = 0;
+      let restoredEntityCount = 0;
+
+      // For each new entity that also existed before, restore KG node links
+      for (const [key, newEntity] of newEntities) {
+        if (oldKGLinks.has(key)) {
+          const links = oldKGLinks.get(key)!;
+          for (const link of links) {
+            try {
+              conn.prepare(
+                'INSERT OR IGNORE INTO node_entity_links (id, node_id, entity_id, document_id, similarity_score, resolution_method, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)'
+              ).run(uuidv4(), link.node_id, newEntity.id, link.document_id, link.similarity_score, link.resolution_method, link.created_at);
+              kgLinksRestored++;
+            } catch (err) {
+              console.error(`[WARN] Failed to restore KG link for entity ${key}: ${err instanceof Error ? err.message : String(err)}`);
+            }
+          }
+          restoredEntityCount++;
+        }
+      }
+
+      // Compute diff stats
+      const addedKeys = [...newKeys].filter(k => !oldEntityKeys!.has(k));
+      const removedKeys = [...oldEntityKeys].filter(k => !newKeys.has(k));
+      const unchangedKeys = [...newKeys].filter(k => oldEntityKeys!.has(k));
+
+      incrementalStats = {
+        incremental_mode: true,
+        entities_added: addedKeys.length,
+        entities_removed: removedKeys.length,
+        entities_unchanged: unchangedKeys.length,
+        kg_links_restored: kgLinksRestored,
+        restored_entity_count: restoredEntityCount,
+      };
+
+      console.error(`[INFO] Incremental re-extraction: +${addedKeys.length} added, -${removedKeys.length} removed, =${unchangedKeys.length} unchanged, ${kgLinksRestored} KG links restored`);
+    }
+
     // Auto-merge into knowledge graph if one exists
     const kgMergeResult = await autoMergeIntoKnowledgeGraph(db, doc.id);
 
@@ -241,6 +311,7 @@ async function handleEntityExtract(params: Record<string, unknown>) {
       segments_failed: result.segmentsFailed,
       segment_size: MAX_CHARS_PER_CALL,
       segment_overlap: SEGMENT_OVERLAP_CHARS,
+      ...incrementalStats,
       ...kgMergeResult,
     });
   } catch (error) {
@@ -521,7 +592,7 @@ async function handleTimelineBuild(params: Record<string, unknown>) {
       document_id: string;
       document_name: string | null;
       context: string | null;
-      co_located_entities?: string[];
+      co_located_entities?: Array<{ name: string; relationship_type?: string; weight?: number }>;
     }> = [];
 
     for (const entity of dateEntities) {
@@ -568,7 +639,8 @@ async function handleTimelineBuild(params: Record<string, unknown>) {
       const contextText = mentions.length > 0 ? mentions[0].context_text : null;
 
       // If entity_names filter active, find which co-located entities appear
-      let coLocatedEntities: string[] | undefined;
+      // and enrich with KG relationship types
+      let coLocatedWithRelationships: Array<{ name: string; relationship_type?: string; weight?: number }> | undefined;
       if (entityNameChunkIds && mentions.length > 0) {
         const coLocated = new Set<string>();
         for (const m of mentions) {
@@ -590,8 +662,53 @@ async function handleTimelineBuild(params: Record<string, unknown>) {
             }
           }
         }
+
         if (coLocated.size > 0) {
-          coLocatedEntities = [...coLocated];
+          // Resolve date entity -> KG node
+          let dateNodeId: string | null = null;
+          try {
+            const dateNodeRow = conn.prepare(`
+              SELECT kn.id FROM knowledge_nodes kn
+              JOIN node_entity_links nel ON nel.node_id = kn.id
+              JOIN entities e ON nel.entity_id = e.id
+              WHERE e.normalized_text = ? AND e.entity_type = 'date'
+              LIMIT 1
+            `).get(entity.normalized_text) as { id: string } | undefined;
+            dateNodeId = dateNodeRow?.id ?? null;
+          } catch {
+            // KG tables may not exist
+          }
+
+          coLocatedWithRelationships = [];
+          for (const entityName of coLocated) {
+            const entry: { name: string; relationship_type?: string; weight?: number } = { name: entityName };
+            if (dateNodeId) {
+              try {
+                const entityNodeRow = conn.prepare(`
+                  SELECT kn.id FROM knowledge_nodes kn
+                  JOIN node_entity_links nel ON nel.node_id = kn.id
+                  JOIN entities e ON nel.entity_id = e.id
+                  WHERE e.normalized_text = ?
+                  LIMIT 1
+                `).get(entityName) as { id: string } | undefined;
+                if (entityNodeRow) {
+                  const edge = conn.prepare(`
+                    SELECT relationship_type, weight FROM knowledge_edges
+                    WHERE (source_node_id = ? AND target_node_id = ?)
+                       OR (source_node_id = ? AND target_node_id = ?)
+                    LIMIT 1
+                  `).get(dateNodeId, entityNodeRow.id, entityNodeRow.id, dateNodeId) as { relationship_type: string; weight: number } | undefined;
+                  if (edge) {
+                    entry.relationship_type = edge.relationship_type;
+                    entry.weight = edge.weight;
+                  }
+                }
+              } catch {
+                // KG not available for this entity - just use name
+              }
+            }
+            coLocatedWithRelationships.push(entry);
+          }
         }
       }
 
@@ -603,7 +720,7 @@ async function handleTimelineBuild(params: Record<string, unknown>) {
         document_id: entity.document_id,
         document_name: document?.file_name ?? null,
         context: contextText,
-        ...(coLocatedEntities ? { co_located_entities: coLocatedEntities } : {}),
+        ...(coLocatedWithRelationships ? { co_located_entities: coLocatedWithRelationships } : {}),
       });
     }
 
@@ -913,6 +1030,173 @@ async function handleEntityExtractFromExtractions(params: Record<string, unknown
   }
 }
 
+/**
+ * ocr_entity_extraction_stats - Entity extraction quality analytics
+ */
+async function handleEntityExtractionStats(params: Record<string, unknown>) {
+  try {
+    const input = validateInput(z.object({
+      document_filter: z.array(z.string()).optional()
+        .describe('Filter by document IDs'),
+    }), params);
+    const { db } = requireDatabase();
+    const conn = db.getConnection();
+
+    const filterClause = input.document_filter?.length
+      ? `WHERE document_id IN (${input.document_filter.map(() => '?').join(',')})`
+      : '';
+    const filterParams = input.document_filter || [];
+
+    // Total entities and mentions
+    const entityCount = (conn.prepare(
+      `SELECT COUNT(*) as cnt FROM entities ${filterClause}`
+    ).get(...filterParams) as { cnt: number }).cnt;
+
+    const mentionCount = (conn.prepare(
+      `SELECT COUNT(*) as cnt FROM entity_mentions em ${filterClause.replace('document_id', 'em.document_id')}`
+    ).get(...filterParams) as { cnt: number }).cnt;
+
+    // Entity type distribution
+    const typeDistribution = conn.prepare(
+      `SELECT entity_type, COUNT(*) as count FROM entities ${filterClause} GROUP BY entity_type ORDER BY count DESC`
+    ).all(...filterParams) as Array<{ entity_type: string; count: number }>;
+
+    // Confidence statistics
+    const confidenceStats = conn.prepare(
+      `SELECT
+        MIN(confidence) as min_confidence,
+        MAX(confidence) as max_confidence,
+        AVG(confidence) as avg_confidence,
+        COUNT(CASE WHEN confidence < 0.5 THEN 1 END) as low_confidence_count,
+        COUNT(CASE WHEN confidence >= 0.5 AND confidence < 0.8 THEN 1 END) as medium_confidence_count,
+        COUNT(CASE WHEN confidence >= 0.8 THEN 1 END) as high_confidence_count
+      FROM entities ${filterClause}`
+    ).get(...filterParams) as {
+      min_confidence: number | null;
+      max_confidence: number | null;
+      avg_confidence: number | null;
+      low_confidence_count: number;
+      medium_confidence_count: number;
+      high_confidence_count: number;
+    };
+
+    // Segment statistics (from entity_extraction_segments table)
+    let segmentStats: Record<string, unknown> = {};
+    try {
+      const segFilterClause = input.document_filter?.length
+        ? `WHERE document_id IN (${input.document_filter.map(() => '?').join(',')})`
+        : '';
+      const segTotal = (conn.prepare(
+        `SELECT COUNT(*) as cnt FROM entity_extraction_segments ${segFilterClause}`
+      ).get(...filterParams) as { cnt: number }).cnt;
+
+      const segByStatus = conn.prepare(
+        `SELECT status, COUNT(*) as count FROM entity_extraction_segments ${segFilterClause} GROUP BY status`
+      ).all(...filterParams) as Array<{ status: string; count: number }>;
+
+      const segAvgEntities = conn.prepare(
+        `SELECT AVG(entity_count) as avg_entities FROM entity_extraction_segments ${segFilterClause ? segFilterClause + ` AND status = 'complete'` : `WHERE status = 'complete'`}`
+      ).get(...filterParams) as { avg_entities: number | null };
+
+      segmentStats = {
+        total_segments: segTotal,
+        by_status: Object.fromEntries(segByStatus.map(s => [s.status, s.count])),
+        avg_entities_per_segment: segAvgEntities.avg_entities != null
+          ? Math.round(segAvgEntities.avg_entities * 100) / 100
+          : 0,
+      };
+    } catch {
+      // entity_extraction_segments table may not exist in older databases
+      segmentStats = { total_segments: 0, note: 'segments table not available' };
+    }
+
+    // Documents with entities vs without
+    let docCoverage: Record<string, unknown> = {};
+    try {
+      const totalDocs = (conn.prepare('SELECT COUNT(*) as cnt FROM documents').get() as { cnt: number }).cnt;
+      const docsFilterClause = input.document_filter?.length
+        ? `WHERE id IN (${input.document_filter.map(() => '?').join(',')})`
+        : '';
+      const filteredDocs = input.document_filter?.length
+        ? (conn.prepare(`SELECT COUNT(*) as cnt FROM documents ${docsFilterClause}`).get(...filterParams) as { cnt: number }).cnt
+        : totalDocs;
+
+      const docsWithEntities = (conn.prepare(
+        `SELECT COUNT(DISTINCT document_id) as cnt FROM entity_mentions em ${filterClause.replace('document_id', 'em.document_id')}`
+      ).get(...filterParams) as { cnt: number }).cnt;
+
+      docCoverage = {
+        total_documents: filteredDocs,
+        documents_with_entities: docsWithEntities,
+        documents_without_entities: filteredDocs - docsWithEntities,
+        coverage_percent: filteredDocs > 0
+          ? Math.round((docsWithEntities / filteredDocs) * 10000) / 100
+          : 0,
+      };
+    } catch {
+      docCoverage = {};
+    }
+
+    // KG integration stats
+    let kgStats: Record<string, unknown> = {};
+    try {
+      const linkedEntities = (conn.prepare(
+        `SELECT COUNT(DISTINCT entity_id) as cnt FROM node_entity_links`
+      ).get() as { cnt: number }).cnt;
+
+      kgStats = {
+        entities_linked_to_kg: linkedEntities,
+        kg_coverage_percent: entityCount > 0
+          ? Math.round((linkedEntities / entityCount) * 10000) / 100
+          : 0,
+      };
+    } catch {
+      kgStats = { entities_linked_to_kg: 0, note: 'KG tables not available' };
+    }
+
+    // Agreement stats (entities with cross-segment agreement)
+    let agreementStats: Record<string, unknown> = {};
+    try {
+      const withAgreement = (conn.prepare(
+        `SELECT COUNT(*) as cnt FROM entities WHERE metadata IS NOT NULL AND metadata LIKE '%agreement_count%' ${filterClause ? 'AND ' + filterClause.replace('WHERE ', '') : ''}`
+      ).get(...filterParams) as { cnt: number }).cnt;
+
+      agreementStats = {
+        entities_with_cross_segment_agreement: withAgreement,
+        agreement_percent: entityCount > 0
+          ? Math.round((withAgreement / entityCount) * 10000) / 100
+          : 0,
+      };
+    } catch {
+      agreementStats = {};
+    }
+
+    return formatResponse({
+      total_entities: entityCount,
+      total_mentions: mentionCount,
+      mentions_per_entity: entityCount > 0
+        ? Math.round((mentionCount / entityCount) * 100) / 100
+        : 0,
+      entity_type_distribution: typeDistribution,
+      confidence: {
+        min: confidenceStats.min_confidence != null ? Math.round(confidenceStats.min_confidence * 1000) / 1000 : null,
+        max: confidenceStats.max_confidence != null ? Math.round(confidenceStats.max_confidence * 1000) / 1000 : null,
+        avg: confidenceStats.avg_confidence != null ? Math.round(confidenceStats.avg_confidence * 1000) / 1000 : null,
+        low_count: confidenceStats.low_confidence_count,
+        medium_count: confidenceStats.medium_confidence_count,
+        high_count: confidenceStats.high_confidence_count,
+      },
+      segments: segmentStats,
+      document_coverage: docCoverage,
+      knowledge_graph: kgStats,
+      cross_segment_agreement: agreementStats,
+      document_filter: input.document_filter || null,
+    });
+  } catch (error) {
+    return handleError(error);
+  }
+}
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // TOOL DEFINITIONS
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -947,5 +1231,13 @@ export const entityAnalysisTools: Record<string, ToolDefinition> = {
     description: 'Create entities from structured extraction fields (e.g., vendor_name -> organization, filing_date -> date). Requires ocr_extract_structured to have been run first.',
     inputSchema: ExtractionEntityExtractInput.shape,
     handler: handleEntityExtractFromExtractions,
+  },
+  'ocr_entity_extraction_stats': {
+    description: 'Get entity extraction quality analytics including type distribution, confidence stats, segment coverage, and KG integration metrics',
+    inputSchema: {
+      document_filter: z.array(z.string()).optional()
+        .describe('Filter by document IDs'),
+    },
+    handler: handleEntityExtractionStats,
   },
 };

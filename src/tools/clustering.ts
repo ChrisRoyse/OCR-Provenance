@@ -28,6 +28,8 @@ import {
   deleteClustersByRunId,
   insertDocumentCluster,
   getClusterSummariesByRunId,
+  getClusterDocumentEntityNodes,
+  getDocumentEntityNodeIds,
 } from '../services/storage/database/cluster-operations.js';
 import type { ClusterRunConfig, DocumentCluster } from '../models/cluster.js';
 
@@ -68,6 +70,8 @@ const ClusterGetInput = z.object({
 const ClusterAssignInput = z.object({
   document_id: z.string().min(1).describe('Document ID to classify'),
   run_id: z.string().min(1).describe('Run ID to classify against'),
+  entity_weight: z.number().min(0).max(1).default(0)
+    .describe('Weight for KG entity overlap (0=embedding only, 0.3=recommended blend)'),
 });
 
 const ClusterDeleteInput = z.object({
@@ -247,6 +251,18 @@ async function handleClusterAssign(
 
     const docEmb = docEmbeddings[0].embedding;
 
+    // Compute document KG entity nodes once (outside loop)
+    let docNodeIds: Set<string> | undefined;
+    const entityWeight = input.entity_weight ?? 0;
+    if (entityWeight > 0) {
+      try {
+        docNodeIds = getDocumentEntityNodeIds(conn, input.document_id);
+      } catch {
+        // KG tables may not exist - fall back to pure cosine
+        console.error(`[WARN] KG tables not available for entity-weighted assignment, using pure cosine`);
+      }
+    }
+
     // Get all clusters for the specified run
     const clusters = getClusterSummariesByRunId(conn, input.run_id);
     if (clusters.length === 0) {
@@ -263,7 +279,21 @@ async function handleClusterAssign(
       if (!fullCluster?.centroid_json) continue;
 
       const centroid = JSON.parse(fullCluster.centroid_json) as number[];
-      const similarity = cosineSimilarity(docEmb, centroid);
+      let similarity = cosineSimilarity(docEmb, centroid);
+
+      if (entityWeight > 0 && docNodeIds && docNodeIds.size > 0) {
+        try {
+          const clusterNodeIds = getClusterDocumentEntityNodes(conn, cluster.id);
+          if (clusterNodeIds.size > 0) {
+            const intersection = new Set([...docNodeIds].filter(id => clusterNodeIds.has(id)));
+            const union = new Set([...docNodeIds, ...clusterNodeIds]);
+            const jaccard = union.size > 0 ? intersection.size / union.size : 0;
+            similarity = (1 - entityWeight) * similarity + entityWeight * jaccard;
+          }
+        } catch {
+          // KG query failed for this cluster - use pure cosine
+        }
+      }
 
       if (similarity > bestSimilarity) {
         bestSimilarity = similarity;
@@ -301,6 +331,7 @@ async function handleClusterAssign(
       cluster_id: bestClusterId,
       cluster_index: bestClusterIndex,
       similarity_to_centroid: dc.similarity_to_centroid,
+      entity_weight: input.entity_weight,
       run_id: input.run_id,
       assigned: true,
     }));
@@ -372,7 +403,7 @@ export const clusteringTools: Record<string, ToolDefinition> = {
     handler: handleClusterGet,
   },
   'ocr_cluster_assign': {
-    description: 'Auto-classify a document by assigning it to the nearest existing cluster',
+    description: 'Auto-classify a document by assigning it to the nearest existing cluster. Set entity_weight > 0 to blend KG entity overlap with embedding similarity.',
     inputSchema: ClusterAssignInput.shape,
     handler: handleClusterAssign,
   },

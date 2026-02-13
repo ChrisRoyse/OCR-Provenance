@@ -172,3 +172,50 @@ export function deleteEntitiesByDocument(db: Database.Database, documentId: stri
   return result.changes;
 }
 
+/**
+ * Get all entities for a document as a Map keyed by "type::normalized_text".
+ * Used for incremental re-extraction diffing.
+ *
+ * @param db - Database connection
+ * @param documentId - Document ID
+ * @returns Map<string, Entity> - Keyed entity map
+ */
+export function getEntitiesByDocumentKeyed(db: Database.Database, documentId: string): Map<string, Entity> {
+  const entities = getEntitiesByDocument(db, documentId);
+  const map = new Map<string, Entity>();
+  for (const e of entities) {
+    map.set(`${e.entity_type}::${e.normalized_text}`, e);
+  }
+  return map;
+}
+
+/**
+ * Delete a single entity and its mentions + KG node_entity_links.
+ * Does NOT delete the KG node itself (it may be linked to other entities).
+ *
+ * @param db - Database connection
+ * @param entityId - Entity ID to delete
+ */
+export function deleteEntity(db: Database.Database, entityId: string): void {
+  db.prepare('DELETE FROM node_entity_links WHERE entity_id = ?').run(entityId);
+  db.prepare('DELETE FROM entity_mentions WHERE entity_id = ?').run(entityId);
+  db.prepare('DELETE FROM entities WHERE id = ?').run(entityId);
+}
+
+/**
+ * Update entity confidence and metadata.
+ *
+ * @param db - Database connection
+ * @param entityId - Entity ID
+ * @param confidence - New confidence value
+ * @param metadata - New metadata JSON string (or null)
+ */
+export function updateEntityConfidence(
+  db: Database.Database,
+  entityId: string,
+  confidence: number,
+  metadata: string | null,
+): void {
+  db.prepare('UPDATE entities SET confidence = ?, metadata = ? WHERE id = ?').run(confidence, metadata, entityId);
+}
+

@@ -32,7 +32,7 @@ import {
 } from './shared.js';
 import { BM25SearchService } from '../services/search/bm25.js';
 import { RRFFusion, type RankedResult } from '../services/search/fusion.js';
-import { expandQueryWithKG, expandQueryWithCoMentioned, expandQueryTextForSemantic, findMatchingNodeIds, getExpandedTerms } from '../services/search/query-expander.js';
+import { expandQueryWithKG, expandQueryWithCoMentioned, expandQueryTextForSemantic, findMatchingNodeIds, getExpandedTerms, findQuerySuggestions } from '../services/search/query-expander.js';
 import { rerankResults, type EdgeInfo } from '../services/search/reranker.js';
 import { getEntitiesForChunks, getDocumentIdsForEntities, getEdgesForNode, getKnowledgeNode, getEntityMentionFrequencyByDocument, getRelatedDocumentsByEntityOverlap, type ChunkEntityInfo } from '../services/storage/database/knowledge-graph-operations.js';
 import { findGraphPaths } from '../services/knowledge-graph/graph-service.js';
@@ -552,6 +552,35 @@ function toSemanticRanked(
   }));
 }
 
+/**
+ * OPT-6: Deduplicate results by primary entity node.
+ * Keeps at most maxPerEntity results for each primary entity (first entity in the list).
+ * Results without entities are always kept.
+ */
+function deduplicateByPrimaryEntity(
+  results: Array<Record<string, unknown>>,
+  entityMap: Map<string, ChunkEntityInfo[]>,
+  maxPerEntity: number = 2,
+): { results: Array<Record<string, unknown>>; removed_count: number } {
+  const entityGroupCounts = new Map<string, number>();
+  let removedCount = 0;
+  const filtered = results.filter(r => {
+    const entityKey = (r.chunk_id as string) ?? (r.image_id as string);
+    if (!entityKey) return true;
+    const chunkEntities = entityMap.get(entityKey) || [];
+    if (chunkEntities.length === 0) return true;
+    const primaryEntity = chunkEntities[0].node_id;
+    const count = entityGroupCounts.get(primaryEntity) || 0;
+    if (count >= maxPerEntity) {
+      removedCount++;
+      return false;
+    }
+    entityGroupCounts.set(primaryEntity, count + 1);
+    return true;
+  });
+  return { results: filtered, removed_count: removedCount };
+}
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // SEARCH TOOL HANDLERS
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -567,6 +596,19 @@ export async function handleSearchSemantic(
     const { db, vector } = requireDatabase();
     const conn = db.getConnection();
 
+    // OPT-12: KG integration metrics tracking
+    const kgMetricsSemantic = {
+      entity_filter_applied: false,
+      entity_filter_documents_matched: 0,
+      expand_query_terms_added: 0,
+      entity_boost_results_boosted: 0,
+      rerank_entity_aware: false,
+      frequency_boost_results_boosted: 0,
+      entity_rescue_count: 0,
+      deduplication_removed: 0,
+      did_you_mean_suggestions: 0,
+    };
+
     // Resolve metadata filter to document IDs, then chain through quality filter
     let documentFilter = resolveQualityFilter(db, input.min_quality_score,
       resolveMetadataFilter(db, input.metadata_filter, input.document_filter));
@@ -578,13 +620,17 @@ export async function handleSearchSemantic(
         query: input.query,
         results: [],
         total: 0,
-        threshold: input.similarity_threshold,
+        threshold: input.similarity_threshold ?? 0.7,
         entity_filter_applied: true,
         entity_filter_document_count: 0,
         related_entities_included: input.entity_filter?.include_related ?? false,
       }));
     }
     documentFilter = entityFilterResult.documentFilter;
+    if (input.entity_filter) {
+      kgMetricsSemantic.entity_filter_applied = true;
+      kgMetricsSemantic.entity_filter_documents_matched = documentFilter?.length ?? 0;
+    }
 
     // Expand query text for semantic embedding if requested
     let semanticQueryText = input.query;
@@ -594,6 +640,9 @@ export async function handleSearchSemantic(
       if (expandedText !== input.query) {
         semanticQueryText = expandedText;
         semanticExpansionInfo = { original: input.query, expanded_text: expandedText };
+        // OPT-12: Count added terms (expanded words minus original words)
+        const origWords = new Set(input.query.toLowerCase().split(/\s+/));
+        kgMetricsSemantic.expand_query_terms_added = expandedText.toLowerCase().split(/\s+/).filter(w => !origWords.has(w)).length;
       }
     }
 
@@ -604,10 +653,16 @@ export async function handleSearchSemantic(
     const limit = input.limit ?? 10;
     const searchLimit = input.rerank ? Math.max(limit * 2, 20) : limit;
 
+    // OPT-5: Lower threshold when entity_rescue enabled to catch borderline results
+    const threshold = input.similarity_threshold ?? 0.7;
+    const effectiveThreshold = input.entity_rescue
+      ? Math.max(0, threshold - 0.1)
+      : threshold;
+
     // Search for similar vectors
     const results = vector.searchSimilar(queryVector, {
       limit: searchLimit,
-      threshold: input.similarity_threshold,
+      threshold: effectiveThreshold,
       documentFilter,
     });
 
@@ -623,14 +678,36 @@ export async function handleSearchSemantic(
       enrichEntityMapWithPageEntities(conn, entityMap, results);
     }
 
+    // OPT-5: Entity rescue - filter borderline results that lack matching entities
+    let entityRescueInfo: { rescued_count: number } | undefined;
+    let filteredSemanticResults = results;
+    if (input.entity_rescue && entityMap && entityMap.size > 0) {
+      const queryTermsLower = input.query.toLowerCase().split(/\s+/).filter(w => w.length >= 3);
+      let rescuedCount = 0;
+      filteredSemanticResults = results.filter(r => {
+        if (r.similarity_score >= threshold) return true;
+        const entityKey = r.chunk_id ?? r.image_id;
+        const entities = entityKey ? (entityMap!.get(entityKey) || []) : [];
+        const hasMatch = entities.some(e =>
+          queryTermsLower.some(term => e.canonical_name.toLowerCase().includes(term))
+        );
+        if (hasMatch) rescuedCount++;
+        return hasMatch;
+      });
+      if (rescuedCount > 0) {
+        entityRescueInfo = { rescued_count: rescuedCount };
+        kgMetricsSemantic.entity_rescue_count = rescuedCount;
+      }
+    }
+
     let finalResults: Array<Record<string, unknown>>;
     let rerankInfo: Record<string, unknown> | undefined;
 
-    if (input.rerank && results.length > 0) {
-      const entityContextForRerank = entityMap ? buildEntityContextForRerank(results, entityMap) : undefined;
+    if (input.rerank && filteredSemanticResults.length > 0) {
+      const entityContextForRerank = entityMap ? buildEntityContextForRerank(filteredSemanticResults, entityMap) : undefined;
       const edgeContextForRerank = entityMap ? buildEdgeContext(conn, entityMap) : undefined;
 
-      const rerankInput = results.map(r => ({
+      const rerankInput = filteredSemanticResults.map(r => ({
         chunk_id: r.chunk_id,
         image_id: r.image_id,
         extraction_id: r.extraction_id,
@@ -653,7 +730,7 @@ export async function handleSearchSemantic(
 
       const reranked = await rerankResults(input.query, rerankInput, limit, entityContextForRerank, edgeContextForRerank);
       finalResults = reranked.map(r => {
-        const original = results[r.original_index];
+        const original = filteredSemanticResults[r.original_index];
         const result: Record<string, unknown> = {
           embedding_id: original.embedding_id,
           chunk_id: original.chunk_id,
@@ -687,10 +764,11 @@ export async function handleSearchSemantic(
         }
         return result;
       });
-      rerankInfo = buildRerankInfo(entityContextForRerank, edgeContextForRerank, results.length, finalResults.length);
+      rerankInfo = buildRerankInfo(entityContextForRerank, edgeContextForRerank, filteredSemanticResults.length, finalResults.length);
+      kgMetricsSemantic.rerank_entity_aware = !!(entityContextForRerank && entityContextForRerank.size > 0);
     } else {
       // Format results with optional provenance (original path)
-      finalResults = results.map(r => {
+      finalResults = filteredSemanticResults.map(r => {
         const result: Record<string, unknown> = {
           embedding_id: r.embedding_id,
           chunk_id: r.chunk_id,
@@ -727,19 +805,33 @@ export async function handleSearchSemantic(
       });
     }
 
+    // OPT-6: Deduplicate by primary entity
+    let semanticDeduplicationInfo: { removed_count: number } | undefined;
+    if (input.deduplicate_by_entity && entityMap && entityMap.size > 0) {
+      const deduped = deduplicateByPrimaryEntity(finalResults, entityMap);
+      finalResults = deduped.results;
+      if (deduped.removed_count > 0) {
+        semanticDeduplicationInfo = { removed_count: deduped.removed_count };
+        kgMetricsSemantic.deduplication_removed = deduped.removed_count;
+      }
+    }
+
     // Apply entity mention frequency boost when entity_filter is active
     let semanticFreqBoostInfo: { boosted_results: number; max_mention_count: number } | undefined;
     if (input.entity_filter) {
       semanticFreqBoostInfo = applyEntityFrequencyBoost(
         finalResults, 'similarity_score', conn, input.entity_filter,
       );
+      if (semanticFreqBoostInfo) {
+        kgMetricsSemantic.frequency_boost_results_boosted = semanticFreqBoostInfo.boosted_results;
+      }
     }
 
     const responseData: Record<string, unknown> = {
       query: input.query,
       results: finalResults,
       total: finalResults.length,
-      threshold: input.similarity_threshold,
+      threshold: threshold,
     };
 
     if (semanticExpansionInfo) {
@@ -748,6 +840,14 @@ export async function handleSearchSemantic(
 
     if (rerankInfo) {
       responseData.rerank = rerankInfo;
+    }
+
+    if (entityRescueInfo) {
+      responseData.entity_rescue = entityRescueInfo;
+    }
+
+    if (semanticDeduplicationInfo) {
+      responseData.deduplication = semanticDeduplicationInfo;
     }
 
     if (input.entity_filter) {
@@ -762,6 +862,22 @@ export async function handleSearchSemantic(
     if (input.include_entities && entityMap && entityMap.size > 0) {
       responseData.cross_document_entities = buildCrossDocumentEntitySummary(entityMap);
     }
+
+    // OPT-7: "Did you mean?" suggestions on zero results
+    if (finalResults.length === 0) {
+      try {
+        const suggestions = findQuerySuggestions(input.query, conn);
+        if (suggestions.length > 0) {
+          responseData.did_you_mean = suggestions;
+          kgMetricsSemantic.did_you_mean_suggestions = suggestions.length;
+        }
+      } catch {
+        // KG not available - skip suggestions
+      }
+    }
+
+    // OPT-12: Add KG integration metrics to response
+    responseData.kg_integration_metrics = kgMetricsSemantic;
 
     return formatResponse(successResult(responseData));
   } catch (error) {
@@ -780,6 +896,19 @@ export async function handleSearch(
     const input = validateInput(SearchInput, params);
     const { db } = requireDatabase();
     const conn = db.getConnection();
+
+    // OPT-12: KG integration metrics tracking
+    const kgMetricsBm25 = {
+      entity_filter_applied: false,
+      entity_filter_documents_matched: 0,
+      expand_query_terms_added: 0,
+      entity_boost_results_boosted: 0,
+      rerank_entity_aware: false,
+      frequency_boost_results_boosted: 0,
+      entity_rescue_count: 0,
+      deduplication_removed: 0,
+      did_you_mean_suggestions: 0,
+    };
 
     // Resolve metadata filter to document IDs, then chain through quality filter
     let documentFilter = resolveQualityFilter(db, input.min_quality_score,
@@ -800,9 +929,16 @@ export async function handleSearch(
       }));
     }
     documentFilter = bm25EntityFilterResult.documentFilter;
+    if (input.entity_filter) {
+      kgMetricsBm25.entity_filter_applied = true;
+      kgMetricsBm25.entity_filter_documents_matched = documentFilter?.length ?? 0;
+    }
 
     const bm25Query = input.expand_query ? expandQueryWithKG(input.query, conn) : input.query;
     const expansionInfo = input.expand_query ? getExpandedTerms(input.query) : undefined;
+    if (expansionInfo && expansionInfo.expanded) {
+      kgMetricsBm25.expand_query_terms_added = expansionInfo.expanded.length;
+    }
 
     const bm25 = new BM25SearchService(conn);
     const limit = input.limit ?? 10;
@@ -886,6 +1022,7 @@ export async function handleSearch(
         return base;
       });
       rerankInfo = buildRerankInfo(entityContextForRerank, edgeContextForRerank, rankedResults.length, finalResults.length);
+      kgMetricsBm25.rerank_entity_aware = !!(entityContextForRerank && entityContextForRerank.size > 0);
     } else {
       finalResults = rankedResults.map(r => {
         const base: Record<string, unknown> = { ...r };
@@ -900,6 +1037,17 @@ export async function handleSearch(
         }
         return base;
       });
+    }
+
+    // OPT-6: Deduplicate by primary entity
+    let bm25DeduplicationInfo: { removed_count: number } | undefined;
+    if (input.deduplicate_by_entity && bm25EntityMap && bm25EntityMap.size > 0) {
+      const deduped = deduplicateByPrimaryEntity(finalResults, bm25EntityMap);
+      finalResults = deduped.results;
+      if (deduped.removed_count > 0) {
+        bm25DeduplicationInfo = { removed_count: deduped.removed_count };
+        kgMetricsBm25.deduplication_removed = deduped.removed_count;
+      }
     }
 
     // Compute source counts from final merged results (not pre-merge candidates)
@@ -918,6 +1066,9 @@ export async function handleSearch(
       bm25FreqBoostInfo = applyEntityFrequencyBoost(
         finalResults, 'bm25_score', conn, input.entity_filter,
       );
+      if (bm25FreqBoostInfo) {
+        kgMetricsBm25.frequency_boost_results_boosted = bm25FreqBoostInfo.boosted_results;
+      }
     }
 
     const responseData: Record<string, unknown> = {
@@ -940,6 +1091,10 @@ export async function handleSearch(
       responseData.rerank = rerankInfo;
     }
 
+    if (bm25DeduplicationInfo) {
+      responseData.deduplication = bm25DeduplicationInfo;
+    }
+
     if (input.entity_filter) {
       responseData.entity_filter_applied = true;
       responseData.entity_filter_document_count = documentFilter?.length ?? 0;
@@ -952,6 +1107,22 @@ export async function handleSearch(
     if (input.include_entities && bm25EntityMap && bm25EntityMap.size > 0) {
       responseData.cross_document_entities = buildCrossDocumentEntitySummary(bm25EntityMap);
     }
+
+    // OPT-7: "Did you mean?" suggestions on zero results
+    if (finalResults.length === 0) {
+      try {
+        const suggestions = findQuerySuggestions(input.query, conn);
+        if (suggestions.length > 0) {
+          responseData.did_you_mean = suggestions;
+          kgMetricsBm25.did_you_mean_suggestions = suggestions.length;
+        }
+      } catch {
+        // KG not available - skip suggestions
+      }
+    }
+
+    // OPT-12: Add KG integration metrics to response
+    responseData.kg_integration_metrics = kgMetricsBm25;
 
     return formatResponse(successResult(responseData));
   } catch (error) {
@@ -971,6 +1142,19 @@ export async function handleSearchHybrid(
     const { db, vector } = requireDatabase();
     const limit = input.limit ?? 10;
     const conn = db.getConnection();
+
+    // OPT-12: KG integration metrics tracking
+    const kgMetricsHybrid = {
+      entity_filter_applied: false,
+      entity_filter_documents_matched: 0,
+      expand_query_terms_added: 0,
+      entity_boost_results_boosted: 0,
+      rerank_entity_aware: false,
+      frequency_boost_results_boosted: 0,
+      entity_rescue_count: 0,
+      deduplication_removed: 0,
+      did_you_mean_suggestions: 0,
+    };
 
     // Resolve metadata filter to document IDs, then chain through quality filter
     let documentFilter = resolveQualityFilter(db, input.min_quality_score,
@@ -996,10 +1180,17 @@ export async function handleSearchHybrid(
       }));
     }
     documentFilter = hybridEntityFilterResult.documentFilter;
+    if (input.entity_filter) {
+      kgMetricsHybrid.entity_filter_applied = true;
+      kgMetricsHybrid.entity_filter_documents_matched = documentFilter?.length ?? 0;
+    }
 
     // Expand with co-mentioned entities for hybrid (broadest expansion -- RRF de-ranks noise)
     const bm25Query = input.expand_query ? expandQueryWithCoMentioned(input.query, conn) : input.query;
     const expansionInfo = input.expand_query ? getExpandedTerms(input.query) : undefined;
+    if (expansionInfo && expansionInfo.expanded) {
+      kgMetricsHybrid.expand_query_terms_added = expansionInfo.expanded.length;
+    }
 
     // Get BM25 results (chunks + VLM + extractions)
     const bm25 = new BM25SearchService(db.getConnection());
@@ -1084,6 +1275,7 @@ export async function handleSearchHybrid(
               // Re-sort by boosted rrf_score
               rawResults.sort((a, b) => b.rrf_score - a.rrf_score);
               entityBoostInfo = { boosted_results: boostedCount, matching_nodes: matchedNodeIds.length };
+              kgMetricsHybrid.entity_boost_results_boosted = boostedCount;
             }
           }
         }
@@ -1132,6 +1324,7 @@ export async function handleSearchHybrid(
         return base;
       });
       rerankInfo = buildRerankInfo(entityContextForRerank, edgeContextForRerank, rawResults.length, finalResults.length);
+      kgMetricsHybrid.rerank_entity_aware = !!(entityContextForRerank && entityContextForRerank.size > 0);
     } else {
       finalResults = rawResults.map(r => {
         const base: Record<string, unknown> = { ...r };
@@ -1146,6 +1339,17 @@ export async function handleSearchHybrid(
         }
         return base;
       });
+    }
+
+    // OPT-6: Deduplicate by primary entity
+    let hybridDeduplicationInfo: { removed_count: number } | undefined;
+    if (input.deduplicate_by_entity && hybridEntityMap && hybridEntityMap.size > 0) {
+      const deduped = deduplicateByPrimaryEntity(finalResults, hybridEntityMap);
+      finalResults = deduped.results;
+      if (deduped.removed_count > 0) {
+        hybridDeduplicationInfo = { removed_count: deduped.removed_count };
+        kgMetricsHybrid.deduplication_removed = deduped.removed_count;
+      }
     }
 
     const responseData: Record<string, unknown> = {
@@ -1178,11 +1382,18 @@ export async function handleSearchHybrid(
       responseData.entity_boost = entityBoostInfo;
     }
 
+    if (hybridDeduplicationInfo) {
+      responseData.deduplication = hybridDeduplicationInfo;
+    }
+
     let hybridFreqBoostInfo: { boosted_results: number; max_mention_count: number } | undefined;
     if (input.entity_filter) {
       hybridFreqBoostInfo = applyEntityFrequencyBoost(
         finalResults, 'rrf_score', conn, input.entity_filter,
       );
+      if (hybridFreqBoostInfo) {
+        kgMetricsHybrid.frequency_boost_results_boosted = hybridFreqBoostInfo.boosted_results;
+      }
 
       responseData.entity_filter_applied = true;
       responseData.entity_filter_document_count = documentFilter?.length ?? 0;
@@ -1195,6 +1406,22 @@ export async function handleSearchHybrid(
     if (input.include_entities && hybridEntityMap && hybridEntityMap.size > 0) {
       responseData.cross_document_entities = buildCrossDocumentEntitySummary(hybridEntityMap);
     }
+
+    // OPT-7: "Did you mean?" suggestions on zero results
+    if (finalResults.length === 0) {
+      try {
+        const suggestions = findQuerySuggestions(input.query, conn);
+        if (suggestions.length > 0) {
+          responseData.did_you_mean = suggestions;
+          kgMetricsHybrid.did_you_mean_suggestions = suggestions.length;
+        }
+      } catch {
+        // KG not available - skip suggestions
+      }
+    }
+
+    // OPT-12: Add KG integration metrics to response
+    responseData.kg_integration_metrics = kgMetricsHybrid;
 
     return formatResponse(successResult(responseData));
   } catch (error) {
@@ -1246,6 +1473,8 @@ const RagContextInput = z.object({
     .describe('Restrict to specific documents'),
   max_context_length: z.number().int().min(500).max(50000).default(8000)
     .describe('Maximum total context length in characters'),
+  include_relationship_summary: z.boolean().default(false)
+    .describe('Include narrative summary of entity relationships'),
 });
 
 /**
@@ -1473,6 +1702,52 @@ async function handleRagContext(
       contextParts.push('');
     }
 
+    // OPT-10: Generate entity relationship narrative summary
+    if (input.include_relationship_summary && kgPaths.length > 0) {
+      const remainingBudget = maxContextLength - contextParts.join('\n').length;
+      if (remainingBudget > 200) {
+        // Group edges by relationship type for narrative structure
+        const edgesByType = new Map<string, RagPathEdge[]>();
+        for (const edge of kgPaths) {
+          const existing = edgesByType.get(edge.relationship_type) || [];
+          existing.push(edge);
+          edgesByType.set(edge.relationship_type, existing);
+        }
+
+        const narrativeParts: string[] = ['## Entity Relationship Summary\n'];
+
+        for (const [relType, edges] of edgesByType) {
+          const readableType = relType.replace(/_/g, ' ');
+          if (edges.length === 1) {
+            const e = edges[0];
+            narrativeParts.push(`${e.source_name} is ${readableType} ${e.target_name}.`);
+          } else {
+            // Group by source entity
+            const bySource = new Map<string, string[]>();
+            for (const e of edges) {
+              const targets = bySource.get(e.source_name) || [];
+              targets.push(e.target_name);
+              bySource.set(e.source_name, targets);
+            }
+            for (const [source, targets] of bySource) {
+              if (targets.length === 1) {
+                narrativeParts.push(`${source} is ${readableType} ${targets[0]}.`);
+              } else {
+                const allTargets = [...targets];
+                const last = allTargets.pop()!;
+                narrativeParts.push(`${source} is ${readableType} ${allTargets.join(', ')} and ${last}.`);
+              }
+            }
+          }
+        }
+
+        const narrativeText = narrativeParts.join('\n');
+        if (narrativeText.length <= remainingBudget) {
+          contextParts.push(narrativeText);
+        }
+      }
+    }
+
     // ── Step 5: Truncate to max_context_length ─────────────────────────────
     let assembledMarkdown = contextParts.join('\n');
     if (assembledMarkdown.length > maxContextLength) {
@@ -1487,6 +1762,7 @@ async function handleRagContext(
       search_results_used: fusedResults.length,
       entities_found: uniqueEntities.size,
       kg_paths_found: kgPaths.length,
+      relationship_summary_included: input.include_relationship_summary && kgPaths.length > 0,
       sources,
     }));
   } catch (error) {
@@ -1520,6 +1796,9 @@ async function handleBenchmarkCompare(params: Record<string, unknown>): Promise<
       kg_metrics?: { nodes: number; edges: number };
       error?: string;
     }> = [];
+
+    // OPT-4: Collect entity canonical names per database for cross-database overlap
+    const dbEntitySets = new Map<string, Set<string>>();
 
     for (const dbName of input.database_names) {
       let tempDb: DatabaseService | null = null;
@@ -1566,6 +1845,14 @@ async function handleBenchmarkCompare(params: Record<string, unknown>): Promise<
           // KG tables may not exist in older databases
         }
 
+        // OPT-4: Collect entity canonical names for cross-database overlap
+        try {
+          const nodes = conn.prepare('SELECT canonical_name FROM knowledge_nodes').all() as Array<{ canonical_name: string }>;
+          dbEntitySets.set(dbName, new Set(nodes.map(n => n.canonical_name.toLowerCase())));
+        } catch {
+          dbEntitySets.set(dbName, new Set());
+        }
+
         dbResults.push({
           database_name: dbName,
           result_count: scores.length,
@@ -1602,6 +1889,25 @@ async function handleBenchmarkCompare(params: Record<string, unknown>): Promise<
       [...allDocIds.entries()].filter(([, dbs]) => dbs.length > 1)
     );
 
+    // OPT-4: Compute pairwise entity overlap between databases
+    const entityOverlap: Record<string, unknown> = {};
+    const dbNamesList = [...dbEntitySets.keys()];
+    for (let i = 0; i < dbNamesList.length; i++) {
+      for (let j = i + 1; j < dbNamesList.length; j++) {
+        const setA = dbEntitySets.get(dbNamesList[i])!;
+        const setB = dbEntitySets.get(dbNamesList[j])!;
+        const shared = [...setA].filter(name => setB.has(name));
+        const union = new Set([...setA, ...setB]);
+        entityOverlap[`${dbNamesList[i]}_vs_${dbNamesList[j]}`] = {
+          shared_count: shared.length,
+          shared_entity_names: shared.slice(0, 20),
+          db1_unique: setA.size - shared.length,
+          db2_unique: setB.size - shared.length,
+          jaccard_similarity: union.size > 0 ? Math.round((shared.length / union.size) * 1000) / 1000 : 0,
+        };
+      }
+    }
+
     return formatResponse(successResult({
       query: input.query,
       search_type: input.search_type,
@@ -1612,6 +1918,7 @@ async function handleBenchmarkCompare(params: Record<string, unknown>): Promise<
         overlap_count: Object.keys(overlapping).length,
         total_unique_documents: allDocIds.size,
       },
+      entity_overlap: entityOverlap,
     }));
   } catch (error) {
     return handleError(error);
@@ -1660,26 +1967,32 @@ async function handleSearchExport(params: Record<string, unknown>): Promise<Tool
     const parsedResponse = JSON.parse(responseContent.text);
     if (!parsedResponse.success) throw new Error(`Search failed: ${parsedResponse.error?.message || 'Unknown error'}`);
     const results = parsedResponse.data?.results || [];
+    // OPT-2: Extract cross-document entity summary from search response
+    const crossDocEntities = parsedResponse.data?.cross_document_entities || [];
 
     // Ensure output directory exists
     const outputDir = path.dirname(input.output_path);
     fs.mkdirSync(outputDir, { recursive: true });
 
     if (input.format === 'json') {
-      const exportData = results.map((r: Record<string, unknown>) => {
-        const row: Record<string, unknown> = {
-          document_id: r.document_id,
-          source_file: r.source_file_name || r.source_file_path,
-          page_number: r.page_number,
-          score: r.bm25_score ?? r.similarity_score ?? r.rrf_score,
-          result_type: r.result_type,
-        };
-        if (input.include_text) row.text = r.original_text;
-        if (input.include_entities && r.entities_mentioned) {
-          row.entities_mentioned = r.entities_mentioned;
-        }
-        return row;
-      });
+      // OPT-2: JSON export includes cross_document_entities alongside results
+      const exportData = {
+        results: results.map((r: Record<string, unknown>) => {
+          const row: Record<string, unknown> = {
+            document_id: r.document_id,
+            source_file: r.source_file_name || r.source_file_path,
+            page_number: r.page_number,
+            score: r.bm25_score ?? r.similarity_score ?? r.rrf_score,
+            result_type: r.result_type,
+          };
+          if (input.include_text) row.text = r.original_text;
+          if (input.include_entities && r.entities_mentioned) {
+            row.entities_mentioned = r.entities_mentioned;
+          }
+          return row;
+        }),
+        cross_document_entities: crossDocEntities,
+      };
       fs.writeFileSync(input.output_path, JSON.stringify(exportData, null, 2));
     } else {
       // CSV
@@ -1708,6 +2021,16 @@ async function handleSearchExport(params: Record<string, unknown>): Promise<Tool
         }
         csvLines.push(row.join(','));
       }
+      // OPT-2: Append cross-document entity summary to CSV
+      if (crossDocEntities.length > 0) {
+        csvLines.push('');
+        csvLines.push('# Cross-Document Entity Summary');
+        csvLines.push('entity_name,entity_type,mention_count,document_count');
+        for (const e of crossDocEntities) {
+          const rec = e as Record<string, unknown>;
+          csvLines.push(`"${((rec.canonical_name as string) || '').replace(/"/g, '""')}",${rec.entity_type || ''},${rec.mentioned_in_results || 0},${rec.document_count || 0}`);
+        }
+      }
       fs.writeFileSync(input.output_path, csvLines.join('\n'));
     }
 
@@ -1718,6 +2041,7 @@ async function handleSearchExport(params: Record<string, unknown>): Promise<Tool
       search_type: input.search_type,
       query: input.query,
       include_entities: input.include_entities,
+      cross_document_entities_count: crossDocEntities.length,
     }));
   } catch (error) {
     return handleError(error);
@@ -1800,6 +2124,8 @@ export const searchTools: Record<string, ToolDefinition> = {
       }).optional().describe('Filter results by knowledge graph entities'),
       rerank: z.boolean().default(false)
         .describe('Re-rank results using Gemini AI for contextual relevance scoring'),
+      deduplicate_by_entity: z.boolean().default(false)
+        .describe('Deduplicate results by primary entity (max 2 results per entity)'),
     },
     handler: handleSearch,
   },
@@ -1829,6 +2155,10 @@ export const searchTools: Record<string, ToolDefinition> = {
       }).optional().describe('Filter results by knowledge graph entities'),
       rerank: z.boolean().default(false)
         .describe('Re-rank results using Gemini AI for contextual relevance scoring'),
+      entity_rescue: z.boolean().default(false)
+        .describe('Rescue borderline results (within 0.1 of threshold) if they contain entities matching query terms'),
+      deduplicate_by_entity: z.boolean().default(false)
+        .describe('Deduplicate results by primary entity (max 2 results per entity)'),
     },
     handler: handleSearchSemantic,
   },
@@ -1862,6 +2192,8 @@ export const searchTools: Record<string, ToolDefinition> = {
       }).optional().describe('Filter results by knowledge graph entities'),
       entity_boost: z.number().min(0).max(2).default(0)
         .describe('Entity boost factor: results containing entities matching query terms get score boost in RRF fusion'),
+      deduplicate_by_entity: z.boolean().default(false)
+        .describe('Deduplicate results by primary entity (max 2 results per entity)'),
     },
     handler: handleSearchHybrid,
   },
@@ -1928,6 +2260,8 @@ export const searchTools: Record<string, ToolDefinition> = {
         .describe('Restrict to specific documents'),
       max_context_length: z.number().int().min(500).max(50000).default(8000)
         .describe('Maximum total context length in characters'),
+      include_relationship_summary: z.boolean().default(false)
+        .describe('Include AI-generated narrative summary of entity relationships'),
     },
     handler: async (params) => handleRagContext(params as Record<string, unknown>),
   },
