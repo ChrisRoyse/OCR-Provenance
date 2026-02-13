@@ -1,5 +1,5 @@
 /**
- * Unit Tests for QW-5: Search Result Export (ocr_search_export)
+ * Unit Tests for Search Result Export (ocr_search_export)
  *
  * Tests the handleSearchExport handler in src/tools/search.ts.
  * Uses real SQLite databases with BM25 data to test the BM25 export path.
@@ -141,7 +141,7 @@ function insertSearchableDoc(
 // TESTS
 // ═══════════════════════════════════════════════════════════════════════════════
 
-describe('QW-5: Search Result Export (ocr_search_export)', () => {
+describe('Search Result Export (ocr_search_export)', () => {
   let tempDir: string;
   let dbName: string;
   let outputDir: string;
@@ -229,10 +229,11 @@ describe('QW-5: Search Result Export (ocr_search_export)', () => {
 
     expect(existsSync(jsonPath)).toBe(true);
     const jsonContent = JSON.parse(readFileSync(jsonPath, 'utf-8'));
-    expect(Array.isArray(jsonContent)).toBe(true);
-    expect(jsonContent.length).toBe(1);
-    expect(jsonContent[0].document_id).toBeDefined();
-    expect(jsonContent[0].text).toContain('artificial intelligence');
+    expect(jsonContent.results).toBeDefined();
+    expect(Array.isArray(jsonContent.results)).toBe(true);
+    expect(jsonContent.results.length).toBe(1);
+    expect(jsonContent.results[0].document_id).toBeDefined();
+    expect(jsonContent.results[0].text).toContain('artificial intelligence');
   });
 
   it.skipIf(!sqliteVecAvailable)('should export CSV without text when include_text is false', async () => {
@@ -341,8 +342,8 @@ describe('QW-5: Search Result Export (ocr_search_export)', () => {
     expect(parsed.success).toBe(true);
 
     const jsonContent = JSON.parse(readFileSync(jsonPath, 'utf-8'));
-    expect(jsonContent[0].text).toBeUndefined();
-    expect(jsonContent[0].document_id).toBeDefined();
+    expect(jsonContent.results[0].text).toBeUndefined();
+    expect(jsonContent.results[0].document_id).toBeDefined();
   });
 
   it.skipIf(!sqliteVecAvailable)('should validate required parameters', async () => {

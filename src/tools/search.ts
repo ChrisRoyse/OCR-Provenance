@@ -553,7 +553,7 @@ function toSemanticRanked(
 }
 
 /**
- * OPT-6: Deduplicate results by primary entity node.
+ * Deduplicate results by primary entity node.
  * Keeps at most maxPerEntity results for each primary entity (first entity in the list).
  * Results without entities are always kept.
  */
@@ -567,10 +567,10 @@ function deduplicateByPrimaryEntity(
   const filtered = results.filter(r => {
     const entityKey = (r.chunk_id as string) ?? (r.image_id as string);
     if (!entityKey) return true;
-    const chunkEntities = entityMap.get(entityKey) || [];
-    if (chunkEntities.length === 0) return true;
+    const chunkEntities = entityMap.get(entityKey);
+    if (!chunkEntities || chunkEntities.length === 0) return true;
     const primaryEntity = chunkEntities[0].node_id;
-    const count = entityGroupCounts.get(primaryEntity) || 0;
+    const count = entityGroupCounts.get(primaryEntity) ?? 0;
     if (count >= maxPerEntity) {
       removedCount++;
       return false;
@@ -579,6 +579,102 @@ function deduplicateByPrimaryEntity(
     return true;
   });
   return { results: filtered, removed_count: removedCount };
+}
+
+/** KG integration metrics shape tracked per search handler */
+interface KGIntegrationMetrics {
+  entity_filter_applied: boolean;
+  entity_filter_documents_matched: number;
+  expand_query_terms_added: number;
+  entity_boost_results_boosted: number;
+  rerank_entity_aware: boolean;
+  frequency_boost_results_boosted: number;
+  entity_rescue_count: number;
+  deduplication_removed: number;
+  did_you_mean_suggestions: number;
+}
+
+/** Create a fresh KG integration metrics object with all fields zeroed */
+function createKGMetrics(): KGIntegrationMetrics {
+  return {
+    entity_filter_applied: false,
+    entity_filter_documents_matched: 0,
+    expand_query_terms_added: 0,
+    entity_boost_results_boosted: 0,
+    rerank_entity_aware: false,
+    frequency_boost_results_boosted: 0,
+    entity_rescue_count: 0,
+    deduplication_removed: 0,
+    did_you_mean_suggestions: 0,
+  };
+}
+
+/**
+ * Attach optional provenance chain and entity mentions to a search result object.
+ * Shared by BM25, semantic, and hybrid handlers (both reranked and non-reranked paths).
+ *
+ * @param provenanceKey - Response field name for provenance chain ('provenance' or 'provenance_chain')
+ */
+function attachProvenanceAndEntities(
+  result: Record<string, unknown>,
+  db: ReturnType<typeof requireDatabase>['db'],
+  provenanceId: string,
+  includeProvenance: boolean,
+  includeEntities: boolean,
+  entityMap: Map<string, ChunkEntityInfo[]> | undefined,
+  chunkId: string | null | undefined,
+  imageId: string | null | undefined,
+  provenanceKey: 'provenance' | 'provenance_chain' = 'provenance',
+): void {
+  if (includeProvenance) {
+    result[provenanceKey] = formatProvenanceChain(db, provenanceId);
+  }
+  if (includeEntities && entityMap) {
+    const entityKey = chunkId ?? imageId;
+    if (entityKey) {
+      result.entities_mentioned = entityMap.get(entityKey) ?? [];
+    }
+  }
+}
+
+/**
+ * Append "did you mean?" suggestions to response when results are empty.
+ * Queries KG entity names for fuzzy matches to the query.
+ */
+function appendDidYouMean(
+  responseData: Record<string, unknown>,
+  kgMetrics: KGIntegrationMetrics,
+  query: string,
+  conn: ReturnType<ReturnType<typeof requireDatabase>['db']['getConnection']>,
+): void {
+  try {
+    const suggestions = findQuerySuggestions(query, conn);
+    if (suggestions.length > 0) {
+      responseData.did_you_mean = suggestions;
+      kgMetrics.did_you_mean_suggestions = suggestions.length;
+    }
+  } catch {
+    // KG not available - skip suggestions
+  }
+}
+
+/**
+ * Append entity filter metadata and frequency boost info to response.
+ */
+function appendEntityFilterResponse(
+  responseData: Record<string, unknown>,
+  kgMetrics: KGIntegrationMetrics,
+  entityFilter: { entity_names?: string[]; entity_types?: string[] },
+  documentFilter: string[] | undefined,
+  freqBoostInfo: { boosted_results: number; max_mention_count: number } | undefined,
+): void {
+  responseData.entity_filter_applied = true;
+  responseData.entity_filter_document_count = documentFilter?.length ?? 0;
+  responseData.related_entities_included = (entityFilter as { include_related?: boolean }).include_related ?? false;
+  if (freqBoostInfo) {
+    responseData.frequency_boost = freqBoostInfo;
+    kgMetrics.frequency_boost_results_boosted = freqBoostInfo.boosted_results;
+  }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -596,18 +692,7 @@ export async function handleSearchSemantic(
     const { db, vector } = requireDatabase();
     const conn = db.getConnection();
 
-    // OPT-12: KG integration metrics tracking
-    const kgMetricsSemantic = {
-      entity_filter_applied: false,
-      entity_filter_documents_matched: 0,
-      expand_query_terms_added: 0,
-      entity_boost_results_boosted: 0,
-      rerank_entity_aware: false,
-      frequency_boost_results_boosted: 0,
-      entity_rescue_count: 0,
-      deduplication_removed: 0,
-      did_you_mean_suggestions: 0,
-    };
+    const kgMetricsSemantic = createKGMetrics();
 
     // Resolve metadata filter to document IDs, then chain through quality filter
     let documentFilter = resolveQualityFilter(db, input.min_quality_score,
@@ -640,7 +725,7 @@ export async function handleSearchSemantic(
       if (expandedText !== input.query) {
         semanticQueryText = expandedText;
         semanticExpansionInfo = { original: input.query, expanded_text: expandedText };
-        // OPT-12: Count added terms (expanded words minus original words)
+        // Count added terms (expanded words minus original words)
         const origWords = new Set(input.query.toLowerCase().split(/\s+/));
         kgMetricsSemantic.expand_query_terms_added = expandedText.toLowerCase().split(/\s+/).filter(w => !origWords.has(w)).length;
       }
@@ -653,7 +738,7 @@ export async function handleSearchSemantic(
     const limit = input.limit ?? 10;
     const searchLimit = input.rerank ? Math.max(limit * 2, 20) : limit;
 
-    // OPT-5: Lower threshold when entity_rescue enabled to catch borderline results
+    // Lower threshold when entity_rescue enabled to catch borderline results
     const threshold = input.similarity_threshold ?? 0.7;
     const effectiveThreshold = input.entity_rescue
       ? Math.max(0, threshold - 0.1)
@@ -678,7 +763,7 @@ export async function handleSearchSemantic(
       enrichEntityMapWithPageEntities(conn, entityMap, results);
     }
 
-    // OPT-5: Entity rescue - filter borderline results that lack matching entities
+    // Entity rescue - filter borderline results that lack matching entities
     let entityRescueInfo: { rescued_count: number } | undefined;
     let filteredSemanticResults = results;
     if (input.entity_rescue && entityMap && entityMap.size > 0) {
@@ -753,21 +838,12 @@ export async function handleSearchSemantic(
           rerank_score: r.relevance_score,
           rerank_reasoning: r.reasoning,
         };
-        if (input.include_provenance) {
-          result.provenance = formatProvenanceChain(db, original.provenance_id);
-        }
-        if (input.include_entities && entityMap) {
-          const entityKey = original.chunk_id ?? original.image_id;
-          if (entityKey) {
-            result.entities_mentioned = entityMap.get(entityKey) ?? [];
-          }
-        }
+        attachProvenanceAndEntities(result, db, original.provenance_id, !!input.include_provenance, !!input.include_entities, entityMap, original.chunk_id, original.image_id);
         return result;
       });
       rerankInfo = buildRerankInfo(entityContextForRerank, edgeContextForRerank, filteredSemanticResults.length, finalResults.length);
       kgMetricsSemantic.rerank_entity_aware = !!(entityContextForRerank && entityContextForRerank.size > 0);
     } else {
-      // Format results with optional provenance (original path)
       finalResults = filteredSemanticResults.map(r => {
         const result: Record<string, unknown> = {
           embedding_id: r.embedding_id,
@@ -789,23 +865,12 @@ export async function handleSearchSemantic(
           content_hash: r.content_hash,
           provenance_id: r.provenance_id,
         };
-
-        if (input.include_provenance) {
-          result.provenance = formatProvenanceChain(db, r.provenance_id);
-        }
-
-        if (input.include_entities && entityMap) {
-          const entityKey = r.chunk_id ?? r.image_id;
-          if (entityKey) {
-            result.entities_mentioned = entityMap.get(entityKey) ?? [];
-          }
-        }
-
+        attachProvenanceAndEntities(result, db, r.provenance_id, !!input.include_provenance, !!input.include_entities, entityMap, r.chunk_id, r.image_id);
         return result;
       });
     }
 
-    // OPT-6: Deduplicate by primary entity
+    // Deduplicate by primary entity
     let semanticDeduplicationInfo: { removed_count: number } | undefined;
     if (input.deduplicate_by_entity && entityMap && entityMap.size > 0) {
       const deduped = deduplicateByPrimaryEntity(finalResults, entityMap);
@@ -817,15 +882,9 @@ export async function handleSearchSemantic(
     }
 
     // Apply entity mention frequency boost when entity_filter is active
-    let semanticFreqBoostInfo: { boosted_results: number; max_mention_count: number } | undefined;
-    if (input.entity_filter) {
-      semanticFreqBoostInfo = applyEntityFrequencyBoost(
-        finalResults, 'similarity_score', conn, input.entity_filter,
-      );
-      if (semanticFreqBoostInfo) {
-        kgMetricsSemantic.frequency_boost_results_boosted = semanticFreqBoostInfo.boosted_results;
-      }
-    }
+    const semanticFreqBoostInfo = input.entity_filter
+      ? applyEntityFrequencyBoost(finalResults, 'similarity_score', conn, input.entity_filter)
+      : undefined;
 
     const responseData: Record<string, unknown> = {
       query: input.query,
@@ -851,32 +910,16 @@ export async function handleSearchSemantic(
     }
 
     if (input.entity_filter) {
-      responseData.entity_filter_applied = true;
-      responseData.entity_filter_document_count = documentFilter?.length ?? 0;
-      responseData.related_entities_included = input.entity_filter.include_related ?? false;
-      if (semanticFreqBoostInfo) {
-        responseData.frequency_boost = semanticFreqBoostInfo;
-      }
+      appendEntityFilterResponse(responseData, kgMetricsSemantic, input.entity_filter, documentFilter, semanticFreqBoostInfo);
     }
 
     if (input.include_entities && entityMap && entityMap.size > 0) {
       responseData.cross_document_entities = buildCrossDocumentEntitySummary(entityMap);
     }
 
-    // OPT-7: "Did you mean?" suggestions on zero results
     if (finalResults.length === 0) {
-      try {
-        const suggestions = findQuerySuggestions(input.query, conn);
-        if (suggestions.length > 0) {
-          responseData.did_you_mean = suggestions;
-          kgMetricsSemantic.did_you_mean_suggestions = suggestions.length;
-        }
-      } catch {
-        // KG not available - skip suggestions
-      }
+      appendDidYouMean(responseData, kgMetricsSemantic, input.query, conn);
     }
-
-    // OPT-12: Add KG integration metrics to response
     responseData.kg_integration_metrics = kgMetricsSemantic;
 
     return formatResponse(successResult(responseData));
@@ -897,18 +940,7 @@ export async function handleSearch(
     const { db } = requireDatabase();
     const conn = db.getConnection();
 
-    // OPT-12: KG integration metrics tracking
-    const kgMetricsBm25 = {
-      entity_filter_applied: false,
-      entity_filter_documents_matched: 0,
-      expand_query_terms_added: 0,
-      entity_boost_results_boosted: 0,
-      rerank_entity_aware: false,
-      frequency_boost_results_boosted: 0,
-      entity_rescue_count: 0,
-      deduplication_removed: 0,
-      did_you_mean_suggestions: 0,
-    };
+    const kgMetricsBm25 = createKGMetrics();
 
     // Resolve metadata filter to document IDs, then chain through quality filter
     let documentFilter = resolveQualityFilter(db, input.min_quality_score,
@@ -964,7 +996,7 @@ export async function handleSearch(
       includeHighlight: input.include_highlight,
     });
 
-    // Search extractions FTS (F-12)
+    // Search extractions FTS
     const extractionResults = bm25.searchExtractions({
       query: bm25Query,
       limit: fetchLimit,
@@ -1039,7 +1071,7 @@ export async function handleSearch(
       });
     }
 
-    // OPT-6: Deduplicate by primary entity
+    // Deduplicate by primary entity
     let bm25DeduplicationInfo: { removed_count: number } | undefined;
     if (input.deduplicate_by_entity && bm25EntityMap && bm25EntityMap.size > 0) {
       const deduped = deduplicateByPrimaryEntity(finalResults, bm25EntityMap);
@@ -1061,15 +1093,9 @@ export async function handleSearch(
     }
 
     // Apply entity mention frequency boost when entity_filter is active
-    let bm25FreqBoostInfo: { boosted_results: number; max_mention_count: number } | undefined;
-    if (input.entity_filter) {
-      bm25FreqBoostInfo = applyEntityFrequencyBoost(
-        finalResults, 'bm25_score', conn, input.entity_filter,
-      );
-      if (bm25FreqBoostInfo) {
-        kgMetricsBm25.frequency_boost_results_boosted = bm25FreqBoostInfo.boosted_results;
-      }
-    }
+    const bm25FreqBoostInfo = input.entity_filter
+      ? applyEntityFrequencyBoost(finalResults, 'bm25_score', conn, input.entity_filter)
+      : undefined;
 
     const responseData: Record<string, unknown> = {
       query: input.query,
@@ -1096,32 +1122,16 @@ export async function handleSearch(
     }
 
     if (input.entity_filter) {
-      responseData.entity_filter_applied = true;
-      responseData.entity_filter_document_count = documentFilter?.length ?? 0;
-      responseData.related_entities_included = input.entity_filter.include_related ?? false;
-      if (bm25FreqBoostInfo) {
-        responseData.frequency_boost = bm25FreqBoostInfo;
-      }
+      appendEntityFilterResponse(responseData, kgMetricsBm25, input.entity_filter, documentFilter, bm25FreqBoostInfo);
     }
 
     if (input.include_entities && bm25EntityMap && bm25EntityMap.size > 0) {
       responseData.cross_document_entities = buildCrossDocumentEntitySummary(bm25EntityMap);
     }
 
-    // OPT-7: "Did you mean?" suggestions on zero results
     if (finalResults.length === 0) {
-      try {
-        const suggestions = findQuerySuggestions(input.query, conn);
-        if (suggestions.length > 0) {
-          responseData.did_you_mean = suggestions;
-          kgMetricsBm25.did_you_mean_suggestions = suggestions.length;
-        }
-      } catch {
-        // KG not available - skip suggestions
-      }
+      appendDidYouMean(responseData, kgMetricsBm25, input.query, conn);
     }
-
-    // OPT-12: Add KG integration metrics to response
     responseData.kg_integration_metrics = kgMetricsBm25;
 
     return formatResponse(successResult(responseData));
@@ -1143,18 +1153,7 @@ export async function handleSearchHybrid(
     const limit = input.limit ?? 10;
     const conn = db.getConnection();
 
-    // OPT-12: KG integration metrics tracking
-    const kgMetricsHybrid = {
-      entity_filter_applied: false,
-      entity_filter_documents_matched: 0,
-      expand_query_terms_added: 0,
-      entity_boost_results_boosted: 0,
-      rerank_entity_aware: false,
-      frequency_boost_results_boosted: 0,
-      entity_rescue_count: 0,
-      deduplication_removed: 0,
-      did_you_mean_suggestions: 0,
-    };
+    const kgMetricsHybrid = createKGMetrics();
 
     // Resolve metadata filter to document IDs, then chain through quality filter
     let documentFilter = resolveQualityFilter(db, input.min_quality_score,
@@ -1341,7 +1340,7 @@ export async function handleSearchHybrid(
       });
     }
 
-    // OPT-6: Deduplicate by primary entity
+    // Deduplicate by primary entity
     let hybridDeduplicationInfo: { removed_count: number } | undefined;
     if (input.deduplicate_by_entity && hybridEntityMap && hybridEntityMap.size > 0) {
       const deduped = deduplicateByPrimaryEntity(finalResults, hybridEntityMap);
@@ -1386,41 +1385,20 @@ export async function handleSearchHybrid(
       responseData.deduplication = hybridDeduplicationInfo;
     }
 
-    let hybridFreqBoostInfo: { boosted_results: number; max_mention_count: number } | undefined;
     if (input.entity_filter) {
-      hybridFreqBoostInfo = applyEntityFrequencyBoost(
+      const hybridFreqBoostInfo = applyEntityFrequencyBoost(
         finalResults, 'rrf_score', conn, input.entity_filter,
       );
-      if (hybridFreqBoostInfo) {
-        kgMetricsHybrid.frequency_boost_results_boosted = hybridFreqBoostInfo.boosted_results;
-      }
-
-      responseData.entity_filter_applied = true;
-      responseData.entity_filter_document_count = documentFilter?.length ?? 0;
-      responseData.related_entities_included = input.entity_filter.include_related ?? false;
-      if (hybridFreqBoostInfo) {
-        responseData.frequency_boost = hybridFreqBoostInfo;
-      }
+      appendEntityFilterResponse(responseData, kgMetricsHybrid, input.entity_filter, documentFilter, hybridFreqBoostInfo);
     }
 
     if (input.include_entities && hybridEntityMap && hybridEntityMap.size > 0) {
       responseData.cross_document_entities = buildCrossDocumentEntitySummary(hybridEntityMap);
     }
 
-    // OPT-7: "Did you mean?" suggestions on zero results
     if (finalResults.length === 0) {
-      try {
-        const suggestions = findQuerySuggestions(input.query, conn);
-        if (suggestions.length > 0) {
-          responseData.did_you_mean = suggestions;
-          kgMetricsHybrid.did_you_mean_suggestions = suggestions.length;
-        }
-      } catch {
-        // KG not available - skip suggestions
-      }
+      appendDidYouMean(responseData, kgMetricsHybrid, input.query, conn);
     }
-
-    // OPT-12: Add KG integration metrics to response
     responseData.kg_integration_metrics = kgMetricsHybrid;
 
     return formatResponse(successResult(responseData));
@@ -1702,7 +1680,7 @@ async function handleRagContext(
       contextParts.push('');
     }
 
-    // OPT-10: Generate entity relationship narrative summary
+    // Generate entity relationship narrative summary
     if (input.include_relationship_summary && kgPaths.length > 0) {
       const remainingBudget = maxContextLength - contextParts.join('\n').length;
       if (remainingBudget > 200) {
@@ -1797,7 +1775,7 @@ async function handleBenchmarkCompare(params: Record<string, unknown>): Promise<
       error?: string;
     }> = [];
 
-    // OPT-4: Collect entity canonical names per database for cross-database overlap
+    // Collect entity canonical names per database for cross-database overlap
     const dbEntitySets = new Map<string, Set<string>>();
 
     for (const dbName of input.database_names) {
@@ -1845,7 +1823,7 @@ async function handleBenchmarkCompare(params: Record<string, unknown>): Promise<
           // KG tables may not exist in older databases
         }
 
-        // OPT-4: Collect entity canonical names for cross-database overlap
+        // Collect entity canonical names for cross-database overlap
         try {
           const nodes = conn.prepare('SELECT canonical_name FROM knowledge_nodes').all() as Array<{ canonical_name: string }>;
           dbEntitySets.set(dbName, new Set(nodes.map(n => n.canonical_name.toLowerCase())));
@@ -1889,7 +1867,7 @@ async function handleBenchmarkCompare(params: Record<string, unknown>): Promise<
       [...allDocIds.entries()].filter(([, dbs]) => dbs.length > 1)
     );
 
-    // OPT-4: Compute pairwise entity overlap between databases
+    // Compute pairwise entity overlap between databases
     const entityOverlap: Record<string, unknown> = {};
     const dbNamesList = [...dbEntitySets.keys()];
     for (let i = 0; i < dbNamesList.length; i++) {
@@ -1967,7 +1945,7 @@ async function handleSearchExport(params: Record<string, unknown>): Promise<Tool
     const parsedResponse = JSON.parse(responseContent.text);
     if (!parsedResponse.success) throw new Error(`Search failed: ${parsedResponse.error?.message || 'Unknown error'}`);
     const results = parsedResponse.data?.results || [];
-    // OPT-2: Extract cross-document entity summary from search response
+    // Extract cross-document entity summary from search response
     const crossDocEntities = parsedResponse.data?.cross_document_entities || [];
 
     // Ensure output directory exists
@@ -1975,7 +1953,7 @@ async function handleSearchExport(params: Record<string, unknown>): Promise<Tool
     fs.mkdirSync(outputDir, { recursive: true });
 
     if (input.format === 'json') {
-      // OPT-2: JSON export includes cross_document_entities alongside results
+      // JSON export includes cross_document_entities alongside results
       const exportData = {
         results: results.map((r: Record<string, unknown>) => {
           const row: Record<string, unknown> = {
@@ -2021,7 +1999,7 @@ async function handleSearchExport(params: Record<string, unknown>): Promise<Tool
         }
         csvLines.push(row.join(','));
       }
-      // OPT-2: Append cross-document entity summary to CSV
+      // Append cross-document entity summary to CSV
       if (crossDocEntities.length > 0) {
         csvLines.push('');
         csvLines.push('# Cross-Document Entity Summary');
@@ -2244,7 +2222,7 @@ export const searchTools: Record<string, ToolDefinition> = {
       min_shared_entities: z.number().int().min(1).default(1)
         .describe('Minimum shared entities to include document'),
     },
-    handler: async (params) => handleRelatedDocuments(params as Record<string, unknown>),
+    handler: handleRelatedDocuments,
   },
   ocr_rag_context: {
     description: 'Assemble a RAG (Retrieval-Augmented Generation) context block for LLM consumption. Runs hybrid search + entity enrichment + KG path expansion and returns a single markdown context block.',
@@ -2263,6 +2241,6 @@ export const searchTools: Record<string, ToolDefinition> = {
       include_relationship_summary: z.boolean().default(false)
         .describe('Include AI-generated narrative summary of entity relationships'),
     },
-    handler: async (params) => handleRagContext(params as Record<string, unknown>),
+    handler: handleRagContext,
   },
 };

@@ -113,7 +113,7 @@ async function handleExtractStructured(params: Record<string, unknown>) {
       created_at: now,
     });
 
-    // ═══════ F-13: Generate embedding for extraction content (semantic search) ═══════
+    // Generate embedding for extraction content (semantic search)
     // Provenance chain: DOCUMENT(0) -> OCR_RESULT(1) -> EXTRACTION(2) -> EMBEDDING(3)
     let embeddingId: string | null = null;
     let embeddingProvId: string | null = null;
