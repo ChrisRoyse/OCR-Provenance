@@ -1976,7 +1976,7 @@ function migrateV17ToV18(db: Database.Database): void {
  *
  * Changes in v19:
  * - entity_extraction_segments: New table for chunked entity extraction with provenance
- *   Stores 250K-character segments with 10% overlap for focused Gemini extraction.
+ *   Stores 50K-character segments with 10% overlap for focused Gemini extraction.
  *   Each segment records its exact character_start/character_end in the OCR text
  *   and links to provenance for full traceability.
  * - 3 new indexes: idx_segments_document, idx_segments_status, idx_segments_doc_status

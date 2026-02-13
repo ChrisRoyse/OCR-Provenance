@@ -20,8 +20,6 @@ import { ProvenanceType } from '../models/provenance.js';
 import { computeHash } from '../utils/hash.js';
 import { ENTITY_TYPES, type EntityType } from '../models/entity.js';
 import {
-  insertEntity,
-  insertEntityMention,
   searchEntities,
   getEntityMentions,
   deleteEntitiesByDocument,
@@ -34,13 +32,7 @@ import { mapExtractionEntitiesToDB } from '../services/knowledge-graph/extractio
 import { incrementalBuildGraph } from '../services/knowledge-graph/incremental-builder.js';
 import { findGraphPaths } from '../services/knowledge-graph/graph-service.js';
 import {
-  normalizeEntity,
-  callGeminiForEntities,
-  findAllEntityOccurrences,
-  filterNoiseEntities,
-  extractDatesWithRegex,
-  createExtractionSegments,
-  updateSegmentStatus,
+  processSegmentsAndStoreEntities,
   MAX_CHARS_PER_CALL,
   SEGMENT_OVERLAP_CHARS,
 } from '../utils/entity-extraction-helpers.js';
@@ -91,9 +83,6 @@ const VLMEntityExtractInput = z.object({
 const ExtractionEntityExtractInput = z.object({
   document_id: z.string().min(1).describe('Document ID with structured extractions'),
 });
-
-// Entity normalization, text splitting, Gemini extraction, and chunk mapping
-// functions are imported from ../utils/entity-extraction-helpers.js above.
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // KNOWLEDGE GRAPH AUTO-MERGE
@@ -175,7 +164,8 @@ async function handleEntityExtract(params: Record<string, unknown>) {
       console.error(`[INFO] Deleted ${existingCount} existing entities for document ${doc.id} before re-extraction`);
     }
 
-    const client = new GeminiClient();
+    // Use stable gemini-2.0-flash for entity extraction (preview models throttle after ~4 calls)
+    const client = new GeminiClient({ model: 'gemini-2.0-flash', retry: { maxAttempts: 2, baseDelayMs: 500, maxDelayMs: 5000 } });
     const startTime = Date.now();
     const textLength = ocrResult.extracted_text.length;
     const ocrText = ocrResult.extracted_text;
@@ -217,188 +207,38 @@ async function handleEntityExtract(params: Record<string, unknown>) {
     });
 
     // Build type filter prompt fragment
-    const typeFilter = (input.entity_types ?? []).length > 0
-      ? `Only extract entities of these types: ${(input.entity_types ?? []).join(', ')}.`
+    const entityTypes = input.entity_types ?? ENTITY_TYPES;
+    const typeFilter = input.entity_types
+      ? `Only extract entities of these types: ${input.entity_types.join(', ')}.`
       : `Extract all entity types: ${ENTITY_TYPES.join(', ')}.`;
 
-    // Create and store extraction segments with provenance tracking.
-    // Each segment records exact character_start/character_end positions in the
-    // original OCR text so entities can always be traced back to source location.
-    const segments = createExtractionSegments(
-      conn, doc.id, ocrResult.id, ocrText, entityProvId,
+    const result = await processSegmentsAndStoreEntities(
+      conn, client, doc.id, ocrResult.id, ocrText, entityProvId,
+      typeFilter, entityTypes, startTime,
     );
-
-    // Process each segment through Gemini independently
-    const allRawEntities: Array<{ type: string; raw_text: string; confidence: number }> = [];
-    let segmentsComplete = 0;
-    let segmentsFailed = 0;
-
-    for (const segment of segments) {
-      updateSegmentStatus(conn, segment.id, 'processing');
-      try {
-        const entities = await callGeminiForEntities(client, segment.text, typeFilter);
-        allRawEntities.push(...entities);
-        updateSegmentStatus(conn, segment.id, 'complete', entities.length);
-        segmentsComplete++;
-      } catch (segError) {
-        const segMsg = segError instanceof Error ? segError.message : String(segError);
-        console.error(`[WARN] Segment ${segment.segment_index} failed: ${segMsg}`);
-        updateSegmentStatus(conn, segment.id, 'failed', 0, segMsg);
-        segmentsFailed++;
-      }
-    }
-
-    const apiCalls = segments.length;
-    const processingDurationMs = Date.now() - startTime;
-
-    // Filter noise entities (bare numbers, times, BP readings, SSNs, phone numbers)
-    const filteredEntities = filterNoiseEntities(allRawEntities);
-    const noiseFilteredCount = allRawEntities.length - filteredEntities.length;
-
-    // Extract dates with regex that Gemini often misses (scans full OCR text)
-    const regexDates = extractDatesWithRegex(ocrText);
-    const regexDatesCount = regexDates.length;
-
-    // Merge regex dates into filtered entities before deduplication
-    const mergedEntities: Array<{ type: string; raw_text: string; confidence: number }> = [
-      ...filteredEntities,
-      ...regexDates,
-    ];
-
-    // Deduplicate by normalized_text + entity_type
-    // Overlap between segments naturally produces duplicate entities;
-    // the Map keyed by type::normalized handles this cleanly
-    const dedupMap = new Map<string, { type: string; raw_text: string; confidence: number }>();
-    for (const entity of mergedEntities) {
-      const normalized = normalizeEntity(entity.raw_text, entity.type);
-      const key = `${entity.type}::${normalized}`;
-      const existing = dedupMap.get(key);
-      if (!existing || entity.confidence > existing.confidence) {
-        dedupMap.set(key, entity);
-      }
-    }
-
-    // Update provenance with final content hash and processing duration
-    const entityContent = JSON.stringify([...dedupMap.values()]);
-    const entityHash = computeHash(entityContent);
-    conn.prepare(`
-      UPDATE provenance SET content_hash = ?, processed_at = ?, processing_duration_ms = ?,
-        processing_params = ?
-      WHERE id = ?
-    `).run(
-      entityHash,
-      new Date().toISOString(),
-      processingDurationMs,
-      JSON.stringify({
-        entity_types: input.entity_types ?? ENTITY_TYPES,
-        api_calls: apiCalls,
-        text_length: textLength,
-        segment_size: MAX_CHARS_PER_CALL,
-        segment_overlap: SEGMENT_OVERLAP_CHARS,
-        segments_total: segments.length,
-        segments_complete: segmentsComplete,
-        segments_failed: segmentsFailed,
-      }),
-      entityProvId,
-    );
-
-    // Load DB chunks for chunk_id mapping (ordered by chunk_index)
-    const dbChunks = getChunksByDocumentId(conn, doc.id);
-    let chunkMappedCount = 0;
-
-    // Store entities and mentions in DB
-    const typeCounts: Record<string, number> = {};
-    let totalInserted = 0;
-    let totalMentions = 0;
-
-    for (const [, entityData] of dedupMap) {
-      const normalized = normalizeEntity(entityData.raw_text, entityData.type);
-      const entityId = uuidv4();
-
-      insertEntity(conn, {
-        id: entityId,
-        document_id: doc.id,
-        entity_type: entityData.type as EntityType,
-        raw_text: entityData.raw_text,
-        normalized_text: normalized,
-        confidence: entityData.confidence,
-        metadata: null,
-        provenance_id: entityProvId,
-        created_at: now,
-      });
-
-      // Find ALL occurrences of this entity in the OCR text
-      const occurrences = findAllEntityOccurrences(entityData.raw_text, ocrText, dbChunks);
-
-      if (occurrences.length > 0) {
-        // Track whether at least one occurrence has a chunk mapping
-        let entityHasChunkMapping = false;
-
-        for (const occ of occurrences) {
-          const mentionId = uuidv4();
-          insertEntityMention(conn, {
-            id: mentionId,
-            entity_id: entityId,
-            document_id: doc.id,
-            chunk_id: occ.chunk_id,
-            page_number: occ.page_number,
-            character_start: occ.character_start,
-            character_end: occ.character_end,
-            context_text: occ.context_text,
-            created_at: now,
-          });
-          totalMentions++;
-          if (occ.chunk_id) {
-            entityHasChunkMapping = true;
-          }
-        }
-
-        if (entityHasChunkMapping) {
-          chunkMappedCount++;
-        }
-      } else {
-        // No occurrences found -- create 1 fallback mention with null chunk_id
-        const mentionId = uuidv4();
-        insertEntityMention(conn, {
-          id: mentionId,
-          entity_id: entityId,
-          document_id: doc.id,
-          chunk_id: null,
-          page_number: null,
-          character_start: null,
-          character_end: null,
-          context_text: entityData.raw_text,
-          created_at: now,
-        });
-        totalMentions++;
-      }
-
-      typeCounts[entityData.type] = (typeCounts[entityData.type] ?? 0) + 1;
-      totalInserted++;
-    }
 
     // Auto-merge into knowledge graph if one exists
     const kgMergeResult = await autoMergeIntoKnowledgeGraph(db, doc.id);
 
     return formatResponse({
       document_id: doc.id,
-      total_entities: totalInserted,
-      total_mentions: totalMentions,
-      total_raw_extracted: allRawEntities.length,
-      noise_filtered: noiseFilteredCount,
-      regex_dates_added: regexDatesCount,
-      deduplicated: mergedEntities.length - totalInserted,
-      entities_by_type: typeCounts,
-      chunk_mapped: chunkMappedCount,
-      chunk_unmapped: totalInserted - chunkMappedCount,
-      total_db_chunks: dbChunks.length,
+      total_entities: result.totalEntities,
+      total_mentions: result.totalMentions,
+      total_raw_extracted: result.totalRawExtracted,
+      noise_filtered: result.noiseFiltered,
+      regex_dates_added: result.regexDatesAdded,
+      deduplicated: result.deduplicated,
+      entities_by_type: result.entitiesByType,
+      chunk_mapped: result.chunkMapped,
+      chunk_unmapped: result.totalEntities - result.chunkMapped,
+      total_db_chunks: getChunksByDocumentId(conn, doc.id).length,
       provenance_id: entityProvId,
-      processing_duration_ms: processingDurationMs,
+      processing_duration_ms: result.processingDurationMs,
       text_length: textLength,
-      api_calls: apiCalls,
-      segments_total: segments.length,
-      segments_complete: segmentsComplete,
-      segments_failed: segmentsFailed,
+      api_calls: result.apiCalls,
+      segments_total: result.segmentsTotal,
+      segments_complete: result.segmentsComplete,
+      segments_failed: result.segmentsFailed,
       segment_size: MAX_CHARS_PER_CALL,
       segment_overlap: SEGMENT_OVERLAP_CHARS,
       ...kgMergeResult,
