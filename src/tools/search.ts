@@ -34,7 +34,7 @@ import { BM25SearchService } from '../services/search/bm25.js';
 import { RRFFusion, type RankedResult } from '../services/search/fusion.js';
 import { expandQueryWithKG, expandQueryWithCoMentioned, expandQueryTextForSemantic, findMatchingNodeIds, getExpandedTerms, findQuerySuggestions } from '../services/search/query-expander.js';
 import { rerankResults, type EdgeInfo } from '../services/search/reranker.js';
-import { getEntitiesForChunks, getDocumentIdsForEntities, getEdgesForNode, getKnowledgeNode, getEntityMentionFrequencyByDocument, getRelatedDocumentsByEntityOverlap, type ChunkEntityInfo } from '../services/storage/database/knowledge-graph-operations.js';
+import { getEntitiesForChunks, getDocumentIdsForEntities, getEdgesForNode, getKnowledgeNode, getEntityMentionFrequencyByDocument, getRelatedDocumentsByEntityOverlap, resolveEntityNodeIdsFromKG, type ChunkEntityInfo } from '../services/storage/database/knowledge-graph-operations.js';
 import { findGraphPaths } from '../services/knowledge-graph/graph-service.js';
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -435,65 +435,15 @@ function applyEntityFrequencyBoost(
 /**
  * Resolve entity filter names/types to KG node IDs (not document IDs).
  * Used by frequency boosting to count entity mentions per document.
+ * Delegates to the shared resolveEntityNodeIdsFromKG (without alias search
+ * for performance -- frequency boosting is a secondary signal).
  */
 function resolveEntityNodeIds(
   db: ReturnType<ReturnType<typeof requireDatabase>['db']['getConnection']>,
   entityNames?: string[],
   entityTypes?: string[],
 ): string[] {
-  if (!entityNames?.length && !entityTypes?.length) return [];
-
-  const nodeIds = new Set<string>();
-
-  if (entityNames && entityNames.length > 0) {
-    for (const name of entityNames) {
-      const lowerName = name.toLowerCase();
-
-      // Strategy 1: Exact canonical_name match
-      const exactRows = db.prepare(
-        'SELECT id FROM knowledge_nodes WHERE LOWER(canonical_name) = ?'
-      ).all(lowerName) as Array<{ id: string }>;
-      for (const row of exactRows) nodeIds.add(row.id);
-
-      // Strategy 2: FTS5 MATCH
-      try {
-        const escaped = name.replace(/["*()\\+:^-]/g, ' ').trim();
-        if (escaped.length > 0) {
-          const ftsRows = db.prepare(
-            `SELECT kn.id FROM knowledge_nodes_fts fts
-             JOIN knowledge_nodes kn ON kn.rowid = fts.rowid
-             WHERE knowledge_nodes_fts MATCH ?
-             LIMIT 20`
-          ).all(escaped) as Array<{ id: string }>;
-          for (const row of ftsRows) nodeIds.add(row.id);
-        }
-      } catch {
-        // FTS5 table may not exist - skip
-      }
-    }
-  }
-
-  // Apply entity type filter
-  if (entityTypes && entityTypes.length > 0) {
-    if (nodeIds.size === 0 && !entityNames?.length) {
-      const typePlaceholders = entityTypes.map(() => '?').join(',');
-      const typeRows = db.prepare(
-        `SELECT id FROM knowledge_nodes WHERE entity_type IN (${typePlaceholders})`
-      ).all(...entityTypes) as Array<{ id: string }>;
-      for (const row of typeRows) nodeIds.add(row.id);
-    } else if (nodeIds.size > 0) {
-      const nodeIdArray = [...nodeIds];
-      const nodePlaceholders = nodeIdArray.map(() => '?').join(',');
-      const typePlaceholders = entityTypes.map(() => '?').join(',');
-      const filteredRows = db.prepare(
-        `SELECT id FROM knowledge_nodes WHERE id IN (${nodePlaceholders}) AND entity_type IN (${typePlaceholders})`
-      ).all(...nodeIdArray, ...entityTypes) as Array<{ id: string }>;
-      nodeIds.clear();
-      for (const row of filteredRows) nodeIds.add(row.id);
-    }
-  }
-
-  return [...nodeIds];
+  return [...resolveEntityNodeIdsFromKG(db, entityNames, entityTypes, false)];
 }
 
 /**
@@ -838,6 +788,10 @@ export async function handleSearchSemantic(
           rerank_score: r.relevance_score,
           rerank_reasoning: r.reasoning,
         };
+        // OPT-5: Mark per-result entity_rescued flag for borderline results
+        if (input.entity_rescue && original.similarity_score < threshold) {
+          result.entity_rescued = true;
+        }
         attachProvenanceAndEntities(result, db, original.provenance_id, !!input.include_provenance, !!input.include_entities, entityMap, original.chunk_id, original.image_id);
         return result;
       });
@@ -865,6 +819,10 @@ export async function handleSearchSemantic(
           content_hash: r.content_hash,
           provenance_id: r.provenance_id,
         };
+        // OPT-5: Mark per-result entity_rescued flag for borderline results
+        if (input.entity_rescue && r.similarity_score < threshold) {
+          result.entity_rescued = true;
+        }
         attachProvenanceAndEntities(result, db, r.provenance_id, !!input.include_provenance, !!input.include_entities, entityMap, r.chunk_id, r.image_id);
         return result;
       });
@@ -1042,15 +1000,7 @@ export async function handleSearch(
           rerank_score: r.relevance_score,
           rerank_reasoning: r.reasoning,
         };
-        if (input.include_provenance) {
-          base.provenance_chain = formatProvenanceChain(db, original.provenance_id);
-        }
-        if (input.include_entities && bm25EntityMap) {
-          const entityKey = original.chunk_id ?? original.image_id;
-          if (entityKey) {
-            base.entities_mentioned = bm25EntityMap.get(entityKey) ?? [];
-          }
-        }
+        attachProvenanceAndEntities(base, db, original.provenance_id, !!input.include_provenance, !!input.include_entities, bm25EntityMap, original.chunk_id, original.image_id, 'provenance_chain');
         return base;
       });
       rerankInfo = buildRerankInfo(entityContextForRerank, edgeContextForRerank, rankedResults.length, finalResults.length);
@@ -1058,15 +1008,7 @@ export async function handleSearch(
     } else {
       finalResults = rankedResults.map(r => {
         const base: Record<string, unknown> = { ...r };
-        if (input.include_provenance) {
-          base.provenance_chain = formatProvenanceChain(db, r.provenance_id);
-        }
-        if (input.include_entities && bm25EntityMap) {
-          const entityKey = r.chunk_id ?? r.image_id;
-          if (entityKey) {
-            base.entities_mentioned = bm25EntityMap.get(entityKey) ?? [];
-          }
-        }
+        attachProvenanceAndEntities(base, db, r.provenance_id, !!input.include_provenance, !!input.include_entities, bm25EntityMap, r.chunk_id, r.image_id, 'provenance_chain');
         return base;
       });
     }
@@ -1311,15 +1253,7 @@ export async function handleSearchHybrid(
           rerank_score: r.relevance_score,
           rerank_reasoning: r.reasoning,
         };
-        if (input.include_provenance) {
-          base.provenance_chain = formatProvenanceChain(db, original.provenance_id);
-        }
-        if (input.include_entities && hybridEntityMap) {
-          const entityKey = original.chunk_id ?? original.image_id;
-          if (entityKey) {
-            base.entities_mentioned = hybridEntityMap.get(entityKey) ?? [];
-          }
-        }
+        attachProvenanceAndEntities(base, db, original.provenance_id, !!input.include_provenance, !!input.include_entities, hybridEntityMap, original.chunk_id, original.image_id, 'provenance_chain');
         return base;
       });
       rerankInfo = buildRerankInfo(entityContextForRerank, edgeContextForRerank, rawResults.length, finalResults.length);
@@ -1327,15 +1261,7 @@ export async function handleSearchHybrid(
     } else {
       finalResults = rawResults.map(r => {
         const base: Record<string, unknown> = { ...r };
-        if (input.include_provenance) {
-          base.provenance_chain = formatProvenanceChain(db, r.provenance_id);
-        }
-        if (input.include_entities && hybridEntityMap) {
-          const entityKey = r.chunk_id ?? r.image_id;
-          if (entityKey) {
-            base.entities_mentioned = hybridEntityMap.get(entityKey) ?? [];
-          }
-        }
+        attachProvenanceAndEntities(base, db, r.provenance_id, !!input.include_provenance, !!input.include_entities, hybridEntityMap, r.chunk_id, r.image_id, 'provenance_chain');
         return base;
       });
     }

@@ -334,6 +334,8 @@ export const DocumentListInput = z.object({
   status_filter: z.enum(['pending', 'processing', 'complete', 'failed']).optional(),
   limit: z.number().int().min(1).max(1000).default(50),
   offset: z.number().int().min(0).default(0),
+  include_entity_counts: z.boolean().default(false)
+    .describe('Include entity_mention_count and kg_node_count per document'),
 });
 
 /**

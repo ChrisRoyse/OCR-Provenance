@@ -55,20 +55,58 @@ export async function handleDocumentList(
       ? stats.documents_by_status[input.status_filter as keyof typeof stats.documents_by_status] ?? 0
       : stats.total_documents;
 
+    // Batch query entity counts per document if requested
+    let entityCountMap: Map<string, number> | undefined;
+    let kgNodeCountMap: Map<string, number> | undefined;
+    if (input.include_entity_counts) {
+      entityCountMap = new Map();
+      kgNodeCountMap = new Map();
+      const conn = db.getConnection();
+      try {
+        const docIds = documents.map(d => d.id);
+        if (docIds.length > 0) {
+          const placeholders = docIds.map(() => '?').join(',');
+          const entityRows = conn.prepare(
+            `SELECT document_id, COUNT(*) as cnt FROM entity_mentions WHERE document_id IN (${placeholders}) GROUP BY document_id`
+          ).all(...docIds) as Array<{ document_id: string; cnt: number }>;
+          for (const r of entityRows) entityCountMap.set(r.document_id, r.cnt);
+
+          const kgRows = conn.prepare(
+            `SELECT em.document_id, COUNT(DISTINCT nel.node_id) as cnt
+             FROM entity_mentions em
+             JOIN entities e ON em.entity_id = e.id
+             JOIN node_entity_links nel ON nel.entity_id = e.id
+             WHERE em.document_id IN (${placeholders})
+             GROUP BY em.document_id`
+          ).all(...docIds) as Array<{ document_id: string; cnt: number }>;
+          for (const r of kgRows) kgNodeCountMap.set(r.document_id, r.cnt);
+        }
+      } catch {
+        // Entity/KG tables may not exist
+      }
+    }
+
     return formatResponse(successResult({
-      documents: documents.map(d => ({
-        id: d.id,
-        file_name: d.file_name,
-        file_path: d.file_path,
-        file_size: d.file_size,
-        file_type: d.file_type,
-        status: d.status,
-        page_count: d.page_count,
-        doc_title: d.doc_title ?? null,
-        doc_author: d.doc_author ?? null,
-        doc_subject: d.doc_subject ?? null,
-        created_at: d.created_at,
-      })),
+      documents: documents.map(d => {
+        const doc: Record<string, unknown> = {
+          id: d.id,
+          file_name: d.file_name,
+          file_path: d.file_path,
+          file_size: d.file_size,
+          file_type: d.file_type,
+          status: d.status,
+          page_count: d.page_count,
+          doc_title: d.doc_title ?? null,
+          doc_author: d.doc_author ?? null,
+          doc_subject: d.doc_subject ?? null,
+          created_at: d.created_at,
+        };
+        if (input.include_entity_counts) {
+          doc.entity_mention_count = entityCountMap?.get(d.id) ?? 0;
+          doc.kg_node_count = kgNodeCountMap?.get(d.id) ?? 0;
+        }
+        return doc;
+      }),
       total,
       limit: input.limit,
       offset: input.offset,
@@ -261,11 +299,12 @@ export async function handleDocumentDelete(
  */
 export const documentTools: Record<string, ToolDefinition> = {
   'ocr_document_list': {
-    description: 'List documents in the current database',
+    description: 'List documents in the current database. Set include_entity_counts=true to see entity and KG node counts per document.',
     inputSchema: {
       status_filter: z.enum(['pending', 'processing', 'complete', 'failed']).optional().describe('Filter by status'),
       limit: z.number().int().min(1).max(1000).default(50).describe('Maximum results'),
       offset: z.number().int().min(0).default(0).describe('Offset for pagination'),
+      include_entity_counts: z.boolean().default(false).describe('Include entity_mention_count and kg_node_count per document'),
     },
     handler: handleDocumentList,
   },
