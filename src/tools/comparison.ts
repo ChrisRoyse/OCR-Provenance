@@ -57,8 +57,8 @@ function countChunks(conn: import('better-sqlite3').Database, docId: string): nu
 }
 
 /**
- * CQ-3.3: Parse stored JSON with descriptive error on malformed data.
- * FAIL FAST: throws MCPError instead of returning undefined.
+ * Parse stored JSON with descriptive error on malformed data.
+ * Throws MCPError instead of returning undefined.
  */
 function parseStoredJSON(field: string, fieldName: string, comparisonId: string): unknown {
   try {
@@ -103,7 +103,7 @@ async function handleDocumentCompare(params: Record<string, unknown>): Promise<T
     const { doc: doc1, ocr: ocr1 } = fetchCompleteDocument(conn, input.document_id_1);
     const { doc: doc2, ocr: ocr2 } = fetchCompleteDocument(conn, input.document_id_2);
 
-    // CQ-3.4: Duplicate comparison detection
+    // Duplicate comparison detection
     const existingComparison = conn.prepare(
       `SELECT c.id, c.created_at, c.similarity_ratio
        FROM comparisons c
@@ -137,7 +137,7 @@ async function handleDocumentCompare(params: Record<string, unknown>): Promise<T
       ? compareText(String(ocr1.extracted_text), String(ocr2.extracted_text), input.max_diff_operations)
       : null;
 
-    // Structural diff (CQ-3.2: extracted to diff-service.ts)
+    // Structural diff
     const structuralDiff = compareStructure(
       {
         page_count: doc1.page_count as number | null,
@@ -164,7 +164,7 @@ async function handleDocumentCompare(params: Record<string, unknown>): Promise<T
         const entities2 = getEntitiesByDocument(conn, input.document_id_2);
         entityDiff = compareEntities(entities1, entities2, conn);
 
-        // OPT-10: KG-aware contradiction detection
+        // KG-aware contradiction detection
         contradictionResult = detectKGContradictions(conn, entities1, entities2);
       } catch (e: unknown) {
         // If entities table doesn't exist (no entities extracted yet), return empty
@@ -188,13 +188,13 @@ async function handleDocumentCompare(params: Record<string, unknown>): Promise<T
 
     // Append contradiction summary if any found
     if (contradictionResult && contradictionResult.contradictions.length > 0) {
-      const highCount = contradictionResult.contradictions.filter(c => c.severity === 'high').length;
-      const medCount = contradictionResult.contradictions.filter(c => c.severity === 'medium').length;
-      const lowCount = contradictionResult.contradictions.filter(c => c.severity === 'low').length;
-      const parts: string[] = [];
-      if (highCount > 0) parts.push(`${highCount} high`);
-      if (medCount > 0) parts.push(`${medCount} medium`);
-      if (lowCount > 0) parts.push(`${lowCount} low`);
+      const severityCounts: Record<string, number> = {};
+      for (const c of contradictionResult.contradictions) {
+        severityCounts[c.severity] = (severityCounts[c.severity] ?? 0) + 1;
+      }
+      const parts = ['high', 'medium', 'low']
+        .filter(s => severityCounts[s] > 0)
+        .map(s => `${severityCounts[s]} ${s}`);
       summary += ` KG contradictions detected: ${parts.join(', ')}.`;
     }
 
@@ -210,7 +210,7 @@ async function handleDocumentCompare(params: Record<string, unknown>): Promise<T
     });
     const contentHash = computeHash(diffContent);
 
-    // CQ-3.1: Create provenance record via ProvenanceTracker (replaces raw SQL)
+    // Create provenance record
     const comparisonId = uuidv4();
     const now = new Date().toISOString();
     const inputHash = computeHash(String(ocr1.content_hash) + ':' + String(ocr2.content_hash));
@@ -317,7 +317,7 @@ async function handleComparisonGet(params: Record<string, unknown>): Promise<Too
       throw new MCPError('DOCUMENT_NOT_FOUND', `Comparison '${input.comparison_id}' not found`);
     }
 
-    // CQ-3.3: Parse stored JSON fields with error handling for malformed data
+    // Parse stored JSON fields with error handling
     return formatResponse({
       ...comparison,
       text_diff_json: parseStoredJSON(comparison.text_diff_json, 'text_diff_json', input.comparison_id),

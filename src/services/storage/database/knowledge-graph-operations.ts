@@ -1216,7 +1216,7 @@ export function getDocumentIdsForEntities(
 
   const documentIds = new Set(docRows.map(r => r.document_id));
 
-  // OPT-6: 1-hop edge traversal for related entities
+  // 1-hop edge traversal for related entities
   if (includeRelated) {
     // Find related node IDs via edges (1-hop neighbors)
     const relatedNodeIds = new Set<string>();
@@ -1300,7 +1300,7 @@ export function searchKnowledgeNodesFTS(
 /**
  * Get entity mention frequency by document for a set of entity node IDs.
  * Returns a Map of document_id -> total mention count across all matching entities.
- * Used by GAP-5 to boost search results that have higher entity mention density.
+ * Used to boost search results that have higher entity mention density.
  *
  * @param conn - Database connection
  * @param documentIds - Document IDs to check

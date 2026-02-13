@@ -132,6 +132,49 @@ async function autoMergeIntoKnowledgeGraph(
   };
 }
 
+/**
+ * Create an entity extraction provenance record for a given document.
+ * Used by VLM and structured extraction handlers that share identical provenance logic.
+ */
+function createEntityExtractionProvenance(
+  db: import('../services/storage/database/index.js').DatabaseService,
+  doc: { id: string; file_path: string; provenance_id: string; file_hash: string },
+  processor: string,
+  source: string,
+): string {
+  const now = new Date().toISOString();
+  const entityProvId = uuidv4();
+  const entityHash = computeHash(JSON.stringify({ document_id: doc.id, source }));
+
+  db.insertProvenance({
+    id: entityProvId,
+    type: ProvenanceType.ENTITY_EXTRACTION,
+    created_at: now,
+    processed_at: now,
+    source_file_created_at: null,
+    source_file_modified_at: null,
+    source_type: 'ENTITY_EXTRACTION',
+    source_path: doc.file_path,
+    source_id: doc.provenance_id,
+    root_document_id: doc.provenance_id,
+    location: null,
+    content_hash: entityHash,
+    input_hash: computeHash(doc.id),
+    file_hash: doc.file_hash,
+    processor,
+    processor_version: '1.0.0',
+    processing_params: { source },
+    processing_duration_ms: null,
+    processing_quality_score: null,
+    parent_id: doc.provenance_id,
+    parent_ids: JSON.stringify([doc.provenance_id]),
+    chain_depth: 2,
+    chain_path: JSON.stringify(['DOCUMENT', 'OCR_RESULT', 'ENTITY_EXTRACTION']),
+  });
+
+  return entityProvId;
+}
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // TOOL HANDLERS
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -161,7 +204,7 @@ async function handleEntityExtract(params: Record<string, unknown>) {
       return formatResponse({ error: `No OCR result found for document ${doc.id}` });
     }
 
-    // OPT-9: Incremental mode - capture existing state before deletion
+    // Incremental mode: capture existing state before deletion for diff and KG link restoration
     let oldKGLinks: Map<string, Array<{ node_id: string; document_id: string; similarity_score: number; resolution_method: string | null; created_at: string }>> | undefined;
     let oldEntityKeys: Set<string> | undefined;
     if (input.incremental) {
@@ -243,7 +286,7 @@ async function handleEntityExtract(params: Record<string, unknown>) {
       typeFilter, entityTypes, startTime,
     );
 
-    // OPT-9: Restore KG links for entities that existed before re-extraction
+    // Restore KG links for entities that existed before re-extraction
     let incrementalStats: Record<string, unknown> | undefined;
     if (input.incremental && oldKGLinks && oldEntityKeys) {
       const newEntities = getEntitiesByDocumentKeyed(conn, doc.id);
@@ -384,7 +427,7 @@ async function handleEntitySearch(params: Record<string, unknown>) {
         mention_count: mentions.length,
       };
 
-      // ENH-5: Enrich with knowledge graph data if available
+      // Enrich with knowledge graph data if available
       if (kgNodeStmt) {
         try {
           const kgNode = kgNodeStmt.get(entity.id) as {
@@ -911,36 +954,7 @@ async function handleEntityExtractFromVLM(params: Record<string, unknown>) {
       return formatResponse({ error: `Document not found: ${input.document_id}` });
     }
 
-    // Create provenance record for VLM entity extraction
-    const now = new Date().toISOString();
-    const entityProvId = uuidv4();
-    const entityHash = computeHash(JSON.stringify({ document_id: input.document_id, source: 'vlm' }));
-
-    db.insertProvenance({
-      id: entityProvId,
-      type: ProvenanceType.ENTITY_EXTRACTION,
-      created_at: now,
-      processed_at: now,
-      source_file_created_at: null,
-      source_file_modified_at: null,
-      source_type: 'ENTITY_EXTRACTION',
-      source_path: doc.file_path,
-      source_id: doc.provenance_id,
-      root_document_id: doc.provenance_id,
-      location: null,
-      content_hash: entityHash,
-      input_hash: computeHash(input.document_id),
-      file_hash: doc.file_hash,
-      processor: 'vlm-entity-extraction',
-      processor_version: '1.0.0',
-      processing_params: { source: 'vlm' },
-      processing_duration_ms: null,
-      processing_quality_score: null,
-      parent_id: doc.provenance_id,
-      parent_ids: JSON.stringify([doc.provenance_id]),
-      chain_depth: 2,
-      chain_path: JSON.stringify(['DOCUMENT', 'OCR_RESULT', 'ENTITY_EXTRACTION']),
-    });
+    const entityProvId = createEntityExtractionProvenance(db, doc, 'vlm-entity-extraction', 'vlm');
 
     const startTime = Date.now();
     const result = await extractEntitiesFromVLM(conn, input.document_id, entityProvId);
@@ -978,36 +992,7 @@ async function handleEntityExtractFromExtractions(params: Record<string, unknown
       return formatResponse({ error: `Document not found: ${input.document_id}` });
     }
 
-    // Create provenance record for extraction entity mapping
-    const now = new Date().toISOString();
-    const entityProvId = uuidv4();
-    const entityHash = computeHash(JSON.stringify({ document_id: input.document_id, source: 'extraction' }));
-
-    db.insertProvenance({
-      id: entityProvId,
-      type: ProvenanceType.ENTITY_EXTRACTION,
-      created_at: now,
-      processed_at: now,
-      source_file_created_at: null,
-      source_file_modified_at: null,
-      source_type: 'ENTITY_EXTRACTION',
-      source_path: doc.file_path,
-      source_id: doc.provenance_id,
-      root_document_id: doc.provenance_id,
-      location: null,
-      content_hash: entityHash,
-      input_hash: computeHash(input.document_id),
-      file_hash: doc.file_hash,
-      processor: 'extraction-entity-mapper',
-      processor_version: '1.0.0',
-      processing_params: { source: 'extraction' },
-      processing_duration_ms: null,
-      processing_quality_score: null,
-      parent_id: doc.provenance_id,
-      parent_ids: JSON.stringify([doc.provenance_id]),
-      chain_depth: 2,
-      chain_path: JSON.stringify(['DOCUMENT', 'OCR_RESULT', 'ENTITY_EXTRACTION']),
-    });
+    const entityProvId = createEntityExtractionProvenance(db, doc, 'extraction-entity-mapper', 'extraction');
 
     const startTime = Date.now();
     const result = mapExtractionEntitiesToDB(conn, input.document_id, entityProvId);
@@ -1083,24 +1068,21 @@ async function handleEntityExtractionStats(params: Record<string, unknown>) {
     // Segment statistics (from entity_extraction_segments table)
     let segmentStats: Record<string, unknown> = {};
     try {
-      const segFilterClause = input.document_filter?.length
-        ? `WHERE document_id IN (${input.document_filter.map(() => '?').join(',')})`
-        : '';
       const segTotal = (conn.prepare(
-        `SELECT COUNT(*) as cnt FROM entity_extraction_segments ${segFilterClause}`
+        `SELECT COUNT(*) as cnt FROM entity_extraction_segments ${filterClause}`
       ).get(...filterParams) as { cnt: number }).cnt;
 
       const segByStatus = conn.prepare(
-        `SELECT status, COUNT(*) as count FROM entity_extraction_segments ${segFilterClause} GROUP BY status`
-      ).all(...filterParams) as Array<{ status: string; count: number }>;
+        `SELECT extraction_status, COUNT(*) as count FROM entity_extraction_segments ${filterClause} GROUP BY extraction_status`
+      ).all(...filterParams) as Array<{ extraction_status: string; count: number }>;
 
       const segAvgEntities = conn.prepare(
-        `SELECT AVG(entity_count) as avg_entities FROM entity_extraction_segments ${segFilterClause ? segFilterClause + ` AND status = 'complete'` : `WHERE status = 'complete'`}`
+        `SELECT AVG(entity_count) as avg_entities FROM entity_extraction_segments ${filterClause ? filterClause + ` AND extraction_status = 'complete'` : `WHERE extraction_status = 'complete'`}`
       ).get(...filterParams) as { avg_entities: number | null };
 
       segmentStats = {
         total_segments: segTotal,
-        by_status: Object.fromEntries(segByStatus.map(s => [s.status, s.count])),
+        by_status: Object.fromEntries(segByStatus.map(s => [s.extraction_status, s.count])),
         avg_entities_per_segment: segAvgEntities.avg_entities != null
           ? Math.round(segAvgEntities.avg_entities * 100) / 100
           : 0,
@@ -1113,13 +1095,12 @@ async function handleEntityExtractionStats(params: Record<string, unknown>) {
     // Documents with entities vs without
     let docCoverage: Record<string, unknown> = {};
     try {
-      const totalDocs = (conn.prepare('SELECT COUNT(*) as cnt FROM documents').get() as { cnt: number }).cnt;
       const docsFilterClause = input.document_filter?.length
         ? `WHERE id IN (${input.document_filter.map(() => '?').join(',')})`
         : '';
-      const filteredDocs = input.document_filter?.length
-        ? (conn.prepare(`SELECT COUNT(*) as cnt FROM documents ${docsFilterClause}`).get(...filterParams) as { cnt: number }).cnt
-        : totalDocs;
+      const filteredDocs = (conn.prepare(
+        `SELECT COUNT(*) as cnt FROM documents ${docsFilterClause}`
+      ).get(...filterParams) as { cnt: number }).cnt;
 
       const docsWithEntities = (conn.prepare(
         `SELECT COUNT(DISTINCT document_id) as cnt FROM entity_mentions em ${filterClause.replace('document_id', 'em.document_id')}`
