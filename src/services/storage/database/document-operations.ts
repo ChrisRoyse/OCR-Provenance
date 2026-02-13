@@ -321,7 +321,7 @@ function deleteDerivedRecords(db: Database.Database, documentId: string, caller:
   // Clean up knowledge graph data (must come before entities deletion since links reference entities)
   cleanupGraphForDocument(db, documentId);
 
-  // Delete extraction segments (no FK children, safe to delete at any point)
+  // Delete extraction segments (may not exist in pre-v19 schemas)
   try {
     db.prepare('DELETE FROM entity_extraction_segments WHERE document_id = ?').run(documentId);
   } catch (e: unknown) {

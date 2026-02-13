@@ -2,7 +2,7 @@
  * OCR Provenance MCP Server
  *
  * Entry point for the MCP server using stdio transport.
- * Exposes 78 OCR, search, provenance, clustering, and knowledge graph tools via JSON-RPC.
+ * Exposes 88 OCR, search, provenance, clustering, and knowledge graph tools via JSON-RPC.
  *
  * CRITICAL: NEVER use console.log() - stdout is reserved for JSON-RPC protocol.
  * Use console.error() for all logging.
@@ -113,7 +113,7 @@ for (const [name, tool] of Object.entries(vlmTools)) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// IMAGE TOOLS (8) - Extracted to src/tools/images.ts
+// IMAGE TOOLS (8) - src/tools/images.ts
 // ═══════════════════════════════════════════════════════════════════════════════
 
 // Register image tools from extracted module
@@ -176,7 +176,7 @@ for (const [name, tool] of Object.entries(fileManagementTools)) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// ENTITY ANALYSIS TOOLS (4) - Extracted to src/tools/entity-analysis.ts
+// ENTITY ANALYSIS TOOLS (6) - src/tools/entity-analysis.ts
 // ═══════════════════════════════════════════════════════════════════════════════
 
 // Register entity analysis tools from extracted module
@@ -203,7 +203,7 @@ for (const [name, tool] of Object.entries(clusteringTools)) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// KNOWLEDGE GRAPH TOOLS (6) - Extracted to src/tools/knowledge-graph.ts
+// KNOWLEDGE GRAPH TOOLS (12) - src/tools/knowledge-graph.ts
 // ═══════════════════════════════════════════════════════════════════════════════
 
 // Register knowledge graph tools from extracted module
@@ -219,7 +219,7 @@ async function main() {
   const transport = new StdioServerTransport();
   await server.connect(transport);
   console.error('OCR Provenance MCP Server running on stdio');
-  console.error('Tools registered: 78');
+  console.error('Tools registered: 88');
 }
 
 main().catch((error) => {

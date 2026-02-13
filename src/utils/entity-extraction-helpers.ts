@@ -14,22 +14,32 @@ import Database from 'better-sqlite3';
 import { GeminiClient } from '../services/gemini/client.js';
 import { ENTITY_TYPES, type EntityType } from '../models/entity.js';
 import type { Chunk } from '../models/chunk.js';
+import {
+  insertEntity,
+  insertEntityMention,
+} from '../services/storage/database/entity-operations.js';
+import { getChunksByDocumentId } from '../services/storage/database/chunk-operations.js';
+import { computeHash } from './hash.js';
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // CONSTANTS
 // ═══════════════════════════════════════════════════════════════════════════════
 
-/** Maximum characters per single Gemini call for entity extraction */
-export const MAX_CHARS_PER_CALL = 250_000;
+/** Maximum characters per single Gemini call for entity extraction.
+ * Tested: 50K works in ~18s, 100K+ times out with schema-constrained JSON. */
+export const MAX_CHARS_PER_CALL = 50_000;
 
-/** Output token limit for entity extraction (Flash 3 supports 65K) */
-export const ENTITY_EXTRACTION_MAX_OUTPUT_TOKENS = 65_536;
+/** Output token limit for entity extraction.
+ * 50K char segments produce ~200-400 entities = ~5-10K tokens of JSON.
+ * 16K is generous; 65K caused API throttling (reserved capacity). */
+export const ENTITY_EXTRACTION_MAX_OUTPUT_TOKENS = 16_384;
 
 /** Overlap characters between segments (10% of MAX_CHARS_PER_CALL) */
-export const SEGMENT_OVERLAP_CHARS = 25_000;
+export const SEGMENT_OVERLAP_CHARS = 5_000;
 
-/** Request timeout for entity extraction (large docs + 65K output tokens) */
-export const ENTITY_EXTRACTION_TIMEOUT_MS = 300_000;
+/** Request timeout for entity extraction per segment.
+ * 50K segments complete in ~18s; 60s allows for API latency spikes. */
+export const ENTITY_EXTRACTION_TIMEOUT_MS = 60_000;
 
 /**
  * JSON schema for Gemini entity extraction response.
@@ -140,19 +150,53 @@ export function splitWithOverlap(text: string, maxChars: number, overlapChars: n
 
 /**
  * Parse a Gemini entity extraction response, filtering to valid entity types.
+ * Handles truncated JSON by recovering valid entities from partial output.
  */
 function parseEntityResponse(
   responseText: string,
 ): Array<{ type: string; raw_text: string; confidence: number }> {
-  const parsed = JSON.parse(responseText) as {
-    entities?: Array<{ type: string; raw_text: string; confidence: number }>;
-  };
-  if (parsed.entities && Array.isArray(parsed.entities)) {
-    return parsed.entities.filter(
-      entity => ENTITY_TYPES.includes(entity.type as EntityType)
-    );
+  // Try clean parse first
+  try {
+    const parsed = JSON.parse(responseText) as {
+      entities?: Array<{ type: string; raw_text: string; confidence: number }>;
+    };
+    if (parsed.entities && Array.isArray(parsed.entities)) {
+      return parsed.entities.filter(
+        entity => ENTITY_TYPES.includes(entity.type as EntityType)
+      );
+    }
+    return [];
+  } catch {
+    // JSON truncated or malformed - recover partial entities via regex
+    return recoverPartialEntities(responseText);
   }
-  return [];
+}
+
+/**
+ * Recover valid entities from truncated/malformed JSON output.
+ * Extracts complete entity objects using regex matching.
+ */
+function recoverPartialEntities(
+  text: string,
+): Array<{ type: string; raw_text: string; confidence: number }> {
+  const entities: Array<{ type: string; raw_text: string; confidence: number }> = [];
+  // Match complete entity objects: {"type":"...","raw_text":"...","confidence":N}
+  const pattern = /\{\s*"type"\s*:\s*"([^"]+)"\s*,\s*"raw_text"\s*:\s*"([^"]*(?:\\.[^"]*)*)"\s*,\s*"confidence"\s*:\s*([\d.]+)\s*\}/g;
+  let match;
+  while ((match = pattern.exec(text)) !== null) {
+    const [, type, rawText, conf] = match;
+    if (ENTITY_TYPES.includes(type as EntityType)) {
+      entities.push({
+        type,
+        raw_text: rawText.replace(/\\"/g, '"').replace(/\\n/g, '\n'),
+        confidence: parseFloat(conf),
+      });
+    }
+  }
+  if (entities.length > 0) {
+    console.error(`[INFO] Recovered ${entities.length} entities from truncated JSON`);
+  }
+  return entities;
 }
 
 /**
@@ -174,7 +218,8 @@ export async function callGeminiForEntities(
     `Do NOT classify medications, diagnoses, or medical devices as 'other'.\n\n` +
     `${text}`;
 
-  // Primary attempt with the provided client
+  // Primary attempt - the robust parseEntityResponse recovers entities
+  // from truncated JSON, so a single attempt is usually sufficient.
   try {
     const response = await client.fast(prompt, ENTITY_EXTRACTION_SCHEMA, {
       maxOutputTokens: ENTITY_EXTRACTION_MAX_OUTPUT_TOKENS,
@@ -184,57 +229,8 @@ export async function callGeminiForEntities(
   } catch (primaryError) {
     const errMsg = primaryError instanceof Error ? primaryError.message : String(primaryError);
     console.error(`[WARN] Primary entity extraction failed: ${errMsg}`);
+    throw new Error(`Entity extraction failed: ${errMsg}`);
   }
-
-  // Fallback to gemini-2.0-flash
-  try {
-    console.error(`[INFO] Falling back to gemini-2.0-flash for entity extraction`);
-    const fallbackClient = new GeminiClient({ model: 'gemini-2.0-flash' });
-    const response = await fallbackClient.fast(prompt, ENTITY_EXTRACTION_SCHEMA, {
-      maxOutputTokens: ENTITY_EXTRACTION_MAX_OUTPUT_TOKENS,
-      requestTimeout: ENTITY_EXTRACTION_TIMEOUT_MS,
-    });
-    console.error(`[INFO] Fallback model gemini-2.0-flash succeeded`);
-    return parseEntityResponse(response.text);
-  } catch (fallbackError) {
-    const errMsg = fallbackError instanceof Error ? fallbackError.message : String(fallbackError);
-    console.error(`[WARN] Fallback entity extraction also failed: ${errMsg}`);
-  }
-
-  return [];
-}
-
-/**
- * Extract entities from text using a single Gemini call (or adaptive batching
- * for very large documents). Most documents fit in one call since Gemini Flash 3
- * has a 1M token (~4M char) context window.
- *
- * @param client - GeminiClient instance
- * @param text - Full OCR extracted text
- * @param entityTypes - Entity types to extract (empty = all)
- * @returns Array of raw extracted entities
- */
-export async function extractEntitiesFromText(
-  client: GeminiClient,
-  text: string,
-  entityTypes: string[],
-): Promise<Array<{ type: string; raw_text: string; confidence: number }>> {
-  const typeFilter = entityTypes.length > 0
-    ? `Only extract entities of these types: ${entityTypes.join(', ')}.`
-    : `Extract all entity types: ${ENTITY_TYPES.join(', ')}.`;
-
-  if (text.length <= MAX_CHARS_PER_CALL) {
-    return callGeminiForEntities(client, text, typeFilter);
-  }
-
-  console.error(`[INFO] Document too large for single call (${text.length} chars), using adaptive batching`);
-  const batches = splitWithOverlap(text, MAX_CHARS_PER_CALL, SEGMENT_OVERLAP_CHARS);
-  const allEntities: Array<{ type: string; raw_text: string; confidence: number }> = [];
-  for (const batch of batches) {
-    const entities = await callGeminiForEntities(client, batch, typeFilter);
-    allEntities.push(...entities);
-  }
-  return allEntities;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -484,18 +480,8 @@ export interface SegmentRecord {
 
 /**
  * Create extraction segments from OCR text and store them in the database.
- *
- * Uses splitWithOverlap to compute segment boundaries, then inserts each segment
- * into entity_extraction_segments with full provenance tracking. Each segment
- * records its exact character_start/character_end position in the original OCR text
- * so that entities can always be traced back to their source location.
- *
- * @param conn - Database connection (better-sqlite3)
- * @param documentId - Document ID
- * @param ocrResultId - OCR result ID
- * @param ocrText - Full OCR extracted text
- * @param provenanceId - Provenance ID for the extraction run
- * @returns Array of SegmentRecord objects
+ * Each segment records its exact character range in the original OCR text
+ * for provenance tracing.
  */
 export function createExtractionSegments(
   conn: Database.Database,
@@ -504,17 +490,12 @@ export function createExtractionSegments(
   ocrText: string,
   provenanceId: string,
 ): SegmentRecord[] {
-  // Delete any existing segments for this document (re-extraction case)
   conn.prepare('DELETE FROM entity_extraction_segments WHERE document_id = ?').run(documentId);
 
-  // Split the text into overlapping segments
   const segmentTexts = splitWithOverlap(ocrText, MAX_CHARS_PER_CALL, SEGMENT_OVERLAP_CHARS);
-
   const now = new Date().toISOString();
   const segments: SegmentRecord[] = [];
 
-  // Track character positions in the original OCR text
-  // splitWithOverlap returns text slices; we need to find their exact offsets
   const insertStmt = conn.prepare(`
     INSERT INTO entity_extraction_segments (
       id, document_id, ocr_result_id, segment_index, text,
@@ -525,28 +506,22 @@ export function createExtractionSegments(
     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
 
-  // Compute exact character positions by tracing through the text
   let currentStart = 0;
   for (let i = 0; i < segmentTexts.length; i++) {
     const segText = segmentTexts[i];
 
-    // Find where this segment starts in the original text
-    // For the first segment, start is 0. For subsequent segments,
-    // find the segment text's actual position starting from expected overlap region.
+    // Locate this segment's start in the original text.
+    // For segment 0 it's always 0; for subsequent segments, search near the overlap region.
     let charStart: number;
     if (i === 0) {
       charStart = 0;
     } else {
-      // The overlap means this segment starts somewhere before the previous end.
-      // Find the exact position by searching for the segment's first unique content.
       const searchFrom = Math.max(0, currentStart - SEGMENT_OVERLAP_CHARS - 100);
       const pos = ocrText.indexOf(segText.slice(0, Math.min(200, segText.length)), searchFrom);
       charStart = pos >= 0 ? pos : currentStart;
     }
 
     const charEnd = charStart + segText.length;
-
-    // Calculate overlap amounts
     const overlapPrevious = i > 0 ? Math.max(0, (segments[i - 1].character_end) - charStart) : 0;
     const overlapNext = (i < segmentTexts.length - 1) ? SEGMENT_OVERLAP_CHARS : 0;
 
@@ -603,12 +578,6 @@ export function createExtractionSegments(
 
 /**
  * Update a segment's status after extraction attempt.
- *
- * @param conn - Database connection
- * @param segmentId - Segment ID
- * @param status - New status
- * @param entityCount - Number of entities extracted (for 'complete' status)
- * @param errorMessage - Error message (for 'failed' status)
  */
 export function updateSegmentStatus(
   conn: Database.Database,
@@ -635,60 +604,14 @@ export function updateSegmentStatus(
 /**
  * Find which DB chunk contains a given character position in the OCR text.
  * Chunks have character_start (inclusive) and character_end (exclusive).
- *
- * @param dbChunks - Chunks ordered by chunk_index (from getChunksByDocumentId)
- * @param position - Character offset in the OCR text
- * @returns The matching chunk, or null if no chunk covers that position
  */
-export function findChunkForPosition(dbChunks: Chunk[], position: number): Chunk | null {
+function findChunkForPosition(dbChunks: Chunk[], position: number): Chunk | null {
   for (const chunk of dbChunks) {
     if (position >= chunk.character_start && position < chunk.character_end) {
       return chunk;
     }
   }
   return null;
-}
-
-/**
- * Find the position of an entity's raw_text in the OCR text, then map to a DB chunk.
- * Uses case-insensitive search. Returns chunk info including chunk_id, character offsets,
- * and page_number.
- *
- * @param entityRawText - The raw entity text from Gemini extraction
- * @param ocrText - The full OCR extracted text
- * @param dbChunks - DB chunks ordered by chunk_index
- * @returns Object with chunk_id, character_start, character_end, page_number or nulls
- */
-export function mapEntityToChunk(
-  entityRawText: string,
-  ocrText: string,
-  dbChunks: Chunk[],
-): { chunk_id: string | null; character_start: number | null; character_end: number | null; page_number: number | null } {
-  if (dbChunks.length === 0 || !entityRawText || entityRawText.trim().length === 0) {
-    return { chunk_id: null, character_start: null, character_end: null, page_number: null };
-  }
-
-  const lowerOcr = ocrText.toLowerCase();
-  const lowerEntity = entityRawText.toLowerCase().trim();
-  const pos = lowerOcr.indexOf(lowerEntity);
-
-  if (pos === -1) {
-    return { chunk_id: null, character_start: null, character_end: null, page_number: null };
-  }
-
-  const charEnd = pos + entityRawText.trim().length;
-
-  const chunk = findChunkForPosition(dbChunks, pos);
-  if (!chunk) {
-    return { chunk_id: null, character_start: pos, character_end: charEnd, page_number: null };
-  }
-
-  return {
-    chunk_id: chunk.id,
-    character_start: pos,
-    character_end: charEnd,
-    page_number: chunk.page_number,
-  };
 }
 
 /** Result for a single entity occurrence found in OCR text */
@@ -703,14 +626,7 @@ export interface EntityOccurrence {
 /**
  * Find ALL occurrences of an entity's raw_text in the OCR text and map each to its
  * containing DB chunk. Returns an array of occurrences with chunk mapping and context.
- *
- * Unlike mapEntityToChunk which only finds the first occurrence, this scans the entire
- * OCR text for every match using case-insensitive search.
- *
- * @param entityRawText - The raw entity text from Gemini extraction
- * @param ocrText - The full OCR extracted text
- * @param dbChunks - DB chunks ordered by chunk_index
- * @returns Array of EntityOccurrence for ALL matches (empty if none found)
+ * Scans the entire OCR text for every match using case-insensitive search.
  */
 export function findAllEntityOccurrences(
   entityRawText: string,
@@ -765,9 +681,218 @@ export function findAllEntityOccurrences(
       context_text: contextText,
     });
 
-    // Advance past this match to find the next one
     searchFrom = pos + entityLen;
   }
 
   return occurrences;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// FULL EXTRACTION PIPELINE (shared by entity-analysis.ts and ingestion.ts)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/** Result of a full segment-based entity extraction run */
+export interface SegmentExtractionResult {
+  totalEntities: number;
+  totalMentions: number;
+  totalRawExtracted: number;
+  noiseFiltered: number;
+  regexDatesAdded: number;
+  deduplicated: number;
+  entitiesByType: Record<string, number>;
+  chunkMapped: number;
+  processingDurationMs: number;
+  segmentsTotal: number;
+  segmentsComplete: number;
+  segmentsFailed: number;
+  apiCalls: number;
+}
+
+/** Cooldown between Gemini API calls to avoid throttling (ms) */
+const SEGMENT_COOLDOWN_MS = 3000;
+
+/**
+ * Run the full segment-based entity extraction pipeline:
+ * create segments, call Gemini per segment, filter noise, extract regex dates,
+ * deduplicate, store entities + mentions in DB, and update provenance.
+ *
+ * Shared core used by both manual extraction (entity-analysis.ts)
+ * and auto-pipeline extraction (ingestion.ts).
+ */
+export async function processSegmentsAndStoreEntities(
+  conn: Database.Database,
+  client: GeminiClient,
+  documentId: string,
+  ocrResultId: string,
+  ocrText: string,
+  entityProvId: string,
+  typeFilter: string,
+  entityTypes: readonly string[],
+  startTime: number,
+  source?: string,
+): Promise<SegmentExtractionResult> {
+  const textLength = ocrText.length;
+  const now = new Date().toISOString();
+
+  const segments = createExtractionSegments(conn, documentId, ocrResultId, ocrText, entityProvId);
+
+  // Process segments sequentially with cooldown to avoid API throttling.
+  // Gemini aborts requests after ~4 rapid calls; 3s delay prevents this.
+  const allRawEntities: Array<{ type: string; raw_text: string; confidence: number }> = [];
+  let segmentsComplete = 0;
+  let segmentsFailed = 0;
+
+  for (let i = 0; i < segments.length; i++) {
+    const segment = segments[i];
+    updateSegmentStatus(conn, segment.id, 'processing');
+
+    if (i > 0) {
+      await new Promise(resolve => setTimeout(resolve, SEGMENT_COOLDOWN_MS));
+    }
+
+    try {
+      const entities = await callGeminiForEntities(client, segment.text, typeFilter);
+      allRawEntities.push(...entities);
+      updateSegmentStatus(conn, segment.id, 'complete', entities.length);
+      segmentsComplete++;
+    } catch (segError) {
+      const segMsg = segError instanceof Error ? segError.message : String(segError);
+      console.error(`[WARN] Segment ${segment.segment_index} failed for ${documentId}: ${segMsg}`);
+      updateSegmentStatus(conn, segment.id, 'failed', 0, segMsg);
+      segmentsFailed++;
+    }
+  }
+
+  const apiCalls = segments.length;
+  const processingDurationMs = Date.now() - startTime;
+
+  const filteredEntities = filterNoiseEntities(allRawEntities);
+  const noiseFilteredCount = allRawEntities.length - filteredEntities.length;
+
+  const regexDates = extractDatesWithRegex(ocrText);
+
+  const mergedEntities = [...filteredEntities, ...regexDates];
+
+  // Deduplicate by type::normalized_text, keeping highest confidence per key
+  const dedupMap = new Map<string, { type: string; raw_text: string; confidence: number }>();
+  for (const entity of mergedEntities) {
+    const normalized = normalizeEntity(entity.raw_text, entity.type);
+    const key = `${entity.type}::${normalized}`;
+    const existing = dedupMap.get(key);
+    if (!existing || entity.confidence > existing.confidence) {
+      dedupMap.set(key, entity);
+    }
+  }
+
+  const entityContent = JSON.stringify([...dedupMap.values()]);
+  const entityHash = computeHash(entityContent);
+  const processingParams: Record<string, unknown> = {
+    entity_types: entityTypes,
+    api_calls: apiCalls,
+    text_length: textLength,
+    segment_size: MAX_CHARS_PER_CALL,
+    segment_overlap: SEGMENT_OVERLAP_CHARS,
+    segments_total: segments.length,
+    segments_complete: segmentsComplete,
+    segments_failed: segmentsFailed,
+  };
+  if (source) {
+    processingParams.source = source;
+  }
+
+  conn.prepare(`
+    UPDATE provenance SET content_hash = ?, processed_at = ?, processing_duration_ms = ?,
+      processing_params = ?
+    WHERE id = ?
+  `).run(
+    entityHash,
+    new Date().toISOString(),
+    processingDurationMs,
+    JSON.stringify(processingParams),
+    entityProvId,
+  );
+
+  const dbChunks = getChunksByDocumentId(conn, documentId);
+  let chunkMappedCount = 0;
+  const typeCounts: Record<string, number> = {};
+  let totalInserted = 0;
+  let totalMentions = 0;
+
+  for (const [, entityData] of dedupMap) {
+    const normalized = normalizeEntity(entityData.raw_text, entityData.type);
+    const entityId = uuidv4();
+
+    insertEntity(conn, {
+      id: entityId,
+      document_id: documentId,
+      entity_type: entityData.type as EntityType,
+      raw_text: entityData.raw_text,
+      normalized_text: normalized,
+      confidence: entityData.confidence,
+      metadata: null,
+      provenance_id: entityProvId,
+      created_at: now,
+    });
+
+    const occurrences = findAllEntityOccurrences(entityData.raw_text, ocrText, dbChunks);
+
+    if (occurrences.length > 0) {
+      let entityHasChunkMapping = false;
+
+      for (const occ of occurrences) {
+        insertEntityMention(conn, {
+          id: uuidv4(),
+          entity_id: entityId,
+          document_id: documentId,
+          chunk_id: occ.chunk_id,
+          page_number: occ.page_number,
+          character_start: occ.character_start,
+          character_end: occ.character_end,
+          context_text: occ.context_text,
+          created_at: now,
+        });
+        totalMentions++;
+        if (occ.chunk_id) {
+          entityHasChunkMapping = true;
+        }
+      }
+
+      if (entityHasChunkMapping) {
+        chunkMappedCount++;
+      }
+    } else {
+      // No occurrences found -- create 1 fallback mention with null positions
+      insertEntityMention(conn, {
+        id: uuidv4(),
+        entity_id: entityId,
+        document_id: documentId,
+        chunk_id: null,
+        page_number: null,
+        character_start: null,
+        character_end: null,
+        context_text: entityData.raw_text,
+        created_at: now,
+      });
+      totalMentions++;
+    }
+
+    typeCounts[entityData.type] = (typeCounts[entityData.type] ?? 0) + 1;
+    totalInserted++;
+  }
+
+  return {
+    totalEntities: totalInserted,
+    totalMentions,
+    totalRawExtracted: allRawEntities.length,
+    noiseFiltered: noiseFilteredCount,
+    regexDatesAdded: regexDates.length,
+    deduplicated: mergedEntities.length - totalInserted,
+    entitiesByType: typeCounts,
+    chunkMapped: chunkMappedCount,
+    processingDurationMs,
+    segmentsTotal: segments.length,
+    segmentsComplete,
+    segmentsFailed,
+    apiCalls,
+  };
 }
