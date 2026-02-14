@@ -317,8 +317,24 @@ export class ImageExtractor {
         }
 
         try {
-          const result = JSON.parse(stdout);
-          resolve(result as ExtractionResult);
+          // Python may output debug/warning lines before the JSON. Find the last
+          // valid JSON line (starts with '{' or '[') to handle multi-line output.
+          const lines = stdout.trim().split('\n');
+          let parsed: ExtractionResult | undefined;
+          for (let i = lines.length - 1; i >= 0; i--) {
+            const line = lines[i].trim();
+            if (line.startsWith('{') || line.startsWith('[')) {
+              try {
+                parsed = JSON.parse(line) as ExtractionResult;
+                break;
+              } catch { /* not valid JSON, try previous line */ }
+            }
+          }
+          if (parsed === undefined) {
+            // Fallback: try parsing the entire stdout as one JSON blob
+            parsed = JSON.parse(stdout) as ExtractionResult;
+          }
+          resolve(parsed);
         } catch (parseError) {
           if (code !== 0) {
             // M-14: Truncate stderr/stdout in error messages to prevent holding megabytes

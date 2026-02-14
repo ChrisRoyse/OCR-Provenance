@@ -9,6 +9,7 @@
 import Database from 'better-sqlite3';
 import { Entity, EntityMention, EntityType } from '../../../models/entity.js';
 import { runWithForeignKeyCheck } from './helpers.js';
+import { escapeLikePattern } from '../../../utils/validation.js';
 
 /**
  * Insert an entity record
@@ -119,8 +120,8 @@ export function searchEntities(
   query: string,
   options?: { entityType?: EntityType; documentFilter?: string[]; limit?: number }
 ): Entity[] {
-  const conditions: string[] = ['normalized_text LIKE ?'];
-  const params: (string | number)[] = [`%${query.toLowerCase()}%`];
+  const conditions: string[] = ["normalized_text LIKE ? ESCAPE '\\'"];
+  const params: (string | number)[] = [`%${escapeLikePattern(query.toLowerCase())}%`];
 
   if (options?.entityType) {
     conditions.push('entity_type = ?');
@@ -157,29 +158,33 @@ export function searchEntities(
  * @returns number - Number of entities deleted
  */
 export function deleteEntitiesByDocument(db: Database.Database, documentId: string): number {
-  // Step 0: Decrement document_count on linked KG nodes before removing links
-  db.prepare(`
-    UPDATE knowledge_nodes SET document_count = MAX(0, document_count - 1)
-    WHERE id IN (
-      SELECT DISTINCT nel.node_id FROM node_entity_links nel
-      JOIN entities e ON nel.entity_id = e.id
-      WHERE e.document_id = ?
-    )
-  `).run(documentId);
+  const deleteAll = db.transaction(() => {
+    // Step 0: Decrement document_count on linked KG nodes before removing links
+    db.prepare(`
+      UPDATE knowledge_nodes SET document_count = MAX(0, document_count - 1)
+      WHERE id IN (
+        SELECT DISTINCT nel.node_id FROM node_entity_links nel
+        JOIN entities e ON nel.entity_id = e.id
+        WHERE e.document_id = ?
+      )
+    `).run(documentId);
 
-  // Step 1: Delete KG node-entity links for entities of this document
-  db.prepare(
-    'DELETE FROM node_entity_links WHERE entity_id IN (SELECT id FROM entities WHERE document_id = ?)'
-  ).run(documentId);
+    // Step 1: Delete KG node-entity links for entities of this document
+    db.prepare(
+      'DELETE FROM node_entity_links WHERE entity_id IN (SELECT id FROM entities WHERE document_id = ?)'
+    ).run(documentId);
 
-  // Step 2: Delete mentions for all entities of this document
-  db.prepare(
-    'DELETE FROM entity_mentions WHERE entity_id IN (SELECT id FROM entities WHERE document_id = ?)'
-  ).run(documentId);
+    // Step 2: Delete mentions for all entities of this document
+    db.prepare(
+      'DELETE FROM entity_mentions WHERE entity_id IN (SELECT id FROM entities WHERE document_id = ?)'
+    ).run(documentId);
 
-  // Step 3: Delete the entities themselves
-  const result = db.prepare('DELETE FROM entities WHERE document_id = ?').run(documentId);
-  return result.changes;
+    // Step 3: Delete the entities themselves
+    const result = db.prepare('DELETE FROM entities WHERE document_id = ?').run(documentId);
+    return result.changes;
+  });
+
+  return deleteAll();
 }
 
 /**

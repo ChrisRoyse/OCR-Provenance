@@ -109,6 +109,8 @@ export class BM25SearchService {
 
     const rows = this.db.prepare(sql).all(...params) as Array<Record<string, unknown>>;
 
+    // TY-09: Field casts below are intentional -- better-sqlite3 returns untyped Records.
+    // The SQL query guarantees these columns exist and have the expected types.
     return rows.map((row, index) => ({
       chunk_id: row.chunk_id as string,
       image_id: null as string | null,
@@ -133,49 +135,7 @@ export class BM25SearchService {
   }
 
   private buildFTSQuery(query: string): string {
-    // L-8 fix: Preserve FTS5 boolean operators (NOT, OR) to maintain query intent.
-    // Previously "cats NOT dogs" became "cats AND dogs" -- reversing intent.
-    // Note: NEAR removed -- FTS5 requires NEAR(t1 t2, N) function syntax, not infix.
-    const FTS5_OPERATORS = new Set(['AND', 'OR', 'NOT']);
-    const rawTokens = query.trim().split(/\s+/).filter(t => t.length > 0);
-
-    const result: string[] = [];
-    for (const raw of rawTokens) {
-      if (FTS5_OPERATORS.has(raw.toUpperCase())) {
-        result.push(raw.toUpperCase());
-      } else {
-        // L-5: Treat hyphens as word separators (matching FTS5 unicode61 tokenizer)
-        const parts = raw.split(/-/)
-          .map(p => p.replace(/['"()*:^~+{}\[\]\\;@<>#!$%&|,./`?]/g, ''))
-          .filter(p => p.length > 0);
-        result.push(...parts);
-      }
-    }
-
-    // Strip leading/trailing operators and consecutive operators
-    while (result.length > 0 && FTS5_OPERATORS.has(result[0])) result.shift();
-    while (result.length > 0 && FTS5_OPERATORS.has(result[result.length - 1])) result.pop();
-    const cleaned: string[] = [];
-    for (const t of result) {
-      if (FTS5_OPERATORS.has(t) && cleaned.length > 0 && FTS5_OPERATORS.has(cleaned[cleaned.length - 1])) continue;
-      cleaned.push(t);
-    }
-
-    const finalTokens = cleaned.filter(t => t.length > 0);
-    if (finalTokens.length === 0) {
-      throw new Error('Query contains no valid search tokens after sanitization');
-    }
-
-    // Insert implicit AND between consecutive non-operator tokens
-    const parts: string[] = [];
-    for (let i = 0; i < finalTokens.length; i++) {
-      parts.push(finalTokens[i]);
-      if (i < finalTokens.length - 1 && !FTS5_OPERATORS.has(finalTokens[i]) && !FTS5_OPERATORS.has(finalTokens[i + 1])) {
-        parts.push('AND');
-      }
-    }
-
-    return parts.join(' ');
+    return sanitizeFTS5Query(query);
   }
 
   /**
@@ -531,6 +491,64 @@ export class BM25SearchService {
   private computeContentHash(): string {
     return computeFTSContentHash(this.db);
   }
+}
+
+/**
+ * Sanitize a user-provided query for safe use in FTS5 MATCH expressions.
+ *
+ * - Preserves FTS5 boolean operators (AND, OR, NOT)
+ * - Treats hyphens as word separators (matching unicode61 tokenizer)
+ * - Strips all FTS5 metacharacters (' " ( ) * : ^ ~ + etc.)
+ * - Inserts implicit AND between consecutive non-operator tokens
+ * - Strips leading/trailing/consecutive operators
+ *
+ * This is the SINGLE authoritative FTS5 sanitizer for the entire codebase.
+ *
+ * @param query - Raw user query string
+ * @returns Sanitized FTS5 query string
+ * @throws Error if query contains no valid tokens after sanitization
+ */
+export function sanitizeFTS5Query(query: string): string {
+  const FTS5_OPERATORS = new Set(['AND', 'OR', 'NOT']);
+  const rawTokens = query.trim().split(/\s+/).filter(t => t.length > 0);
+
+  const result: string[] = [];
+  for (const raw of rawTokens) {
+    if (FTS5_OPERATORS.has(raw.toUpperCase())) {
+      result.push(raw.toUpperCase());
+    } else {
+      // L-5: Treat hyphens as word separators (matching FTS5 unicode61 tokenizer)
+      const parts = raw.split(/-/)
+        .map(p => p.replace(/['"()*:^~+{}\[\]\\;@<>#!$%&|,./`?]/g, ''))
+        .filter(p => p.length > 0);
+      result.push(...parts);
+    }
+  }
+
+  // Strip leading/trailing operators and consecutive operators
+  while (result.length > 0 && FTS5_OPERATORS.has(result[0])) result.shift();
+  while (result.length > 0 && FTS5_OPERATORS.has(result[result.length - 1])) result.pop();
+  const cleaned: string[] = [];
+  for (const t of result) {
+    if (FTS5_OPERATORS.has(t) && cleaned.length > 0 && FTS5_OPERATORS.has(cleaned[cleaned.length - 1])) continue;
+    cleaned.push(t);
+  }
+
+  const finalTokens = cleaned.filter(t => t.length > 0);
+  if (finalTokens.length === 0) {
+    throw new Error('Query contains no valid search tokens after sanitization');
+  }
+
+  // Insert implicit AND between consecutive non-operator tokens
+  const parts: string[] = [];
+  for (let i = 0; i < finalTokens.length; i++) {
+    parts.push(finalTokens[i]);
+    if (i < finalTokens.length - 1 && !FTS5_OPERATORS.has(finalTokens[i]) && !FTS5_OPERATORS.has(finalTokens[i + 1])) {
+      parts.push('AND');
+    }
+  }
+
+  return parts.join(' ');
 }
 
 /**

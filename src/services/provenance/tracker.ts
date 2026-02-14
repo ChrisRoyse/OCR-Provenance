@@ -202,7 +202,15 @@ export class ProvenanceTracker {
     // Parse chain_path or reconstruct from chain
     let chainPath: string[];
     if (current.chain_path) {
-      chainPath = JSON.parse(current.chain_path) as string[];
+      try {
+        chainPath = JSON.parse(current.chain_path) as string[];
+      } catch {
+        throw new ProvenanceError(
+          `Corrupt chain_path JSON in provenance record ${current.id}`,
+          ProvenanceErrorCode.CHAIN_BROKEN,
+          { provenanceId: current.id, raw: current.chain_path }
+        );
+      }
     } else {
       chainPath = chain.map(r => r.type).reverse();
     }
@@ -278,7 +286,16 @@ export class ProvenanceTracker {
     }
 
     // Parse parent's parent_ids and append parent to get full chain
-    const parentParentIds = JSON.parse(parent.parent_ids) as string[];
+    let parentParentIds: string[];
+    try {
+      parentParentIds = JSON.parse(parent.parent_ids) as string[];
+    } catch {
+      throw new ProvenanceError(
+        `Corrupt parent_ids JSON in provenance record ${parent.id}`,
+        ProvenanceErrorCode.CHAIN_BROKEN,
+        { provenanceId: parent.id, raw: parent.parent_ids }
+      );
+    }
     return [...parentParentIds, sourceId];
   }
 

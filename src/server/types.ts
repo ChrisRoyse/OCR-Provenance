@@ -84,9 +84,6 @@ export interface ServerConfig {
   /** Chunk overlap percentage (0-50) */
   chunkOverlapPercent: number;
 
-  /** Log level */
-  logLevel: string;
-
   /** Image optimization settings */
   imageOptimization: ImageOptimizationConfig;
 }

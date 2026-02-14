@@ -26,9 +26,6 @@ import { formatResponse, handleError, type ToolResponse, type ToolDefinition } f
 // CONSTANTS
 // ═══════════════════════════════════════════════════════════════════════════════
 
-/** Immutable configuration keys - cannot be changed at runtime */
-const IMMUTABLE_KEYS = ['embedding_model', 'embedding_dimensions', 'hash_algorithm'];
-
 /** Map config keys to their state property names */
 const CONFIG_KEY_MAP: Record<string, string> = {
   datalab_default_mode: 'defaultOCRMode',
@@ -37,7 +34,6 @@ const CONFIG_KEY_MAP: Record<string, string> = {
   embedding_device: 'embeddingDevice',
   chunk_size: 'chunkSize',
   chunk_overlap_percent: 'chunkOverlapPercent',
-  log_level: 'logLevel',
 };
 
 function getConfigValue(key: z.infer<typeof ConfigKey>): unknown {
@@ -75,10 +71,6 @@ const CONFIG_VALIDATORS: Record<string, (value: unknown) => void> = {
   chunk_overlap_percent: (v) => {
     if (typeof v !== 'number' || v < 0 || v > 50)
       throw validationError('chunk_overlap_percent must be a number between 0 and 50', { value: v });
-  },
-  log_level: (v) => {
-    if (typeof v !== 'string' || !['debug', 'info', 'warn', 'error'].includes(v))
-      throw validationError('log_level must be "debug", "info", "warn", or "error"', { value: v });
   },
 };
 
@@ -129,7 +121,6 @@ export async function handleConfigGet(
       embedding_device: config.embeddingDevice,
       chunk_size: config.chunkSize,
       chunk_overlap_percent: config.chunkOverlapPercent,
-      log_level: config.logLevel,
     }));
   } catch (error) {
     return handleError(error);
@@ -141,14 +132,6 @@ export async function handleConfigSet(
 ): Promise<ToolResponse> {
   try {
     const input = validateInput(ConfigSetInput, params);
-
-    // FAIL FAST: Block immutable keys
-    if (IMMUTABLE_KEYS.includes(input.key)) {
-      throw validationError(`Configuration key "${input.key}" is immutable and cannot be changed at runtime`, {
-        key: input.key,
-        immutableKeys: IMMUTABLE_KEYS,
-      });
-    }
 
     // Apply the configuration change
     setConfigValue(input.key, input.value);
@@ -174,30 +157,14 @@ export const configTools: Record<string, ToolDefinition> = {
   'ocr_config_get': {
     description: 'Get current system configuration',
     inputSchema: {
-      key: z.enum([
-        'datalab_default_mode',
-        'datalab_max_concurrent',
-        'embedding_batch_size',
-        'embedding_device',
-        'chunk_size',
-        'chunk_overlap_percent',
-        'log_level',
-      ]).optional().describe('Specific config key to retrieve'),
+      key: ConfigKey.optional().describe('Specific config key to retrieve'),
     },
     handler: handleConfigGet,
   },
   'ocr_config_set': {
     description: 'Update a configuration setting',
     inputSchema: {
-      key: z.enum([
-        'datalab_default_mode',
-        'datalab_max_concurrent',
-        'embedding_batch_size',
-        'embedding_device',
-        'chunk_size',
-        'chunk_overlap_percent',
-        'log_level',
-      ]).describe('Configuration key to update'),
+      key: ConfigKey.describe('Configuration key to update'),
       value: z.union([z.string(), z.number(), z.boolean()]).describe('New value'),
     },
     handler: handleConfigSet,

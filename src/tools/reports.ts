@@ -17,7 +17,7 @@ import { requireDatabase } from '../server/state.js';
 import { successResult } from '../server/types.js';
 import { MCPError } from '../server/errors.js';
 import { formatResponse, handleError, type ToolResponse, type ToolDefinition } from './shared.js';
-import { validateInput } from '../utils/validation.js';
+import { validateInput, sanitizePath } from '../utils/validation.js';
 import {
   getImageStats,
   getImagesByDocument,
@@ -288,12 +288,14 @@ export async function handleEvaluationReport(
 
     // Save to file if path provided
     if (outputPath) {
-      const dir = resolve(outputPath).replace(/[^/\\]+$/, '');
+      // Sanitize output path to prevent directory traversal
+      const safeOutputPath = sanitizePath(outputPath);
+      const dir = resolve(safeOutputPath).replace(/[^/\\]+$/, '');
       if (!fs.existsSync(dir)) {
         fs.mkdirSync(dir, { recursive: true });
       }
-      fs.writeFileSync(outputPath, report);
-      console.error(`[INFO] Report saved to: ${outputPath}`);
+      fs.writeFileSync(safeOutputPath, report);
+      console.error(`[INFO] Report saved to: ${safeOutputPath}`);
     }
 
     return formatResponse(successResult({

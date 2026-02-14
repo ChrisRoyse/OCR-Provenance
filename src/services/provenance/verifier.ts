@@ -555,10 +555,38 @@ export class ProvenanceVerifier {
           );
         }
 
+        let textDiff: unknown, structuralDiff: unknown, entityDiff: unknown;
+        try {
+          textDiff = JSON.parse(comparison.text_diff_json);
+        } catch {
+          throw new VerifierError(
+            `Corrupt text_diff_json in comparison for provenance ${record.id}`,
+            VerifierErrorCode.CONTENT_NOT_FOUND,
+            { provenanceId: record.id, field: 'text_diff_json' }
+          );
+        }
+        try {
+          structuralDiff = JSON.parse(comparison.structural_diff_json);
+        } catch {
+          throw new VerifierError(
+            `Corrupt structural_diff_json in comparison for provenance ${record.id}`,
+            VerifierErrorCode.CONTENT_NOT_FOUND,
+            { provenanceId: record.id, field: 'structural_diff_json' }
+          );
+        }
+        try {
+          entityDiff = JSON.parse(comparison.entity_diff_json);
+        } catch {
+          throw new VerifierError(
+            `Corrupt entity_diff_json in comparison for provenance ${record.id}`,
+            VerifierErrorCode.CONTENT_NOT_FOUND,
+            { provenanceId: record.id, field: 'entity_diff_json' }
+          );
+        }
         const diffContent = JSON.stringify({
-          text_diff: JSON.parse(comparison.text_diff_json),
-          structural_diff: JSON.parse(comparison.structural_diff_json),
-          entity_diff: JSON.parse(comparison.entity_diff_json),
+          text_diff: textDiff,
+          structural_diff: structuralDiff,
+          entity_diff: entityDiff,
         });
 
         return { content: diffContent, expectedHash: record.content_hash, isFile: false };

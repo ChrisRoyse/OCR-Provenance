@@ -1365,7 +1365,7 @@ describe('Knowledge Graph Manual Verification', () => {
       // Build should fail
       await expect(
         buildKnowledgeGraph(db, { resolution_mode: 'fuzzy' })
-      ).rejects.toThrow('No entities found');
+      ).rejects.toThrow('No documents provided for KG build');
 
       // No graph data should exist
       const nodeCount = (conn.prepare('SELECT COUNT(*) as cnt FROM knowledge_nodes').get() as any).cnt;

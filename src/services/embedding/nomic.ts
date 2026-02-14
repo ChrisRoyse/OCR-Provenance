@@ -9,6 +9,7 @@
 
 import { PythonShell, Options as PythonShellOptions } from 'python-shell';
 import path from 'path';
+import { state } from '../../server/state.js';
 
 type EmbeddingErrorCode =
   | 'GPU_NOT_AVAILABLE'
@@ -78,6 +79,21 @@ export class NomicEmbeddingClient {
    */
   private static readonly MAX_CHUNKS_PER_CALL = 100;
 
+  /**
+   * DC-01: Read embedding_batch_size from server config if available,
+   * falling back to the caller-provided value or DEFAULT_BATCH_SIZE.
+   * DC-02: Read embedding_device from server config if available,
+   * falling back to the Python worker's auto-detection.
+   */
+  private getEffectiveBatchSize(callerBatchSize: number): number {
+    const configBatchSize = state.config?.embeddingBatchSize;
+    return configBatchSize && configBatchSize > 0 ? configBatchSize : callerBatchSize;
+  }
+
+  private getEffectiveDevice(): string | undefined {
+    return state.config?.embeddingDevice || undefined;
+  }
+
   async embedChunks(
     chunks: string[],
     batchSize: number = DEFAULT_BATCH_SIZE
@@ -127,9 +143,17 @@ export class NomicEmbeddingClient {
     chunks: string[],
     batchSize: number
   ): Promise<Float32Array[]> {
+    // DC-01: Use config-aware batch size; DC-02: Use config-aware device
+    const effectiveBatchSize = this.getEffectiveBatchSize(batchSize);
+    const args = ['--stdin', '--batch-size', effectiveBatchSize.toString(), '--json'];
+    const device = this.getEffectiveDevice();
+    if (device) {
+      args.push('--device', device);
+    }
+
     // Use stdin for reliability with special characters and large inputs
     const result = await this.runWorker<EmbeddingResult>(
-      ['--stdin', '--batch-size', batchSize.toString(), '--json'],
+      args,
       JSON.stringify(chunks)
     );
 
@@ -170,11 +194,14 @@ export class NomicEmbeddingClient {
       );
     }
 
-    const result = await this.runWorker<QueryEmbeddingResult>([
-      '--query',
-      query,
-      '--json',
-    ]);
+    // DC-02: Pass configured device to query embedding worker
+    const queryArgs = ['--query', query, '--json'];
+    const device = this.getEffectiveDevice();
+    if (device) {
+      queryArgs.push('--device', device);
+    }
+
+    const result = await this.runWorker<QueryEmbeddingResult>(queryArgs);
 
     if (!result.success) {
       throw new EmbeddingError(
@@ -277,6 +304,17 @@ export class NomicEmbeddingClient {
         }
 
         if (parsed !== undefined) {
+          // Basic structural validation: worker output must be an object or array
+          if (typeof parsed !== 'object' || parsed === null) {
+            reject(
+              new EmbeddingError(
+                `Worker returned unexpected type "${typeof parsed}" instead of object/array`,
+                'PARSE_ERROR',
+                { output: output.substring(0, 1000) }
+              )
+            );
+            return;
+          }
           resolve(parsed);
         } else {
           console.error('[EmbeddingWorker] Parse error: no valid JSON in output');

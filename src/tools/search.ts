@@ -19,6 +19,8 @@ import { requireDatabase, getDefaultStoragePath } from '../server/state.js';
 import { successResult } from '../server/types.js';
 import {
   validateInput,
+  sanitizePath,
+  escapeLikePattern,
   SearchSemanticInput,
   SearchInput,
   SearchHybridInput,
@@ -66,9 +68,9 @@ function resolveMetadataFilter(
 
   let sql = 'SELECT id FROM documents WHERE 1=1';
   const params: string[] = [];
-  if (doc_title) { sql += ' AND doc_title LIKE ?'; params.push(`%${doc_title}%`); }
-  if (doc_author) { sql += ' AND doc_author LIKE ?'; params.push(`%${doc_author}%`); }
-  if (doc_subject) { sql += ' AND doc_subject LIKE ?'; params.push(`%${doc_subject}%`); }
+  if (doc_title) { sql += " AND doc_title LIKE ? ESCAPE '\\'"; params.push(`%${escapeLikePattern(doc_title)}%`); }
+  if (doc_author) { sql += " AND doc_author LIKE ? ESCAPE '\\'"; params.push(`%${escapeLikePattern(doc_author)}%`); }
+  if (doc_subject) { sql += " AND doc_subject LIKE ? ESCAPE '\\'"; params.push(`%${escapeLikePattern(doc_subject)}%`); }
 
   // If existing doc filter, intersect with it
   if (existingDocFilter && existingDocFilter.length > 0) {
@@ -1234,6 +1236,7 @@ export async function handleSearchHybrid(
     const conn = db.getConnection();
 
     const kgMetricsHybrid = createKGMetrics();
+    const searchWarnings: string[] = [];
 
     // Resolve metadata filter to document IDs, then chain through quality filter
     let documentFilter = resolveQualityFilter(db, input.min_quality_score,
@@ -1373,7 +1376,10 @@ export async function handleSearchHybrid(
           }
         }
       } catch (error) {
-        console.error(`[WARN] Entity boost failed: ${error instanceof Error ? error.message : String(error)}`);
+        const msg = error instanceof Error ? error.message : String(error);
+        console.error(`[WARN] Entity boost failed: ${msg}`);
+        searchWarnings.push(`Entity boost failed: ${msg}`);
+        entityBoostInfo = undefined;
       }
     }
 
@@ -1462,6 +1468,9 @@ export async function handleSearchHybrid(
 
     if (entityBoostInfo) {
       responseData.entity_boost = entityBoostInfo;
+      responseData.entity_boost_applied = true;
+    } else if (entityBoostFactor > 0) {
+      responseData.entity_boost_applied = false;
     }
 
     if (chunkProximityInfo) {
@@ -1473,17 +1482,30 @@ export async function handleSearchHybrid(
     }
 
     if (input.entity_filter) {
-      const hybridFreqBoostInfo = applyEntityFrequencyBoost(
-        finalResults, 'rrf_score', conn, input.entity_filter,
-      );
-      appendEntityFilterResponse(responseData, kgMetricsHybrid, input.entity_filter, documentFilter, hybridFreqBoostInfo);
+      try {
+        const hybridFreqBoostInfo = applyEntityFrequencyBoost(
+          finalResults, 'rrf_score', conn, input.entity_filter,
+        );
+        appendEntityFilterResponse(responseData, kgMetricsHybrid, input.entity_filter, documentFilter, hybridFreqBoostInfo);
+      } catch (freqErr) {
+        const msg = freqErr instanceof Error ? freqErr.message : String(freqErr);
+        console.error(`[WARN] Entity frequency boost failed: ${msg}`);
+        searchWarnings.push(`Entity frequency boost failed: ${msg}`);
+        appendEntityFilterResponse(responseData, kgMetricsHybrid, input.entity_filter, documentFilter, undefined);
+      }
     } else {
-      const hybridQueryFreqBoostInfo = applyQueryDerivedFrequencyBoost(
-        finalResults, 'rrf_score', conn, input.query,
-      );
-      if (hybridQueryFreqBoostInfo) {
-        responseData.frequency_boost = hybridQueryFreqBoostInfo;
-        kgMetricsHybrid.frequency_boost_results_boosted = hybridQueryFreqBoostInfo.boosted_results;
+      try {
+        const hybridQueryFreqBoostInfo = applyQueryDerivedFrequencyBoost(
+          finalResults, 'rrf_score', conn, input.query,
+        );
+        if (hybridQueryFreqBoostInfo) {
+          responseData.frequency_boost = hybridQueryFreqBoostInfo;
+          kgMetricsHybrid.frequency_boost_results_boosted = hybridQueryFreqBoostInfo.boosted_results;
+        }
+      } catch (freqErr) {
+        const msg = freqErr instanceof Error ? freqErr.message : String(freqErr);
+        console.error(`[WARN] Query-derived frequency boost failed: ${msg}`);
+        searchWarnings.push(`Query-derived frequency boost failed: ${msg}`);
       }
     }
 
@@ -1498,6 +1520,11 @@ export async function handleSearchHybrid(
       appendDidYouMean(responseData, kgMetricsHybrid, input.query, conn);
     }
     responseData.kg_integration_metrics = kgMetricsHybrid;
+
+    if (searchWarnings.length > 0) {
+      responseData.warnings = searchWarnings;
+      responseData._degraded = true;
+    }
 
     return formatResponse(successResult(responseData));
   } catch (error) {
@@ -1577,6 +1604,7 @@ async function handleRagContext(
     const conn = db.getConnection();
     const limit = input.limit ?? 5;
     const maxContextLength = input.max_context_length ?? 8000;
+    const ragWarnings: string[] = [];
 
     // ── Step 1: Run hybrid search (BM25 + semantic + RRF) ──────────────────
     // Expand BM25 query with KG co-mentioned entities for broader recall
@@ -1649,7 +1677,9 @@ async function handleRagContext(
         try {
           entityMap = getEntitiesForChunks(conn, chunkIds, input.min_entity_confidence);
         } catch (err) {
-          console.error(`[RAG] Entity enrichment failed: ${err instanceof Error ? err.message : String(err)}`);
+          const msg = err instanceof Error ? err.message : String(err);
+          console.error(`[RAG] Entity enrichment failed: ${msg}`);
+          ragWarnings.push(`Entity enrichment failed: ${msg}. LLM context may be incomplete.`);
         }
       }
       // Enrich VLM/image results with page co-occurrence entities
@@ -1833,7 +1863,7 @@ async function handleRagContext(
     }
 
     // ── Step 6: Return structured response ─────────────────────────────────
-    return formatResponse(successResult({
+    const ragResponse: Record<string, unknown> = {
       question: input.question,
       context: assembledMarkdown,
       context_length: assembledMarkdown.length,
@@ -1842,7 +1872,12 @@ async function handleRagContext(
       kg_paths_found: kgPaths.length,
       relationship_summary_included: input.include_relationship_summary && kgPaths.length > 0,
       sources,
-    }));
+    };
+    if (ragWarnings.length > 0) {
+      ragResponse.warnings = ragWarnings;
+      ragResponse._degraded = true;
+    }
+    return formatResponse(successResult(ragResponse));
   } catch (error) {
     return handleError(error);
   }
@@ -1927,7 +1962,8 @@ async function handleBenchmarkCompare(params: Record<string, unknown>): Promise<
         try {
           const nodes = conn.prepare('SELECT canonical_name FROM knowledge_nodes').all() as Array<{ canonical_name: string }>;
           dbEntitySets.set(dbName, new Set(nodes.map(n => n.canonical_name.toLowerCase())));
-        } catch {
+        } catch (entityErr) {
+          console.error(`[BENCHMARK] Failed to collect entity names for database '${dbName}': ${entityErr instanceof Error ? entityErr.message : String(entityErr)}`);
           dbEntitySets.set(dbName, new Set());
         }
 
@@ -2040,16 +2076,31 @@ async function handleSearchExport(params: Record<string, unknown>): Promise<Tool
     }
 
     // Parse search results from the ToolResponse
+    if (!searchResult.content || searchResult.content.length === 0) {
+      throw new Error('Search returned empty content');
+    }
     const responseContent = searchResult.content[0];
     if (responseContent.type !== 'text') throw new Error('Unexpected search response format');
-    const parsedResponse = JSON.parse(responseContent.text);
-    if (!parsedResponse.success) throw new Error(`Search failed: ${parsedResponse.error?.message || 'Unknown error'}`);
-    const results = parsedResponse.data?.results || [];
+    let parsedResponse: Record<string, unknown>;
+    try {
+      parsedResponse = JSON.parse(responseContent.text) as Record<string, unknown>;
+    } catch {
+      throw new Error('Failed to parse search response as JSON');
+    }
+    if (!parsedResponse.success) {
+      const errObj = parsedResponse.error as Record<string, unknown> | undefined;
+      throw new Error(`Search failed: ${errObj?.message || 'Unknown error'}`);
+    }
+    const dataObj = parsedResponse.data as Record<string, unknown> | undefined;
+    const results: Array<Record<string, unknown>> = Array.isArray(dataObj?.results) ? dataObj.results as Array<Record<string, unknown>> : [];
     // Extract cross-document entity summary from search response
-    const crossDocEntities = parsedResponse.data?.cross_document_entities || [];
+    const crossDocEntities: unknown[] = Array.isArray(dataObj?.cross_document_entities) ? dataObj.cross_document_entities as unknown[] : [];
+
+    // Sanitize output path to prevent directory traversal
+    const safeOutputPath = sanitizePath(input.output_path);
 
     // Ensure output directory exists
-    const outputDir = path.dirname(input.output_path);
+    const outputDir = path.dirname(safeOutputPath);
     fs.mkdirSync(outputDir, { recursive: true });
 
     if (input.format === 'json') {
@@ -2071,23 +2122,24 @@ async function handleSearchExport(params: Record<string, unknown>): Promise<Tool
         }),
         cross_document_entities: crossDocEntities,
       };
-      fs.writeFileSync(input.output_path, JSON.stringify(exportData, null, 2));
+      fs.writeFileSync(safeOutputPath, JSON.stringify(exportData, null, 2));
     } else {
       // CSV
       const headers = ['document_id', 'source_file', 'page_number', 'score', 'result_type'];
       if (input.include_text) headers.push('text');
       if (input.include_entities) headers.push('entities_mentioned');
       const csvLines = [headers.join(',')];
+      // TY-13: r is Record<string,unknown> from parsed JSON -- use String() for safe coercion
       for (const r of results) {
         const row = [
-          r.document_id,
-          (r.source_file_name || r.source_file_path || '').replace(/,/g, ';'),
-          r.page_number ?? '',
-          r.bm25_score ?? r.similarity_score ?? r.rrf_score ?? '',
-          r.result_type || '',
+          String(r.document_id ?? ''),
+          String(r.source_file_name || r.source_file_path || '').replace(/,/g, ';'),
+          r.page_number != null ? String(r.page_number) : '',
+          String(r.bm25_score ?? r.similarity_score ?? r.rrf_score ?? ''),
+          String(r.result_type || ''),
         ];
         if (input.include_text) {
-          row.push(`"${(r.original_text || '').replace(/"/g, '""').replace(/\n/g, ' ')}"`);
+          row.push(`"${String(r.original_text || '').replace(/"/g, '""').replace(/\n/g, ' ')}"`);
         }
         if (input.include_entities) {
           // Format entities as semicolon-separated canonical names for CSV
@@ -2109,11 +2161,11 @@ async function handleSearchExport(params: Record<string, unknown>): Promise<Tool
           csvLines.push(`"${((rec.canonical_name as string) || '').replace(/"/g, '""')}",${rec.entity_type || ''},${rec.mentioned_in_results || 0},${rec.document_count || 0}`);
         }
       }
-      fs.writeFileSync(input.output_path, csvLines.join('\n'));
+      fs.writeFileSync(safeOutputPath, csvLines.join('\n'));
     }
 
     return formatResponse(successResult({
-      output_path: input.output_path,
+      output_path: safeOutputPath,
       format: input.format,
       result_count: results.length,
       search_type: input.search_type,

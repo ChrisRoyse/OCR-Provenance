@@ -42,7 +42,7 @@ describe('Config Schemas', () => {
     });
 
     it('should accept boolean value', () => {
-      const result = ConfigSetInput.parse({ key: 'log_level', value: true });
+      const result = ConfigSetInput.parse({ key: 'embedding_device', value: true });
       expect(result.value).toBe(true);
     });
 

@@ -180,7 +180,7 @@ describe('GeminiClient', () => {
     const originalKey = process.env.GEMINI_API_KEY;
     delete process.env.GEMINI_API_KEY;
 
-    expect(() => new GeminiClient({ apiKey: '' })).toThrow('GEMINI_API_KEY is required');
+    expect(() => new GeminiClient({ apiKey: '' })).toThrow('GEMINI_API_KEY environment variable is not set');
 
     if (originalKey) {
       process.env.GEMINI_API_KEY = originalKey;

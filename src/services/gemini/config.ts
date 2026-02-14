@@ -98,11 +98,22 @@ export const GeminiConfigSchema = z.object({
 export type GeminiConfig = z.infer<typeof GeminiConfigSchema>;
 
 /**
- * Load configuration from environment variables
+ * Load configuration from environment variables.
+ *
+ * Checks for GEMINI_API_KEY before Zod validation to provide a clear,
+ * actionable error message instead of a cryptic Zod validation failure.
  */
 export function loadGeminiConfig(overrides?: Partial<GeminiConfig>): GeminiConfig {
+  const apiKey = overrides?.apiKey ?? process.env.GEMINI_API_KEY;
+  if (!apiKey || apiKey.trim().length === 0) {
+    throw new Error(
+      'GEMINI_API_KEY environment variable is not set. ' +
+      'Set it in .env or environment to use Gemini features (VLM, entity extraction, re-ranking).'
+    );
+  }
+
   const envConfig = {
-    apiKey: process.env.GEMINI_API_KEY || '',
+    apiKey,
     model: process.env.GEMINI_MODEL || GEMINI_MODELS.FLASH_3,
     tier: (process.env.GEMINI_TIER as SubscriptionTier) || 'payAsYouGo',
     maxOutputTokens: process.env.GEMINI_MAX_OUTPUT_TOKENS

@@ -2,7 +2,7 @@
  * Helper functions for DatabaseService
  *
  * Contains utility functions for validation, path resolution,
- * and foreign key error handling.
+ * foreign key error handling, and batched query execution.
  */
 
 import Database from 'better-sqlite3';
@@ -74,4 +74,39 @@ export function runWithForeignKeyCheck(
     }
     throw error;
   }
+}
+
+/**
+ * SQLite maximum parameter count per query. SQLite crashes at ~999 parameters.
+ * We use 500 as default batch size to stay well under the limit.
+ */
+const DEFAULT_BATCH_SIZE = 500;
+
+/**
+ * Execute a query callback in batches to avoid SQLite's 999-parameter limit.
+ *
+ * When building queries with `IN (?, ?, ...)` clauses, SQLite crashes if
+ * more than ~999 parameters are bound. This helper splits an array of IDs
+ * into batches and calls the provided callback for each batch, concatenating
+ * the results.
+ *
+ * @param ids - Full array of IDs to process
+ * @param callback - Function that receives a batch of IDs and returns results
+ * @param batchSize - Maximum IDs per batch (default 500)
+ * @returns Concatenated results from all batches
+ */
+export function batchedQuery<T>(
+  ids: string[],
+  callback: (batch: string[]) => T[],
+  batchSize: number = DEFAULT_BATCH_SIZE,
+): T[] {
+  if (ids.length === 0) return [];
+  if (ids.length <= batchSize) return callback(ids);
+
+  const results: T[] = [];
+  for (let i = 0; i < ids.length; i += batchSize) {
+    const batch = ids.slice(i, i + batchSize);
+    results.push(...callback(batch));
+  }
+  return results;
 }

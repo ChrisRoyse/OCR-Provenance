@@ -13,7 +13,7 @@
 import { z } from 'zod';
 import { v4 as uuidv4 } from 'uuid';
 import { formatResponse, handleError, type ToolDefinition } from './shared.js';
-import { validateInput } from '../utils/validation.js';
+import { validateInput, escapeLikePattern } from '../utils/validation.js';
 import { requireDatabase } from '../server/state.js';
 import { GeminiClient } from '../services/gemini/client.js';
 import { ProvenanceType } from '../models/provenance.js';
@@ -642,13 +642,13 @@ async function handleTimelineBuild(params: Record<string, unknown>) {
       // Query entity_mentions for entities whose normalized_text or raw_text matches
       // any of the entity_names (case-insensitive LIKE match)
       for (const name of input.entity_names) {
-        const likePattern = `%${name}%`;
+        const likePattern = `%${escapeLikePattern(name)}%`;
         const rows = conn.prepare(`
           SELECT DISTINCT em.chunk_id
           FROM entity_mentions em
           JOIN entities e ON em.entity_id = e.id
           WHERE em.chunk_id IS NOT NULL
-            AND (e.normalized_text LIKE ? COLLATE NOCASE OR e.raw_text LIKE ? COLLATE NOCASE)
+            AND (e.normalized_text LIKE ? ESCAPE '\\' COLLATE NOCASE OR e.raw_text LIKE ? ESCAPE '\\' COLLATE NOCASE)
         `).all(likePattern, likePattern) as Array<{ chunk_id: string }>;
         for (const row of rows) {
           entityNameChunkIds.add(row.chunk_id);
@@ -1482,7 +1482,7 @@ async function handleEntityDossier(params: Record<string, unknown>) {
       // FTS5 fallback
       if (!nodeRow) {
         try {
-          const sanitized = input.entity_name.replace(/['"]/g, '').trim();
+          const sanitized = input.entity_name.replace(/["*()\\+:^-]/g, ' ').trim();
           if (sanitized.length > 0) {
             nodeRow = conn.prepare(`
               SELECT kn.id, kn.entity_type, kn.canonical_name, kn.aliases,
@@ -1502,9 +1502,9 @@ async function handleEntityDossier(params: Record<string, unknown>) {
         nodeRow = conn.prepare(`
           SELECT id, entity_type, canonical_name, aliases, document_count, mention_count,
                  avg_confidence, importance_score
-          FROM knowledge_nodes WHERE LOWER(aliases) LIKE ?
+          FROM knowledge_nodes WHERE LOWER(aliases) LIKE ? ESCAPE '\\'
           LIMIT 1
-        `).get(`%${input.entity_name.toLowerCase()}%`) as KGNodeRow | undefined ?? null;
+        `).get(`%${escapeLikePattern(input.entity_name.toLowerCase())}%`) as KGNodeRow | undefined ?? null;
       }
 
       if (nodeRow) {
@@ -1521,15 +1521,16 @@ async function handleEntityDossier(params: Record<string, unknown>) {
 
     if (!nodeRow) {
       entityFallback = true;
+      const escapedEntityName = escapeLikePattern(input.entity_name.toLowerCase());
       fallbackEntities = conn.prepare(`
         SELECT id, entity_type, raw_text, normalized_text, confidence, document_id
         FROM entities
-        WHERE LOWER(normalized_text) LIKE ? OR LOWER(raw_text) LIKE ?
+        WHERE LOWER(normalized_text) LIKE ? ESCAPE '\\' OR LOWER(raw_text) LIKE ? ESCAPE '\\'
         ORDER BY confidence DESC
         LIMIT 20
       `).all(
-        `%${input.entity_name.toLowerCase()}%`,
-        `%${input.entity_name.toLowerCase()}%`,
+        `%${escapedEntityName}%`,
+        `%${escapedEntityName}%`,
       ) as typeof fallbackEntities;
 
       if (fallbackEntities.length === 0) {

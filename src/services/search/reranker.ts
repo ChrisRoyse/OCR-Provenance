@@ -78,7 +78,14 @@ export async function rerankResults(
   const client = new GeminiClient();
   const response = await client.fast(prompt, RERANK_SCHEMA);
 
-  const parsed = JSON.parse(response.text);
+  let parsed: { rankings?: RerankResult[] };
+  try {
+    parsed = JSON.parse(response.text);
+  } catch (_parseErr) {
+    const rawPreview = response.text.slice(0, 500);
+    console.error(`[ERROR] Reranker JSON parse failed. Raw response (first 500 chars): ${rawPreview}`);
+    throw new Error(`Reranker failed: Gemini returned unparseable response. Raw text (first 200 chars): ${response.text.slice(0, 200)}`);
+  }
   const rankings = (parsed.rankings || []) as RerankResult[];
 
   // Sort by relevance score descending, take maxResults

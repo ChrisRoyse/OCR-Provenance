@@ -8,6 +8,7 @@
 import Database from 'better-sqlite3';
 import { FormFill } from '../../../models/form-fill.js';
 import { runWithForeignKeyCheck } from './helpers.js';
+import { escapeLikePattern } from '../../../utils/validation.js';
 
 /**
  * Insert a form fill record
@@ -122,12 +123,13 @@ export function searchFormFills(
   const limit = options?.limit ?? 50;
   const offset = options?.offset ?? 0;
 
+  const escaped = escapeLikePattern(query);
   return db.prepare(`
     SELECT * FROM form_fills
-    WHERE field_data_json LIKE ? OR fields_filled LIKE ? OR source_file_path LIKE ?
+    WHERE field_data_json LIKE ? ESCAPE '\\' OR fields_filled LIKE ? ESCAPE '\\' OR source_file_path LIKE ? ESCAPE '\\'
     ORDER BY created_at DESC
     LIMIT ? OFFSET ?
-  `).all(`%${query}%`, `%${query}%`, `%${query}%`, limit, offset) as FormFill[];
+  `).all(`%${escaped}%`, `%${escaped}%`, `%${escaped}%`, limit, offset) as FormFill[];
 }
 
 /**

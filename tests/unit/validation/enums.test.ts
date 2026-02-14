@@ -38,7 +38,7 @@ describe('Enums', () => {
     it('should accept valid config keys', () => {
       expect(ConfigKey.parse('datalab_default_mode')).toBe('datalab_default_mode');
       expect(ConfigKey.parse('chunk_size')).toBe('chunk_size');
-      expect(ConfigKey.parse('log_level')).toBe('log_level');
+      expect(ConfigKey.parse('chunk_overlap_percent')).toBe('chunk_overlap_percent');
     });
   });
 });

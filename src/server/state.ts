@@ -28,7 +28,6 @@ const defaultConfig: ServerConfig = {
   embeddingDevice: 'cuda:0',
   chunkSize: 2000,
   chunkOverlapPercent: 10,
-  logLevel: 'info',
   imageOptimization: {
     enabled: true,
     ocrMaxWidth: 4800,
@@ -92,6 +91,29 @@ export function requireDatabase(): DatabaseServices {
     _cachedVectorService = new VectorService(state.currentDatabase.getConnection());
   }
   return { db: state.currentDatabase, vector: _cachedVectorService, generation: _dbGeneration };
+}
+
+/**
+ * Validate that the database generation matches the expected value.
+ *
+ * The generation counter increments on every database switch/clear. A mismatch
+ * means the database was switched between the time a caller obtained the
+ * generation and the time it validates -- indicating a race condition where
+ * the caller's database reference is stale.
+ *
+ * Callers can optionally use this at critical points (e.g., before writing
+ * results back to the database) to detect and fail fast on stale references.
+ *
+ * @param expectedGeneration - The generation value obtained from requireDatabase()
+ * @throws Error if the current generation does not match
+ */
+export function validateGeneration(expectedGeneration: number): void {
+  if (_dbGeneration !== expectedGeneration) {
+    throw new Error(
+      `Database generation mismatch: expected ${expectedGeneration}, current ${_dbGeneration}. ` +
+      `The database was switched during this operation. Retry with the current database.`
+    );
+  }
 }
 
 /**

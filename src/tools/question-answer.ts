@@ -118,25 +118,20 @@ function runBM25Search(
   searchLimit: number,
   documentFilter: string[] | undefined,
 ): QASearchResult[] {
-  try {
-    const bm25 = new BM25SearchService(conn);
-    const chunkResults = bm25.search({
-      query,
-      limit: searchLimit,
-      documentFilter,
-      includeHighlight: false,
-    });
-    return chunkResults.map(r => ({
-      chunk_id: r.chunk_id,
-      document_id: r.document_id,
-      original_text: r.original_text,
-      page_number: r.page_number,
-      score: r.bm25_score,
-    }));
-  } catch {
-    // FTS may not be populated
-    return [];
-  }
+  const bm25 = new BM25SearchService(conn);
+  const chunkResults = bm25.search({
+    query,
+    limit: searchLimit,
+    documentFilter,
+    includeHighlight: false,
+  });
+  return chunkResults.map(r => ({
+    chunk_id: r.chunk_id,
+    document_id: r.document_id,
+    original_text: r.original_text,
+    page_number: r.page_number,
+    score: r.bm25_score,
+  }));
 }
 
 /**
@@ -180,7 +175,8 @@ async function runHybridSearch(
   searchLimit: number,
   documentFilter: string[] | undefined,
   semanticWeight: number,
-): Promise<{ results: QASearchResult[]; mode_used: string }> {
+): Promise<{ results: QASearchResult[]; mode_used: string; warnings: string[]; _degraded: boolean }> {
+  const warnings: string[] = [];
   // BM25 results
   let bm25Results: Array<{
     chunk_id: string | null; document_id: string; original_text: string;
@@ -200,8 +196,10 @@ async function runHybridSearch(
       includeHighlight: false,
     });
     bm25Results = chunkResults.map((r, i) => ({ ...r, rank: i + 1 }));
-  } catch {
-    // FTS may not be populated
+  } catch (bm25Err) {
+    const msg = bm25Err instanceof Error ? bm25Err.message : String(bm25Err);
+    console.error(`[ERROR] BM25 search failed in hybrid mode: ${msg}`);
+    throw new Error(`BM25 search failed: ${msg}`);
   }
 
   // Semantic results
@@ -224,16 +222,19 @@ async function runHybridSearch(
       documentFilter,
     });
   } catch (err) {
-    console.error(`[WARN] Semantic search failed in hybrid mode: ${err instanceof Error ? err.message : String(err)}`);
+    const semanticMsg = err instanceof Error ? err.message : String(err);
+    console.error(`[WARN] Semantic search failed in hybrid mode: ${semanticMsg}`);
+    warnings.push(`Semantic search failed: ${semanticMsg}. Results are BM25-only.`);
   }
 
   // If both are empty, no results
   if (bm25Results.length === 0 && semanticResults.length === 0) {
-    return { results: [], mode_used: 'hybrid' };
+    return { results: [], mode_used: 'hybrid', warnings, _degraded: warnings.length > 0 };
   }
 
   // If only one side has results, return that side directly
   if (semanticResults.length === 0) {
+    const degraded = warnings.length > 0;
     return {
       results: bm25Results.map(r => ({
         chunk_id: r.chunk_id,
@@ -242,7 +243,9 @@ async function runHybridSearch(
         page_number: r.page_number,
         score: r.bm25_score,
       })),
-      mode_used: 'bm25_fallback',
+      mode_used: degraded ? 'bm25_only' : 'bm25_fallback',
+      warnings,
+      _degraded: degraded,
     };
   }
 
@@ -256,6 +259,8 @@ async function runHybridSearch(
         score: r.similarity_score,
       })),
       mode_used: 'semantic_fallback',
+      warnings,
+      _degraded: warnings.length > 0,
     };
   }
 
@@ -320,6 +325,8 @@ async function runHybridSearch(
       score: r.rrf_score,
     })),
     mode_used: 'hybrid',
+    warnings,
+    _degraded: warnings.length > 0,
   };
 }
 
@@ -679,6 +686,8 @@ async function handleQuestionAnswer(params: Record<string, unknown>): Promise<To
     // Step 2: Run search based on mode
     let searchResults: QASearchResult[];
     let modeUsed: string = searchMode;
+    const responseWarnings: string[] = [];
+    let isDegraded = false;
 
     if (searchMode === 'bm25') {
       searchResults = runBM25Search(conn, input.question, searchLimit, documentFilter);
@@ -694,6 +703,12 @@ async function handleQuestionAnswer(params: Record<string, unknown>): Promise<To
       const hybridResult = await runHybridSearch(conn, input.question, searchLimit, documentFilter, semanticWeight);
       searchResults = hybridResult.results;
       modeUsed = hybridResult.mode_used;
+      if (hybridResult.warnings.length > 0) {
+        responseWarnings.push(...hybridResult.warnings);
+      }
+      if (hybridResult._degraded) {
+        isDegraded = true;
+      }
     }
 
     // Take top results
@@ -827,6 +842,14 @@ ${input.question}
     if (entityFilterApplied) {
       responseData.entity_filter_applied = true;
       responseData.entity_filter_document_count = entityFilterDocCount;
+    }
+
+    if (responseWarnings.length > 0) {
+      responseData.warnings = responseWarnings;
+    }
+    if (isDegraded) {
+      responseData._degraded = true;
+      responseData.actual_mode = modeUsed;
     }
 
     return formatResponse(successResult(responseData));
