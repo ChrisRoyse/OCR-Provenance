@@ -249,83 +249,77 @@ export class VLMService {
   }
 
   /**
+   * Parse a VLM JSON response, stripping markdown fences.
+   * Throws with diagnostic info on parse failure (fail-fast).
+   */
+  private parseVLMJson<T>(text: string, label: string): T {
+    try {
+      const clean = text.replace(/```json\n?|\n?```/g, '').trim();
+      return JSON.parse(clean) as T;
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error(`[VLMService] Failed to parse ${label} JSON: ${msg}`);
+      throw new Error(`VLM ${label} JSON parse failed: ${msg}. Raw response (first 200 chars): ${text.slice(0, 200)}`);
+    }
+  }
+
+  /**
    * Parse JSON response into ImageAnalysis structure.
    */
   private parseAnalysis(text: string): ImageAnalysis {
-    try {
-      const clean = text.replace(/```json\n?|\n?```/g, '').trim();
-      const parsed = JSON.parse(clean) as Partial<ImageAnalysis>;
+    const parsed = this.parseVLMJson<Partial<ImageAnalysis>>(text, 'analysis');
 
-      return {
-        imageType: parsed.imageType || 'unknown',
-        primarySubject: parsed.primarySubject || '',
-        paragraph1: parsed.paragraph1 || '',
-        paragraph2: parsed.paragraph2 || '',
-        paragraph3: parsed.paragraph3 || '',
-        extractedText: parsed.extractedText || [],
-        dates: parsed.dates || [],
-        names: parsed.names || [],
-        numbers: parsed.numbers || [],
-        confidence: parsed.confidence ?? 0.5,
-      };
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      console.error(`[VLMService] Failed to parse analysis JSON: ${msg}`);
-      throw new Error(`VLM analysis JSON parse failed: ${msg}. Raw response (first 200 chars): ${text.slice(0, 200)}`);
-    }
+    return {
+      imageType: parsed.imageType || 'unknown',
+      primarySubject: parsed.primarySubject || '',
+      paragraph1: parsed.paragraph1 || '',
+      paragraph2: parsed.paragraph2 || '',
+      paragraph3: parsed.paragraph3 || '',
+      extractedText: parsed.extractedText || [],
+      dates: parsed.dates || [],
+      names: parsed.names || [],
+      numbers: parsed.numbers || [],
+      confidence: parsed.confidence ?? 0.5,
+    };
   }
 
   /**
    * Parse classification response.
    */
   private parseClassification(text: string): ImageClassification {
-    try {
-      const clean = text.replace(/```json\n?|\n?```/g, '').trim();
-      const parsed = JSON.parse(clean) as Partial<ImageClassification>;
+    const parsed = this.parseVLMJson<Partial<ImageClassification>>(text, 'classification');
 
-      return {
-        type: parsed.type || 'other',
-        hasText: parsed.hasText ?? false,
-        textDensity: parsed.textDensity || 'unknown',
-        complexity: parsed.complexity || 'medium',
-        confidence: parsed.confidence ?? 0.5,
-      };
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      console.error(`[VLMService] Failed to parse classification JSON: ${msg}`);
-      throw new Error(`VLM classification JSON parse failed: ${msg}. Raw response (first 200 chars): ${text.slice(0, 200)}`);
-    }
+    return {
+      type: parsed.type || 'other',
+      hasText: parsed.hasText ?? false,
+      textDensity: parsed.textDensity || 'unknown',
+      complexity: parsed.complexity || 'medium',
+      confidence: parsed.confidence ?? 0.5,
+    };
   }
 
   /**
    * Parse deep analysis response.
    */
   private parseDeepAnalysis(text: string): DeepAnalysisResult {
-    try {
-      const clean = text.replace(/```json\n?|\n?```/g, '').trim();
-      const parsed = JSON.parse(clean) as Partial<DeepAnalysisResult>;
+    const parsed = this.parseVLMJson<Partial<DeepAnalysisResult>>(text, 'deep analysis');
 
-      return {
-        thinkingSteps: parsed.thinkingSteps || [],
-        imageType: parsed.imageType || 'unknown',
-        fullDescription: parsed.fullDescription || text,
-        extractedData: {
-          text: parsed.extractedData?.text || [],
-          dates: parsed.extractedData?.dates || [],
-          amounts: parsed.extractedData?.amounts || [],
-          names: parsed.extractedData?.names || [],
-          references: parsed.extractedData?.references || [],
-        },
-        legalSignificance: parsed.legalSignificance || '',
-        medicalSignificance: parsed.medicalSignificance,
-        uncertainties: parsed.uncertainties || [],
-        confidence: parsed.confidence ?? 0.5,
-      };
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      console.error(`[VLMService] Failed to parse deep analysis JSON: ${msg}`);
-      throw new Error(`VLM deep analysis JSON parse failed: ${msg}. Raw response (first 200 chars): ${text.slice(0, 200)}`);
-    }
+    return {
+      thinkingSteps: parsed.thinkingSteps || [],
+      imageType: parsed.imageType || 'unknown',
+      fullDescription: parsed.fullDescription || text,
+      extractedData: {
+        text: parsed.extractedData?.text || [],
+        dates: parsed.extractedData?.dates || [],
+        amounts: parsed.extractedData?.amounts || [],
+        names: parsed.extractedData?.names || [],
+        references: parsed.extractedData?.references || [],
+      },
+      legalSignificance: parsed.legalSignificance || '',
+      medicalSignificance: parsed.medicalSignificance,
+      uncertainties: parsed.uncertainties || [],
+      confidence: parsed.confidence ?? 0.5,
+    };
   }
 
   /**

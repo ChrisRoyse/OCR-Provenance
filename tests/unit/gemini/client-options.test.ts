@@ -3,6 +3,14 @@
  *
  * Uses real GeminiClient class but mocks GoogleGenerativeAI to capture
  * the generation config passed to generateContent().
+ *
+ * TS-09 NOTE: SDK Drift Risk
+ * This test mocks @google/generative-ai at the module level. If the Gemini SDK
+ * changes its API (e.g., different method signatures on getGenerativeModel or
+ * generateContent, renamed properties in usageMetadata, or new required fields),
+ * these tests will continue to pass against the mock while the real integration
+ * silently breaks. When upgrading @google/generative-ai, manually verify that
+ * the mock structure still matches the real SDK interface.
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';

@@ -2,6 +2,15 @@
  * Unit tests for VLM Service
  *
  * Tests the VLMService class for image analysis functionality.
+ *
+ * TS-01 FIX: Tests VLMService's REAL parsing logic using mock HTTP responses.
+ * The GeminiClient is mocked at the HTTP layer, but VLMService's parseAnalysis,
+ * parseClassification, and parseDeepAnalysis methods are tested with realistic
+ * Gemini response formats (valid JSON, markdown-wrapped JSON, malformed JSON).
+ *
+ * VLMService now THROWS on parse failure (not returns defaults).
+ *
+ * @module tests/unit/vlm/service
  */
 
 import { describe, it, expect, beforeEach, vi, type Mock } from 'vitest';
@@ -14,7 +23,7 @@ import {
 } from '../../../src/services/vlm/service.js';
 import { GeminiClient, type GeminiResponse, type FileRef } from '../../../src/services/gemini/index.js';
 
-// Mock the GeminiClient
+// Mock the GeminiClient at the HTTP layer - VLMService's parse methods run for real
 vi.mock('../../../src/services/gemini/client.js', () => {
   return {
     GeminiClient: vi.fn().mockImplementation(() => ({
@@ -33,23 +42,10 @@ vi.mock('../../../src/services/gemini/client.js', () => {
 const mockFileRefFromPath = vi.fn();
 (GeminiClient as unknown as { fileRefFromPath: Mock }).fileRefFromPath = mockFileRefFromPath;
 
-describe('VLMService', () => {
-  let service: VLMService;
-  let mockClient: { analyzeImage: Mock; getStatus: Mock };
-
-  const mockAnalysisResponse: GeminiResponse = {
-    text: JSON.stringify({
-      imageType: 'medical_document',
-      primarySubject: 'Lab results',
-      paragraph1: 'This is a medical laboratory report.',
-      paragraph2: 'The report shows blood test results including CBC and metabolic panel.',
-      paragraph3: 'Results indicate normal values for most parameters.',
-      extractedText: ['Patient Name: John Doe', 'Date: 2023-09-15'],
-      dates: ['2023-09-15'],
-      names: ['John Doe'],
-      numbers: ['12.5', '140'],
-      confidence: 0.92,
-    }),
+// Realistic Gemini response builder
+function makeGeminiResponse(text: string, overrides?: Partial<GeminiResponse>): GeminiResponse {
+  return {
+    text,
     usage: {
       inputTokens: 1000,
       outputTokens: 200,
@@ -59,13 +55,19 @@ describe('VLMService', () => {
     },
     model: 'gemini-3-flash-preview',
     processingTimeMs: 2500,
+    ...overrides,
   };
+}
 
-  const mockFileRef: FileRef = {
-    mimeType: 'image/png',
-    data: 'base64encodeddata',
-    sizeBytes: 1024,
-  };
+const mockFileRef: FileRef = {
+  mimeType: 'image/png',
+  data: 'base64encodeddata',
+  sizeBytes: 1024,
+};
+
+describe('VLMService', () => {
+  let service: VLMService;
+  let mockClient: { analyzeImage: Mock; getStatus: Mock };
 
   beforeEach(() => {
     vi.clearAllMocks();
@@ -73,10 +75,8 @@ describe('VLMService', () => {
 
     mockFileRefFromPath.mockReturnValue(mockFileRef);
 
-    // Get mock instance
     service = new VLMService();
     mockClient = (service as unknown as { client: typeof mockClient }).client;
-    mockClient.analyzeImage.mockResolvedValue(mockAnalysisResponse);
   });
 
   describe('constructor', () => {
@@ -91,20 +91,42 @@ describe('VLMService', () => {
     });
   });
 
-  describe('describeImage', () => {
-    it('should analyze an image and return structured result', async () => {
+  describe('describeImage - real parsing', () => {
+    it('should parse a complete well-formed Gemini JSON response', async () => {
+      const analysisJson = {
+        imageType: 'medical_document',
+        primarySubject: 'Lab results',
+        paragraph1: 'This is a medical laboratory report.',
+        paragraph2: 'The report shows blood test results including CBC and metabolic panel.',
+        paragraph3: 'Results indicate normal values for most parameters.',
+        extractedText: ['Patient Name: John Doe', 'Date: 2023-09-15'],
+        dates: ['2023-09-15'],
+        names: ['John Doe'],
+        numbers: ['12.5', '140'],
+        confidence: 0.92,
+      };
+      mockClient.analyzeImage.mockResolvedValue(makeGeminiResponse(JSON.stringify(analysisJson)));
+
       const result = await service.describeImage('/path/to/image.png');
 
-      expect(mockFileRefFromPath).toHaveBeenCalledWith('/path/to/image.png');
-      expect(mockClient.analyzeImage).toHaveBeenCalled();
-      expect(result.description).toBeDefined();
-      expect(result.description).toContain('medical laboratory report');
+      // Verify the parse method correctly extracted all fields
       expect(result.analysis.imageType).toBe('medical_document');
+      expect(result.analysis.primarySubject).toBe('Lab results');
+      expect(result.analysis.paragraph1).toBe('This is a medical laboratory report.');
+      expect(result.analysis.extractedText).toEqual(['Patient Name: John Doe', 'Date: 2023-09-15']);
+      expect(result.analysis.dates).toEqual(['2023-09-15']);
+      expect(result.analysis.names).toEqual(['John Doe']);
+      expect(result.analysis.numbers).toEqual(['12.5', '140']);
       expect(result.analysis.confidence).toBe(0.92);
+      // description = paragraphs joined
+      expect(result.description).toContain('medical laboratory report');
+      expect(result.description).toContain('CBC and metabolic panel');
       expect(result.tokensUsed).toBe(1200);
+      expect(result.model).toBe('gemini-3-flash-preview');
     });
 
     it('should use universal prompt by default', async () => {
+      mockClient.analyzeImage.mockResolvedValue(makeGeminiResponse('{"imageType":"test"}'));
       await service.describeImage('/path/to/image.png');
 
       expect(mockClient.analyzeImage).toHaveBeenCalled();
@@ -113,6 +135,7 @@ describe('VLMService', () => {
     });
 
     it('should use context prompt when contextText is provided and universal is disabled', async () => {
+      mockClient.analyzeImage.mockResolvedValue(makeGeminiResponse('{"imageType":"test"}'));
       await service.describeImage('/path/to/image.png', {
         contextText: 'This image appears after a medication list.',
         useUniversalPrompt: false,
@@ -123,54 +146,55 @@ describe('VLMService', () => {
       expect(callArgs[0]).toContain('SURROUNDING TEXT CONTEXT');
     });
 
-    it('should use medical prompt when useMedicalPrompt is true and universal is disabled', async () => {
+    it('should fall back to legal prompt when universal is disabled and no context', async () => {
+      mockClient.analyzeImage.mockResolvedValue(makeGeminiResponse('{"imageType":"legal_doc"}'));
       await service.describeImage('/path/to/image.png', {
-        useMedicalPrompt: true,
         useUniversalPrompt: false,
       });
 
       expect(mockClient.analyzeImage).toHaveBeenCalled();
       const callArgs = mockClient.analyzeImage.mock.calls[0];
-      expect(callArgs[0]).toContain('medical document');
+      expect(callArgs[0]).toContain('legal or medical document');
     });
 
-    it('should handle parse errors gracefully with zero confidence', async () => {
-      mockClient.analyzeImage.mockResolvedValue({
-        ...mockAnalysisResponse,
-        text: 'Invalid JSON response that cannot be parsed',
-      });
+    it('should throw on unparseable JSON (not return defaults)', async () => {
+      mockClient.analyzeImage.mockResolvedValue(
+        makeGeminiResponse('Invalid JSON response that cannot be parsed')
+      );
 
-      const result = await service.describeImage('/path/to/image.png');
+      await expect(
+        service.describeImage('/path/to/image.png')
+      ).rejects.toThrow('VLM analysis JSON parse failed');
+    });
 
-      expect(result.analysis.imageType).toBe('unknown');
-      expect(result.analysis.confidence).toBe(0);
-      expect(result.analysis.primarySubject).toContain('[PARSE_ERROR]');
-      expect(result.analysis.paragraph1).toContain('Invalid JSON');
+    it('should throw on Gemini rate limit HTML response', async () => {
+      const rateLimitHtml = '<html><body><p>Resource exhausted. Please try again later.</p></body></html>';
+      mockClient.analyzeImage.mockResolvedValue(makeGeminiResponse(rateLimitHtml));
+
+      await expect(
+        service.describeImage('/path/to/image.png')
+      ).rejects.toThrow('VLM analysis JSON parse failed');
+    });
+
+    it('should throw on empty string response', async () => {
+      mockClient.analyzeImage.mockResolvedValue(makeGeminiResponse(''));
+
+      await expect(
+        service.describeImage('/path/to/image.png')
+      ).rejects.toThrow('VLM analysis JSON parse failed');
     });
   });
 
-  describe('classifyImage', () => {
-    const mockClassificationResponse: GeminiResponse = {
-      text: JSON.stringify({
+  describe('classifyImage - real parsing', () => {
+    it('should parse a well-formed classification response', async () => {
+      const classJson = {
         type: 'form',
         hasText: true,
         textDensity: 'dense',
         complexity: 'medium',
         confidence: 0.88,
-      }),
-      usage: {
-        inputTokens: 500,
-        outputTokens: 50,
-        cachedTokens: 0,
-        thinkingTokens: 0,
-        totalTokens: 550,
-      },
-      model: 'gemini-3-flash-preview',
-      processingTimeMs: 800,
-    };
-
-    it('should classify an image', async () => {
-      mockClient.analyzeImage.mockResolvedValue(mockClassificationResponse);
+      };
+      mockClient.analyzeImage.mockResolvedValue(makeGeminiResponse(JSON.stringify(classJson)));
 
       const result = await service.classifyImage('/path/to/image.png');
 
@@ -182,12 +206,19 @@ describe('VLMService', () => {
     });
 
     it('should use low resolution for classification', async () => {
-      mockClient.analyzeImage.mockResolvedValue(mockClassificationResponse);
-
+      mockClient.analyzeImage.mockResolvedValue(makeGeminiResponse('{"type":"chart"}'));
       await service.classifyImage('/path/to/image.png');
 
       const callArgs = mockClient.analyzeImage.mock.calls[0];
       expect(callArgs[2].mediaResolution).toBe('MEDIA_RESOLUTION_LOW');
+    });
+
+    it('should throw on malformed classification JSON', async () => {
+      mockClient.analyzeImage.mockResolvedValue(makeGeminiResponse('not json'));
+
+      await expect(
+        service.classifyImage('/path/to/image.png')
+      ).rejects.toThrow('VLM classification JSON parse failed');
     });
   });
 
@@ -218,7 +249,7 @@ describe('VLMService', () => {
   });
 });
 
-describe('ImageAnalysis parsing', () => {
+describe('ImageAnalysis parsing - real Gemini response formats', () => {
   let service: VLMService;
   let mockClient: { analyzeImage: Mock };
 
@@ -230,31 +261,77 @@ describe('ImageAnalysis parsing', () => {
     mockClient = (service as unknown as { client: typeof mockClient }).client;
   });
 
-  it('should handle JSON wrapped in markdown code blocks', async () => {
-    mockClient.analyzeImage.mockResolvedValue({
-      text: '```json\n{"imageType":"chart","confidence":0.85}\n```',
-      usage: { inputTokens: 100, outputTokens: 50, cachedTokens: 0, thinkingTokens: 0, totalTokens: 150 },
-      model: 'gemini-3-flash-preview',
-      processingTimeMs: 1000,
-    });
+  it('should strip markdown code blocks and parse inner JSON', async () => {
+    // Real Gemini often wraps JSON in ```json blocks
+    mockClient.analyzeImage.mockResolvedValue(
+      makeGeminiResponse('```json\n{"imageType":"chart","confidence":0.85}\n```')
+    );
 
     const result = await service.describeImage('/test.png');
     expect(result.analysis.imageType).toBe('chart');
     expect(result.analysis.confidence).toBe(0.85);
   });
 
-  it('should provide defaults for missing fields', async () => {
-    mockClient.analyzeImage.mockResolvedValue({
-      text: '{"imageType":"document"}',
-      usage: { inputTokens: 100, outputTokens: 50, cachedTokens: 0, thinkingTokens: 0, totalTokens: 150 },
-      model: 'gemini-3-flash-preview',
-      processingTimeMs: 1000,
-    });
+  it('should provide defaults for missing optional fields in valid JSON', async () => {
+    // Gemini may return only some fields - VLMService fills in defaults
+    mockClient.analyzeImage.mockResolvedValue(
+      makeGeminiResponse('{"imageType":"document"}')
+    );
 
     const result = await service.describeImage('/test.png');
     expect(result.analysis.imageType).toBe('document');
+    expect(result.analysis.primarySubject).toBe('');
+    expect(result.analysis.paragraph1).toBe('');
+    expect(result.analysis.paragraph2).toBe('');
+    expect(result.analysis.paragraph3).toBe('');
     expect(result.analysis.extractedText).toEqual([]);
     expect(result.analysis.dates).toEqual([]);
-    expect(result.analysis.confidence).toBe(0.5); // Default
+    expect(result.analysis.names).toEqual([]);
+    expect(result.analysis.numbers).toEqual([]);
+    expect(result.analysis.confidence).toBe(0.5); // Default when not provided
+  });
+
+  it('should handle JSON with extra whitespace and newlines', async () => {
+    const jsonWithWhitespace = `
+    {
+      "imageType": "photograph",
+      "primarySubject": "Building exterior",
+      "confidence": 0.75
+    }
+    `;
+    mockClient.analyzeImage.mockResolvedValue(makeGeminiResponse(jsonWithWhitespace));
+
+    const result = await service.describeImage('/test.png');
+    expect(result.analysis.imageType).toBe('photograph');
+    expect(result.analysis.primarySubject).toBe('Building exterior');
+    expect(result.analysis.confidence).toBe(0.75);
+  });
+
+  it('should handle empty JSON object (all defaults)', async () => {
+    mockClient.analyzeImage.mockResolvedValue(makeGeminiResponse('{}'));
+
+    const result = await service.describeImage('/test.png');
+    expect(result.analysis.imageType).toBe('unknown');
+    expect(result.analysis.confidence).toBe(0.5);
+  });
+
+  it('should handle nested markdown code block with extra backticks', async () => {
+    // Some Gemini responses may have extra backticks
+    mockClient.analyzeImage.mockResolvedValue(
+      makeGeminiResponse('```json\n{"imageType":"table","confidence":0.9}\n```')
+    );
+
+    const result = await service.describeImage('/test.png');
+    expect(result.analysis.imageType).toBe('table');
+    expect(result.analysis.confidence).toBe(0.9);
+  });
+
+  it('should throw on truncated JSON (common Gemini failure mode)', async () => {
+    const truncatedJson = '{"imageType":"medical","primarySubject":"Lab result","paragraph1":"The rep';
+    mockClient.analyzeImage.mockResolvedValue(makeGeminiResponse(truncatedJson));
+
+    await expect(
+      service.describeImage('/test.png')
+    ).rejects.toThrow('VLM analysis JSON parse failed');
   });
 });

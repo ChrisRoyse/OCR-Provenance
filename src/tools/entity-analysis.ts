@@ -39,6 +39,21 @@ import {
 } from '../utils/entity-extraction-helpers.js';
 
 // ═══════════════════════════════════════════════════════════════════════════════
+// HELPERS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/** Safely parse a JSON aliases string into a string array */
+function parseAliases(aliasesJson: string | null | undefined): string[] {
+  if (!aliasesJson) return [];
+  try {
+    const parsed = JSON.parse(aliasesJson);
+    return Array.isArray(parsed) ? parsed.filter((a: unknown) => typeof a === 'string' && a.length > 0) : [];
+  } catch {
+    return [];
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
 // INPUT SCHEMAS
 // ═══════════════════════════════════════════════════════════════════════════════
 
@@ -467,18 +482,7 @@ async function handleEntitySearch(params: Record<string, unknown>) {
           } | undefined;
 
           if (kgNode) {
-            // Parse aliases JSON
-            let aliases: string[] = [];
-            if (kgNode.aliases) {
-              try {
-                const parsed = JSON.parse(kgNode.aliases);
-                if (Array.isArray(parsed)) {
-                  aliases = parsed.filter((a: unknown) => typeof a === 'string' && a.length > 0);
-                }
-              } catch {
-                // Malformed aliases JSON
-              }
-            }
+            const aliases = parseAliases(kgNode.aliases);
 
             result.kg_node_id = kgNode.node_id;
             result.kg_canonical_name = kgNode.canonical_name;
@@ -1280,12 +1284,7 @@ export async function handleCoreferenceResolve(params: Record<string, unknown>) 
             WHERE nel.entity_id = ?
             LIMIT 1
           `).get(e.id) as { aliases: string | null } | undefined;
-          if (aliasRow?.aliases) {
-            const parsed = JSON.parse(aliasRow.aliases);
-            if (Array.isArray(parsed)) {
-              aliases = parsed.filter((a: unknown) => typeof a === 'string' && a.length > 0);
-            }
-          }
+          aliases = parseAliases(aliasRow?.aliases);
         } catch { /* KG tables may not exist */ }
 
         const aliasStr = aliases.length > 0 ? ` [aliases: ${aliases.join(', ')}]` : '';
@@ -1545,15 +1544,7 @@ async function handleEntityDossier(params: Record<string, unknown>) {
 
     // -- Profile --
     if (nodeRow) {
-      let aliases: string[] = [];
-      if (nodeRow.aliases) {
-        try {
-          const parsed = JSON.parse(nodeRow.aliases);
-          if (Array.isArray(parsed)) {
-            aliases = parsed.filter((a: unknown) => typeof a === 'string' && a.length > 0);
-          }
-        } catch { /* malformed */ }
-      }
+      const aliases = parseAliases(nodeRow.aliases);
 
       dossier.profile = {
         node_id: nodeRow.id,

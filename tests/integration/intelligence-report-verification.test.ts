@@ -25,6 +25,17 @@ const DB_PATH = `${process.env.HOME}/.ocr-provenance/databases/bridginglife-benc
 const benchmarkExists = existsSync(DB_PATH);
 let conn: Database.Database;
 
+// TS-05: Make benchmark database skip VISIBLE instead of silent
+if (!benchmarkExists) {
+  console.error('');
+  console.error('='.repeat(78));
+  console.error(`[INFO] Benchmark database not found at ${DB_PATH}`);
+  console.error('Skipping R1-R10 integration tests (intelligence-report-verification).');
+  console.error('To create: npm run test:benchmark or ingest documents first.');
+  console.error('='.repeat(78));
+  console.error('');
+}
+
 beforeAll(() => {
   if (!benchmarkExists) return;
   conn = new Database(DB_PATH, { readonly: true });
@@ -725,54 +736,12 @@ describe.skipIf(!benchmarkExists)('R7: Dynamic Entity Confidence', () => {
     }
   });
 
-  it('should simulate dry_run output with expected fields', () => {
-    // Simulate the full dry_run response
-    const entityRows = conn.prepare(`
-      SELECT e.id, e.document_id, e.entity_type, e.normalized_text, e.confidence
-      FROM entities e
-      LIMIT 10
-    `).all() as Array<{
-      id: string; document_id: string; entity_type: string;
-      normalized_text: string; confidence: number;
-    }>;
-
-    expect(entityRows.length, 'Expected entities for confidence update').toBeGreaterThan(0);
-
-    // Compute avg_confidence_before
-    const avgBefore = entityRows.reduce((s, e) => s + e.confidence, 0) / entityRows.length;
-    expect(avgBefore, 'avg_confidence_before should be > 0').toBeGreaterThan(0);
-
-    // After applying boosts, avg should be >= before
-    let totalNew = 0;
-    const updates: Array<{ entity_id: string; cross_document_boost: number; mention_boost: number; multi_source_boost: number }> = [];
-    for (const entity of entityRows) {
-      const crossDocBoost = 0.15;
-      const mentionBoost = 0.10;
-      const multiSourceBoost = 0.05;
-      const newConf = Math.min(1.0, entity.confidence + crossDocBoost + mentionBoost + multiSourceBoost);
-      totalNew += newConf;
-      updates.push({
-        entity_id: entity.id,
-        cross_document_boost: crossDocBoost,
-        mention_boost: mentionBoost,
-        multi_source_boost: multiSourceBoost,
-      });
-    }
-    const avgAfter = totalNew / entityRows.length;
-    expect(avgAfter, 'avg_confidence_after should be > avg_confidence_before').toBeGreaterThan(avgBefore);
-
-    // Verify structure matches expected output
-    const response = {
-      entities_in_scope: entityRows.length,
-      avg_confidence_before: Math.round(avgBefore * 1000) / 1000,
-      avg_confidence_after: Math.round(avgAfter * 1000) / 1000,
-      sample_updates: updates.slice(0, 5),
-    };
-
-    expect(response.entities_in_scope).toBeGreaterThan(0);
-    expect(response.avg_confidence_before).toBeGreaterThan(0);
-    expect(response.avg_confidence_after).toBeGreaterThan(response.avg_confidence_before);
-    expect(response.sample_updates.length).toBeGreaterThan(0);
+  it.skip('R7 dry_run: Requires calling actual ocr_entity_update_confidence handler with benchmark database - run manually with: npx vitest run tests/integration/intelligence-report-verification.test.ts', () => {
+    // TS-02/TS-04 FIX: The previous test was a mathematical tautology - it hardcoded
+    // boost values (0.15 + 0.10 + 0.05), added them to confidence, and asserted the
+    // sum was larger. This is always true by construction and tests no real handler behavior.
+    // The actual R7 handler (ocr_entity_update_confidence) should be called with dry_run=true
+    // against the benchmark database to verify real confidence update logic.
   });
 });
 

@@ -1447,7 +1447,6 @@ export function getEntityMentionFrequencyByDocument(
     }
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error);
-    console.error(`[KG] Failed to get entity mention frequency: ${msg}`);
     throw new Error(`Entity mention frequency query failed: ${msg}`);
   }
 
@@ -1712,9 +1711,6 @@ export function getEvidenceChunksForEdge(
     return rows;
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error);
-    console.error(
-      `[KG] Failed to get evidence chunks for edge ${sourceNodeId} <-> ${targetNodeId}: ${msg}`,
-    );
     throw new Error(`Evidence chunk retrieval failed for edge ${sourceNodeId} <-> ${targetNodeId}: ${msg}`);
   }
 }
