@@ -1061,6 +1061,11 @@ export function migrateToLatest(db: Database.Database): void {
     migrateV19ToV20(db);
     bumpVersion(20);
   }
+
+  if (currentVersion < 21) {
+    migrateV20ToV21(db);
+    bumpVersion(21);
+  }
 }
 
 /**
@@ -2096,21 +2101,33 @@ function migrateV19ToV20(db: Database.Database): void {
       db.exec('ALTER TABLE knowledge_nodes ADD COLUMN resolution_type TEXT');
     }
 
-    // Step 2b: Add ocr_quality_score to chunks
+    // Step 3: Add ocr_quality_score to chunks
     const chunkCols = db.pragma('table_info(chunks)') as Array<{ name: string }>;
     const chunkColNames = new Set(chunkCols.map(c => c.name));
     if (!chunkColNames.has('ocr_quality_score')) {
       db.exec('ALTER TABLE chunks ADD COLUMN ocr_quality_score REAL');
     }
 
-    // Step 3: Create entity_embeddings table and indexes
-    db.exec(CREATE_ENTITY_EMBEDDINGS_TABLE);
+    // Step 4: Create placeholder entity_embeddings table (v21 will recreate with correct schema)
+    db.exec(`CREATE TABLE IF NOT EXISTS entity_embeddings (
+      id TEXT PRIMARY KEY,
+      entity_id TEXT NOT NULL REFERENCES entities(id),
+      node_id TEXT REFERENCES knowledge_nodes(id),
+      embedding_model TEXT NOT NULL,
+      dimensions INTEGER NOT NULL,
+      content_hash TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      provenance_id TEXT REFERENCES provenance(id)
+    )`);
     db.exec('CREATE INDEX IF NOT EXISTS idx_entity_embeddings_entity_id ON entity_embeddings(entity_id)');
     db.exec('CREATE INDEX IF NOT EXISTS idx_entity_embeddings_node_id ON entity_embeddings(node_id)');
     db.exec('CREATE INDEX IF NOT EXISTS idx_entity_embeddings_content_hash ON entity_embeddings(content_hash)');
 
-    // Step 4: Create vec_entity_embeddings virtual table (sqlite-vec, outside transaction)
-    db.exec(CREATE_VEC_ENTITY_EMBEDDINGS_TABLE);
+    // Step 5: Create placeholder vec_entity_embeddings virtual table (v21 will recreate with correct PK)
+    db.exec(`CREATE VIRTUAL TABLE IF NOT EXISTS vec_entity_embeddings USING vec0(
+      id TEXT PRIMARY KEY,
+      embedding float[768] distance_metric=cosine
+    )`);
 
     db.exec('PRAGMA foreign_keys = ON');
 
@@ -2129,6 +2146,45 @@ function migrateV19ToV20(db: Database.Database): void {
       `Failed to migrate from v19 to v20 (entity embeddings, temporal edges, node scoring): ${cause}`,
       'migrate',
       'knowledge_edges',
+      error
+    );
+  }
+}
+
+/**
+ * Migrate from schema version 20 to version 21
+ *
+ * Changes in v21:
+ * - Rebuild entity_embeddings table with correct columns:
+ *   node_id, original_text, original_text_length, entity_type, document_count, model_name
+ *   (v20 table had entity_id, embedding_model, dimensions which didn't match embed_entities code)
+ * - Rebuild vec_entity_embeddings with entity_embedding_id PK (was id)
+ */
+function migrateV20ToV21(db: Database.Database): void {
+  try {
+    db.exec('PRAGMA foreign_keys = OFF');
+
+    // Step 1: Drop and recreate entity_embeddings with correct schema
+    // Safe because embed_entities never succeeded with the v20 schema
+    // DROP TABLE removes the table's indexes automatically
+    db.exec('DROP TABLE IF EXISTS entity_embeddings');
+
+    db.exec(CREATE_ENTITY_EMBEDDINGS_TABLE);
+    db.exec('CREATE INDEX IF NOT EXISTS idx_entity_embeddings_node_id ON entity_embeddings(node_id)');
+    db.exec('CREATE INDEX IF NOT EXISTS idx_entity_embeddings_content_hash ON entity_embeddings(content_hash)');
+
+    // Step 2: Drop and recreate vec_entity_embeddings with correct PK column name
+    db.exec('DROP TABLE IF EXISTS vec_entity_embeddings');
+    db.exec(CREATE_VEC_ENTITY_EMBEDDINGS_TABLE);
+
+    db.exec('PRAGMA foreign_keys = ON');
+  } catch (error) {
+    db.exec('PRAGMA foreign_keys = ON');
+    const cause = error instanceof Error ? error.message : String(error);
+    throw new MigrationError(
+      `Failed to migrate from v20 to v21 (entity embeddings schema fix): ${cause}`,
+      'migrate',
+      'entity_embeddings',
       error
     );
   }

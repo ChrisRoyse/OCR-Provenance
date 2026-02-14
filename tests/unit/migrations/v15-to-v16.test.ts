@@ -577,7 +577,7 @@ describe('Migration v15 to v16 (Knowledge Graph)', () => {
     migrateToLatest(db);
 
     const version = (db.prepare('SELECT version FROM schema_version').get() as { version: number }).version;
-    expect(version).toBe(20);
+    expect(version).toBe(21);
   });
 
   it.skipIf(!sqliteVecAvailable)('FK integrity clean after migration', () => {
@@ -643,7 +643,7 @@ describe('Migration v15 to v16 (Knowledge Graph)', () => {
     expect(() => migrateToLatest(db)).not.toThrow();
 
     const version = (db.prepare('SELECT version FROM schema_version').get() as { version: number }).version;
-    expect(version).toBe(20);
+    expect(version).toBe(21);
   });
 
   it.skipIf(!sqliteVecAvailable)('FK relationships work for knowledge_nodes', () => {
@@ -807,7 +807,7 @@ describe('Migration v15 to v16 (Knowledge Graph)', () => {
     expect(tables).toContain('node_entity_links');
 
     const version = (db.prepare('SELECT version FROM schema_version').get() as { version: number }).version;
-    expect(version).toBe(20);
+    expect(version).toBe(21);
 
     const indexes = getIndexNames(db);
     expect(indexes).toContain('idx_kn_entity_type');

@@ -8,7 +8,7 @@
  */
 
 /** Current schema version */
-export const SCHEMA_VERSION = 20;
+export const SCHEMA_VERSION = 21;
 
 /**
  * Database configuration pragmas for optimal performance and safety
@@ -622,10 +622,12 @@ CREATE TABLE IF NOT EXISTS entity_extraction_segments (
 export const CREATE_ENTITY_EMBEDDINGS_TABLE = `
 CREATE TABLE IF NOT EXISTS entity_embeddings (
   id TEXT PRIMARY KEY,
-  entity_id TEXT NOT NULL REFERENCES entities(id),
-  node_id TEXT REFERENCES knowledge_nodes(id),
-  embedding_model TEXT NOT NULL,
-  dimensions INTEGER NOT NULL,
+  node_id TEXT NOT NULL REFERENCES knowledge_nodes(id),
+  original_text TEXT NOT NULL,
+  original_text_length INTEGER NOT NULL,
+  entity_type TEXT NOT NULL,
+  document_count INTEGER NOT NULL DEFAULT 1,
+  model_name TEXT NOT NULL DEFAULT 'nomic-embed-text-v1.5',
   content_hash TEXT NOT NULL,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   provenance_id TEXT REFERENCES provenance(id)
@@ -638,8 +640,8 @@ CREATE TABLE IF NOT EXISTS entity_embeddings (
  */
 export const CREATE_VEC_ENTITY_EMBEDDINGS_TABLE = `
 CREATE VIRTUAL TABLE IF NOT EXISTS vec_entity_embeddings USING vec0(
-  id TEXT PRIMARY KEY,
-  embedding float[768] distance_metric=cosine
+  entity_embedding_id TEXT PRIMARY KEY,
+  vector FLOAT[768] distance_metric=cosine
 )
 `;
 
@@ -782,8 +784,7 @@ export const CREATE_INDEXES = [
   'CREATE INDEX IF NOT EXISTS idx_segments_status ON entity_extraction_segments(extraction_status)',
   'CREATE INDEX IF NOT EXISTS idx_segments_doc_status ON entity_extraction_segments(document_id, extraction_status)',
 
-  // Entity embeddings indexes (v20)
-  'CREATE INDEX IF NOT EXISTS idx_entity_embeddings_entity_id ON entity_embeddings(entity_id)',
+  // Entity embeddings indexes (v21)
   'CREATE INDEX IF NOT EXISTS idx_entity_embeddings_node_id ON entity_embeddings(node_id)',
   'CREATE INDEX IF NOT EXISTS idx_entity_embeddings_content_hash ON entity_embeddings(content_hash)',
 ] as const;
@@ -908,7 +909,6 @@ export const REQUIRED_INDEXES = [
   'idx_segments_document',
   'idx_segments_status',
   'idx_segments_doc_status',
-  'idx_entity_embeddings_entity_id',
   'idx_entity_embeddings_node_id',
   'idx_entity_embeddings_content_hash',
 ] as const;
