@@ -966,6 +966,11 @@ export async function handleSearchSemantic(
       ? applyEntityFrequencyBoost(finalResults, 'similarity_score', conn, input.entity_filter)
       : applyQueryDerivedFrequencyBoost(finalResults, 'similarity_score', conn, input.query);
 
+    // Re-sort after frequency boost may have changed scores
+    if (semanticFreqBoostInfo) {
+      finalResults.sort((a, b) => (b.similarity_score as number) - (a.similarity_score as number));
+    }
+
     const responseData: Record<string, unknown> = {
       query: input.query,
       results: finalResults,
@@ -1164,6 +1169,11 @@ export async function handleSearch(
       ? applyEntityFrequencyBoost(finalResults, 'bm25_score', conn, input.entity_filter)
       : applyQueryDerivedFrequencyBoost(finalResults, 'bm25_score', conn, input.query);
 
+    // Re-sort after frequency boost may have changed scores
+    if (bm25FreqBoostInfo) {
+      finalResults.sort((a, b) => (b.bm25_score as number) - (a.bm25_score as number));
+    }
+
     const responseData: Record<string, unknown> = {
       query: input.query,
       search_type: 'bm25',
@@ -1328,8 +1338,22 @@ export async function handleSearchHybrid(
             let boostedCount = 0;
 
             for (const r of rawResults) {
-              if (!r.chunk_id) continue;
-              const entities = boostEntityMap.get(r.chunk_id);
+              let entities = r.chunk_id ? boostEntityMap.get(r.chunk_id) : undefined;
+
+              // For VLM results without chunk_id, find entities via page co-occurrence
+              if (!entities && r.image_id && r.document_id) {
+                const pageChunks = conn.prepare(
+                  'SELECT id FROM chunks WHERE document_id = ? AND page_number = ?'
+                ).all(r.document_id, r.page_number) as Array<{id: string}>;
+                for (const pc of pageChunks) {
+                  const chunkEntities = boostEntityMap.get(pc.id);
+                  if (chunkEntities && chunkEntities.length > 0) {
+                    entities = chunkEntities;
+                    break;
+                  }
+                }
+              }
+
               if (!entities || entities.length === 0) continue;
 
               const matchedCount = entities.filter(e => matchedNodeSet.has(e.node_id)).length;
@@ -1462,6 +1486,9 @@ export async function handleSearchHybrid(
         kgMetricsHybrid.frequency_boost_results_boosted = hybridQueryFreqBoostInfo.boosted_results;
       }
     }
+
+    // Re-sort after frequency boost may have changed rrf_scores
+    finalResults.sort((a, b) => (b.rrf_score as number) - (a.rrf_score as number));
 
     if (input.include_entities && hybridEntityMap && hybridEntityMap.size > 0) {
       responseData.cross_document_entities = buildCrossDocumentEntitySummary(hybridEntityMap);

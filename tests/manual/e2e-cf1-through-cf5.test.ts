@@ -206,11 +206,11 @@ describe('E2E-1: Schema v10 Physical Verification', () => {
     // WHAT: Verify schema version constant
     // INPUT: SCHEMA_VERSION export
     // EXPECTED: 12
-    expect(SCHEMA_VERSION).toBe(21);
+    expect(SCHEMA_VERSION).toBe(22);
 
     // SOURCE OF TRUTH: schema_version table
     const row = db.prepare('SELECT version FROM schema_version WHERE id = 1').get() as { version: number };
-    expect(row.version).toBe(21);
+    expect(row.version).toBe(22);
   });
 
   it('All 16 required tables exist (minus vec_embeddings without extension)', () => {

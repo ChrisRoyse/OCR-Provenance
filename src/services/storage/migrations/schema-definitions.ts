@@ -8,7 +8,7 @@
  */
 
 /** Current schema version */
-export const SCHEMA_VERSION = 21;
+export const SCHEMA_VERSION = 22;
 
 /**
  * Database configuration pragmas for optimal performance and safety
