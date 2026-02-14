@@ -101,6 +101,7 @@ describe('Column Verification', () => {
       'created_at',
       'embedding_status',
       'embedded_at',
+      'ocr_quality_score',
     ];
 
     it.skipIf(!sqliteVecAvailable)('should have all required columns', () => {

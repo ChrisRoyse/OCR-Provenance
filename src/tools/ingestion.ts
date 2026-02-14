@@ -43,7 +43,7 @@ import {
   documentNotFoundError,
 } from '../server/errors.js';
 import { formatResponse, handleError, type ToolDefinition } from './shared.js';
-import type { Document, OCRResult } from '../models/document.js';
+import type { Document, OCRResult, PageOffset } from '../models/document.js';
 import type { Chunk } from '../models/chunk.js';
 import type { CreateImageReference, ImageReference } from '../models/image.js';
 import { ProvenanceType } from '../models/provenance.js';
@@ -65,6 +65,8 @@ import {
   MAX_CHARS_PER_CALL,
   SEGMENT_OVERLAP_CHARS,
 } from '../utils/entity-extraction-helpers.js';
+import { handleCoreferenceResolve } from './entity-analysis.js';
+import { handleKnowledgeGraphScanContradictions } from './knowledge-graph.js';
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // TYPE DEFINITIONS
@@ -147,6 +149,7 @@ function storeChunks(
       overlap_previous: cr.overlapWithPrevious,
       overlap_next: cr.overlapWithNext,
       provenance_id: chunkProvId,
+      ocr_quality_score: ocrResult.parse_quality_score ?? null,
     });
 
     // L-4 fix: Build Chunk object directly from insert data instead of
@@ -169,6 +172,7 @@ function storeChunks(
       created_at: now,
       embedding_status: 'pending',
       embedded_at: null,
+      ocr_quality_score: ocrResult.parse_quality_score ?? null,
     });
   }
 
@@ -176,22 +180,41 @@ function storeChunks(
 }
 
 /**
- * Extract a context text window from OCR text based on estimated page position.
+ * Extract a context text window from OCR text for a target page.
  *
- * Uses a best-effort heuristic: estimates page position as (targetPage - 1) / pageCount * textLength,
- * then takes a ±500 char window around that position, trimmed to word boundaries.
+ * When pageOffsets are provided, uses exact character boundaries from OCR.
+ * Falls back to heuristic estimation when pageOffsets are unavailable.
  *
  * @param ocrText - Full OCR extracted text
  * @param pageCount - Total number of pages in the document
  * @param targetPage - The page number to extract context for (1-indexed)
+ * @param pageOffsets - Optional exact page offset data from OCR
  * @returns Context text window (max ~1000 chars)
  */
-function extractContextText(ocrText: string, pageCount: number, targetPage: number): string {
+function extractContextText(
+  ocrText: string,
+  pageCount: number,
+  targetPage: number,
+  pageOffsets?: PageOffset[],
+): string {
   if (!ocrText || ocrText.length === 0 || pageCount <= 0) {
     return '';
   }
 
   const textLength = ocrText.length;
+
+  // Use exact page boundaries when available
+  if (pageOffsets && pageOffsets.length > 0) {
+    const pageInfo = pageOffsets.find(p => p.page === targetPage);
+    if (pageInfo) {
+      const start = Math.max(0, Math.min(pageInfo.charStart, textLength));
+      const end = Math.min(pageInfo.charEnd, textLength);
+      // Cap at 1000 chars to match original behavior
+      return ocrText.slice(start, Math.min(end, start + 1000)).trim();
+    }
+  }
+
+  // Fallback: heuristic estimation
   const safePageCount = Math.max(1, pageCount);
   const safePage = Math.max(1, Math.min(targetPage, safePageCount));
 
@@ -339,6 +362,7 @@ function saveAndStoreImages(
   images: Record<string, string>,
   outputDir: string,
   jsonBlocks?: Record<string, unknown> | null,
+  pageOffsets?: PageOffset[],
 ): ImageReference[] {
   // Create output directory
   if (!existsSync(outputDir)) {
@@ -396,11 +420,12 @@ function saveAndStoreImages(
     const ext = extname(filename).slice(1).toLowerCase();
     const format = ext || 'png';
 
-    // Extract context text from OCR for this page
+    // Extract context text from OCR for this page (uses exact pageOffsets when available)
     const contextText = extractContextText(
       ocrResult.extracted_text,
       ocrResult.page_count ?? 1,
-      pageNumber
+      pageNumber,
+      pageOffsets,
     );
 
     // Create image reference for database
@@ -927,6 +952,12 @@ export async function handleProcessPending(
     if (input.auto_build_kg && !input.auto_extract_entities) {
       throw new Error('auto_build_kg requires auto_extract_entities=true');
     }
+    if (input.auto_coreference_resolve && !input.auto_extract_entities) {
+      throw new Error('auto_coreference_resolve requires auto_extract_entities=true');
+    }
+    if (input.auto_scan_contradictions && !input.auto_build_kg) {
+      throw new Error('auto_scan_contradictions requires auto_build_kg=true');
+    }
     if (input.auto_extract_entities && !process.env.GEMINI_API_KEY) {
       throw new Error('auto_extract_entities requires GEMINI_API_KEY environment variable to be set');
     }
@@ -966,6 +997,11 @@ export async function handleProcessPending(
     const extractionEntityResults: Array<{ document_id: string; entities_created: number; extractions_processed: number }> = [];
     const successfulDocIds: string[] = [];
 
+    // F-12: Batch-level tracking for provenance traceability
+    const batchId = uuidv4();
+    const batchStartTime = Date.now();
+    console.error(`[INFO] Batch ${batchId}: processing ${pendingDocs.length} documents`);
+
     // Default images output directory
     const imagesBaseDir = resolve(state.config.defaultStoragePath, 'images');
 
@@ -997,7 +1033,7 @@ export async function handleProcessPending(
         if (processResult.images && Object.keys(processResult.images).length > 0) {
           const imageRefs = saveAndStoreImages(
             db, doc, ocrResult, processResult.images, imageOutputDir,
-            processResult.jsonBlocks,
+            processResult.jsonBlocks, processResult.pageOffsets,
           );
           imageCount = imageRefs.length;
           console.error(`[INFO] Images from Datalab: ${imageCount}`);
@@ -1353,6 +1389,23 @@ export async function handleProcessPending(
           }
         }
 
+        // Step 7c: Auto-resolve coreferences if enabled (F-4)
+        if (input.auto_coreference_resolve && input.auto_extract_entities) {
+          try {
+            console.error(`[INFO] Auto-pipeline: resolving coreferences for document ${doc.id}`);
+            await handleCoreferenceResolve({
+              document_id: doc.id,
+              merge_into_kg: input.auto_build_kg ?? false,
+              resolution_scope: 'document',
+            });
+            console.error(`[INFO] Auto-pipeline: coreference resolution complete for ${doc.id}`);
+          } catch (corefError) {
+            const corefMsg = corefError instanceof Error ? corefError.message : String(corefError);
+            console.error(`[WARN] Coreference resolution failed for ${doc.id}: ${corefMsg}`);
+            results.errors.push({ document_id: doc.id, error: `Coreference resolution failed: ${corefMsg}` });
+          }
+        }
+
       } catch (error) {
         const errorMsg = error instanceof Error ? error.message : String(error);
         console.error(`[ERROR] Document ${doc.id} failed: ${errorMsg}`);
@@ -1405,11 +1458,40 @@ export async function handleProcessPending(
       }
     }
 
+    // Step 9: Auto-scan contradictions after KG build (F-11)
+    let contradictionScanResult: Record<string, unknown> | undefined;
+    if (input.auto_scan_contradictions && kgBuildResult) {
+      try {
+        console.error(`[INFO] Auto-pipeline: scanning for contradictions in knowledge graph`);
+        const scanResponse = await handleKnowledgeGraphScanContradictions({
+          scan_types: ['conflicting_relationships', 'temporal_conflicts', 'duplicate_nodes'],
+          limit: 50,
+        });
+        // Parse the formatted ToolResponse to extract result data
+        const scanText = scanResponse.content?.[0]?.text;
+        if (scanText) {
+          const scanData = JSON.parse(scanText);
+          const totalFound = scanData.data?.total_contradictions ?? 0;
+          contradictionScanResult = {
+            total_contradictions: totalFound,
+            scan_types: ['conflicting_relationships', 'temporal_conflicts', 'duplicate_nodes'],
+          };
+          console.error(`[INFO] Auto-pipeline: contradiction scan found ${totalFound} issues`);
+        }
+      } catch (scanError) {
+        const scanMsg = scanError instanceof Error ? scanError.message : String(scanError);
+        console.error(`[WARN] Contradiction scanning failed: ${scanMsg}`);
+        contradictionScanResult = { error: `Contradiction scan failed: ${scanMsg}` };
+      }
+    }
+
     // Get remaining count - CRITICAL: use 'status' not 'statusFilter'
     const remaining = db.listDocuments({ status: 'pending' }).length;
 
     // Build response
     const response: Record<string, unknown> = {
+      batch_id: batchId,
+      batch_duration_ms: Date.now() - batchStartTime,
       processed: results.processed,
       failed: results.failed,
       remaining,
@@ -1447,6 +1529,14 @@ export async function handleProcessPending(
 
     if (kgBuildResult) {
       response.knowledge_graph = kgBuildResult;
+    }
+
+    if (contradictionScanResult) {
+      response.contradiction_scan = contradictionScanResult;
+    }
+
+    if (input.auto_coreference_resolve) {
+      response.coreference_resolution = { enabled: true };
     }
 
     return formatResponse(successResult(response));

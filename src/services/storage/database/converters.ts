@@ -136,6 +136,7 @@ export function rowToChunk(row: ChunkRow): Chunk {
     created_at: row.created_at,
     embedding_status: row.embedding_status as 'pending' | 'complete' | 'failed',
     embedded_at: row.embedded_at,
+    ocr_quality_score: row.ocr_quality_score ?? null,
   };
 }
 

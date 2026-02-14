@@ -48,6 +48,7 @@ import { getEmbeddingService } from '../services/embedding/embedder.js';
 import { getEmbeddingClient } from '../services/embedding/nomic.js';
 import { computeHash } from '../utils/hash.js';
 import { sorensenDice } from '../services/knowledge-graph/string-similarity.js';
+import { computeImportanceScore } from '../models/knowledge-graph.js';
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // INPUT SCHEMAS
@@ -851,6 +852,11 @@ async function handleKnowledgeGraphSplit(
         chain_path: '["DOCUMENT","KNOWLEDGE_GRAPH","KNOWLEDGE_GRAPH"]',
       });
 
+      const splitAvgConf = splitCount > 0
+        ? Math.round((splitTotalConf / splitCount) * 10000) / 10000
+        : 0;
+      const splitImportance = computeImportanceScore(splitAvgConf, splitDocIds.size, splitLinks.length);
+
       insertKnowledgeNode(conn, {
         id: newNodeId,
         entity_type: node.entity_type,
@@ -860,9 +866,8 @@ async function handleKnowledgeGraphSplit(
         document_count: splitDocIds.size,
         mention_count: splitLinks.length,
         edge_count: 0,
-        avg_confidence: splitCount > 0
-          ? Math.round((splitTotalConf / splitCount) * 10000) / 10000
-          : 0,
+        avg_confidence: splitAvgConf,
+        importance_score: splitImportance,
         metadata: JSON.stringify({ split_from: node.id }),
         provenance_id: splitProvId,
         created_at: now,
@@ -1681,7 +1686,7 @@ async function handleKnowledgeGraphSearchEntities(
  * Handle ocr_knowledge_graph_scan_contradictions - Proactively scan the entire KG
  * for potential contradictions across multiple scan types
  */
-async function handleKnowledgeGraphScanContradictions(
+export async function handleKnowledgeGraphScanContradictions(
   params: Record<string, unknown>
 ): Promise<ToolResponse> {
   try {
@@ -2265,35 +2270,34 @@ async function handleKnowledgeGraphVisualize(
     const collectedNodeIds = new Set<string>();
 
     if (input.entity_name) {
-      // Find the center node by name
+      const searchTerm = input.entity_name.toLowerCase();
       const centerNode = conn.prepare(
         `SELECT id FROM knowledge_nodes WHERE LOWER(canonical_name) = ? LIMIT 1`
-      ).get(input.entity_name.toLowerCase()) as { id: string } | undefined;
+      ).get(searchTerm) as { id: string } | undefined;
 
-      if (!centerNode) {
-        // Try LIKE match on canonical_name
+      if (centerNode) {
+        collectedNodeIds.add(centerNode.id);
+      } else {
         const likeNode = conn.prepare(
           `SELECT id FROM knowledge_nodes WHERE LOWER(canonical_name) LIKE ? LIMIT 1`
-        ).get(`%${input.entity_name.toLowerCase()}%`) as { id: string } | undefined;
+        ).get(`%${searchTerm}%`) as { id: string } | undefined;
 
-        if (!likeNode) {
-          // Try alias match via entities table
+        if (likeNode) {
+          collectedNodeIds.add(likeNode.id);
+        } else {
+          // Fallback: search entity aliases via node_entity_links
           const aliasNode = conn.prepare(`
             SELECT nel.node_id as id FROM node_entity_links nel
             JOIN entities e ON e.id = nel.entity_id
             WHERE LOWER(e.normalized_text) LIKE ?
             LIMIT 1
-          `).get(`%${input.entity_name.toLowerCase()}%`) as { id: string } | undefined;
+          `).get(`%${searchTerm}%`) as { id: string } | undefined;
 
           if (!aliasNode) {
             throw new Error(`Entity not found: "${input.entity_name}"`);
           }
           collectedNodeIds.add(aliasNode.id);
-        } else {
-          collectedNodeIds.add(likeNode.id);
         }
-      } else {
-        collectedNodeIds.add(centerNode.id);
       }
 
       // BFS to max_depth

@@ -11,6 +11,7 @@
 
 import type { Entity, EntityType } from '../../models/entity.js';
 import type { KnowledgeNode, NodeEntityLink } from '../../models/knowledge-graph.js';
+import { computeImportanceScore } from '../../models/knowledge-graph.js';
 import {
   sorensenDice,
   tokenSortedSimilarity,
@@ -352,6 +353,8 @@ function buildNode(groupEntities: Entity[], provenanceId: string): KnowledgeNode
 
   const now = new Date().toISOString();
 
+  const importanceScore = computeImportanceScore(avgConfidence, uniqueDocs.size, groupEntities.length);
+
   return {
     id: uuidv4(),
     entity_type: canonical.entity_type,
@@ -362,6 +365,7 @@ function buildNode(groupEntities: Entity[], provenanceId: string): KnowledgeNode
     mention_count: groupEntities.length,
     edge_count: 0,
     avg_confidence: Math.round(avgConfidence * 10000) / 10000,
+    importance_score: importanceScore,
     metadata: null,
     provenance_id: provenanceId,
     created_at: now,
