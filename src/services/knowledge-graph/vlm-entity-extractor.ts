@@ -137,7 +137,6 @@ export async function extractEntitiesFromVLM(
         character_start: null,
         character_end: null,
         context_text: desc.original_text.slice(0, 500),
-        provenance_id: provenanceId,
         created_at: now,
       });
 

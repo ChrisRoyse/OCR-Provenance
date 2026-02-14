@@ -1249,7 +1249,7 @@ describe('KGO Comprehensive Manual Verification', () => {
 
       await expect(
         buildKnowledgeGraph(db, { resolution_mode: 'exact' })
-      ).rejects.toThrow('No entities found');
+      ).rejects.toThrow('No documents provided for KG build');
 
       const nodeCount = (conn.prepare('SELECT COUNT(*) as cnt FROM knowledge_nodes').get() as { cnt: number }).cnt;
       expect(nodeCount).toBe(0);

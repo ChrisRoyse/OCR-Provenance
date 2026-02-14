@@ -12,6 +12,7 @@
  */
 
 import { z } from 'zod';
+import * as path from 'path';
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // CUSTOM ERROR CLASS
@@ -85,7 +86,6 @@ export const ConfigKey = z.enum([
   'embedding_device',
   'chunk_size',
   'chunk_overlap_percent',
-  'log_level',
 ]);
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -438,3 +438,59 @@ export const ConfigSetInput = z.object({
   key: ConfigKey,
   value: z.union([z.string(), z.number(), z.boolean()]),
 });
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// PATH SANITIZATION
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/**
+ * Sanitize a file path to prevent directory traversal attacks.
+ *
+ * - Rejects null bytes
+ * - Resolves the path fully via path.resolve() to eliminate '..' segments
+ * - Optionally verifies the resolved path starts with one of the allowed base directories
+ *
+ * @param filePath - The file path to sanitize
+ * @param allowedBaseDirs - Optional array of allowed base directories
+ * @returns The resolved, safe path
+ * @throws ValidationError if the path contains null bytes or escapes allowed directories
+ */
+export function sanitizePath(filePath: string, allowedBaseDirs?: string[]): string {
+  if (filePath.includes('\0')) {
+    throw new ValidationError('Path contains null bytes');
+  }
+
+  const resolved = path.resolve(filePath);
+
+  if (allowedBaseDirs && allowedBaseDirs.length > 0) {
+    const resolvedBases = allowedBaseDirs.map(d => path.resolve(d));
+    const withinAllowed = resolvedBases.some(
+      base => resolved === base || resolved.startsWith(base + path.sep)
+    );
+    if (!withinAllowed) {
+      throw new ValidationError(
+        `Path "${resolved}" is outside allowed directories: ${resolvedBases.join(', ')}`
+      );
+    }
+  }
+
+  return resolved;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// SQL ESCAPING
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/**
+ * Escape special characters for safe use in SQL LIKE clauses.
+ * Escapes '%', '_', and '\' characters.
+ *
+ * @param pattern - The raw string to escape
+ * @returns The escaped string safe for LIKE clause usage
+ */
+export function escapeLikePattern(pattern: string): string {
+  return pattern
+    .replace(/\\/g, '\\\\')
+    .replace(/%/g, '\\%')
+    .replace(/_/g, '\\_');
+}

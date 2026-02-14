@@ -177,6 +177,15 @@ export class FormFillClient {
           return;
         }
 
+        // Validate required fields before casting
+        const resp = response as Record<string, unknown>;
+        if (typeof resp.id !== 'string' || typeof resp.source_file_path !== 'string' || typeof resp.status !== 'string') {
+          reject(new OCRError(
+            `Form fill worker response missing required fields (id, source_file_path, status). Got keys: ${Object.keys(resp).join(', ')}`,
+            'FORM_FILL_API_ERROR'
+          ));
+          return;
+        }
         promiseResolve(this.toFormFillResult(response as PythonFormFillResponse));
       });
     });

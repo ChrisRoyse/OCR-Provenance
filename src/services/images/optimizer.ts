@@ -252,8 +252,24 @@ export class ImageOptimizer {
         }
 
         try {
-          const result = JSON.parse(stdout);
-          resolve(result as T);
+          // Python may output debug/warning lines before the JSON. Find the last
+          // valid JSON line (starts with '{' or '[') to handle multi-line output.
+          const lines = stdout.trim().split('\n');
+          let parsed: T | undefined;
+          for (let i = lines.length - 1; i >= 0; i--) {
+            const line = lines[i].trim();
+            if (line.startsWith('{') || line.startsWith('[')) {
+              try {
+                parsed = JSON.parse(line) as T;
+                break;
+              } catch { /* not valid JSON, try previous line */ }
+            }
+          }
+          if (parsed === undefined) {
+            // Fallback: try parsing the entire stdout as one JSON blob
+            parsed = JSON.parse(stdout) as T;
+          }
+          resolve(parsed);
         } catch (parseError) {
           if (code !== 0) {
             resolve({

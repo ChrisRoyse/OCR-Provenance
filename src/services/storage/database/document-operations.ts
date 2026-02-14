@@ -458,10 +458,12 @@ interface ArchiveNodeRow {
   mention_count: number;
   edge_count: number;
   avg_confidence: number;
+  importance_score: number;
   metadata: string | null;
   provenance_id: string;
   created_at: string;
   updated_at: string;
+  resolution_type: string | null;
 }
 
 /**
@@ -478,6 +480,10 @@ interface ArchiveEdgeRow {
   metadata: string | null;
   provenance_id: string;
   created_at: string;
+  valid_from: string | null;
+  valid_until: string | null;
+  normalized_weight: number | null;
+  contradiction_count: number;
 }
 
 /**

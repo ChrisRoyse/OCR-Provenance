@@ -12,7 +12,7 @@
 import { z } from 'zod';
 import { v4 as uuidv4 } from 'uuid';
 import { formatResponse, handleError, type ToolDefinition } from './shared.js';
-import { validateInput } from '../utils/validation.js';
+import { validateInput, sanitizePath } from '../utils/validation.js';
 import { requireDatabase } from '../server/state.js';
 import { successResult } from '../server/types.js';
 import { FormFillClient } from '../services/ocr/form-fill.js';
@@ -21,6 +21,19 @@ import { computeHash } from '../utils/hash.js';
 import {
   listKnowledgeNodes,
 } from '../services/storage/database/knowledge-graph-operations.js';
+
+/**
+ * Safely parse JSON from stored form fill data. Returns fallback on corrupt data
+ * instead of crashing the entire tool handler.
+ */
+function safeJsonParse<T>(json: string | null | undefined, fallback: T): T {
+  if (!json) return fallback;
+  try {
+    return JSON.parse(json) as T;
+  } catch {
+    return fallback;
+  }
+}
 
 const FormFillInput = z.object({
   file_path: z.string().min(1).describe('Path to form file (PDF or image)'),
@@ -60,9 +73,11 @@ async function handleFormFill(params: Record<string, unknown>) {
     if (input.output_path && result.outputBase64) {
       const { writeFileSync, mkdirSync } = await import('fs');
       const { dirname: dirPath } = await import('path');
-      mkdirSync(dirPath(input.output_path), { recursive: true });
-      writeFileSync(input.output_path, Buffer.from(result.outputBase64, 'base64'));
-      console.error(`[INFO] Saved filled form to ${input.output_path}`);
+      // Sanitize output path to prevent directory traversal
+      const safeOutputPath = sanitizePath(input.output_path);
+      mkdirSync(dirPath(safeOutputPath), { recursive: true });
+      writeFileSync(safeOutputPath, Buffer.from(result.outputBase64, 'base64'));
+      console.error(`[INFO] Saved filled form to ${safeOutputPath}`);
     }
 
     // Create provenance record
@@ -152,10 +167,10 @@ async function handleFormFillStatus(params: Record<string, unknown>) {
       return formatResponse({
         form_fill: {
           ...formFill,
-          // Parse JSON strings for display
-          fields_filled: JSON.parse(formFill.fields_filled || '[]'),
-          fields_not_found: JSON.parse(formFill.fields_not_found || '[]'),
-          field_data: JSON.parse(formFill.field_data_json || '{}'),
+          // Parse JSON strings for display (safe parse handles corrupt stored data)
+          fields_filled: safeJsonParse(formFill.fields_filled, []),
+          fields_not_found: safeJsonParse(formFill.fields_not_found, []),
+          field_data: safeJsonParse(formFill.field_data_json, {}),
           // Don't include base64 in status response
           output_base64: formFill.output_base64 ? '[base64 data available]' : null,
         },
@@ -172,8 +187,8 @@ async function handleFormFillStatus(params: Record<string, unknown>) {
           id: ff.id,
           source_file_path: ff.source_file_path,
           status: ff.status,
-          fields_filled: JSON.parse(ff.fields_filled || '[]').length,
-          fields_not_found: JSON.parse(ff.fields_not_found || '[]').length,
+          fields_filled: safeJsonParse<unknown[]>(ff.fields_filled, []).length,
+          fields_not_found: safeJsonParse<unknown[]>(ff.fields_not_found, []).length,
           cost_cents: ff.cost_cents,
           created_at: ff.created_at,
           error_message: ff.error_message,
@@ -190,8 +205,8 @@ async function handleFormFillStatus(params: Record<string, unknown>) {
         id: ff.id,
         source_file_path: ff.source_file_path,
         status: ff.status,
-        fields_filled: JSON.parse(ff.fields_filled || '[]').length,
-        fields_not_found: JSON.parse(ff.fields_not_found || '[]').length,
+        fields_filled: safeJsonParse<unknown[]>(ff.fields_filled, []).length,
+        fields_not_found: safeJsonParse<unknown[]>(ff.fields_not_found, []).length,
         cost_cents: ff.cost_cents,
         created_at: ff.created_at,
         error_message: ff.error_message,

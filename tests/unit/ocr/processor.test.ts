@@ -251,28 +251,19 @@ describe('OCRProcessor', () => {
         error_message: null,
       });
 
-      // Execute
-      const result = await processor!.processDocument(docId);
+      // Execute: processDocument now throws on failure (FAIL-FAST)
+      await expect(processor!.processDocument(docId)).rejects.toThrow();
 
-      // Verify failure
-      console.log('[FAILURE TEST] Success:', result.success);
-      console.log('[FAILURE TEST] Error:', result.error);
-      expect(result.success).toBe(false);
-      expect(result.error).toBeTruthy();
-
-      // Verify document status in database
+      // Verify document status in database (marked 'failed' before throwing)
       const updatedDoc = db!.getDocument(docId);
-      console.log('[DB STATE] Document status:', updatedDoc!.status);
-      console.log('[DB STATE] Error message:', updatedDoc!.error_message);
       expect(updatedDoc!.status).toBe('failed');
       expect(updatedDoc!.error_message).toBeTruthy();
     });
 
-    it.skipIf(!canRunTests)('returns error for non-existent document', async () => {
-      const result = await processor!.processDocument('nonexistent-document-id');
-
-      expect(result.success).toBe(false);
-      expect(result.error).toContain('Document not found');
+    it.skipIf(!canRunTests)('throws for non-existent document', async () => {
+      // processDocument now throws on failure (FAIL-FAST)
+      await expect(processor!.processDocument('nonexistent-document-id'))
+        .rejects.toThrow('Document not found');
     });
   });
 

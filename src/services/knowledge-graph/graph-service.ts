@@ -215,7 +215,7 @@ export async function buildKnowledgeGraph(
   }
 
   if (documentIds.length === 0) {
-    throw new Error('No entities found. Run ocr_entity_extract first.');
+    throw new Error('No documents provided for KG build. Run ocr_entity_extract first.');
   }
 
   const allEntities: Entity[] = [];
@@ -921,8 +921,9 @@ async function classifyRelationshipsWithGemini(
   try {
     client = new GeminiClient();
   } catch (error) {
-    console.error('[KnowledgeGraph] Failed to initialize Gemini client:', error);
-    return;
+    const msg = error instanceof Error ? error.message : String(error);
+    console.error(`[KnowledgeGraph] Failed to initialize Gemini client: ${msg}`);
+    throw new Error(`Gemini client initialization failed for relationship classification: ${msg}`);
   }
 
   for (const edge of edges) {

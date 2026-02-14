@@ -15,7 +15,7 @@ import { basename } from 'path';
 import { z } from 'zod';
 import { v4 as uuidv4 } from 'uuid';
 import { formatResponse, handleError, type ToolDefinition } from './shared.js';
-import { validateInput } from '../utils/validation.js';
+import { validateInput, sanitizePath } from '../utils/validation.js';
 import { requireDatabase } from '../server/state.js';
 import { FileManagerClient } from '../services/ocr/file-manager.js';
 import { ProvenanceType } from '../models/provenance.js';
@@ -67,8 +67,11 @@ async function handleFileUpload(params: Record<string, unknown>) {
     const { db } = requireDatabase();
     const conn = db.getConnection();
 
+    // Sanitize file path to prevent directory traversal
+    const safeFilePath = sanitizePath(input.file_path);
+
     // Compute file hash for dedup check
-    const fileHash = await hashFile(input.file_path);
+    const fileHash = await hashFile(safeFilePath);
 
     // Check for existing upload with same hash
     const existing = getUploadedFileByHash(conn, fileHash);
@@ -102,7 +105,7 @@ async function handleFileUpload(params: Record<string, unknown>) {
       source_file_created_at: null,
       source_file_modified_at: null,
       source_type: 'FILE',
-      source_path: input.file_path,
+      source_path: safeFilePath,
       source_id: null,
       root_document_id: provId,
       location: null,
@@ -121,12 +124,12 @@ async function handleFileUpload(params: Record<string, unknown>) {
     });
 
     // Insert pending record
-    const stats = statSync(input.file_path);
+    const stats = statSync(safeFilePath);
 
     insertUploadedFile(conn, {
       id: uploadId,
-      local_path: input.file_path,
-      file_name: basename(input.file_path),
+      local_path: safeFilePath,
+      file_name: basename(safeFilePath),
       file_hash: fileHash,
       file_size: stats.size,
       content_type: 'application/octet-stream',
@@ -142,7 +145,7 @@ async function handleFileUpload(params: Record<string, unknown>) {
     // Perform upload
     const client = new FileManagerClient();
     try {
-      const result = await client.uploadFile(input.file_path);
+      const result = await client.uploadFile(safeFilePath);
 
       // Update record with Datalab info
       updateUploadedFileDatalabInfo(conn, uploadId, result.fileId, result.reference);
@@ -261,13 +264,18 @@ async function handleFileDelete(params: Record<string, unknown>) {
     }
 
     // Optionally delete from Datalab cloud
+    let datalabDeleteSucceeded = false;
+    let datalabDeleteError: string | undefined;
     if (input.delete_from_datalab && file.datalab_file_id) {
       try {
         const client = new FileManagerClient();
         await client.deleteFile(file.datalab_file_id);
         console.error(`[INFO] Deleted file from Datalab: ${file.datalab_file_id}`);
+        datalabDeleteSucceeded = true;
       } catch (datalabError) {
-        console.error(`[WARN] Failed to delete from Datalab: ${datalabError instanceof Error ? datalabError.message : String(datalabError)}`);
+        const msg = datalabError instanceof Error ? datalabError.message : String(datalabError);
+        console.error(`[WARN] Failed to delete from Datalab: ${msg}`);
+        datalabDeleteError = msg;
         // Continue with local delete even if Datalab delete fails
       }
     }
@@ -275,12 +283,16 @@ async function handleFileDelete(params: Record<string, unknown>) {
     // Delete from local DB
     const deleted = deleteUploadedFile(conn, input.file_id);
 
-    return formatResponse({
+    const response: Record<string, unknown> = {
       deleted,
       file_id: input.file_id,
       datalab_file_id: file.datalab_file_id,
-      deleted_from_datalab: input.delete_from_datalab && !!file.datalab_file_id,
-    });
+      deleted_from_datalab: datalabDeleteSucceeded,
+    };
+    if (datalabDeleteError) {
+      response.datalab_delete_error = datalabDeleteError;
+    }
+    return formatResponse(response);
   } catch (error) {
     return handleError(error);
   }

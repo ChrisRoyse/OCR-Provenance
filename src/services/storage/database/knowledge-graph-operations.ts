@@ -8,7 +8,8 @@
 
 import Database from 'better-sqlite3';
 import type { KnowledgeNode, KnowledgeEdge, NodeEntityLink, RelationshipType } from '../../../models/knowledge-graph.js';
-import { runWithForeignKeyCheck } from './helpers.js';
+import { runWithForeignKeyCheck, batchedQuery } from './helpers.js';
+import { escapeLikePattern } from '../../../utils/validation.js';
 
 // ============================================================
 // Knowledge Nodes CRUD
@@ -146,7 +147,7 @@ export function listKnowledgeNodes(
   // and no document_filter is active (FTS + JOIN is complex)
   if (options?.entity_name && !options?.document_filter?.length) {
     try {
-      const sanitized = options.entity_name.replace(/['"]/g, '').trim();
+      const sanitized = options.entity_name.replace(/["*()\\+:^-]/g, ' ').trim();
       if (sanitized.length > 0) {
         const ftsConditions: string[] = [];
         const ftsParams: (string | number)[] = [];
@@ -193,8 +194,8 @@ export function listKnowledgeNodes(
   }
 
   if (options?.entity_name) {
-    conditions.push('kn.canonical_name LIKE ?');
-    params.push(`%${options.entity_name}%`);
+    conditions.push("kn.canonical_name LIKE ? ESCAPE '\\'");
+    params.push(`%${escapeLikePattern(options.entity_name)}%`);
   }
 
   if (options?.min_document_count !== undefined) {
@@ -563,24 +564,37 @@ export function getGraphData(
     return { nodes: [], edges: [] };
   }
 
-  const placeholders = nodeIds.map(() => '?').join(',');
+  // Use batched queries to avoid SQLite 999-parameter limit
+  const nodes = batchedQuery(nodeIds, (batch) => {
+    const placeholders = batch.map(() => '?').join(',');
+    return db.prepare(
+      `SELECT * FROM knowledge_nodes WHERE id IN (${placeholders})`,
+    ).all(...batch) as KnowledgeNode[];
+  });
 
-  const nodes = db.prepare(
-    `SELECT * FROM knowledge_nodes WHERE id IN (${placeholders})`,
-  ).all(...nodeIds) as KnowledgeNode[];
-
-  // Get all edges where both endpoints are in the requested set
-  const edges = db.prepare(
-    `SELECT * FROM knowledge_edges WHERE source_node_id IN (${placeholders}) AND target_node_id IN (${placeholders})`,
-  ).all(...nodeIds, ...nodeIds) as KnowledgeEdge[];
+  // For edges, we need both endpoints in the set. Query edges for batches of source nodes,
+  // then filter to ensure target is also in the full set.
+  const nodeIdSet = new Set(nodeIds);
+  const edges = batchedQuery(nodeIds, (batch) => {
+    const placeholders = batch.map(() => '?').join(',');
+    const rows = db.prepare(
+      `SELECT * FROM knowledge_edges WHERE source_node_id IN (${placeholders})`,
+    ).all(...batch) as KnowledgeEdge[];
+    return rows.filter(e => nodeIdSet.has(e.target_node_id));
+  });
 
   return { nodes, edges };
 }
 
 /**
  * Bidirectional BFS path finding between two nodes.
- * Expands from both source and target simultaneously, meeting in the middle.
- * Returns all paths up to max_hops, capped at 20 paths.
+ * Queries edges per-node during traversal instead of loading all edges into memory.
+ * Returns all paths up to max_hops, capped at maxPaths (100).
+ *
+ * Hard caps prevent OOM on large graphs:
+ * - MAX_VISITED_NODES (1000): stops BFS expansion if too many nodes explored
+ * - maxPaths (100): stops collecting paths after this count
+ * - When either cap is hit, returns what was found with truncated: true
  *
  * The bidirectional approach reduces the search space from O(b^d) to O(b^(d/2))
  * where b is branching factor and d is path depth.
@@ -597,50 +611,54 @@ export function findPaths(
   length: number;
   node_ids: string[];
   edge_ids: string[];
+  truncated?: boolean;
 }> {
   const maxHops = Math.min(options?.max_hops ?? 3, 6);
-  const maxPaths = 20;
+  const maxPaths = 100;
+  const MAX_VISITED_NODES = 1000;
 
   // Same node: no meaningful path
   if (sourceNodeId === targetNodeId) {
     return [];
   }
 
-  // Build adjacency list from all edges (or filtered edges)
-  let edgeRows: KnowledgeEdge[];
-  if (options?.relationship_filter && options.relationship_filter.length > 0) {
-    const placeholders = options.relationship_filter.map(() => '?').join(',');
-    edgeRows = db.prepare(
-      `SELECT * FROM knowledge_edges WHERE relationship_type IN (${placeholders})`,
-    ).all(...options.relationship_filter) as KnowledgeEdge[];
-  } else {
-    edgeRows = db.prepare('SELECT * FROM knowledge_edges').all() as KnowledgeEdge[];
-  }
+  // Query neighbors for a node on-demand instead of loading all edges into memory.
+  // This avoids OOM for graphs with 50K+ edges.
+  const neighborCache = new Map<string, Array<{ neighbor: string; edgeId: string }>>();
 
-  // Adjacency: nodeId -> Array<{ neighbor: string; edgeId: string }>
-  const adjacency = new Map<string, Array<{ neighbor: string; edgeId: string }>>();
+  function getNeighbors(nodeId: string): Array<{ neighbor: string; edgeId: string }> {
+    const cached = neighborCache.get(nodeId);
+    if (cached) return cached;
 
-  for (const edge of edgeRows) {
-    // Bidirectional: edges can be traversed in either direction
-    if (!adjacency.has(edge.source_node_id)) {
-      adjacency.set(edge.source_node_id, []);
+    let edgeRows: Array<{ id: string; source_node_id: string; target_node_id: string }>;
+    if (options?.relationship_filter && options.relationship_filter.length > 0) {
+      const placeholders = options.relationship_filter.map(() => '?').join(',');
+      edgeRows = db.prepare(
+        `SELECT id, source_node_id, target_node_id FROM knowledge_edges
+         WHERE (source_node_id = ? OR target_node_id = ?)
+         AND relationship_type IN (${placeholders})`,
+      ).all(nodeId, nodeId, ...options.relationship_filter) as typeof edgeRows;
+    } else {
+      edgeRows = db.prepare(
+        `SELECT id, source_node_id, target_node_id FROM knowledge_edges
+         WHERE source_node_id = ? OR target_node_id = ?`,
+      ).all(nodeId, nodeId) as typeof edgeRows;
     }
-    adjacency.get(edge.source_node_id)!.push({
-      neighbor: edge.target_node_id,
-      edgeId: edge.id,
-    });
 
-    if (!adjacency.has(edge.target_node_id)) {
-      adjacency.set(edge.target_node_id, []);
+    const neighbors: Array<{ neighbor: string; edgeId: string }> = [];
+    for (const edge of edgeRows) {
+      if (edge.source_node_id === nodeId) {
+        neighbors.push({ neighbor: edge.target_node_id, edgeId: edge.id });
+      }
+      if (edge.target_node_id === nodeId) {
+        neighbors.push({ neighbor: edge.source_node_id, edgeId: edge.id });
+      }
     }
-    adjacency.get(edge.target_node_id)!.push({
-      neighbor: edge.source_node_id,
-      edgeId: edge.id,
-    });
+    neighborCache.set(nodeId, neighbors);
+    return neighbors;
   }
 
   // Bidirectional BFS state
-  // Each direction stores partial paths reaching each node
   interface PartialPath {
     nodePath: string[];
     edgePath: string[];
@@ -660,11 +678,13 @@ export function findPaths(
     length: number;
     node_ids: string[];
     edge_ids: string[];
+    truncated?: boolean;
   }> = [];
   const resultKeys = new Set<string>();
+  let truncated = false;
 
-  // Check for direct meeting point at start (source == neighbor of target or vice versa)
-  // This is handled by the BFS loop below.
+  // Total unique nodes visited across both directions
+  const allVisitedNodes = new Set<string>([sourceNodeId, targetNodeId]);
 
   // Expand layer by layer, alternating forward/backward
   let forwardDepth = 0;
@@ -675,6 +695,12 @@ export function findPaths(
     results.length < maxPaths &&
     forwardDepth + backwardDepth < maxHops
   ) {
+    // Hard cap on visited nodes to prevent OOM on dense graphs
+    if (allVisitedNodes.size >= MAX_VISITED_NODES) {
+      truncated = true;
+      break;
+    }
+
     // Expand the smaller frontier for efficiency
     const expandForward = forwardFrontier.size <= backwardFrontier.size
       ? forwardFrontier.size > 0
@@ -685,8 +711,7 @@ export function findPaths(
       forwardDepth++;
 
       for (const nodeId of forwardFrontier) {
-        const neighbors = adjacency.get(nodeId);
-        if (!neighbors) continue;
+        const neighbors = getNeighbors(nodeId);
 
         const currentPaths = forwardVisited.get(nodeId) ?? [];
 
@@ -703,17 +728,13 @@ export function findPaths(
               // Combine forward + backward paths at meeting node
               const backwardPaths = backwardVisited.get(neighbor)!;
               for (const bPath of backwardPaths) {
-                // bPath.nodePath = [target, ..., meetingNode] (backward walk order)
-                // Reverse to get [meetingNode, ..., target], skip meetingNode (already in forward)
                 const reversedBackNodes = [...bPath.nodePath].reverse().slice(1);
                 const reversedBackEdges = [...bPath.edgePath].reverse();
                 const fullNodePath = [...newNodePath, ...reversedBackNodes];
                 const fullEdgePath = [...newEdgePath, ...reversedBackEdges];
 
-                // Check total length within max_hops
                 if (fullEdgePath.length > maxHops) continue;
 
-                // Check for cycles in combined path
                 const nodeSet = new Set(fullNodePath);
                 if (nodeSet.size !== fullNodePath.length) continue;
 
@@ -725,7 +746,7 @@ export function findPaths(
                     node_ids: fullNodePath,
                     edge_ids: fullEdgePath,
                   });
-                  if (results.length >= maxPaths) break;
+                  if (results.length >= maxPaths) { truncated = true; break; }
                 }
               }
               if (results.length >= maxPaths) break;
@@ -735,8 +756,8 @@ export function findPaths(
             if (!forwardVisited.has(neighbor)) {
               forwardVisited.set(neighbor, []);
               nextFrontier.add(neighbor);
+              allVisitedNodes.add(neighbor);
             }
-            // Only store path if we haven't exceeded max paths and depth is within budget
             if (forwardDepth + backwardDepth <= maxHops) {
               forwardVisited.get(neighbor)!.push({
                 nodePath: newNodePath,
@@ -756,26 +777,20 @@ export function findPaths(
       backwardDepth++;
 
       for (const nodeId of backwardFrontier) {
-        const neighbors = adjacency.get(nodeId);
-        if (!neighbors) continue;
+        const neighbors = getNeighbors(nodeId);
 
         const currentPaths = backwardVisited.get(nodeId) ?? [];
 
         for (const { neighbor, edgeId } of neighbors) {
           for (const partial of currentPaths) {
-            // Avoid cycles within this path
             if (partial.nodePath.includes(neighbor)) continue;
 
             const newNodePath = [...partial.nodePath, neighbor];
             const newEdgePath = [...partial.edgePath, edgeId];
 
-            // Check if forward search has reached this node
             if (forwardVisited.has(neighbor)) {
               const forwardPaths = forwardVisited.get(neighbor)!;
               for (const fPath of forwardPaths) {
-                // fPath.nodePath = [source, ..., meetingNode] (forward walk order)
-                // newNodePath = [target, ..., meetingNode] (backward walk order)
-                // Reverse backward to get [meetingNode, ..., target], skip meetingNode
                 const reversedBackNodes = [...newNodePath].reverse().slice(1);
                 const reversedBackEdges = [...newEdgePath].reverse();
                 const fullNodePath = [...fPath.nodePath, ...reversedBackNodes];
@@ -783,7 +798,6 @@ export function findPaths(
 
                 if (fullEdgePath.length > maxHops) continue;
 
-                // Check for cycles in combined path
                 const nodeSet = new Set(fullNodePath);
                 if (nodeSet.size !== fullNodePath.length) continue;
 
@@ -795,16 +809,16 @@ export function findPaths(
                     node_ids: fullNodePath,
                     edge_ids: fullEdgePath,
                   });
-                  if (results.length >= maxPaths) break;
+                  if (results.length >= maxPaths) { truncated = true; break; }
                 }
               }
               if (results.length >= maxPaths) break;
             }
 
-            // Store this partial path for future expansion
             if (!backwardVisited.has(neighbor)) {
               backwardVisited.set(neighbor, []);
               nextFrontier.add(neighbor);
+              allVisitedNodes.add(neighbor);
             }
             if (forwardDepth + backwardDepth <= maxHops) {
               backwardVisited.get(neighbor)!.push({
@@ -827,7 +841,14 @@ export function findPaths(
 
   // Sort by path length (shortest first)
   results.sort((a, b) => a.length - b.length);
-  return results.slice(0, maxPaths);
+  const finalResults = results.slice(0, maxPaths);
+
+  // Mark last result with truncated flag if we hit any cap
+  if (truncated && finalResults.length > 0) {
+    finalResults[finalResults.length - 1].truncated = true;
+  }
+
+  return finalResults;
 }
 
 /**
@@ -1236,8 +1257,8 @@ export function resolveEntityNodeIdsFromKG(
       // Strategy 3: Alias JSON LIKE match
       if (includeAliasSearch) {
         const aliasRows = db.prepare(
-          'SELECT id FROM knowledge_nodes WHERE aliases LIKE ?'
-        ).all(`%${lowerName}%`) as Array<{ id: string }>;
+          "SELECT id FROM knowledge_nodes WHERE aliases LIKE ? ESCAPE '\\'"
+        ).all(`%${escapeLikePattern(lowerName)}%`) as Array<{ id: string }>;
         for (const row of aliasRows) nodeIds.add(row.id);
       }
     }
@@ -1246,18 +1267,22 @@ export function resolveEntityNodeIdsFromKG(
   // Apply entity type filter
   if (entityTypes && entityTypes.length > 0) {
     if (nodeIds.size === 0 && !entityNames?.length) {
+      // entityTypes is typically small (< 20), no batching needed
       const typePlaceholders = entityTypes.map(() => '?').join(',');
       const typeRows = db.prepare(
         `SELECT id FROM knowledge_nodes WHERE entity_type IN (${typePlaceholders})`
       ).all(...entityTypes) as Array<{ id: string }>;
       for (const row of typeRows) nodeIds.add(row.id);
     } else if (nodeIds.size > 0) {
+      // nodeIds can be large -- batch the IN clause
       const nodeIdArray = [...nodeIds];
-      const nodePlaceholders = nodeIdArray.map(() => '?').join(',');
       const typePlaceholders = entityTypes.map(() => '?').join(',');
-      const filteredRows = db.prepare(
-        `SELECT id FROM knowledge_nodes WHERE id IN (${nodePlaceholders}) AND entity_type IN (${typePlaceholders})`
-      ).all(...nodeIdArray, ...entityTypes) as Array<{ id: string }>;
+      const filteredRows = batchedQuery(nodeIdArray, (batch) => {
+        const nodePlaceholders = batch.map(() => '?').join(',');
+        return db.prepare(
+          `SELECT id FROM knowledge_nodes WHERE id IN (${nodePlaceholders}) AND entity_type IN (${typePlaceholders})`
+        ).all(...batch, ...entityTypes) as Array<{ id: string }>;
+      });
       nodeIds.clear();
       for (const row of filteredRows) nodeIds.add(row.id);
     }
@@ -1289,49 +1314,51 @@ export function getDocumentIdsForEntities(
   const nodeIds = resolveEntityNodeIdsFromKG(db, entityNames, entityTypes, true);
   if (nodeIds.size === 0) return [];
 
-  // Get document IDs from matching nodes via entity links
+  // Get document IDs from matching nodes via entity links (batched to avoid 999-param limit)
   const nodeIdArray = [...nodeIds];
-  const nodePlaceholders = nodeIdArray.map(() => '?').join(',');
-  const docRows = db.prepare(
-    `SELECT DISTINCT em.document_id
-     FROM node_entity_links nel
-     JOIN entities e ON nel.entity_id = e.id
-     JOIN entity_mentions em ON em.entity_id = e.id
-     WHERE nel.node_id IN (${nodePlaceholders})`
-  ).all(...nodeIdArray) as Array<{ document_id: string }>;
+  const docRows = batchedQuery(nodeIdArray, (batch) => {
+    const placeholders = batch.map(() => '?').join(',');
+    return db.prepare(
+      `SELECT DISTINCT em.document_id
+       FROM node_entity_links nel
+       JOIN entities e ON nel.entity_id = e.id
+       JOIN entity_mentions em ON em.entity_id = e.id
+       WHERE nel.node_id IN (${placeholders})`
+    ).all(...batch) as Array<{ document_id: string }>;
+  });
 
   const documentIds = new Set(docRows.map(r => r.document_id));
 
   // 1-hop edge traversal for related entities
   if (includeRelated) {
-    // Find related node IDs via edges (1-hop neighbors)
+    // Find related node IDs via edges (1-hop neighbors) -- batched
     const relatedNodeIds = new Set<string>();
-    const edgeRows = db.prepare(
-      `SELECT DISTINCT CASE
-        WHEN source_node_id IN (${nodePlaceholders}) THEN target_node_id
-        ELSE source_node_id
-       END as related_node_id
-       FROM knowledge_edges
-       WHERE source_node_id IN (${nodePlaceholders}) OR target_node_id IN (${nodePlaceholders})`
-    ).all(...nodeIdArray, ...nodeIdArray, ...nodeIdArray) as Array<{ related_node_id: string }>;
+    const edgeRows = batchedQuery(nodeIdArray, (batch) => {
+      const placeholders = batch.map(() => '?').join(',');
+      return db.prepare(
+        `SELECT DISTINCT source_node_id, target_node_id
+         FROM knowledge_edges
+         WHERE source_node_id IN (${placeholders}) OR target_node_id IN (${placeholders})`
+      ).all(...batch, ...batch) as Array<{ source_node_id: string; target_node_id: string }>;
+    });
 
     for (const row of edgeRows) {
-      // Exclude nodes already in the initial set (they're already covered)
-      if (!nodeIds.has(row.related_node_id)) {
-        relatedNodeIds.add(row.related_node_id);
-      }
+      if (!nodeIds.has(row.target_node_id)) relatedNodeIds.add(row.target_node_id);
+      if (!nodeIds.has(row.source_node_id)) relatedNodeIds.add(row.source_node_id);
     }
 
-    // Look up document IDs for related nodes
+    // Look up document IDs for related nodes (batched)
     if (relatedNodeIds.size > 0) {
       const relatedArray = [...relatedNodeIds];
-      const relatedPlaceholders = relatedArray.map(() => '?').join(',');
-      const relatedDocRows = db.prepare(
-        `SELECT DISTINCT e.document_id
-         FROM node_entity_links nel
-         JOIN entities e ON nel.entity_id = e.id
-         WHERE nel.node_id IN (${relatedPlaceholders})`
-      ).all(...relatedArray) as Array<{ document_id: string }>;
+      const relatedDocRows = batchedQuery(relatedArray, (batch) => {
+        const placeholders = batch.map(() => '?').join(',');
+        return db.prepare(
+          `SELECT DISTINCT e.document_id
+           FROM node_entity_links nel
+           JOIN entities e ON nel.entity_id = e.id
+           WHERE nel.node_id IN (${placeholders})`
+        ).all(...batch) as Array<{ document_id: string }>;
+      });
 
       for (const row of relatedDocRows) {
         documentIds.add(row.document_id);
@@ -1358,8 +1385,8 @@ export function searchKnowledgeNodesFTS(
 ): Array<{ id: string; entity_type: string; canonical_name: string; document_count: number; edge_count: number; rank: number }> {
   if (!query || query.trim().length === 0) return [];
 
-  // Sanitize query for FTS5: remove quotes and special FTS operators
-  const sanitized = query.replace(/['"]/g, '').trim();
+  // Sanitize query for FTS5: remove quotes and all special FTS5 metacharacters
+  const sanitized = query.replace(/["*()\\+:^-]/g, ' ').trim();
   if (sanitized.length === 0) return [];
 
   try {
@@ -1419,7 +1446,9 @@ export function getEntityMentionFrequencyByDocument(
       result.set(row.document_id, row.mention_count);
     }
   } catch (error) {
-    console.error(`[KG] Failed to get entity mention frequency: ${error instanceof Error ? error.message : String(error)}`);
+    const msg = error instanceof Error ? error.message : String(error);
+    console.error(`[KG] Failed to get entity mention frequency: ${msg}`);
+    throw new Error(`Entity mention frequency query failed: ${msg}`);
   }
 
   return result;
@@ -1682,10 +1711,11 @@ export function getEvidenceChunksForEdge(
     }>;
     return rows;
   } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error);
     console.error(
-      `[KG] Failed to get evidence chunks for edge ${sourceNodeId} <-> ${targetNodeId}: ${error instanceof Error ? error.message : String(error)}`,
+      `[KG] Failed to get evidence chunks for edge ${sourceNodeId} <-> ${targetNodeId}: ${msg}`,
     );
-    return [];
+    throw new Error(`Evidence chunk retrieval failed for edge ${sourceNodeId} <-> ${targetNodeId}: ${msg}`);
   }
 }
 

@@ -18,7 +18,7 @@
 
 import { z } from 'zod';
 import { formatResponse, handleError, type ToolDefinition, type ToolResponse } from './shared.js';
-import { validateInput } from '../utils/validation.js';
+import { validateInput, escapeLikePattern } from '../utils/validation.js';
 import { requireDatabase } from '../server/state.js';
 import { successResult } from '../server/types.js';
 import { v4 as uuidv4 } from 'uuid';
@@ -601,12 +601,14 @@ async function handleKnowledgeGraphMerge(
       }
 
       // 2. Merge aliases
-      const sourceAliases: string[] = sourceNode.aliases
-        ? JSON.parse(sourceNode.aliases)
-        : [];
-      const targetAliases: string[] = targetNode.aliases
-        ? JSON.parse(targetNode.aliases)
-        : [];
+      let sourceAliases: string[] = [];
+      if (sourceNode.aliases) {
+        try { sourceAliases = JSON.parse(sourceNode.aliases); } catch { /* malformed alias JSON - treat as empty */ }
+      }
+      let targetAliases: string[] = [];
+      if (targetNode.aliases) {
+        try { targetAliases = JSON.parse(targetNode.aliases); } catch { /* malformed alias JSON - treat as empty */ }
+      }
 
       // Add source canonical name and its aliases to target aliases
       const mergedAliases = new Set([
@@ -969,9 +971,9 @@ async function handleKnowledgeGraphEnrich(
               SELECT e.image_id, e.original_text as description, e.document_id
               FROM embeddings e
               WHERE e.document_id = ? AND e.image_id IS NOT NULL AND e.original_text IS NOT NULL
-                AND LOWER(e.original_text) LIKE ?
+                AND LOWER(e.original_text) LIKE ? ESCAPE '\\'
               LIMIT 5
-            `).all(docId, `%${node.canonical_name.toLowerCase()}%`) as Array<{
+            `).all(docId, `%${escapeLikePattern(node.canonical_name.toLowerCase())}%`) as Array<{
               image_id: string;
               description: string;
               document_id: string;
@@ -1077,9 +1079,9 @@ async function handleKnowledgeGraphEnrich(
           const searchRows = conn.prepare(`
             SELECT c.id as chunk_id, c.document_id, c.text, c.page_number
             FROM chunks c
-            WHERE LOWER(c.text) LIKE ?
+            WHERE LOWER(c.text) LIKE ? ESCAPE '\\'
             LIMIT 10
-          `).all(`%${node.canonical_name.toLowerCase()}%`) as Array<{
+          `).all(`%${escapeLikePattern(node.canonical_name.toLowerCase())}%`) as Array<{
             chunk_id: string;
             document_id: string;
             text: string;
@@ -1447,8 +1449,9 @@ async function handleKnowledgeGraphContradictions(
     const params_list: unknown[] = [input.min_contradiction_count ?? 1];
 
     if (input.entity_name) {
-      sql += ` AND (sn.canonical_name LIKE ? OR tn.canonical_name LIKE ?)`;
-      params_list.push(`%${input.entity_name}%`, `%${input.entity_name}%`);
+      sql += ` AND (sn.canonical_name LIKE ? ESCAPE '\\' OR tn.canonical_name LIKE ? ESCAPE '\\')`;
+      const escapedName = escapeLikePattern(input.entity_name);
+      params_list.push(`%${escapedName}%`, `%${escapedName}%`);
     }
     if (input.entity_type) {
       sql += ` AND (sn.entity_type = ? OR tn.entity_type = ?)`;
@@ -1712,9 +1715,9 @@ export async function handleKnowledgeGraphScanContradictions(
       suggested_action: string;
     }> = [];
 
-    const entityTypeFilter = input.entity_type
-      ? ` AND n.entity_type = '${input.entity_type.replace(/'/g, "''")}'`
-      : '';
+    // Use parameterized query for entity_type filter instead of string interpolation
+    const entityTypeFilterClause = input.entity_type ? ' AND n.entity_type = ?' : '';
+    const entityTypeParam = input.entity_type ? [input.entity_type] : [];
 
     // --- conflicting_relationships ---
     if (scanTypes.includes('conflicting_relationships')) {
@@ -1724,12 +1727,12 @@ export async function handleKnowledgeGraphScanContradictions(
         FROM knowledge_nodes n
         JOIN knowledge_edges e ON (e.source_node_id = n.id OR e.target_node_id = n.id)
         WHERE e.relationship_type NOT IN ('co_mentioned', 'co_located', 'references', 'related_to')
-        ${entityTypeFilter}
+        ${entityTypeFilterClause}
         GROUP BY n.id, e.relationship_type
         HAVING partner_count > 1
         ORDER BY partner_count DESC
         LIMIT ?
-      `).all(limit) as Array<{
+      `).all(...entityTypeParam, limit) as Array<{
         node_id: string; canonical_name: string; entity_type: string;
         relationship_type: string; partner_count: number;
       }>;
@@ -1794,9 +1797,9 @@ export async function handleKnowledgeGraphScanContradictions(
             AND (e2.valid_until IS NULL OR e2.valid_until >= e1.valid_from)
             AND CASE WHEN e1.source_node_id = n.id THEN e1.target_node_id ELSE e1.source_node_id END
              != CASE WHEN e2.source_node_id = n.id THEN e2.target_node_id ELSE e2.source_node_id END
-          ${entityTypeFilter}
+          ${entityTypeFilterClause}
           LIMIT ?
-        `).all(limit - contradictions.length) as Array<{
+        `).all(...entityTypeParam, limit - contradictions.length) as Array<{
           edge1_id: string; edge2_id: string; relationship_type: string;
           e1_from: string; e1_until: string | null;
           e2_from: string; e2_until: string | null;
@@ -2283,9 +2286,10 @@ async function handleKnowledgeGraphVisualize(
       if (centerNode) {
         collectedNodeIds.add(centerNode.id);
       } else {
+        const escapedSearchTerm = escapeLikePattern(searchTerm);
         const likeNode = conn.prepare(
-          `SELECT id FROM knowledge_nodes WHERE LOWER(canonical_name) LIKE ? LIMIT 1`
-        ).get(`%${searchTerm}%`) as { id: string } | undefined;
+          `SELECT id FROM knowledge_nodes WHERE LOWER(canonical_name) LIKE ? ESCAPE '\\' LIMIT 1`
+        ).get(`%${escapedSearchTerm}%`) as { id: string } | undefined;
 
         if (likeNode) {
           collectedNodeIds.add(likeNode.id);
@@ -2294,9 +2298,9 @@ async function handleKnowledgeGraphVisualize(
           const aliasNode = conn.prepare(`
             SELECT nel.node_id as id FROM node_entity_links nel
             JOIN entities e ON e.id = nel.entity_id
-            WHERE LOWER(e.normalized_text) LIKE ?
+            WHERE LOWER(e.normalized_text) LIKE ? ESCAPE '\\'
             LIMIT 1
-          `).get(`%${searchTerm}%`) as { id: string } | undefined;
+          `).get(`%${escapedSearchTerm}%`) as { id: string } | undefined;
 
           if (!aliasNode) {
             throw new Error(`Entity not found: "${input.entity_name}"`);

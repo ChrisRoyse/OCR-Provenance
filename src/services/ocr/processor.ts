@@ -100,14 +100,10 @@ export class OCRProcessor {
     const ocrMode = mode ?? this.defaultMode;
     const startTime = Date.now();
 
-    // 1. Get document
+    // 1. Get document (FAIL-FAST: throw if not found)
     const document = this.db.getDocument(documentId);
     if (!document) {
-      return {
-        success: false,
-        documentId,
-        error: `Document not found: ${documentId}`,
-      };
+      throw new OCRError(`Document not found: ${documentId}`, 'OCR_FILE_ERROR');
     }
 
     // 2. Update status to 'processing'
@@ -202,16 +198,15 @@ export class OCRProcessor {
       };
 
     } catch (error) {
-      // Update status to 'failed'
+      // Update status to 'failed' and re-throw (FAIL-FAST: callers must handle)
       const errorMsg = error instanceof Error ? error.message : String(error);
       this.db.updateDocumentStatus(documentId, 'failed', errorMsg);
 
-      return {
-        success: false,
-        documentId,
-        error: errorMsg,
-        durationMs: Date.now() - startTime,
-      };
+      // Re-throw as OCRError if not already one
+      if (error instanceof OCRError) {
+        throw error;
+      }
+      throw new OCRError(`OCR processing failed for ${documentId}: ${errorMsg}`, 'OCR_API_ERROR');
     }
   }
 
@@ -239,7 +234,20 @@ export class OCRProcessor {
     for (let i = 0; i < pending.length; i += this.maxConcurrent) {
       const batch = pending.slice(i, i + this.maxConcurrent);
       const batchResults = await Promise.all(
-        batch.map(doc => this.processDocument(doc.id, ocrMode))
+        batch.map(async (doc) => {
+          try {
+            return await this.processDocument(doc.id, ocrMode);
+          } catch (error) {
+            // processDocument already marks doc as 'failed' before throwing
+            const errorMsg = error instanceof Error ? error.message : String(error);
+            return {
+              success: false,
+              documentId: doc.id,
+              error: errorMsg,
+              durationMs: 0,
+            } as ProcessResult;
+          }
+        })
       );
       results.push(...batchResults);
     }

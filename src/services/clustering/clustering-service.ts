@@ -382,6 +382,31 @@ async function runClusteringWorker(
       }
 
       if (parsed !== undefined) {
+        // Validate required fields exist on parsed worker result
+        if (typeof parsed !== 'object' || parsed === null) {
+          reject(new ClusteringError(
+            'Clustering worker returned non-object result',
+            'WORKER_PARSE_ERROR',
+            { output: output.substring(0, 1000) }
+          ));
+          return;
+        }
+        if (typeof parsed.success !== 'boolean') {
+          reject(new ClusteringError(
+            'Clustering worker result missing required "success" field',
+            'WORKER_PARSE_ERROR',
+            { output: output.substring(0, 1000) }
+          ));
+          return;
+        }
+        if (parsed.success && parsed.silhouette_score === undefined && parsed.labels === undefined) {
+          reject(new ClusteringError(
+            'Clustering worker success=true but missing "labels" and "silhouette_score" fields',
+            'WORKER_PARSE_ERROR',
+            { output: output.substring(0, 1000) }
+          ));
+          return;
+        }
         resolve(parsed);
       } else {
         reject(new ClusteringError(

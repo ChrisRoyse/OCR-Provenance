@@ -271,6 +271,9 @@ export async function handleEvaluateDocument(
           });
 
           // Parse result
+          if (!result.content || result.content.length === 0) {
+            throw new Error('Gemini returned empty content for image evaluation');
+          }
           const data = JSON.parse(result.content[0].text);
           if (data.success && data.data) {
             return {

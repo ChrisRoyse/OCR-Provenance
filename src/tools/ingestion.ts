@@ -12,7 +12,7 @@
 
 import { z } from 'zod';
 import { v4 as uuidv4 } from 'uuid';
-import { existsSync, statSync, readdirSync, mkdirSync, writeFileSync } from 'fs';
+import { existsSync, statSync, lstatSync, readdirSync, mkdirSync, writeFileSync } from 'fs';
 import { resolve, extname, basename } from 'path';
 
 import { DatabaseService } from '../services/storage/database/index.js';
@@ -30,6 +30,7 @@ import {
 import { successResult } from '../server/types.js';
 import {
   validateInput,
+  sanitizePath,
   IngestDirectoryInput,
   IngestFilesInput,
   ProcessPendingInput,
@@ -519,13 +520,25 @@ export async function handleIngestDirectory(
     const fileTypes = input.file_types ?? [...DEFAULT_FILE_TYPES];
     const items: IngestionItem[] = [];
 
-    // Collect files recursively
+    // Collect files recursively, skipping symlinks for security
     const collectFiles = (dirPath: string): string[] => {
       const files: string[] = [];
       const entries = readdirSync(dirPath, { withFileTypes: true });
 
       for (const entry of entries) {
         const fullPath = resolve(dirPath, entry.name);
+
+        // Detect and skip symlinks to prevent symlink-based traversal attacks
+        try {
+          if (lstatSync(fullPath).isSymbolicLink()) {
+            console.error(`[WARN] Skipping symlink during ingestion: ${fullPath}`);
+            continue;
+          }
+        } catch {
+          console.error(`[WARN] Could not stat entry, skipping: ${fullPath}`);
+          continue;
+        }
+
         if (entry.isDirectory() && input.recursive) {
           files.push(...collectFiles(fullPath));
         } else if (entry.isFile()) {
@@ -672,7 +685,9 @@ export async function handleIngestFiles(
 
     const items: IngestionItem[] = [];
 
-    for (const filePath of input.file_paths) {
+    for (const rawFilePath of input.file_paths) {
+      // Sanitize each file path to prevent directory traversal
+      const filePath = sanitizePath(rawFilePath);
       try {
         // Validate file exists - FAIL FAST
         if (!existsSync(filePath)) {
@@ -1010,13 +1025,10 @@ export async function handleProcessPending(
         console.error(`[INFO] Processing document: ${doc.id} (${doc.file_name})`);
 
         // Step 1: OCR via Datalab
-        // OCRProcessor.processDocument() handles status='processing' internally
+        // OCRProcessor.processDocument() throws on failure (FAIL-FAST).
+        // It handles status='processing' internally and marks 'failed' before throwing.
         const ocrProcessor = new OCRProcessor(db);
         const processResult = await ocrProcessor.processDocument(doc.id, ocrMode, ocrOptions);
-
-        if (!processResult.success) {
-          throw new Error(processResult.error ?? 'OCR processing failed');
-        }
 
         // Get the OCR result
         const ocrResult = db.getOCRResultByDocumentId(doc.id);
@@ -1302,7 +1314,9 @@ export async function handleProcessPending(
 
             console.error(`[INFO] Stored structured extraction for document ${doc.id}`);
           } catch (extErr) {
-            console.error(`[WARN] Failed to store extraction for ${doc.id}: ${extErr instanceof Error ? extErr.message : String(extErr)}`);
+            const extErrMsg = extErr instanceof Error ? extErr.message : String(extErr);
+            console.error(`[ERROR] Failed to store extraction for ${doc.id}: ${extErrMsg}`);
+            results.errors.push({ document_id: doc.id, error: `Extraction storage failed: ${extErrMsg}` });
           }
         }
 
