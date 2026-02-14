@@ -316,29 +316,21 @@ describe('Task 11 Full State Verification', () => {
       error_message: null,
     });
 
-    const result = await processor!.processDocument(docId);
-    console.log('[RESULT] success:', result.success);
-    console.log('[RESULT] error:', result.error);
-
-    expect(result.success).toBe(false);
-    expect(result.error).toBeTruthy();
+    // processDocument now THROWS on file errors (Agent 2 change)
+    await expect(
+      processor!.processDocument(docId)
+    ).rejects.toThrow();
 
     const docAfter = db!.getDocument(docId);
-    console.log('[DB] status:', docAfter!.status);
-    console.log('[DB] error_message:', docAfter!.error_message);
-
     expect(docAfter!.status).toBe('failed');
     expect(docAfter!.error_message).toBeTruthy();
   });
 
   it.skipIf(!canRunTests)('Edge Case: document not in database returns error', async () => {
-    const result = await processor!.processDocument('nonexistent-document-id');
-
-    console.log('[RESULT] success:', result.success);
-    console.log('[RESULT] error:', result.error);
-
-    expect(result.success).toBe(false);
-    expect(result.error).toContain('not found');
+    // processDocument now THROWS on missing document (Agent 2 change)
+    await expect(
+      processor!.processDocument('nonexistent-document-id')
+    ).rejects.toThrow(/not found/i);
   });
 
   it.skipIf(!canRunTests)('DOCX Processing: processes DOCX files correctly', async () => {

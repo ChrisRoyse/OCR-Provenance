@@ -520,7 +520,6 @@ export async function handleIngestDirectory(
     const fileTypes = input.file_types ?? [...DEFAULT_FILE_TYPES];
     const items: IngestionItem[] = [];
 
-    // Collect files recursively, skipping symlinks for security
     const collectFiles = (dirPath: string): string[] => {
       const files: string[] = [];
       const entries = readdirSync(dirPath, { withFileTypes: true });
@@ -528,7 +527,6 @@ export async function handleIngestDirectory(
       for (const entry of entries) {
         const fullPath = resolve(dirPath, entry.name);
 
-        // Detect and skip symlinks to prevent symlink-based traversal attacks
         try {
           if (lstatSync(fullPath).isSymbolicLink()) {
             console.error(`[WARN] Skipping symlink during ingestion: ${fullPath}`);
@@ -686,7 +684,6 @@ export async function handleIngestFiles(
     const items: IngestionItem[] = [];
 
     for (const rawFilePath of input.file_paths) {
-      // Sanitize each file path to prevent directory traversal
       const filePath = sanitizePath(rawFilePath);
       try {
         // Validate file exists - FAIL FAST

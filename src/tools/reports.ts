@@ -12,7 +12,7 @@
 
 import { z } from 'zod';
 import * as fs from 'fs';
-import { resolve } from 'path';
+import { dirname } from 'path';
 import { requireDatabase } from '../server/state.js';
 import { successResult } from '../server/types.js';
 import { MCPError } from '../server/errors.js';
@@ -288,9 +288,8 @@ export async function handleEvaluationReport(
 
     // Save to file if path provided
     if (outputPath) {
-      // Sanitize output path to prevent directory traversal
       const safeOutputPath = sanitizePath(outputPath);
-      const dir = resolve(safeOutputPath).replace(/[^/\\]+$/, '');
+      const dir = dirname(safeOutputPath);
       if (!fs.existsSync(dir)) {
         fs.mkdirSync(dir, { recursive: true });
       }

@@ -372,12 +372,24 @@ describe.skipIf(!sqliteVecAvailable)('VALUE ENHANCEMENT VERIFICATION: Phases 1-5
         VALUES (?, 'ENTITY_EXTRACTION', datetime('now'), datetime('now'), 'ENTITY_EXTRACTION', ?, 'sha256:badtype', 'test', '1.0', '{}', '[]', 2)
       `).run(entityProvId, DOC_IDS.doc1);
 
-      expect(() => {
-        db.prepare(`
-          INSERT INTO entities (id, document_id, entity_type, raw_text, normalized_text, confidence, provenance_id)
-          VALUES (?, ?, 'INVALID_TYPE', 'test', 'test', 0.5, ?)
-        `).run(crypto.randomUUID(), DOC_IDS.doc1, entityProvId);
-      }).toThrow();
+      // TS-07: Multiple invalid entity type test cases
+      const invalidTypes = [
+        'INVALID_TYPE',    // arbitrary invalid type
+        '',                // empty string
+        'PERSON',          // wrong case (uppercase)
+        'null',            // string "null"
+        'Person',          // wrong case (title case)
+        'medical_devices', // plural (close but wrong)
+      ];
+
+      for (const invalidType of invalidTypes) {
+        expect(() => {
+          db.prepare(`
+            INSERT INTO entities (id, document_id, entity_type, raw_text, normalized_text, confidence, provenance_id)
+            VALUES (?, ?, ?, 'test', 'test', 0.5, ?)
+          `).run(crypto.randomUUID(), DOC_IDS.doc1, invalidType, entityProvId);
+        }, `Expected entity_type '${invalidType}' to be rejected by CHECK constraint`).toThrow();
+      }
     });
 
     it('should accept ENTITY_EXTRACTION provenance type', () => {
