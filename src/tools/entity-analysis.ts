@@ -93,6 +93,23 @@ const CoreferenceResolveInput = z.object({
     .describe('Maximum chunks to process for coreference resolution'),
   merge_into_kg: z.boolean().default(false)
     .describe('Automatically merge resolved coreferences into knowledge graph'),
+  resolution_scope: z.enum(['chunk', 'document']).default('chunk')
+    .describe('Resolution scope: chunk processes independently, document passes full entity index as persistent context'),
+});
+
+const EntityDossierInput = z.object({
+  entity_name: z.string().min(1).describe('Entity name or KG node canonical name to look up'),
+  node_id: z.string().optional().describe('Direct KG node ID if known'),
+  include_mentions: z.boolean().default(true).describe('Include all mention positions'),
+  include_relationships: z.boolean().default(true).describe('Include KG relationships'),
+  include_documents: z.boolean().default(true).describe('Include document list'),
+  include_timeline: z.boolean().default(false).describe('Include timeline of date co-occurrences'),
+  max_mentions: z.number().min(1).max(500).default(50).describe('Max mentions to return'),
+});
+
+const EntityUpdateConfidenceInput = z.object({
+  document_id: z.string().optional().describe('Update for specific document, or all if omitted'),
+  dry_run: z.boolean().default(false).describe('Preview changes without applying'),
 });
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -1202,11 +1219,11 @@ async function handleCoreferenceResolve(params: Record<string, unknown>) {
 
     // Get entities for this document
     const entities = conn.prepare(`
-      SELECT id, raw_text, entity_type, confidence
+      SELECT id, raw_text, normalized_text, entity_type, confidence
       FROM entities WHERE document_id = ?
       ORDER BY confidence DESC
     `).all(input.document_id) as Array<{
-      id: string; raw_text: string; entity_type: string; confidence: number;
+      id: string; raw_text: string; normalized_text: string; entity_type: string; confidence: number;
     }>;
 
     if (entities.length === 0) {
@@ -1238,6 +1255,39 @@ async function handleCoreferenceResolve(params: Record<string, unknown>) {
     // Build entity list for Gemini prompt (top 50 by confidence)
     const entityList = entities.slice(0, 50).map(e => `- "${e.raw_text}" (${e.entity_type})`).join('\n');
 
+    // For document-level scope, build a comprehensive entity index with aliases
+    let documentEntityIndex = '';
+    if (input.resolution_scope === 'document') {
+      const entityEntries: string[] = [];
+      const seenNormalized = new Set<string>();
+      for (const e of entities) {
+        const key = `${e.entity_type}::${e.normalized_text}`;
+        if (seenNormalized.has(key)) continue;
+        seenNormalized.add(key);
+
+        // Look up KG aliases if available
+        let aliases: string[] = [];
+        try {
+          const aliasRow = conn.prepare(`
+            SELECT kn.aliases FROM knowledge_nodes kn
+            JOIN node_entity_links nel ON nel.node_id = kn.id
+            WHERE nel.entity_id = ?
+            LIMIT 1
+          `).get(e.id) as { aliases: string | null } | undefined;
+          if (aliasRow?.aliases) {
+            const parsed = JSON.parse(aliasRow.aliases);
+            if (Array.isArray(parsed)) {
+              aliases = parsed.filter((a: unknown) => typeof a === 'string' && a.length > 0);
+            }
+          }
+        } catch { /* KG tables may not exist */ }
+
+        const aliasStr = aliases.length > 0 ? ` [aliases: ${aliases.join(', ')}]` : '';
+        entityEntries.push(`- "${e.raw_text}" (${e.entity_type}, confidence: ${e.confidence.toFixed(2)})${aliasStr}`);
+      }
+      documentEntityIndex = entityEntries.join('\n');
+    }
+
     const gemini = new GeminiClient();
     const resolutions: Array<{
       pronoun_or_description: string;
@@ -1249,10 +1299,41 @@ async function handleCoreferenceResolve(params: Record<string, unknown>) {
 
     const startTime = Date.now();
 
+    // Track accumulated resolutions for document-level context propagation
+    const accumulatedResolutions: string[] = [];
+
     // Process chunks sequentially with cooldown
     for (let i = 0; i < chunks.length; i++) {
       const chunk = chunks[i];
-      const prompt = `Analyze this text and identify any pronouns, abbreviations, or descriptions that refer to the known entities listed below. Return ONLY a JSON array of resolutions.
+
+      let prompt: string;
+      if (input.resolution_scope === 'document') {
+        // Document-level: include full entity index and accumulated resolutions
+        const priorContext = accumulatedResolutions.length > 0
+          ? `\n\n## Previously Resolved References (from earlier chunks):\n${accumulatedResolutions.join('\n')}\nUse these as additional context for resolving references in the current text.`
+          : '';
+
+        prompt = `You are resolving coreferences in a document. The following entities have been identified across the entire document. Resolve any pronouns, abbreviations, or descriptions in the text below to these known entities.
+
+## Full Document Entity Index:
+${documentEntityIndex}
+${priorContext}
+
+## Current Text (chunk ${i + 1} of ${chunks.length}):
+${chunk.text.slice(0, 3000)}
+
+## Instructions:
+Return a JSON array where each element has:
+- "reference": the pronoun/description/abbreviation found in the text (e.g., "he", "the patient", "Dr. S")
+- "resolved_to": the full entity name from the entity index
+- "entity_type": the entity type
+- "confidence": confidence score 0-1
+
+Only include clear, unambiguous resolutions. Return [] if no resolutions found.
+Return ONLY the JSON array, no other text.`;
+      } else {
+        // Chunk-level (original behavior): independent processing per chunk
+        prompt = `Analyze this text and identify any pronouns, abbreviations, or descriptions that refer to the known entities listed below. Return ONLY a JSON array of resolutions.
 
 ## Known Entities:
 ${entityList}
@@ -1269,6 +1350,7 @@ Return a JSON array where each element has:
 
 Only include clear, unambiguous resolutions. Return [] if no resolutions found.
 Return ONLY the JSON array, no other text.`;
+      }
 
       try {
         const result = await gemini.fast(prompt);
@@ -1291,6 +1373,13 @@ Return ONLY the JSON array, no other text.`;
                 chunk_id: chunk.id,
                 confidence: r.confidence,
               });
+
+              // Accumulate for document-level context propagation
+              if (input.resolution_scope === 'document') {
+                accumulatedResolutions.push(
+                  `- "${r.reference}" -> "${r.resolved_to}" (${r.entity_type})`
+                );
+              }
             }
           }
         }
@@ -1329,12 +1418,643 @@ Return ONLY the JSON array, no other text.`;
 
     return formatResponse({
       document_id: input.document_id,
+      resolution_scope: input.resolution_scope,
       chunks_analyzed: chunks.length,
       entities_available: entities.length,
       total_resolutions: resolutions.length,
       resolutions,
       kg_merge: kgMergeResult ?? null,
       processing_duration_ms: Date.now() - startTime,
+    });
+  } catch (error) {
+    return handleError(error);
+  }
+}
+
+/**
+ * ocr_entity_dossier - Comprehensive single-entity profile
+ *
+ * Gathers profile, mentions, relationships, documents, timeline, and related entities
+ * for a single entity or KG node.
+ */
+async function handleEntityDossier(params: Record<string, unknown>) {
+  try {
+    const input = validateInput(EntityDossierInput, params);
+    const { db } = requireDatabase();
+    const conn = db.getConnection();
+
+    // Step 1: Resolve the entity to a KG node
+    type KGNodeRow = {
+      id: string; entity_type: string; canonical_name: string;
+      aliases: string | null; document_count: number; mention_count: number;
+      avg_confidence: number; importance_score: number | null;
+    };
+
+    let nodeId: string | null = input.node_id ?? null;
+    let nodeRow: KGNodeRow | null = null;
+    const maxMentions = input.max_mentions ?? 50;
+
+    if (nodeId) {
+      // Direct node_id lookup
+      nodeRow = conn.prepare(`
+        SELECT id, entity_type, canonical_name, aliases, document_count, mention_count,
+               avg_confidence, importance_score
+        FROM knowledge_nodes WHERE id = ?
+      `).get(nodeId) as KGNodeRow | undefined ?? null;
+      if (!nodeRow) {
+        return formatResponse({ error: `KG node not found: ${nodeId}` });
+      }
+    } else {
+      // Search by entity_name: case-insensitive canonical_name first
+      nodeRow = conn.prepare(`
+        SELECT id, entity_type, canonical_name, aliases, document_count, mention_count,
+               avg_confidence, importance_score
+        FROM knowledge_nodes WHERE LOWER(canonical_name) = LOWER(?)
+      `).get(input.entity_name) as KGNodeRow | undefined ?? null;
+
+      // FTS5 fallback
+      if (!nodeRow) {
+        try {
+          const sanitized = input.entity_name.replace(/['"]/g, '').trim();
+          if (sanitized.length > 0) {
+            nodeRow = conn.prepare(`
+              SELECT kn.id, kn.entity_type, kn.canonical_name, kn.aliases,
+                     kn.document_count, kn.mention_count, kn.avg_confidence, kn.importance_score
+              FROM knowledge_nodes_fts fts
+              JOIN knowledge_nodes kn ON kn.rowid = fts.rowid
+              WHERE knowledge_nodes_fts MATCH ?
+              ORDER BY rank
+              LIMIT 1
+            `).get(sanitized) as KGNodeRow | undefined ?? null;
+          }
+        } catch { /* FTS5 may not exist */ }
+      }
+
+      // Alias LIKE fallback
+      if (!nodeRow) {
+        nodeRow = conn.prepare(`
+          SELECT id, entity_type, canonical_name, aliases, document_count, mention_count,
+                 avg_confidence, importance_score
+          FROM knowledge_nodes WHERE LOWER(aliases) LIKE ?
+          LIMIT 1
+        `).get(`%${input.entity_name.toLowerCase()}%`) as KGNodeRow | undefined ?? null;
+      }
+
+      if (nodeRow) {
+        nodeId = nodeRow.id;
+      }
+    }
+
+    // If no KG node found, fall back to entities table directly
+    let entityFallback = false;
+    let fallbackEntities: Array<{
+      id: string; entity_type: string; raw_text: string; normalized_text: string;
+      confidence: number; document_id: string;
+    }> = [];
+
+    if (!nodeRow) {
+      entityFallback = true;
+      fallbackEntities = conn.prepare(`
+        SELECT id, entity_type, raw_text, normalized_text, confidence, document_id
+        FROM entities
+        WHERE LOWER(normalized_text) LIKE ? OR LOWER(raw_text) LIKE ?
+        ORDER BY confidence DESC
+        LIMIT 20
+      `).all(
+        `%${input.entity_name.toLowerCase()}%`,
+        `%${input.entity_name.toLowerCase()}%`,
+      ) as typeof fallbackEntities;
+
+      if (fallbackEntities.length === 0) {
+        return formatResponse({
+          error: `Entity not found: "${input.entity_name}". No matching KG node or entity record found.`,
+        });
+      }
+    }
+
+    // Build the dossier response
+    const dossier: Record<string, unknown> = {};
+
+    // -- Profile --
+    if (nodeRow) {
+      let aliases: string[] = [];
+      if (nodeRow.aliases) {
+        try {
+          const parsed = JSON.parse(nodeRow.aliases);
+          if (Array.isArray(parsed)) {
+            aliases = parsed.filter((a: unknown) => typeof a === 'string' && a.length > 0);
+          }
+        } catch { /* malformed */ }
+      }
+
+      dossier.profile = {
+        node_id: nodeRow.id,
+        canonical_name: nodeRow.canonical_name,
+        entity_type: nodeRow.entity_type,
+        aliases,
+        document_count: nodeRow.document_count,
+        mention_count: nodeRow.mention_count,
+        avg_confidence: Math.round(nodeRow.avg_confidence * 1000) / 1000,
+        importance_score: nodeRow.importance_score != null
+          ? Math.round(nodeRow.importance_score * 1000) / 1000 : null,
+        source: 'knowledge_graph',
+      };
+    } else {
+      // Fallback profile from entities table
+      const types = [...new Set(fallbackEntities.map(e => e.entity_type))];
+      const avgConf = fallbackEntities.reduce((s, e) => s + e.confidence, 0) / fallbackEntities.length;
+      const docIds = [...new Set(fallbackEntities.map(e => e.document_id))];
+      dossier.profile = {
+        entity_name: input.entity_name,
+        entity_types: types,
+        entity_count: fallbackEntities.length,
+        document_count: docIds.length,
+        avg_confidence: Math.round(avgConf * 1000) / 1000,
+        source: 'entities_table',
+      };
+    }
+
+    // -- Mentions --
+    if (input.include_mentions) {
+      const mentions: Array<Record<string, unknown>> = [];
+
+      if (nodeRow && nodeId) {
+        // Get entity IDs linked to this node
+        const linkedEntityIds = conn.prepare(
+          'SELECT entity_id FROM node_entity_links WHERE node_id = ?'
+        ).all(nodeId) as Array<{ entity_id: string }>;
+
+        if (linkedEntityIds.length > 0) {
+          const entityIdList = linkedEntityIds.map(r => r.entity_id);
+          const placeholders = entityIdList.map(() => '?').join(',');
+          const mentionRows = conn.prepare(`
+            SELECT em.id, em.entity_id, em.document_id, em.chunk_id,
+                   em.page_number, em.character_start, em.character_end, em.context_text,
+                   e.raw_text, e.entity_type
+            FROM entity_mentions em
+            JOIN entities e ON em.entity_id = e.id
+            WHERE em.entity_id IN (${placeholders})
+            ORDER BY em.document_id, em.character_start
+            LIMIT ?
+          `).all(...entityIdList, maxMentions) as Array<{
+            id: string; entity_id: string; document_id: string; chunk_id: string | null;
+            page_number: number | null; character_start: number | null;
+            character_end: number | null; context_text: string | null;
+            raw_text: string; entity_type: string;
+          }>;
+
+          for (const m of mentionRows) {
+            mentions.push({
+              mention_id: m.id,
+              raw_text: m.raw_text,
+              document_id: m.document_id,
+              chunk_id: m.chunk_id,
+              page_number: m.page_number,
+              character_start: m.character_start,
+              character_end: m.character_end,
+              context_text: m.context_text,
+            });
+          }
+        }
+      } else {
+        // Fallback: mentions from entities table matches
+        for (const e of fallbackEntities) {
+          const mentionRows = conn.prepare(`
+            SELECT id, document_id, chunk_id, page_number,
+                   character_start, character_end, context_text
+            FROM entity_mentions WHERE entity_id = ?
+            LIMIT ?
+          `).all(e.id, Math.ceil(maxMentions / fallbackEntities.length)) as Array<{
+            id: string; document_id: string; chunk_id: string | null;
+            page_number: number | null; character_start: number | null;
+            character_end: number | null; context_text: string | null;
+          }>;
+          for (const m of mentionRows) {
+            mentions.push({
+              mention_id: m.id,
+              raw_text: e.raw_text,
+              document_id: m.document_id,
+              chunk_id: m.chunk_id,
+              page_number: m.page_number,
+              character_start: m.character_start,
+              character_end: m.character_end,
+              context_text: m.context_text,
+            });
+          }
+        }
+      }
+
+      dossier.mentions = mentions;
+      dossier.mention_count = mentions.length;
+    }
+
+    // -- Relationships --
+    if (input.include_relationships && nodeId) {
+      const edgeRows = conn.prepare(`
+        SELECT ke.id as edge_id, ke.relationship_type, ke.weight, ke.evidence_count,
+               ke.valid_from, ke.valid_until,
+               CASE WHEN ke.source_node_id = ? THEN ke.target_node_id ELSE ke.source_node_id END as partner_id,
+               CASE WHEN ke.source_node_id = ? THEN 'outgoing' ELSE 'incoming' END as direction
+        FROM knowledge_edges ke
+        WHERE ke.source_node_id = ? OR ke.target_node_id = ?
+        ORDER BY ke.weight DESC
+      `).all(nodeId, nodeId, nodeId, nodeId) as Array<{
+        edge_id: string; relationship_type: string; weight: number;
+        evidence_count: number; valid_from: string | null; valid_until: string | null;
+        partner_id: string; direction: string;
+      }>;
+
+      const relationships: Array<Record<string, unknown>> = [];
+      for (const edge of edgeRows) {
+        const partner = conn.prepare(
+          'SELECT canonical_name, entity_type FROM knowledge_nodes WHERE id = ?'
+        ).get(edge.partner_id) as { canonical_name: string; entity_type: string } | undefined;
+
+        relationships.push({
+          edge_id: edge.edge_id,
+          partner_node_id: edge.partner_id,
+          partner_name: partner?.canonical_name ?? 'unknown',
+          partner_type: partner?.entity_type ?? 'unknown',
+          relationship_type: edge.relationship_type,
+          direction: edge.direction,
+          weight: Math.round(edge.weight * 1000) / 1000,
+          evidence_count: edge.evidence_count,
+          valid_from: edge.valid_from,
+          valid_until: edge.valid_until,
+        });
+      }
+
+      dossier.relationships = relationships;
+      dossier.relationship_count = relationships.length;
+    }
+
+    // -- Documents --
+    if (input.include_documents) {
+      const documents: Array<Record<string, unknown>> = [];
+
+      if (nodeId) {
+        // Documents via node_entity_links
+        const docRows = conn.prepare(`
+          SELECT d.id, d.file_name, d.page_count,
+                 COUNT(em.id) as mention_count
+          FROM node_entity_links nel
+          JOIN entities e ON nel.entity_id = e.id
+          JOIN entity_mentions em ON em.entity_id = e.id
+          JOIN documents d ON d.id = em.document_id
+          WHERE nel.node_id = ?
+          GROUP BY d.id
+          ORDER BY mention_count DESC
+        `).all(nodeId) as Array<{
+          id: string; file_name: string; page_count: number | null; mention_count: number;
+        }>;
+
+        for (const d of docRows) {
+          documents.push({
+            document_id: d.id,
+            file_name: d.file_name,
+            page_count: d.page_count,
+            entity_mention_count: d.mention_count,
+          });
+        }
+      } else {
+        // Fallback: documents from matched entities
+        const docIds = [...new Set(fallbackEntities.map(e => e.document_id))];
+        for (const docId of docIds) {
+          const docInfo = db.getDocument(docId);
+          if (docInfo) {
+            const mentionCount = fallbackEntities
+              .filter(e => e.document_id === docId).length;
+            documents.push({
+              document_id: docId,
+              file_name: docInfo.file_name,
+              page_count: docInfo.page_count,
+              entity_mention_count: mentionCount,
+            });
+          }
+        }
+      }
+
+      dossier.documents = documents;
+      dossier.document_count = documents.length;
+    }
+
+    // -- Timeline --
+    if (input.include_timeline && nodeId) {
+      // Find date entities co-located in chunks with this entity
+      const linkedEntityIds = conn.prepare(
+        'SELECT entity_id FROM node_entity_links WHERE node_id = ?'
+      ).all(nodeId) as Array<{ entity_id: string }>;
+
+      const timeline: Array<Record<string, unknown>> = [];
+
+      if (linkedEntityIds.length > 0) {
+        const entityIdList = linkedEntityIds.map(r => r.entity_id);
+        const placeholders = entityIdList.map(() => '?').join(',');
+
+        // Find chunk_ids containing this entity's mentions
+        const chunkRows = conn.prepare(`
+          SELECT DISTINCT chunk_id FROM entity_mentions
+          WHERE entity_id IN (${placeholders}) AND chunk_id IS NOT NULL
+        `).all(...entityIdList) as Array<{ chunk_id: string }>;
+
+        if (chunkRows.length > 0) {
+          const chunkIds = chunkRows.map(r => r.chunk_id);
+          const chunkPlaceholders = chunkIds.map(() => '?').join(',');
+
+          // Find date entities in those same chunks
+          const dateRows = conn.prepare(`
+            SELECT DISTINCT e.normalized_text, e.raw_text, e.confidence,
+                   em.document_id, em.context_text
+            FROM entity_mentions em
+            JOIN entities e ON em.entity_id = e.id
+            WHERE em.chunk_id IN (${chunkPlaceholders})
+              AND e.entity_type = 'date'
+            ORDER BY e.normalized_text ASC
+          `).all(...chunkIds) as Array<{
+            normalized_text: string; raw_text: string; confidence: number;
+            document_id: string; context_text: string | null;
+          }>;
+
+          for (const d of dateRows) {
+            timeline.push({
+              date_normalized: d.normalized_text,
+              date_raw: d.raw_text,
+              confidence: d.confidence,
+              document_id: d.document_id,
+              context: d.context_text,
+            });
+          }
+        }
+      }
+
+      dossier.timeline = timeline;
+      dossier.timeline_count = timeline.length;
+    }
+
+    // -- Related Entities (top 10 by edge weight) --
+    if (nodeId) {
+      const relatedRows = conn.prepare(`
+        SELECT
+          CASE WHEN ke.source_node_id = ? THEN ke.target_node_id ELSE ke.source_node_id END as related_id,
+          SUM(ke.weight) as total_weight,
+          COUNT(*) as edge_count
+        FROM knowledge_edges ke
+        WHERE ke.source_node_id = ? OR ke.target_node_id = ?
+        GROUP BY related_id
+        ORDER BY total_weight DESC
+        LIMIT 10
+      `).all(nodeId, nodeId, nodeId) as Array<{
+        related_id: string; total_weight: number; edge_count: number;
+      }>;
+
+      const relatedEntities: Array<Record<string, unknown>> = [];
+      for (const r of relatedRows) {
+        const partner = conn.prepare(
+          'SELECT canonical_name, entity_type, document_count FROM knowledge_nodes WHERE id = ?'
+        ).get(r.related_id) as { canonical_name: string; entity_type: string; document_count: number } | undefined;
+        if (partner) {
+          relatedEntities.push({
+            node_id: r.related_id,
+            canonical_name: partner.canonical_name,
+            entity_type: partner.entity_type,
+            document_count: partner.document_count,
+            total_edge_weight: Math.round(r.total_weight * 1000) / 1000,
+            edge_count: r.edge_count,
+          });
+        }
+      }
+
+      dossier.related_entities = relatedEntities;
+    }
+
+    dossier.entity_fallback = entityFallback;
+
+    return formatResponse(dossier);
+  } catch (error) {
+    return handleError(error);
+  }
+}
+
+/**
+ * ocr_entity_update_confidence - Dynamically recalculate entity confidence based on accumulated evidence
+ *
+ * Applies boosts for:
+ * - Cross-document KG presence: min(0.10, (N-1) * 0.02) where N = documents containing the KG node
+ * - Mention frequency: min(0.05, log(mention_count/5) * 0.02) when mention_count > 5
+ * - Multi-source extraction: 0.05 per additional source (OCR + VLM + extraction)
+ */
+async function handleEntityUpdateConfidence(params: Record<string, unknown>) {
+  try {
+    const input = validateInput(EntityUpdateConfidenceInput, params);
+    const { db } = requireDatabase();
+    const conn = db.getConnection();
+
+    // Scope filter
+    const filterClause = input.document_id
+      ? 'WHERE e.document_id = ?'
+      : '';
+    const filterParams = input.document_id ? [input.document_id] : [];
+
+    // Get all entities in scope
+    const entityRows = conn.prepare(`
+      SELECT e.id, e.document_id, e.entity_type, e.normalized_text, e.confidence
+      FROM entities e
+      ${filterClause}
+      ORDER BY e.document_id, e.entity_type
+    `).all(...filterParams) as Array<{
+      id: string; document_id: string; entity_type: string;
+      normalized_text: string; confidence: number;
+    }>;
+
+    if (entityRows.length === 0) {
+      return formatResponse({
+        message: 'No entities found in scope.',
+        entities_updated: 0,
+      });
+    }
+
+    // Pre-compute mention counts per entity
+    const mentionCountMap = new Map<string, number>();
+    const mentionRows = conn.prepare(`
+      SELECT entity_id, COUNT(*) as cnt FROM entity_mentions
+      ${input.document_id ? 'WHERE document_id = ?' : ''}
+      GROUP BY entity_id
+    `).all(...filterParams) as Array<{ entity_id: string; cnt: number }>;
+    for (const r of mentionRows) {
+      mentionCountMap.set(r.entity_id, r.cnt);
+    }
+
+    // Pre-compute KG node document counts per entity
+    const kgDocCountMap = new Map<string, number>();
+    try {
+      const kgRows = conn.prepare(`
+        SELECT nel.entity_id, kn.document_count
+        FROM node_entity_links nel
+        JOIN knowledge_nodes kn ON nel.node_id = kn.id
+        ${input.document_id ? 'WHERE nel.document_id = ?' : ''}
+      `).all(...filterParams) as Array<{ entity_id: string; document_count: number }>;
+      for (const r of kgRows) {
+        kgDocCountMap.set(r.entity_id, r.document_count);
+      }
+    } catch { /* KG tables may not exist */ }
+
+    // Pre-compute extraction source counts per entity
+    const multiSourceMap = new Map<string, number>();
+    try {
+      const sourceRows = conn.prepare(`
+        SELECT e.id as entity_id, COUNT(DISTINCT p.processor) as source_count
+        FROM entities e
+        JOIN provenance p ON e.provenance_id = p.id
+        ${filterClause}
+        GROUP BY e.id
+      `).all(...filterParams) as Array<{ entity_id: string; source_count: number }>;
+      for (const r of sourceRows) {
+        multiSourceMap.set(r.entity_id, r.source_count);
+      }
+    } catch { /* provenance join may fail */ }
+
+    // Check for entities with same normalized_text + type from different provenance sources
+    const crossSourceMap = new Map<string, number>();
+    try {
+      const crossRows = conn.prepare(`
+        SELECT e1.id as entity_id, COUNT(DISTINCT p2.processor) as cross_source_count
+        FROM entities e1
+        JOIN entities e2 ON e1.normalized_text = e2.normalized_text
+          AND e1.entity_type = e2.entity_type
+          AND e1.id != e2.id
+        JOIN provenance p2 ON e2.provenance_id = p2.id
+        ${filterClause.replace('e.document_id', 'e1.document_id')}
+        GROUP BY e1.id
+      `).all(...filterParams) as Array<{ entity_id: string; cross_source_count: number }>;
+      for (const r of crossRows) {
+        crossSourceMap.set(r.entity_id, r.cross_source_count);
+      }
+    } catch { /* may fail on schema without provenance processor field */ }
+
+    // Calculate new confidence for each entity
+    const updates: Array<{
+      entity_id: string;
+      old_confidence: number;
+      new_confidence: number;
+      cross_document_boost: number;
+      mention_boost: number;
+      multi_source_boost: number;
+    }> = [];
+
+    let totalOldConfidence = 0;
+    let totalNewConfidence = 0;
+
+    for (const entity of entityRows) {
+      const baseConfidence = entity.confidence;
+      totalOldConfidence += baseConfidence;
+
+      // Cross-document boost
+      const kgDocCount = kgDocCountMap.get(entity.id) ?? 1;
+      const crossDocBoost = Math.min(0.10, Math.max(0, (kgDocCount - 1) * 0.02));
+
+      // Mention frequency boost
+      const mentionCount = mentionCountMap.get(entity.id) ?? 1;
+      let mentionBoost = 0;
+      if (mentionCount > 5) {
+        mentionBoost = Math.min(0.05, Math.log(mentionCount / 5) * 0.02);
+      }
+
+      // Multi-source boost
+      const directSourceCount = multiSourceMap.get(entity.id) ?? 1;
+      const crossSourceCount = crossSourceMap.get(entity.id) ?? 0;
+      const totalSources = Math.max(directSourceCount, 1 + crossSourceCount);
+      const multiSourceBoost = Math.min(0.15, Math.max(0, (totalSources - 1) * 0.05));
+
+      const newConfidence = Math.min(1.0, baseConfidence + crossDocBoost + mentionBoost + multiSourceBoost);
+      totalNewConfidence += newConfidence;
+
+      if (Math.abs(newConfidence - baseConfidence) > 0.001) {
+        updates.push({
+          entity_id: entity.id,
+          old_confidence: baseConfidence,
+          new_confidence: Math.round(newConfidence * 1000) / 1000,
+          cross_document_boost: Math.round(crossDocBoost * 1000) / 1000,
+          mention_boost: Math.round(mentionBoost * 1000) / 1000,
+          multi_source_boost: Math.round(multiSourceBoost * 1000) / 1000,
+        });
+      }
+    }
+
+    // Apply updates (unless dry_run)
+    if (!input.dry_run && updates.length > 0) {
+      const updateStmt = conn.prepare('UPDATE entities SET confidence = ? WHERE id = ?');
+      const updateMany = conn.transaction(() => {
+        for (const u of updates) {
+          updateStmt.run(u.new_confidence, u.entity_id);
+        }
+      });
+      updateMany();
+
+      // Update KG node avg_confidence for affected nodes
+      try {
+        const affectedNodeIds = new Set<string>();
+        const entityIds = updates.map(u => u.entity_id);
+        const placeholders = entityIds.map(() => '?').join(',');
+        const linkRows = conn.prepare(
+          `SELECT DISTINCT node_id FROM node_entity_links WHERE entity_id IN (${placeholders})`
+        ).all(...entityIds) as Array<{ node_id: string }>;
+        for (const r of linkRows) affectedNodeIds.add(r.node_id);
+
+        for (const nid of affectedNodeIds) {
+          const avgRow = conn.prepare(`
+            SELECT AVG(e.confidence) as avg_conf
+            FROM node_entity_links nel
+            JOIN entities e ON nel.entity_id = e.id
+            WHERE nel.node_id = ?
+          `).get(nid) as { avg_conf: number | null };
+          if (avgRow?.avg_conf != null) {
+            conn.prepare('UPDATE knowledge_nodes SET avg_confidence = ? WHERE id = ?')
+              .run(Math.round(avgRow.avg_conf * 1000) / 1000, nid);
+          }
+        }
+
+        console.error(`[INFO] Updated avg_confidence on ${affectedNodeIds.size} KG nodes`);
+      } catch {
+        // KG tables may not exist
+      }
+    }
+
+    // Confidence distribution (before/after)
+    const beforeBuckets = { low: 0, medium: 0, high: 0 };
+    const afterBuckets = { low: 0, medium: 0, high: 0 };
+    const updateMap = new Map(updates.map(u => [u.entity_id, u]));
+
+    for (const entity of entityRows) {
+      // Before
+      if (entity.confidence < 0.5) beforeBuckets.low++;
+      else if (entity.confidence < 0.8) beforeBuckets.medium++;
+      else beforeBuckets.high++;
+
+      // After
+      const update = updateMap.get(entity.id);
+      const newConf = update ? update.new_confidence : entity.confidence;
+      if (newConf < 0.5) afterBuckets.low++;
+      else if (newConf < 0.8) afterBuckets.medium++;
+      else afterBuckets.high++;
+    }
+
+    const avgOld = entityRows.length > 0 ? totalOldConfidence / entityRows.length : 0;
+    const avgNew = entityRows.length > 0 ? totalNewConfidence / entityRows.length : 0;
+
+    return formatResponse({
+      document_id: input.document_id ?? null,
+      dry_run: input.dry_run,
+      entities_in_scope: entityRows.length,
+      entities_updated: updates.length,
+      entities_unchanged: entityRows.length - updates.length,
+      avg_confidence_before: Math.round(avgOld * 1000) / 1000,
+      avg_confidence_after: Math.round(avgNew * 1000) / 1000,
+      avg_confidence_change: Math.round((avgNew - avgOld) * 1000) / 1000,
+      confidence_distribution: {
+        before: beforeBuckets,
+        after: afterBuckets,
+      },
+      sample_updates: updates.slice(0, 20),
     });
   } catch (error) {
     return handleError(error);
@@ -1385,8 +2105,18 @@ export const entityAnalysisTools: Record<string, ToolDefinition> = {
     handler: handleEntityExtractionStats,
   },
   'ocr_coreference_resolve': {
-    description: 'Resolve coreferences (pronouns, abbreviations, descriptions) to their corresponding entities using Gemini AI. Optionally merge resolutions into knowledge graph.',
+    description: 'Resolve coreferences (pronouns, abbreviations, descriptions) to their corresponding entities using Gemini AI. Supports chunk-level (default) or document-level resolution scope for cross-chunk pronoun resolution.',
     inputSchema: CoreferenceResolveInput.shape,
     handler: handleCoreferenceResolve,
+  },
+  'ocr_entity_dossier': {
+    description: 'Get a comprehensive profile for a single entity or KG node, including mentions, relationships, documents, timeline, and related entities.',
+    inputSchema: EntityDossierInput.shape,
+    handler: handleEntityDossier,
+  },
+  'ocr_entity_update_confidence': {
+    description: 'Dynamically recalculate entity confidence scores based on accumulated evidence: cross-document presence, mention frequency, and multi-source extraction confirmation.',
+    inputSchema: EntityUpdateConfidenceInput.shape,
+    handler: handleEntityUpdateConfidence,
   },
 };

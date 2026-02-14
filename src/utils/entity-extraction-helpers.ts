@@ -199,6 +199,161 @@ function recoverPartialEntities(
   return entities;
 }
 
+/** Maximum character budget for KG entity hints in the Gemini prompt */
+const KG_HINT_MAX_CHARS = 5000;
+
+/** Maximum number of KG nodes to query for hints */
+const KG_HINT_MAX_NODES = 200;
+
+/** Entity types where aliases are valuable for OCR variant recognition */
+const ALIAS_WORTHY_TYPES = new Set([
+  'person', 'organization', 'medication', 'diagnosis', 'medical_device',
+]);
+
+/** Display labels for entity types in grouped hint output */
+const TYPE_LABELS: Record<string, string> = {
+  person: 'PERSONS',
+  organization: 'ORGANIZATIONS',
+  date: 'DATES',
+  amount: 'AMOUNTS',
+  case_number: 'CASE_NUMBERS',
+  location: 'LOCATIONS',
+  statute: 'STATUTES',
+  exhibit: 'EXHIBITS',
+  medication: 'MEDICATIONS',
+  diagnosis: 'DIAGNOSES',
+  medical_device: 'MEDICAL_DEVICES',
+};
+
+/** Row shape returned by the KG hints query */
+interface KGHintRow {
+  canonical_name: string;
+  entity_type: string;
+  aliases: string | null;
+  mention_count: number;
+}
+
+/**
+ * Build a compact, grouped hint string from Knowledge Graph nodes.
+ *
+ * Queries top KG nodes (by mention_count DESC), groups by entity_type,
+ * includes aliases for types where OCR variant recognition matters
+ * (persons, organizations, medications, diagnoses, medical_devices),
+ * and caps total output at KG_HINT_MAX_CHARS.
+ *
+ * Format example:
+ *   Known entities from other documents:
+ *   PERSONS: John Smith (aka J. Smith, Mr. Smith), Jane Doe
+ *   ORGANIZATIONS: Acme Corp (aka Acme Corporation, ACME)
+ *   DATES: 2024-03-15, 2024-01-01
+ *
+ * @param conn - Database connection
+ * @returns Formatted hint string, or undefined if no KG exists or is empty
+ */
+export function buildKGEntityHints(conn: Database.Database): string | undefined {
+  let hintRows: KGHintRow[];
+  try {
+    hintRows = conn.prepare(
+      `SELECT canonical_name, entity_type, aliases, mention_count
+       FROM knowledge_nodes
+       ORDER BY mention_count DESC
+       LIMIT ?`
+    ).all(KG_HINT_MAX_NODES) as KGHintRow[];
+  } catch {
+    // KG tables may not exist yet
+    return undefined;
+  }
+
+  if (hintRows.length === 0) {
+    return undefined;
+  }
+
+  // Group rows by entity_type, preserving mention_count ordering within each group
+  const grouped = new Map<string, KGHintRow[]>();
+  for (const row of hintRows) {
+    const existing = grouped.get(row.entity_type);
+    if (existing) {
+      existing.push(row);
+    } else {
+      grouped.set(row.entity_type, [row]);
+    }
+  }
+
+  // Build the hint string with character budget tracking
+  const header = 'Known entities from other documents:';
+  let result = header;
+  let currentLength = result.length;
+
+  // Process types in a stable order: types with most total mentions first
+  const sortedTypes = [...grouped.entries()].sort((a, b) => {
+    const totalA = a[1].reduce((sum, r) => sum + r.mention_count, 0);
+    const totalB = b[1].reduce((sum, r) => sum + r.mention_count, 0);
+    return totalB - totalA;
+  });
+
+  for (const [entityType, rows] of sortedTypes) {
+    const label = TYPE_LABELS[entityType] ?? entityType.toUpperCase();
+    const linePrefix = `\n${label}: `;
+
+    // Check if we have budget for at least the prefix + one entity
+    if (currentLength + linePrefix.length + 10 > KG_HINT_MAX_CHARS) {
+      break;
+    }
+
+    const includeAliases = ALIAS_WORTHY_TYPES.has(entityType);
+    let lineContent = '';
+
+    for (const row of rows) {
+      let entry = row.canonical_name;
+
+      // Add aliases for types where variant recognition matters
+      if (includeAliases && row.aliases) {
+        try {
+          const aliasArr = JSON.parse(row.aliases) as string[];
+          if (Array.isArray(aliasArr) && aliasArr.length > 0) {
+            // Filter out aliases identical to canonical_name (case-insensitive)
+            const canonical = row.canonical_name.toLowerCase();
+            const uniqueAliases = aliasArr.filter(
+              a => typeof a === 'string' && a.toLowerCase() !== canonical
+            );
+            if (uniqueAliases.length > 0) {
+              entry += ` (aka ${uniqueAliases.join(', ')})`;
+            }
+          }
+        } catch {
+          // Malformed aliases JSON -- use canonical_name only
+        }
+      }
+
+      // Check budget before adding this entry
+      const separator = lineContent.length > 0 ? ', ' : '';
+      const candidate = lineContent + separator + entry;
+      if (currentLength + linePrefix.length + candidate.length > KG_HINT_MAX_CHARS) {
+        break;
+      }
+
+      lineContent = candidate;
+    }
+
+    if (lineContent.length > 0) {
+      const line = linePrefix + lineContent;
+      result += line;
+      currentLength = result.length;
+    }
+  }
+
+  // Only return if we actually added entities beyond the header
+  if (result.length <= header.length) {
+    return undefined;
+  }
+
+  console.error(
+    `[INFO] buildKGEntityHints: ${hintRows.length} nodes, ${result.length} chars hint string`
+  );
+
+  return result;
+}
+
 /**
  * Make a single Gemini API call to extract entities from text.
  *
@@ -209,10 +364,10 @@ export async function callGeminiForEntities(
   client: GeminiClient,
   text: string,
   typeFilter: string,
-  entityHints?: string[],
+  entityHints?: string,
 ): Promise<Array<{ type: string; raw_text: string; confidence: number }>> {
-  const hintsSection = entityHints && entityHints.length > 0
-    ? `\nKNOWN ENTITIES IN THIS CORPUS (use these canonical forms when matching):\n${entityHints.join(', ')}\n\n`
+  const hintsSection = entityHints
+    ? `\n${entityHints}\n\n`
     : '';
   const prompt =
     `Extract named entities from the following text. ${typeFilter}\n` +
@@ -741,18 +896,8 @@ export async function processSegmentsAndStoreEntities(
 
   const segments = createExtractionSegments(conn, documentId, ocrResultId, ocrText, entityProvId);
 
-  // Query top KG entities as hints for better extraction recall
-  let entityHints: string[] | undefined;
-  try {
-    const hintRows = conn.prepare(
-      `SELECT canonical_name FROM knowledge_nodes ORDER BY mention_count DESC LIMIT 50`
-    ).all() as Array<{ canonical_name: string }>;
-    if (hintRows.length > 0) {
-      entityHints = hintRows.map(r => r.canonical_name);
-    }
-  } catch {
-    // KG tables may not exist yet
-  }
+  // Build grouped KG entity hints with aliases for better extraction recall
+  const entityHints = buildKGEntityHints(conn);
 
   // Process segments sequentially with cooldown to avoid API throttling.
   // Gemini aborts requests after ~4 rapid calls; 3s delay prevents this.

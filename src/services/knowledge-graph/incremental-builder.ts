@@ -49,6 +49,7 @@ import {
   getEntitiesByDocument,
   getEntityMentions,
 } from '../storage/database/entity-operations.js';
+import { parseToISODate, isMoreSpecificTemporal } from './graph-service.js';
 
 // ============================================================
 // Types
@@ -64,6 +65,7 @@ interface IncrementalBuildOptions {
   document_ids: string[];
   resolution_mode?: ResolutionMode;
   classify_relationships?: boolean;
+  auto_temporal?: boolean;
 }
 
 interface IncrementalBuildResult {
@@ -399,10 +401,12 @@ export async function incrementalBuildGraph(
   }
 
   // Step 7: Build co-occurrence edges for touched nodes
+  const autoTemporal = options.auto_temporal ?? true;
   const { newEdges, updatedEdges } = buildIncrementalEdges(
     db,
     touchedNodeIds,
     provenanceId,
+    autoTemporal,
   );
 
   const processingDurationMs = Date.now() - startTime;
@@ -434,12 +438,14 @@ export async function incrementalBuildGraph(
  * @param db - DatabaseService
  * @param touchedNodeIds - Node IDs that were created or updated
  * @param provenanceId - Provenance ID for new edges
+ * @param autoTemporal - When true, infer temporal bounds from co-located date entities
  * @returns Count of new and updated edges
  */
 function buildIncrementalEdges(
   db: DatabaseService,
   touchedNodeIds: Set<string>,
   provenanceId: string,
+  autoTemporal: boolean = true,
 ): { newEdges: number; updatedEdges: number } {
   const conn = db.getConnection();
   const now = new Date().toISOString();
@@ -499,6 +505,34 @@ function buildIncrementalEdges(
     console.error(
       `[KnowledgeGraph] Single-document graph detected in incremental build. Skipping co_mentioned edges.`,
     );
+  }
+
+  // Pre-compute temporal bounds for all chunks if auto_temporal is enabled
+  let chunkTemporalMap = new Map<string, { valid_from?: string; valid_until?: string }>();
+  if (autoTemporal) {
+    const allChunkIds = new Set<string>();
+    for (const chunkSet of nodeChunkMap.values()) {
+      for (const chunkId of chunkSet) {
+        allChunkIds.add(chunkId);
+      }
+    }
+    if (allChunkIds.size > 0) {
+      chunkTemporalMap = batchInferTemporalBoundsIncremental(conn, [...allChunkIds]);
+    }
+  }
+  let temporalEdgesSet = 0;
+
+  // Build node type lookup for date-entity filtering
+  const nodeTypeMap = new Map<string, string>();
+  for (const nodeId of allRelevantNodeIds) {
+    try {
+      const nodeRow = conn.prepare(
+        'SELECT entity_type FROM knowledge_nodes WHERE id = ?',
+      ).get(nodeId) as { entity_type: string } | undefined;
+      if (nodeRow) nodeTypeMap.set(nodeId, nodeRow.entity_type);
+    } catch {
+      // Ignore lookup errors
+    }
   }
 
   // Only process pairs where at least one node is touched
@@ -641,6 +675,28 @@ function buildIncrementalEdges(
               }),
             });
             updatedEdges++;
+
+            // Auto-temporal: update existing edge if new temporal data is more specific
+            if (autoTemporal
+              && nodeTypeMap.get(sourceId) !== 'date'
+              && nodeTypeMap.get(targetId) !== 'date') {
+              try {
+                const temporal = mergeTemporalFromChunksIncremental(sharedChunks, chunkTemporalMap);
+                if (temporal) {
+                  const existing = conn.prepare(
+                    'SELECT valid_from, valid_until FROM knowledge_edges WHERE id = ?',
+                  ).get(existingCoLocated.id) as { valid_from: string | null; valid_until: string | null } | undefined;
+                  if (existing && isMoreSpecificTemporal(existing, temporal)) {
+                    conn.prepare(
+                      'UPDATE knowledge_edges SET valid_from = COALESCE(?, valid_from), valid_until = COALESCE(?, valid_until) WHERE id = ?',
+                    ).run(temporal.valid_from ?? null, temporal.valid_until ?? null, existingCoLocated.id);
+                    temporalEdgesSet++;
+                  }
+                }
+              } catch {
+                // valid_from/valid_until columns may not exist in older schemas
+              }
+            }
           } else {
             const edge: KnowledgeEdge = {
               id: uuidv4(),
@@ -656,10 +712,33 @@ function buildIncrementalEdges(
             };
             insertKnowledgeEdge(conn, edge);
             newEdges++;
+
+            // Auto-temporal: set temporal bounds on newly created edge
+            if (autoTemporal
+              && nodeTypeMap.get(sourceId) !== 'date'
+              && nodeTypeMap.get(targetId) !== 'date') {
+              const temporal = mergeTemporalFromChunksIncremental(sharedChunks, chunkTemporalMap);
+              if (temporal) {
+                try {
+                  conn.prepare(
+                    'UPDATE knowledge_edges SET valid_from = ?, valid_until = ? WHERE id = ?',
+                  ).run(temporal.valid_from ?? null, temporal.valid_until ?? null, edge.id);
+                  temporalEdgesSet++;
+                } catch {
+                  // valid_from/valid_until columns may not exist in older schemas
+                }
+              }
+            }
           }
         }
       }
     }
+  }
+
+  if (autoTemporal && temporalEdgesSet > 0) {
+    console.error(
+      `[KnowledgeGraph] Auto-temporal (incremental): set temporal bounds on ${temporalEdgesSet} co_located edges`,
+    );
   }
 
   // Update edge_count on all touched nodes
@@ -672,3 +751,94 @@ function buildIncrementalEdges(
 
   return { newEdges, updatedEdges };
 }
+
+// ============================================================
+// Temporal inference helpers (incremental)
+// ============================================================
+
+/**
+ * Batch-query date entities for multiple chunks and infer temporal bounds.
+ * Uses parseToISODate from graph-service for date parsing.
+ */
+function batchInferTemporalBoundsIncremental(
+  conn: ReturnType<DatabaseService['getConnection']>,
+  chunkIds: string[],
+): Map<string, { valid_from?: string; valid_until?: string }> {
+  const result = new Map<string, { valid_from?: string; valid_until?: string }>();
+  if (chunkIds.length === 0) return result;
+
+  try {
+    const placeholders = chunkIds.map(() => '?').join(',');
+    const rows = conn.prepare(`
+      SELECT em.chunk_id, e.normalized_text
+      FROM entities e
+      JOIN entity_mentions em ON em.entity_id = e.id
+      WHERE em.chunk_id IN (${placeholders}) AND e.entity_type = 'date'
+      ORDER BY em.chunk_id, e.normalized_text ASC
+    `).all(...chunkIds) as Array<{ chunk_id: string; normalized_text: string }>;
+
+    const chunkDateMap = new Map<string, string[]>();
+    for (const row of rows) {
+      const parsed = parseToISODate(row.normalized_text);
+      if (parsed) {
+        if (!chunkDateMap.has(row.chunk_id)) {
+          chunkDateMap.set(row.chunk_id, []);
+        }
+        chunkDateMap.get(row.chunk_id)!.push(parsed);
+      }
+    }
+
+    for (const [chunkId, dates] of chunkDateMap) {
+      const uniqueDates = [...new Set(dates)].sort();
+      if (uniqueDates.length === 0) continue;
+      if (uniqueDates.length === 1) {
+        result.set(chunkId, { valid_from: uniqueDates[0] });
+      } else {
+        result.set(chunkId, {
+          valid_from: uniqueDates[0],
+          valid_until: uniqueDates[uniqueDates.length - 1],
+        });
+      }
+    }
+  } catch {
+    // Gracefully handle query errors
+  }
+
+  return result;
+}
+
+/**
+ * Merge temporal bounds from multiple shared chunks.
+ */
+function mergeTemporalFromChunksIncremental(
+  sharedChunkIds: string[],
+  chunkTemporalMap: Map<string, { valid_from?: string; valid_until?: string }>,
+): { valid_from?: string; valid_until?: string } | null {
+  let earliestFrom: string | undefined;
+  let latestUntil: string | undefined;
+
+  for (const chunkId of sharedChunkIds) {
+    const bounds = chunkTemporalMap.get(chunkId);
+    if (!bounds) continue;
+
+    if (bounds.valid_from) {
+      if (!earliestFrom || bounds.valid_from < earliestFrom) {
+        earliestFrom = bounds.valid_from;
+      }
+    }
+    if (bounds.valid_until) {
+      if (!latestUntil || bounds.valid_until > latestUntil) {
+        latestUntil = bounds.valid_until;
+      }
+    }
+  }
+
+  if (!earliestFrom && !latestUntil) return null;
+
+  const out: { valid_from?: string; valid_until?: string } = {};
+  if (earliestFrom) out.valid_from = earliestFrom;
+  if (latestUntil) out.valid_until = latestUntil;
+  return out;
+}
+
+// isMoreSpecificTemporal is imported from graph-service.ts

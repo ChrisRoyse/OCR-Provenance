@@ -775,3 +775,451 @@ describe.skipIf(!sqliteVecAvailable)('handleKnowledgeGraphDelete', () => {
     expect(result.error?.category).toBe('INTERNAL_ERROR');
   });
 });
+
+// =============================================================================
+// NEW TOOLS: Tool export verification for new tools
+// =============================================================================
+
+describe('new tool exports', () => {
+  it('exports all 22 knowledge graph tools including new ones', () => {
+    const toolKeys = Object.keys(knowledgeGraphTools);
+    expect(toolKeys.length).toBeGreaterThanOrEqual(22);
+    expect(knowledgeGraphTools).toHaveProperty('ocr_knowledge_graph_scan_contradictions');
+    expect(knowledgeGraphTools).toHaveProperty('ocr_knowledge_graph_entity_export');
+    expect(knowledgeGraphTools).toHaveProperty('ocr_knowledge_graph_entity_import');
+    expect(knowledgeGraphTools).toHaveProperty('ocr_knowledge_graph_visualize');
+  });
+
+  it('new tools each have description, inputSchema, and handler', () => {
+    const newTools = [
+      'ocr_knowledge_graph_scan_contradictions',
+      'ocr_knowledge_graph_entity_export',
+      'ocr_knowledge_graph_entity_import',
+      'ocr_knowledge_graph_visualize',
+    ];
+    for (const name of newTools) {
+      const tool = knowledgeGraphTools[name];
+      expect(tool, `${name} not found`).toBeDefined();
+      expect(tool.description, `${name} missing description`).toBeDefined();
+      expect(typeof tool.description).toBe('string');
+      expect(tool.inputSchema, `${name} missing inputSchema`).toBeDefined();
+      expect(tool.handler, `${name} missing handler`).toBeDefined();
+      expect(typeof tool.handler).toBe('function');
+    }
+  });
+});
+
+// =============================================================================
+// handleKnowledgeGraphScanContradictions TESTS
+// =============================================================================
+
+describe.skipIf(!sqliteVecAvailable)('handleKnowledgeGraphScanContradictions', () => {
+  let tempDir: string;
+  let dbService: DatabaseService;
+
+  beforeEach(() => {
+    resetState();
+    tempDir = createTempDir('kg-scan-');
+    tempDirs.push(tempDir);
+    updateConfig({ defaultStoragePath: tempDir });
+    const dbName = createUniqueName('kgscan');
+
+    dbService = DatabaseService.create(dbName, undefined, tempDir);
+    state.currentDatabase = dbService;
+    state.currentDatabaseName = dbName;
+  });
+
+  afterEach(() => {
+    clearDatabase();
+    resetState();
+  });
+
+  it('returns empty results on an empty graph', async () => {
+    const handler = knowledgeGraphTools['ocr_knowledge_graph_scan_contradictions'].handler;
+    const response = await handler({});
+    const result = parseResponse(response);
+
+    expect(result.success).toBe(true);
+    const data = result.data as Record<string, unknown>;
+    expect(data.total_contradictions).toBe(0);
+    expect(data.contradictions).toEqual([]);
+  });
+
+  it('detects conflicting relationships', async () => {
+    const conn = dbService.getConnection();
+    const now = new Date().toISOString();
+    const { docId, docProvId } = insertDocumentChain(dbService, 'scan-test.pdf', '/test/scan-test.pdf');
+
+    // Create KG provenance
+    const provId = uuidv4();
+    dbService.insertProvenance({
+      id: provId,
+      type: 'KNOWLEDGE_GRAPH',
+      created_at: now, processed_at: now,
+      source_file_created_at: null, source_file_modified_at: null,
+      source_type: 'KNOWLEDGE_GRAPH', source_path: null,
+      source_id: docProvId, root_document_id: docProvId,
+      location: null, content_hash: computeHash('scan-kg'), input_hash: null, file_hash: null,
+      processor: 'test', processor_version: '1.0.0', processing_params: {},
+      processing_duration_ms: null, processing_quality_score: null,
+      parent_id: docProvId, parent_ids: JSON.stringify([docProvId]),
+      chain_depth: 2, chain_path: '["DOCUMENT","KNOWLEDGE_GRAPH"]',
+    });
+
+    // Person node connected to 2 different orgs via works_at
+    const personId = uuidv4();
+    const org1Id = uuidv4();
+    const org2Id = uuidv4();
+    conn.prepare(`INSERT INTO knowledge_nodes (id, entity_type, canonical_name, normalized_name,
+      document_count, mention_count, avg_confidence, provenance_id, created_at, updated_at)
+      VALUES (?, 'person', 'Bob', 'bob', 1, 1, 0.9, ?, ?, ?)`).run(personId, provId, now, now);
+    conn.prepare(`INSERT INTO knowledge_nodes (id, entity_type, canonical_name, normalized_name,
+      document_count, mention_count, avg_confidence, provenance_id, created_at, updated_at)
+      VALUES (?, 'organization', 'CompanyA', 'companya', 1, 1, 0.8, ?, ?, ?)`).run(org1Id, provId, now, now);
+    conn.prepare(`INSERT INTO knowledge_nodes (id, entity_type, canonical_name, normalized_name,
+      document_count, mention_count, avg_confidence, provenance_id, created_at, updated_at)
+      VALUES (?, 'organization', 'CompanyB', 'companyb', 1, 1, 0.8, ?, ?, ?)`).run(org2Id, provId, now, now);
+
+    // Two works_at edges
+    const [s1, t1] = personId < org1Id ? [personId, org1Id] : [org1Id, personId];
+    const [s2, t2] = personId < org2Id ? [personId, org2Id] : [org2Id, personId];
+    conn.prepare(`INSERT INTO knowledge_edges (id, source_node_id, target_node_id, relationship_type,
+      weight, evidence_count, document_ids, provenance_id, created_at)
+      VALUES (?, ?, ?, 'works_at', 1.0, 1, ?, ?, ?)`).run(uuidv4(), s1, t1, JSON.stringify([docId]), provId, now);
+    conn.prepare(`INSERT INTO knowledge_edges (id, source_node_id, target_node_id, relationship_type,
+      weight, evidence_count, document_ids, provenance_id, created_at)
+      VALUES (?, ?, ?, 'works_at', 1.0, 1, ?, ?, ?)`).run(uuidv4(), s2, t2, JSON.stringify([docId]), provId, now);
+
+    const handler = knowledgeGraphTools['ocr_knowledge_graph_scan_contradictions'].handler;
+    const response = await handler({ scan_types: ['conflicting_relationships'] });
+    const result = parseResponse(response);
+
+    expect(result.success).toBe(true);
+    const data = result.data as Record<string, unknown>;
+    expect(data.total_contradictions).toBeGreaterThanOrEqual(1);
+    const contrs = data.contradictions as Array<Record<string, unknown>>;
+    expect(contrs[0].type).toBe('conflicting_relationships');
+    expect(contrs[0].severity).toBeDefined();
+    expect(contrs[0].description).toBeDefined();
+  });
+
+  it('detects duplicate nodes by name similarity', async () => {
+    const conn = dbService.getConnection();
+    const now = new Date().toISOString();
+    const { docProvId } = insertDocumentChain(dbService, 'dup-test.pdf', '/test/dup-test.pdf');
+
+    const provId = uuidv4();
+    dbService.insertProvenance({
+      id: provId,
+      type: 'KNOWLEDGE_GRAPH',
+      created_at: now, processed_at: now,
+      source_file_created_at: null, source_file_modified_at: null,
+      source_type: 'KNOWLEDGE_GRAPH', source_path: null,
+      source_id: docProvId, root_document_id: docProvId,
+      location: null, content_hash: computeHash('dup-kg'), input_hash: null, file_hash: null,
+      processor: 'test', processor_version: '1.0.0', processing_params: {},
+      processing_duration_ms: null, processing_quality_score: null,
+      parent_id: docProvId, parent_ids: JSON.stringify([docProvId]),
+      chain_depth: 2, chain_path: '["DOCUMENT","KNOWLEDGE_GRAPH"]',
+    });
+
+    // Two person nodes with very similar names
+    conn.prepare(`INSERT INTO knowledge_nodes (id, entity_type, canonical_name, normalized_name,
+      document_count, mention_count, avg_confidence, provenance_id, created_at, updated_at)
+      VALUES (?, 'person', 'Jonathan Smith', 'jonathan smith', 1, 1, 0.9, ?, ?, ?)`).run(uuidv4(), provId, now, now);
+    conn.prepare(`INSERT INTO knowledge_nodes (id, entity_type, canonical_name, normalized_name,
+      document_count, mention_count, avg_confidence, provenance_id, created_at, updated_at)
+      VALUES (?, 'person', 'Jonathon Smith', 'jonathon smith', 1, 1, 0.9, ?, ?, ?)`).run(uuidv4(), provId, now, now);
+
+    const handler = knowledgeGraphTools['ocr_knowledge_graph_scan_contradictions'].handler;
+    const response = await handler({ scan_types: ['duplicate_nodes'], similarity_threshold: 0.80 });
+    const result = parseResponse(response);
+
+    expect(result.success).toBe(true);
+    const data = result.data as Record<string, unknown>;
+    expect(data.total_contradictions).toBeGreaterThanOrEqual(1);
+    const contrs = data.contradictions as Array<Record<string, unknown>>;
+    expect(contrs[0].type).toBe('duplicate_nodes');
+  });
+});
+
+// =============================================================================
+// handleKnowledgeGraphEntityExport TESTS
+// =============================================================================
+
+describe.skipIf(!sqliteVecAvailable)('handleKnowledgeGraphEntityExport', () => {
+  let tempDir: string;
+  let dbService: DatabaseService;
+
+  beforeEach(() => {
+    resetState();
+    tempDir = createTempDir('kg-export-entity-');
+    tempDirs.push(tempDir);
+    updateConfig({ defaultStoragePath: tempDir });
+    const dbName = createUniqueName('kgexportent');
+
+    dbService = DatabaseService.create(dbName, undefined, tempDir);
+    state.currentDatabase = dbService;
+    state.currentDatabaseName = dbName;
+  });
+
+  afterEach(() => {
+    clearDatabase();
+    resetState();
+  });
+
+  it('exports entities in JSON format', async () => {
+    insertTestGraphData(dbService);
+
+    const handler = knowledgeGraphTools['ocr_knowledge_graph_entity_export'].handler;
+    const response = await handler({ format: 'json' });
+    const result = parseResponse(response);
+
+    expect(result.success).toBe(true);
+    const data = result.data as Record<string, unknown>;
+    expect(data.format).toBe('json');
+    expect(data.total_entities).toBe(2);
+    const entities = data.entities as Array<Record<string, unknown>>;
+    expect(entities.length).toBe(2);
+    expect(entities[0].canonical_name).toBeDefined();
+    expect(entities[0].entity_type).toBeDefined();
+    expect(entities[0].avg_confidence).toBeDefined();
+  });
+
+  it('exports entities in CSV format', async () => {
+    insertTestGraphData(dbService);
+
+    const handler = knowledgeGraphTools['ocr_knowledge_graph_entity_export'].handler;
+    const response = await handler({ format: 'csv' });
+    const result = parseResponse(response);
+
+    expect(result.success).toBe(true);
+    const data = result.data as Record<string, unknown>;
+    expect(data.format).toBe('csv');
+    expect(data.total_entities).toBe(2);
+    const csv = data.csv as string;
+    expect(csv).toContain('node_id');
+    expect(csv).toContain('canonical_name');
+    // Should have header + 2 data rows
+    const lines = csv.split('\n');
+    expect(lines.length).toBe(3);
+  });
+
+  it('filters by entity_types', async () => {
+    insertTestGraphData(dbService);
+
+    const handler = knowledgeGraphTools['ocr_knowledge_graph_entity_export'].handler;
+    const response = await handler({ format: 'json', entity_types: ['person'] });
+    const result = parseResponse(response);
+
+    expect(result.success).toBe(true);
+    const data = result.data as Record<string, unknown>;
+    expect(data.total_entities).toBe(1);
+    const entities = data.entities as Array<Record<string, unknown>>;
+    expect(entities[0].entity_type).toBe('person');
+  });
+
+  it('includes relationships when requested', async () => {
+    insertTestGraphData(dbService);
+
+    const handler = knowledgeGraphTools['ocr_knowledge_graph_entity_export'].handler;
+    const response = await handler({ format: 'json', include_relationships: true });
+    const result = parseResponse(response);
+
+    expect(result.success).toBe(true);
+    const data = result.data as Record<string, unknown>;
+    const entities = data.entities as Array<Record<string, unknown>>;
+    // At least one entity should have relationships
+    const withRels = entities.filter(e => (e.relationships as unknown[])?.length > 0);
+    expect(withRels.length).toBeGreaterThanOrEqual(1);
+  });
+});
+
+// =============================================================================
+// handleKnowledgeGraphEntityImport TESTS
+// =============================================================================
+
+describe.skipIf(!sqliteVecAvailable)('handleKnowledgeGraphEntityImport', () => {
+  let tempDir: string;
+  let dbService: DatabaseService;
+
+  beforeEach(() => {
+    resetState();
+    tempDir = createTempDir('kg-import-entity-');
+    tempDirs.push(tempDir);
+    updateConfig({ defaultStoragePath: tempDir });
+    const dbName = createUniqueName('kgimportent');
+
+    dbService = DatabaseService.create(dbName, undefined, tempDir);
+    state.currentDatabase = dbService;
+    state.currentDatabaseName = dbName;
+  });
+
+  afterEach(() => {
+    clearDatabase();
+    resetState();
+  });
+
+  it('matches exact entities in dry_run mode', async () => {
+    insertTestGraphData(dbService);
+
+    const handler = knowledgeGraphTools['ocr_knowledge_graph_entity_import'].handler;
+    const response = await handler({
+      entities: [
+        { canonical_name: 'Alice', entity_type: 'person' },
+        { canonical_name: 'Nonexistent Entity', entity_type: 'person' },
+      ],
+      dry_run: true,
+    });
+    const result = parseResponse(response);
+
+    expect(result.success).toBe(true);
+    const data = result.data as Record<string, unknown>;
+    expect(data.dry_run).toBe(true);
+    expect(data.total_imported).toBe(2);
+
+    const matched = data.matched as Record<string, unknown>;
+    expect(matched.count).toBe(1);
+
+    const unmatched = data.unmatched as Record<string, unknown>;
+    expect(unmatched.count).toBe(1);
+  });
+
+  it('stores external_links when not dry_run', async () => {
+    const { nodeIds } = insertTestGraphData(dbService);
+
+    const handler = knowledgeGraphTools['ocr_knowledge_graph_entity_import'].handler;
+    const response = await handler({
+      entities: [
+        { canonical_name: 'Alice', entity_type: 'person', source_database: 'other-db', external_id: 'ext-123' },
+      ],
+      dry_run: false,
+    });
+    const result = parseResponse(response);
+
+    expect(result.success).toBe(true);
+    const data = result.data as Record<string, unknown>;
+    expect(data.dry_run).toBe(false);
+    expect((data.matched as Record<string, unknown>).count).toBe(1);
+
+    // Verify metadata was updated with external_links
+    const conn = dbService.getConnection();
+    const personNodeId = nodeIds[0]; // Alice is first node
+    const node = conn.prepare('SELECT metadata FROM knowledge_nodes WHERE id = ?').get(personNodeId) as { metadata: string | null } | undefined;
+    expect(node?.metadata).toBeDefined();
+    const meta = JSON.parse(node!.metadata!);
+    expect(meta.external_links).toHaveLength(1);
+    expect(meta.external_links[0].source_database).toBe('other-db');
+    expect(meta.external_links[0].external_id).toBe('ext-123');
+  });
+});
+
+// =============================================================================
+// handleKnowledgeGraphVisualize TESTS
+// =============================================================================
+
+describe.skipIf(!sqliteVecAvailable)('handleKnowledgeGraphVisualize', () => {
+  let tempDir: string;
+  let dbService: DatabaseService;
+
+  beforeEach(() => {
+    resetState();
+    tempDir = createTempDir('kg-visualize-');
+    tempDirs.push(tempDir);
+    updateConfig({ defaultStoragePath: tempDir });
+    const dbName = createUniqueName('kgvisualize');
+
+    dbService = DatabaseService.create(dbName, undefined, tempDir);
+    state.currentDatabase = dbService;
+    state.currentDatabaseName = dbName;
+  });
+
+  afterEach(() => {
+    clearDatabase();
+    resetState();
+  });
+
+  it('generates Mermaid output for a graph', async () => {
+    insertTestGraphData(dbService);
+
+    const handler = knowledgeGraphTools['ocr_knowledge_graph_visualize'].handler;
+    const response = await handler({});
+    const result = parseResponse(response);
+
+    expect(result.success).toBe(true);
+    const data = result.data as Record<string, unknown>;
+    expect(data.node_count).toBe(2);
+    expect(data.edge_count).toBe(1);
+    const mermaid = data.mermaid as string;
+    expect(mermaid).toContain('graph LR');
+    expect(mermaid).toContain('Alice');
+    expect(mermaid).toContain('Acme Corp');
+    expect(mermaid).toContain('person');
+    expect(mermaid).toContain('organization');
+  });
+
+  it('centers on an entity by name', async () => {
+    insertTestGraphData(dbService);
+
+    const handler = knowledgeGraphTools['ocr_knowledge_graph_visualize'].handler;
+    const response = await handler({ entity_name: 'Alice' });
+    const result = parseResponse(response);
+
+    expect(result.success).toBe(true);
+    const data = result.data as Record<string, unknown>;
+    expect(data.node_count).toBeGreaterThanOrEqual(1);
+    const mermaid = data.mermaid as string;
+    expect(mermaid).toContain('Alice');
+  });
+
+  it('returns error for nonexistent entity', async () => {
+    insertTestGraphData(dbService);
+
+    const handler = knowledgeGraphTools['ocr_knowledge_graph_visualize'].handler;
+    const response = await handler({ entity_name: 'ZZZNonexistent' });
+    const result = parseResponse(response);
+
+    expect(result.success).toBe(false);
+    expect(result.error).toBeDefined();
+  });
+
+  it('generates flowchart layout when requested', async () => {
+    insertTestGraphData(dbService);
+
+    const handler = knowledgeGraphTools['ocr_knowledge_graph_visualize'].handler;
+    const response = await handler({ layout: 'flowchart' });
+    const result = parseResponse(response);
+
+    expect(result.success).toBe(true);
+    const data = result.data as Record<string, unknown>;
+    const mermaid = data.mermaid as string;
+    expect(mermaid).toContain('graph TD');
+  });
+
+  it('returns empty graph message when no nodes found', async () => {
+    const handler = knowledgeGraphTools['ocr_knowledge_graph_visualize'].handler;
+    const response = await handler({});
+    const result = parseResponse(response);
+
+    expect(result.success).toBe(true);
+    const data = result.data as Record<string, unknown>;
+    expect(data.node_count).toBe(0);
+    const mermaid = data.mermaid as string;
+    expect(mermaid).toContain('No nodes found');
+  });
+
+  it('omits edge labels when include_edge_labels is false', async () => {
+    insertTestGraphData(dbService);
+
+    const handler = knowledgeGraphTools['ocr_knowledge_graph_visualize'].handler;
+    const response = await handler({ include_edge_labels: false });
+    const result = parseResponse(response);
+
+    expect(result.success).toBe(true);
+    const data = result.data as Record<string, unknown>;
+    const mermaid = data.mermaid as string;
+    // Should have plain arrows, no |label|
+    expect(mermaid).not.toContain('|co_mentioned|');
+    expect(mermaid).toContain('-->');
+  });
+});
