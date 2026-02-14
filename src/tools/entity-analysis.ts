@@ -138,30 +138,36 @@ async function autoMergeIntoKnowledgeGraph(
 
   console.error(`[INFO] Knowledge graph detected (${row.cnt} nodes), auto-merging entities for document ${documentId}`);
 
-  const kgResult = await incrementalBuildGraph(db, {
-    document_ids: [documentId],
-    resolution_mode: 'fuzzy',
-  });
+  try {
+    const kgResult = await incrementalBuildGraph(db, {
+      document_ids: [documentId],
+      resolution_mode: 'fuzzy',
+    });
 
-  return {
-    kg_auto_merged: true,
-    kg_documents_processed: kgResult.documents_processed,
-    kg_new_entities_found: kgResult.new_entities_found,
-    kg_entities_matched_to_existing: kgResult.entities_matched_to_existing,
-    kg_new_nodes_created: kgResult.new_nodes_created,
-    kg_existing_nodes_updated: kgResult.existing_nodes_updated,
-    kg_new_edges_created: kgResult.new_edges_created,
-    kg_existing_edges_updated: kgResult.existing_edges_updated,
-    kg_provenance_id: kgResult.provenance_id,
-    kg_processing_duration_ms: kgResult.processing_duration_ms,
-  };
+    return {
+      kg_auto_merged: true,
+      kg_documents_processed: kgResult.documents_processed,
+      kg_new_entities_found: kgResult.new_entities_found,
+      kg_entities_matched_to_existing: kgResult.entities_matched_to_existing,
+      kg_new_nodes_created: kgResult.new_nodes_created,
+      kg_existing_nodes_updated: kgResult.existing_nodes_updated,
+      kg_new_edges_created: kgResult.new_edges_created,
+      kg_existing_edges_updated: kgResult.existing_edges_updated,
+      kg_provenance_id: kgResult.provenance_id,
+      kg_processing_duration_ms: kgResult.processing_duration_ms,
+    };
+  } catch (mergeError) {
+    const msg = mergeError instanceof Error ? mergeError.message : String(mergeError);
+    console.error(`[WARN] KG auto-merge skipped for document ${documentId}: ${msg}`);
+    return { kg_auto_merged: false, kg_auto_merge_skipped_reason: msg };
+  }
 }
 
 /**
  * Create an entity extraction provenance record for a given document.
  * Used by VLM and structured extraction handlers that share identical provenance logic.
  */
-function createEntityExtractionProvenance(
+export function createEntityExtractionProvenance(
   db: import('../services/storage/database/index.js').DatabaseService,
   doc: { id: string; file_path: string; provenance_id: string; file_hash: string },
   processor: string,

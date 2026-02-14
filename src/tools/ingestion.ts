@@ -65,7 +65,7 @@ import {
   MAX_CHARS_PER_CALL,
   SEGMENT_OVERLAP_CHARS,
 } from '../utils/entity-extraction-helpers.js';
-import { handleCoreferenceResolve } from './entity-analysis.js';
+import { handleCoreferenceResolve, createEntityExtractionProvenance } from './entity-analysis.js';
 import { handleKnowledgeGraphScanContradictions } from './knowledge-graph.js';
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -959,10 +959,10 @@ export async function handleProcessPending(
       throw new Error('auto_scan_contradictions requires auto_build_kg=true');
     }
     if (input.auto_extract_entities && !process.env.GEMINI_API_KEY) {
-      throw new Error('auto_extract_entities requires GEMINI_API_KEY environment variable to be set');
+      throw new Error('auto_extract_entities requires GEMINI_API_KEY');
     }
     if (input.auto_extract_vlm_entities && !process.env.GEMINI_API_KEY) {
-      throw new Error('auto_extract_vlm_entities requires GEMINI_API_KEY environment variable to be set');
+      throw new Error('auto_extract_vlm_entities requires GEMINI_API_KEY');
     }
 
     // Get pending documents - CRITICAL: use 'status' not 'statusFilter'
@@ -1346,34 +1346,7 @@ export async function handleProcessPending(
             ).get(doc.id) as { cnt: number }).cnt;
             if (extractionCount > 0) {
               console.error(`[INFO] Auto-pipeline: extracting entities from ${extractionCount} structured extractions for ${doc.id}`);
-              const entityProvId = uuidv4();
-              const now = new Date().toISOString();
-              const entityHash = computeHash(JSON.stringify({ document_id: doc.id, source: 'extraction' }));
-              db.insertProvenance({
-                id: entityProvId,
-                type: ProvenanceType.ENTITY_EXTRACTION,
-                created_at: now,
-                processed_at: now,
-                source_file_created_at: null,
-                source_file_modified_at: null,
-                source_type: 'ENTITY_EXTRACTION',
-                source_path: doc.file_path,
-                source_id: doc.provenance_id,
-                root_document_id: doc.provenance_id,
-                location: null,
-                content_hash: entityHash,
-                input_hash: computeHash(doc.id),
-                file_hash: doc.file_hash,
-                processor: 'extraction-entity-mapper',
-                processor_version: '1.0.0',
-                processing_params: { source: 'extraction' },
-                processing_duration_ms: null,
-                processing_quality_score: null,
-                parent_id: doc.provenance_id,
-                parent_ids: JSON.stringify([doc.provenance_id]),
-                chain_depth: 2,
-                chain_path: JSON.stringify(['DOCUMENT', 'OCR_RESULT', 'ENTITY_EXTRACTION']),
-              });
+              const entityProvId = createEntityExtractionProvenance(db, doc, 'extraction-entity-mapper', 'extraction');
               const extractionResult = mapExtractionEntitiesToDB(conn, doc.id, entityProvId);
               extractionEntityResults.push({
                 document_id: doc.id,
@@ -1922,6 +1895,12 @@ export const ingestionTools: Record<string, ToolDefinition> = {
         .describe('Auto-build/update knowledge graph after entity extraction (requires auto_extract_entities=true)'),
       auto_extract_vlm_entities: z.boolean().default(false)
         .describe('Auto-extract entities from VLM image descriptions after VLM processing. Requires GEMINI_API_KEY.'),
+      auto_extract_from_extractions: z.boolean().default(false)
+        .describe('Auto-extract entities from structured extractions after processing'),
+      auto_coreference_resolve: z.boolean().default(false)
+        .describe('Auto-resolve coreferences (pronouns, abbreviations) after entity extraction. Requires auto_extract_entities=true and GEMINI_API_KEY.'),
+      auto_scan_contradictions: z.boolean().default(false)
+        .describe('Auto-scan for contradictions after knowledge graph build. Requires auto_build_kg=true.'),
     },
     handler: handleProcessPending,
   },

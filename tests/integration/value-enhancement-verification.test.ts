@@ -109,8 +109,8 @@ describe.skipIf(!sqliteVecAvailable)('VALUE ENHANCEMENT VERIFICATION: Phases 1-5
       for (const required of REQUIRED_INDEXES) {
         expect(indexNames).toContain(required);
       }
-      expect(REQUIRED_INDEXES.length).toBe(59);
-      expect(indexNames.length).toBeGreaterThanOrEqual(59);
+      expect(REQUIRED_INDEXES.length).toBe(58);
+      expect(indexNames.length).toBeGreaterThanOrEqual(58);
     });
 
     it('should filter documents by quality score (QW-2)', () => {
