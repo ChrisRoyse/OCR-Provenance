@@ -31,8 +31,8 @@ export function insertChunk(
       id, document_id, ocr_result_id, text, text_hash, chunk_index,
       character_start, character_end, page_number, page_range,
       overlap_previous, overlap_next, provenance_id, created_at,
-      embedding_status, embedded_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      embedding_status, embedded_at, ocr_quality_score
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
 
   runWithForeignKeyCheck(
@@ -54,6 +54,7 @@ export function insertChunk(
       created_at,
       'pending',
       null,
+      chunk.ocr_quality_score ?? null,
     ],
     'inserting chunk: document_id, ocr_result_id, or provenance_id does not exist'
   );
@@ -90,8 +91,8 @@ export function insertChunks(
         id, document_id, ocr_result_id, text, text_hash, chunk_index,
         character_start, character_end, page_number, page_range,
         overlap_previous, overlap_next, provenance_id, created_at,
-        embedding_status, embedded_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        embedding_status, embedded_at, ocr_quality_score
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
 
     for (const chunk of chunks) {
@@ -114,6 +115,7 @@ export function insertChunks(
           created_at,
           'pending',
           null,
+          chunk.ocr_quality_score ?? null,
         ],
         `inserting chunk "${chunk.id}"`
       );

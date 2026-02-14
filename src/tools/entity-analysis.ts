@@ -1206,7 +1206,7 @@ async function handleEntityExtractionStats(params: Record<string, unknown>) {
 /**
  * ocr_coreference_resolve - Resolve coreferences (pronouns, abbreviations, descriptions) to entities
  */
-async function handleCoreferenceResolve(params: Record<string, unknown>) {
+export async function handleCoreferenceResolve(params: Record<string, unknown>) {
   try {
     const input = validateInput(CoreferenceResolveInput, params);
     const { db } = requireDatabase();

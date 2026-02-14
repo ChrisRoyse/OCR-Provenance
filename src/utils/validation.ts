@@ -209,6 +209,10 @@ export const ProcessPendingInput = z.object({
     .describe('Auto-extract entities from VLM image descriptions after VLM processing. Requires GEMINI_API_KEY.'),
   auto_extract_from_extractions: z.boolean().default(false)
     .describe('Auto-extract entities from structured extractions after processing'),
+  auto_coreference_resolve: z.boolean().default(false)
+    .describe('Auto-resolve coreferences (pronouns, abbreviations) after entity extraction. Requires auto_extract_entities=true and GEMINI_API_KEY.'),
+  auto_scan_contradictions: z.boolean().default(false)
+    .describe('Auto-scan for contradictions after knowledge graph build. Requires auto_build_kg=true.'),
 });
 
 /**
@@ -242,6 +246,12 @@ export const EntityFilter = z.object({
     .describe('Include documents from 1-hop related entities via KG edges'),
 }).optional().describe('Filter results by knowledge graph entities');
 
+/** Temporal filter for entity relationships */
+const TimeRange = z.object({
+  from: z.string().optional().describe('ISO date - only include results from entities active after this date'),
+  to: z.string().optional().describe('ISO date - only include results from entities active before this date'),
+}).optional().describe('Temporal filter for entity relationships');
+
 /**
  * Schema for semantic search
  */
@@ -259,6 +269,7 @@ export const SearchSemanticInput = z.object({
   expand_query: z.boolean().default(false)
     .describe('Expand query with domain-specific legal/medical synonyms and knowledge graph aliases'),
   entity_filter: EntityFilter,
+  time_range: TimeRange,
   rerank: z.boolean().default(false)
     .describe('Re-rank results using Gemini AI for contextual relevance scoring'),
   entity_rescue: z.boolean().default(false)
@@ -287,6 +298,7 @@ export const SearchInput = z.object({
   expand_query: z.boolean().default(false)
     .describe('Expand query with domain-specific legal/medical synonyms and knowledge graph aliases'),
   entity_filter: EntityFilter,
+  time_range: TimeRange,
   rerank: z.boolean().default(false)
     .describe('Re-rank results using Gemini AI for contextual relevance scoring'),
   deduplicate_by_entity: z.boolean().default(false)
@@ -316,6 +328,7 @@ export const SearchHybridInput = z.object({
   rerank: z.boolean().default(false)
     .describe('Re-rank results using Gemini AI for contextual relevance scoring'),
   entity_filter: EntityFilter,
+  time_range: TimeRange,
   entity_boost: z.number().min(0).max(2).default(0)
     .describe('Entity boost factor: results containing entities matching query terms get score boost in RRF fusion'),
   deduplicate_by_entity: z.boolean().default(false)

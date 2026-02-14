@@ -23,9 +23,9 @@ export function insertKnowledgeNode(
 ): string {
   const stmt = db.prepare(`
     INSERT INTO knowledge_nodes (id, entity_type, canonical_name, normalized_name,
-      aliases, document_count, mention_count, avg_confidence, metadata,
-      provenance_id, created_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      aliases, document_count, mention_count, avg_confidence, importance_score,
+      metadata, provenance_id, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
 
   runWithForeignKeyCheck(
@@ -39,6 +39,7 @@ export function insertKnowledgeNode(
       node.document_count,
       node.mention_count,
       node.avg_confidence,
+      node.importance_score ?? 0,
       node.metadata,
       node.provenance_id,
       node.created_at,
@@ -69,7 +70,7 @@ export function getKnowledgeNode(
 export function updateKnowledgeNode(
   db: Database.Database,
   id: string,
-  updates: Partial<Pick<KnowledgeNode, 'document_count' | 'mention_count' | 'avg_confidence' | 'aliases' | 'metadata' | 'updated_at'>>,
+  updates: Partial<Pick<KnowledgeNode, 'document_count' | 'mention_count' | 'avg_confidence' | 'importance_score' | 'aliases' | 'metadata' | 'updated_at'>>,
 ): void {
   const setClauses: string[] = [];
   const params: unknown[] = [];
@@ -85,6 +86,10 @@ export function updateKnowledgeNode(
   if (updates.avg_confidence !== undefined) {
     setClauses.push('avg_confidence = ?');
     params.push(updates.avg_confidence);
+  }
+  if (updates.importance_score !== undefined) {
+    setClauses.push('importance_score = ?');
+    params.push(updates.importance_score);
   }
   if (updates.aliases !== undefined) {
     setClauses.push('aliases = ?');

@@ -185,6 +185,7 @@ export interface ChunkRow {
   created_at: string;
   embedding_status: string;
   embedded_at: string | null;
+  ocr_quality_score: number | null;
 }
 
 /**

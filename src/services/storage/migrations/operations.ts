@@ -2072,56 +2072,35 @@ function migrateV19ToV20(db: Database.Database): void {
     const edgeCols = db.pragma('table_info(knowledge_edges)') as Array<{ name: string }>;
     const edgeColNames = new Set(edgeCols.map(c => c.name));
 
-    try {
-      if (!edgeColNames.has('valid_from')) {
-        db.exec('ALTER TABLE knowledge_edges ADD COLUMN valid_from TEXT');
-      }
-    } catch (e) {
-      console.error('v19->v20: valid_from column may already exist:', e);
+    if (!edgeColNames.has('valid_from')) {
+      db.exec('ALTER TABLE knowledge_edges ADD COLUMN valid_from TEXT');
     }
-
-    try {
-      if (!edgeColNames.has('valid_until')) {
-        db.exec('ALTER TABLE knowledge_edges ADD COLUMN valid_until TEXT');
-      }
-    } catch (e) {
-      console.error('v19->v20: valid_until column may already exist:', e);
+    if (!edgeColNames.has('valid_until')) {
+      db.exec('ALTER TABLE knowledge_edges ADD COLUMN valid_until TEXT');
     }
-
-    try {
-      if (!edgeColNames.has('normalized_weight')) {
-        db.exec('ALTER TABLE knowledge_edges ADD COLUMN normalized_weight REAL DEFAULT 0');
-      }
-    } catch (e) {
-      console.error('v19->v20: normalized_weight column may already exist:', e);
+    if (!edgeColNames.has('normalized_weight')) {
+      db.exec('ALTER TABLE knowledge_edges ADD COLUMN normalized_weight REAL DEFAULT 0');
     }
-
-    try {
-      if (!edgeColNames.has('contradiction_count')) {
-        db.exec('ALTER TABLE knowledge_edges ADD COLUMN contradiction_count INTEGER DEFAULT 0');
-      }
-    } catch (e) {
-      console.error('v19->v20: contradiction_count column may already exist:', e);
+    if (!edgeColNames.has('contradiction_count')) {
+      db.exec('ALTER TABLE knowledge_edges ADD COLUMN contradiction_count INTEGER DEFAULT 0');
     }
 
     // Step 2: Add new columns to knowledge_nodes
     const nodeCols = db.pragma('table_info(knowledge_nodes)') as Array<{ name: string }>;
     const nodeColNames = new Set(nodeCols.map(c => c.name));
 
-    try {
-      if (!nodeColNames.has('importance_score')) {
-        db.exec('ALTER TABLE knowledge_nodes ADD COLUMN importance_score REAL');
-      }
-    } catch (e) {
-      console.error('v19->v20: importance_score column may already exist:', e);
+    if (!nodeColNames.has('importance_score')) {
+      db.exec('ALTER TABLE knowledge_nodes ADD COLUMN importance_score REAL');
+    }
+    if (!nodeColNames.has('resolution_type')) {
+      db.exec('ALTER TABLE knowledge_nodes ADD COLUMN resolution_type TEXT');
     }
 
-    try {
-      if (!nodeColNames.has('resolution_type')) {
-        db.exec('ALTER TABLE knowledge_nodes ADD COLUMN resolution_type TEXT');
-      }
-    } catch (e) {
-      console.error('v19->v20: resolution_type column may already exist:', e);
+    // Step 2b: Add ocr_quality_score to chunks
+    const chunkCols = db.pragma('table_info(chunks)') as Array<{ name: string }>;
+    const chunkColNames = new Set(chunkCols.map(c => c.name));
+    if (!chunkColNames.has('ocr_quality_score')) {
+      db.exec('ALTER TABLE chunks ADD COLUMN ocr_quality_score REAL');
     }
 
     // Step 3: Create entity_embeddings table and indexes

@@ -160,6 +160,7 @@ CREATE TABLE IF NOT EXISTS chunks (
   created_at TEXT NOT NULL,
   embedding_status TEXT NOT NULL CHECK (embedding_status IN ('pending', 'complete', 'failed')),
   embedded_at TEXT,
+  ocr_quality_score REAL,
   FOREIGN KEY (document_id) REFERENCES documents(id),
   FOREIGN KEY (ocr_result_id) REFERENCES ocr_results(id),
   FOREIGN KEY (provenance_id) REFERENCES provenance(id)

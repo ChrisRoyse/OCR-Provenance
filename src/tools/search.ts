@@ -258,17 +258,64 @@ function resolveEntityFilter(
   conn: ReturnType<ReturnType<typeof requireDatabase>['db']['getConnection']>,
   entityFilter: { entity_names?: string[]; entity_types?: string[]; include_related?: boolean } | undefined,
   existingDocFilter: string[] | undefined,
+  timeRange?: { from?: string; to?: string },
 ): { documentFilter: string[] | undefined; empty: boolean } {
   if (!entityFilter) return { documentFilter: existingDocFilter, empty: false };
 
-  const entityDocIds = getDocumentIdsForEntities(
+  let entityDocIds = getDocumentIdsForEntities(
     conn,
     entityFilter.entity_names,
     entityFilter.entity_types,
     entityFilter.include_related,
   );
 
+  // F-13: Semantic fallback via entity_embeddings when standard lookup returns empty
+  if (entityDocIds.length === 0 && entityFilter.entity_names && entityFilter.entity_names.length > 0) {
+    try {
+      const semanticEntityDocIds = searchEntityEmbeddingsForDocuments(conn, entityFilter.entity_names);
+      if (semanticEntityDocIds.length > 0) {
+        entityDocIds = semanticEntityDocIds;
+      }
+    } catch {
+      // entity_embeddings tables may not exist yet
+    }
+  }
+
   if (entityDocIds.length === 0) return { documentFilter: undefined, empty: true };
+
+  // F-8: Temporal filtering - narrow related documents by temporally-valid edges
+  if (timeRange && (timeRange.from || timeRange.to) && entityFilter.include_related) {
+    try {
+      const fromDate = timeRange.from ?? '0000-01-01';
+      const toDate = timeRange.to ?? '9999-12-31';
+      const temporalRows = conn.prepare(`
+        SELECT DISTINCT ke.source_node_id, ke.target_node_id
+        FROM knowledge_edges ke
+        WHERE (ke.valid_from IS NULL OR ke.valid_from <= ?)
+          AND (ke.valid_until IS NULL OR ke.valid_until >= ?)
+      `).all(toDate, fromDate) as Array<{ source_node_id: string; target_node_id: string }>;
+
+      if (temporalRows.length > 0) {
+        // Build set of node IDs connected by temporally-valid edges
+        const validNodeIds = new Set<string>();
+        for (const row of temporalRows) {
+          validNodeIds.add(row.source_node_id);
+          validNodeIds.add(row.target_node_id);
+        }
+        // Re-filter entityDocIds to only documents whose entities have valid temporal edges
+        const entityNodeIds = [...resolveEntityNodeIdsFromKG(conn, entityFilter.entity_names, entityFilter.entity_types, false)];
+        if (entityNodeIds.length > 0) {
+          const hasTemporalConnection = entityNodeIds.some(nid => validNodeIds.has(nid));
+          if (!hasTemporalConnection) {
+            // No temporally-valid connections - narrow to direct entity docs only
+            entityDocIds = getDocumentIdsForEntities(conn, entityFilter.entity_names, entityFilter.entity_types, false);
+          }
+        }
+      }
+    } catch {
+      // Temporal columns may not exist in older schema versions
+    }
+  }
 
   if (existingDocFilter && existingDocFilter.length > 0) {
     const entitySet = new Set(entityDocIds);
@@ -392,21 +439,16 @@ function buildRerankInfo(
  * Multiplies scores by (1 + log(1 + mention_count) * 0.1) for results
  * whose documents have entity mentions matching the active entity_filter.
  */
-function applyEntityFrequencyBoost(
+function boostResultsByMentionFrequency(
   results: Array<Record<string, unknown>>,
   scoreField: string,
   conn: ReturnType<ReturnType<typeof requireDatabase>['db']['getConnection']>,
-  entityFilter: { entity_names?: string[]; entity_types?: string[] },
+  nodeIds: string[],
 ): { boosted_results: number; max_mention_count: number } | undefined {
-  if (results.length === 0) return undefined;
-
-  const entityNodeIds = resolveEntityNodeIds(conn, entityFilter.entity_names, entityFilter.entity_types);
-  if (entityNodeIds.length === 0) return undefined;
-
   const docIds = [...new Set(results.map(r => r.document_id as string).filter(Boolean))];
   if (docIds.length === 0) return undefined;
 
-  const freqMap = getEntityMentionFrequencyByDocument(conn, docIds, entityNodeIds);
+  const freqMap = getEntityMentionFrequencyByDocument(conn, docIds, nodeIds);
   if (freqMap.size === 0) return undefined;
 
   let boostedCount = 0;
@@ -432,18 +474,98 @@ function applyEntityFrequencyBoost(
   return { boosted_results: boostedCount, max_mention_count: maxMentionCount };
 }
 
+function applyEntityFrequencyBoost(
+  results: Array<Record<string, unknown>>,
+  scoreField: string,
+  conn: ReturnType<ReturnType<typeof requireDatabase>['db']['getConnection']>,
+  entityFilter: { entity_names?: string[]; entity_types?: string[] },
+): { boosted_results: number; max_mention_count: number } | undefined {
+  if (results.length === 0) return undefined;
+
+  const entityNodeIds = [...resolveEntityNodeIdsFromKG(conn, entityFilter.entity_names, entityFilter.entity_types, false)];
+  if (entityNodeIds.length === 0) return undefined;
+
+  return boostResultsByMentionFrequency(results, scoreField, conn, entityNodeIds);
+}
+
+function applyQueryDerivedFrequencyBoost(
+  results: Array<Record<string, unknown>>,
+  scoreField: string,
+  conn: ReturnType<ReturnType<typeof requireDatabase>['db']['getConnection']>,
+  query: string,
+): { boosted_results: number; max_mention_count: number } | undefined {
+  if (results.length === 0) return undefined;
+
+  try {
+    const nodeIds = findMatchingNodeIds(query, conn);
+    if (nodeIds.length === 0) return undefined;
+
+    return boostResultsByMentionFrequency(results, scoreField, conn, nodeIds);
+  } catch {
+    // KG tables may not exist - skip query-derived frequency boost
+    return undefined;
+  }
+}
+
 /**
- * Resolve entity filter names/types to KG node IDs (not document IDs).
- * Used by frequency boosting to count entity mentions per document.
- * Delegates to the shared resolveEntityNodeIdsFromKG (without alias search
- * for performance -- frequency boosting is a secondary signal).
+ * Apply chunk proximity boost to hybrid search results.
+ * Results from the same document whose chunk indexes are within 2 of each other
+ * get their rrf_score multiplied by (1 + 0.1 * nearbyCount), rewarding
+ * clusters of nearby relevant chunks.
  */
-function resolveEntityNodeIds(
-  db: ReturnType<ReturnType<typeof requireDatabase>['db']['getConnection']>,
-  entityNames?: string[],
-  entityTypes?: string[],
+function applyChunkProximityBoost(
+  results: Array<Record<string, unknown>>,
+): { boosted_results: number } | undefined {
+  const byDoc = new Map<string, Array<{ idx: number; chunkIndex: number }>>();
+  for (let i = 0; i < results.length; i++) {
+    const docId = results[i].document_id as string;
+    const chunkIndex = results[i].chunk_index as number | undefined;
+    if (docId && chunkIndex !== undefined && chunkIndex !== null) {
+      if (!byDoc.has(docId)) byDoc.set(docId, []);
+      byDoc.get(docId)!.push({ idx: i, chunkIndex });
+    }
+  }
+
+  let boostedCount = 0;
+  for (const entries of byDoc.values()) {
+    if (entries.length < 2) continue;
+    for (const entry of entries) {
+      const nearbyCount = entries.filter(e =>
+        Math.abs(e.chunkIndex - entry.chunkIndex) <= 2 &&
+        e.chunkIndex !== entry.chunkIndex
+      ).length;
+      if (nearbyCount > 0) {
+        const currentScore = results[entry.idx].rrf_score as number;
+        if (typeof currentScore === 'number') {
+          results[entry.idx].rrf_score = currentScore * (1 + 0.1 * nearbyCount);
+          boostedCount++;
+        }
+      }
+    }
+  }
+  return boostedCount > 0 ? { boosted_results: boostedCount } : undefined;
+}
+
+/**
+ * Search entity_embeddings table for document IDs matching entity names.
+ * Used as a semantic fallback when getDocumentIdsForEntities returns empty.
+ * Nodes with embeddings are more likely to be important entities.
+ */
+function searchEntityEmbeddingsForDocuments(
+  conn: ReturnType<ReturnType<typeof requireDatabase>['db']['getConnection']>,
+  entityNames: string[],
 ): string[] {
-  return [...resolveEntityNodeIdsFromKG(db, entityNames, entityTypes, false)];
+  const placeholders = entityNames.map(() => '?').join(',');
+  const rows = conn.prepare(`
+    SELECT DISTINCT e.document_id
+    FROM entity_embeddings ee
+    JOIN knowledge_nodes kn ON ee.node_id = kn.id
+    JOIN node_entity_links nel ON nel.node_id = kn.id
+    JOIN entities e ON nel.entity_id = e.id
+    WHERE LOWER(kn.canonical_name) IN (${placeholders})
+       OR LOWER(kn.normalized_name) IN (${placeholders})
+  `).all(...entityNames.map(n => n.toLowerCase()), ...entityNames.map(n => n.toLowerCase())) as Array<{ document_id: string }>;
+  return rows.map(r => r.document_id);
 }
 
 /**
@@ -649,7 +771,7 @@ export async function handleSearchSemantic(
       resolveMetadataFilter(db, input.metadata_filter, input.document_filter));
 
     // Entity filter: resolve entity names/types to document IDs
-    const entityFilterResult = resolveEntityFilter(conn, input.entity_filter, documentFilter);
+    const entityFilterResult = resolveEntityFilter(conn, input.entity_filter, documentFilter, input.time_range);
     if (entityFilterResult.empty) {
       return formatResponse(successResult({
         query: input.query,
@@ -839,10 +961,10 @@ export async function handleSearchSemantic(
       }
     }
 
-    // Apply entity mention frequency boost when entity_filter is active
+    // Apply entity mention frequency boost
     const semanticFreqBoostInfo = input.entity_filter
       ? applyEntityFrequencyBoost(finalResults, 'similarity_score', conn, input.entity_filter)
-      : undefined;
+      : applyQueryDerivedFrequencyBoost(finalResults, 'similarity_score', conn, input.query);
 
     const responseData: Record<string, unknown> = {
       query: input.query,
@@ -869,6 +991,9 @@ export async function handleSearchSemantic(
 
     if (input.entity_filter) {
       appendEntityFilterResponse(responseData, kgMetricsSemantic, input.entity_filter, documentFilter, semanticFreqBoostInfo);
+    } else if (semanticFreqBoostInfo) {
+      responseData.frequency_boost = semanticFreqBoostInfo;
+      kgMetricsSemantic.frequency_boost_results_boosted = semanticFreqBoostInfo.boosted_results;
     }
 
     if (input.include_entities && entityMap && entityMap.size > 0) {
@@ -905,7 +1030,7 @@ export async function handleSearch(
       resolveMetadataFilter(db, input.metadata_filter, input.document_filter));
 
     // Entity filter: resolve entity names/types to document IDs
-    const bm25EntityFilterResult = resolveEntityFilter(conn, input.entity_filter, documentFilter);
+    const bm25EntityFilterResult = resolveEntityFilter(conn, input.entity_filter, documentFilter, input.time_range);
     if (bm25EntityFilterResult.empty) {
       return formatResponse(successResult({
         query: input.query,
@@ -1034,10 +1159,10 @@ export async function handleSearch(
       else finalExtractionCount++;
     }
 
-    // Apply entity mention frequency boost when entity_filter is active
+    // Apply entity mention frequency boost
     const bm25FreqBoostInfo = input.entity_filter
       ? applyEntityFrequencyBoost(finalResults, 'bm25_score', conn, input.entity_filter)
-      : undefined;
+      : applyQueryDerivedFrequencyBoost(finalResults, 'bm25_score', conn, input.query);
 
     const responseData: Record<string, unknown> = {
       query: input.query,
@@ -1065,6 +1190,9 @@ export async function handleSearch(
 
     if (input.entity_filter) {
       appendEntityFilterResponse(responseData, kgMetricsBm25, input.entity_filter, documentFilter, bm25FreqBoostInfo);
+    } else if (bm25FreqBoostInfo) {
+      responseData.frequency_boost = bm25FreqBoostInfo;
+      kgMetricsBm25.frequency_boost_results_boosted = bm25FreqBoostInfo.boosted_results;
     }
 
     if (input.include_entities && bm25EntityMap && bm25EntityMap.size > 0) {
@@ -1102,7 +1230,7 @@ export async function handleSearchHybrid(
       resolveMetadataFilter(db, input.metadata_filter, input.document_filter));
 
     // Entity filter: resolve entity names/types to document IDs
-    const hybridEntityFilterResult = resolveEntityFilter(conn, input.entity_filter, documentFilter);
+    const hybridEntityFilterResult = resolveEntityFilter(conn, input.entity_filter, documentFilter, input.time_range);
     if (hybridEntityFilterResult.empty) {
       return formatResponse(successResult({
         query: input.query,
@@ -1277,6 +1405,11 @@ export async function handleSearchHybrid(
       }
     }
 
+    // F-15: Chunk proximity boost - reward clusters of nearby relevant chunks
+    const chunkProximityInfo = finalResults.length > 0
+      ? applyChunkProximityBoost(finalResults)
+      : undefined;
+
     const responseData: Record<string, unknown> = {
       query: input.query,
       search_type: 'rrf_hybrid',
@@ -1307,6 +1440,10 @@ export async function handleSearchHybrid(
       responseData.entity_boost = entityBoostInfo;
     }
 
+    if (chunkProximityInfo) {
+      responseData.chunk_proximity_boost = chunkProximityInfo;
+    }
+
     if (hybridDeduplicationInfo) {
       responseData.deduplication = hybridDeduplicationInfo;
     }
@@ -1316,6 +1453,14 @@ export async function handleSearchHybrid(
         finalResults, 'rrf_score', conn, input.entity_filter,
       );
       appendEntityFilterResponse(responseData, kgMetricsHybrid, input.entity_filter, documentFilter, hybridFreqBoostInfo);
+    } else {
+      const hybridQueryFreqBoostInfo = applyQueryDerivedFrequencyBoost(
+        finalResults, 'rrf_score', conn, input.query,
+      );
+      if (hybridQueryFreqBoostInfo) {
+        responseData.frequency_boost = hybridQueryFreqBoostInfo;
+        kgMetricsHybrid.frequency_boost_results_boosted = hybridQueryFreqBoostInfo.boosted_results;
+      }
     }
 
     if (input.include_entities && hybridEntityMap && hybridEntityMap.size > 0) {
@@ -2028,6 +2173,10 @@ export const searchTools: Record<string, ToolDefinition> = {
         include_related: z.boolean().default(false)
           .describe('Include documents from 1-hop related entities via KG edges'),
       }).optional().describe('Filter results by knowledge graph entities'),
+      time_range: z.object({
+        from: z.string().optional().describe('ISO date - only include results from entities active after this date'),
+        to: z.string().optional().describe('ISO date - only include results from entities active before this date'),
+      }).optional().describe('Temporal filter for entity relationships'),
       rerank: z.boolean().default(false)
         .describe('Re-rank results using Gemini AI for contextual relevance scoring'),
       deduplicate_by_entity: z.boolean().default(false)
@@ -2059,6 +2208,10 @@ export const searchTools: Record<string, ToolDefinition> = {
         include_related: z.boolean().default(false)
           .describe('Include documents from 1-hop related entities via KG edges'),
       }).optional().describe('Filter results by knowledge graph entities'),
+      time_range: z.object({
+        from: z.string().optional().describe('ISO date - only include results from entities active after this date'),
+        to: z.string().optional().describe('ISO date - only include results from entities active before this date'),
+      }).optional().describe('Temporal filter for entity relationships'),
       rerank: z.boolean().default(false)
         .describe('Re-rank results using Gemini AI for contextual relevance scoring'),
       entity_rescue: z.boolean().default(false)
@@ -2096,6 +2249,10 @@ export const searchTools: Record<string, ToolDefinition> = {
         include_related: z.boolean().default(false)
           .describe('Include documents from 1-hop related entities via KG edges'),
       }).optional().describe('Filter results by knowledge graph entities'),
+      time_range: z.object({
+        from: z.string().optional().describe('ISO date - only include results from entities active after this date'),
+        to: z.string().optional().describe('ISO date - only include results from entities active before this date'),
+      }).optional().describe('Temporal filter for entity relationships'),
       entity_boost: z.number().min(0).max(2).default(0)
         .describe('Entity boost factor: results containing entities matching query terms get score boost in RRF fusion'),
       deduplicate_by_entity: z.boolean().default(false)
