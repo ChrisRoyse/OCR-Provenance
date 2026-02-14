@@ -14,6 +14,7 @@ import {
   DATABASE_PRAGMAS,
   CREATE_SCHEMA_VERSION_TABLE,
   CREATE_VEC_EMBEDDINGS_TABLE,
+  CREATE_VEC_ENTITY_EMBEDDINGS_TABLE,
   CREATE_CHUNKS_FTS_TABLE,
   CREATE_FTS_TRIGGERS,
   CREATE_FTS_INDEX_METADATA,
@@ -106,6 +107,16 @@ export function createVecTable(db: Database.Database): void {
       'Failed to create vec_embeddings virtual table. Ensure sqlite-vec extension is loaded.',
       'create_virtual_table',
       'vec_embeddings',
+      error
+    );
+  }
+  try {
+    db.exec(CREATE_VEC_ENTITY_EMBEDDINGS_TABLE);
+  } catch (error) {
+    throw new MigrationError(
+      'Failed to create vec_entity_embeddings virtual table. Ensure sqlite-vec extension is loaded.',
+      'create_virtual_table',
+      'vec_entity_embeddings',
       error
     );
   }

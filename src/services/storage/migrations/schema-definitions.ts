@@ -8,7 +8,7 @@
  */
 
 /** Current schema version */
-export const SCHEMA_VERSION = 19;
+export const SCHEMA_VERSION = 20;
 
 /**
  * Database configuration pragmas for optimal performance and safety
@@ -553,6 +553,8 @@ CREATE TABLE IF NOT EXISTS knowledge_nodes (
   provenance_id TEXT NOT NULL,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
+  importance_score REAL,
+  resolution_type TEXT,
   FOREIGN KEY (provenance_id) REFERENCES provenance(id)
 )
 `;
@@ -573,6 +575,10 @@ CREATE TABLE IF NOT EXISTS knowledge_edges (
   metadata TEXT,
   provenance_id TEXT NOT NULL,
   created_at TEXT NOT NULL,
+  valid_from TEXT,
+  valid_until TEXT,
+  normalized_weight REAL DEFAULT 0,
+  contradiction_count INTEGER DEFAULT 0,
   FOREIGN KEY (source_node_id) REFERENCES knowledge_nodes(id),
   FOREIGN KEY (target_node_id) REFERENCES knowledge_nodes(id),
   FOREIGN KEY (provenance_id) REFERENCES provenance(id)
@@ -604,6 +610,35 @@ CREATE TABLE IF NOT EXISTS entity_extraction_segments (
   provenance_id TEXT REFERENCES provenance(id),
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   UNIQUE(document_id, segment_index)
+)
+`;
+
+/**
+ * Entity embeddings table - vector embeddings for entity semantic search
+ * Links entities to their embedding vectors via knowledge nodes
+ * Provenance depth: 3 (after ENTITY_EXTRACTION)
+ */
+export const CREATE_ENTITY_EMBEDDINGS_TABLE = `
+CREATE TABLE IF NOT EXISTS entity_embeddings (
+  id TEXT PRIMARY KEY,
+  entity_id TEXT NOT NULL REFERENCES entities(id),
+  node_id TEXT REFERENCES knowledge_nodes(id),
+  embedding_model TEXT NOT NULL,
+  dimensions INTEGER NOT NULL,
+  content_hash TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  provenance_id TEXT REFERENCES provenance(id)
+)
+`;
+
+/**
+ * Vector entity embeddings virtual table using sqlite-vec
+ * 768-dimensional float32 vectors for entity semantic search (cosine distance)
+ */
+export const CREATE_VEC_ENTITY_EMBEDDINGS_TABLE = `
+CREATE VIRTUAL TABLE IF NOT EXISTS vec_entity_embeddings USING vec0(
+  id TEXT PRIMARY KEY,
+  embedding float[768] distance_metric=cosine
 )
 `;
 
@@ -745,6 +780,11 @@ export const CREATE_INDEXES = [
   'CREATE INDEX IF NOT EXISTS idx_segments_document ON entity_extraction_segments(document_id)',
   'CREATE INDEX IF NOT EXISTS idx_segments_status ON entity_extraction_segments(extraction_status)',
   'CREATE INDEX IF NOT EXISTS idx_segments_doc_status ON entity_extraction_segments(document_id, extraction_status)',
+
+  // Entity embeddings indexes (v20)
+  'CREATE INDEX IF NOT EXISTS idx_entity_embeddings_entity_id ON entity_embeddings(entity_id)',
+  'CREATE INDEX IF NOT EXISTS idx_entity_embeddings_node_id ON entity_embeddings(node_id)',
+  'CREATE INDEX IF NOT EXISTS idx_entity_embeddings_content_hash ON entity_embeddings(content_hash)',
 ] as const;
 
 /**
@@ -770,6 +810,7 @@ export const TABLE_DEFINITIONS = [
   { name: 'knowledge_edges', sql: CREATE_KNOWLEDGE_EDGES_TABLE },
   { name: 'node_entity_links', sql: CREATE_NODE_ENTITY_LINKS_TABLE },
   { name: 'entity_extraction_segments', sql: CREATE_ENTITY_EXTRACTION_SEGMENTS_TABLE },
+  { name: 'entity_embeddings', sql: CREATE_ENTITY_EMBEDDINGS_TABLE },
 ] as const;
 
 /**
@@ -802,6 +843,8 @@ export const REQUIRED_TABLES = [
   'node_entity_links',
   'knowledge_nodes_fts',
   'entity_extraction_segments',
+  'entity_embeddings',
+  'vec_entity_embeddings',
 ] as const;
 
 /**
@@ -864,4 +907,7 @@ export const REQUIRED_INDEXES = [
   'idx_segments_document',
   'idx_segments_status',
   'idx_segments_doc_status',
+  'idx_entity_embeddings_entity_id',
+  'idx_entity_embeddings_node_id',
+  'idx_entity_embeddings_content_hash',
 ] as const;

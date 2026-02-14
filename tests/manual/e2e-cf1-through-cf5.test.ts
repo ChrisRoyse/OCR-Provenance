@@ -51,6 +51,7 @@ import {
   CREATE_KNOWLEDGE_NODES_FTS_TABLE,
   CREATE_KNOWLEDGE_NODES_FTS_TRIGGERS,
   CREATE_ENTITY_EXTRACTION_SEGMENTS_TABLE,
+  CREATE_ENTITY_EMBEDDINGS_TABLE,
   CREATE_SCHEMA_VERSION_TABLE,
   DATABASE_PRAGMAS,
 } from '../../src/services/storage/migrations/schema-definitions.js';
@@ -99,6 +100,9 @@ function createFreshDatabase(): Database.Database {
   conn.exec(CREATE_KNOWLEDGE_EDGES_TABLE);
   conn.exec(CREATE_NODE_ENTITY_LINKS_TABLE);
   conn.exec(CREATE_ENTITY_EXTRACTION_SEGMENTS_TABLE);
+  conn.exec(CREATE_ENTITY_EMBEDDINGS_TABLE);
+  // Skip vec0 virtual table - requires sqlite-vec extension
+  // conn.exec(CREATE_VEC_ENTITY_EMBEDDINGS_TABLE);
   conn.exec(CREATE_KNOWLEDGE_NODES_FTS_TABLE);
   conn.exec(CREATE_CHUNKS_FTS_TABLE);
   conn.exec(CREATE_FTS_INDEX_METADATA);
@@ -202,11 +206,11 @@ describe('E2E-1: Schema v10 Physical Verification', () => {
     // WHAT: Verify schema version constant
     // INPUT: SCHEMA_VERSION export
     // EXPECTED: 12
-    expect(SCHEMA_VERSION).toBe(19);
+    expect(SCHEMA_VERSION).toBe(20);
 
     // SOURCE OF TRUTH: schema_version table
     const row = db.prepare('SELECT version FROM schema_version WHERE id = 1').get() as { version: number };
-    expect(row.version).toBe(19);
+    expect(row.version).toBe(20);
   });
 
   it('All 16 required tables exist (minus vec_embeddings without extension)', () => {
@@ -218,7 +222,7 @@ describe('E2E-1: Schema v10 Physical Verification', () => {
     ).all().map((r: Record<string, unknown>) => r.name as string);
 
     for (const required of REQUIRED_TABLES) {
-      if (required === 'vec_embeddings') continue; // Requires sqlite-vec extension
+      if (required === 'vec_embeddings' || required === 'vec_entity_embeddings') continue; // Requires sqlite-vec extension
       expect(tables).toContain(required);
     }
   });
@@ -234,7 +238,7 @@ describe('E2E-1: Schema v10 Physical Verification', () => {
     for (const required of REQUIRED_INDEXES) {
       expect(indexes).toContain(required);
     }
-    expect(REQUIRED_INDEXES.length).toBe(56);
+    expect(REQUIRED_INDEXES.length).toBe(59);
   });
 
   it('documents table has metadata columns', () => {

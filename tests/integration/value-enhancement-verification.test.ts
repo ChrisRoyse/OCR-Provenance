@@ -85,7 +85,6 @@ describe.skipIf(!sqliteVecAvailable)('VALUE ENHANCEMENT VERIFICATION: Phases 1-5
     it('should have schema version 16', () => {
       const row = db.prepare('SELECT version FROM schema_version WHERE id = 1').get() as { version: number };
       expect(row).toBeDefined();
-      expect(row.version).toBe(19);
       expect(row.version).toBe(SCHEMA_VERSION);
     });
 
@@ -98,7 +97,7 @@ describe.skipIf(!sqliteVecAvailable)('VALUE ENHANCEMENT VERIFICATION: Phases 1-5
       for (const required of REQUIRED_TABLES) {
         expect(tableNames).toContain(required);
       }
-      expect(REQUIRED_TABLES.length).toBe(26);
+      expect(REQUIRED_TABLES.length).toBe(28);
     });
 
     it('should have all 51 required indexes', () => {
@@ -110,8 +109,8 @@ describe.skipIf(!sqliteVecAvailable)('VALUE ENHANCEMENT VERIFICATION: Phases 1-5
       for (const required of REQUIRED_INDEXES) {
         expect(indexNames).toContain(required);
       }
-      expect(REQUIRED_INDEXES.length).toBe(56);
-      expect(indexNames.length).toBeGreaterThanOrEqual(56);
+      expect(REQUIRED_INDEXES.length).toBe(59);
+      expect(indexNames.length).toBeGreaterThanOrEqual(59);
     });
 
     it('should filter documents by quality score (QW-2)', () => {

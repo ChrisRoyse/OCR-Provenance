@@ -2271,15 +2271,27 @@ async function handleKnowledgeGraphVisualize(
       ).get(input.entity_name.toLowerCase()) as { id: string } | undefined;
 
       if (!centerNode) {
-        // Try LIKE match
+        // Try LIKE match on canonical_name
         const likeNode = conn.prepare(
           `SELECT id FROM knowledge_nodes WHERE LOWER(canonical_name) LIKE ? LIMIT 1`
         ).get(`%${input.entity_name.toLowerCase()}%`) as { id: string } | undefined;
 
         if (!likeNode) {
-          throw new Error(`Entity not found: "${input.entity_name}"`);
+          // Try alias match via entities table
+          const aliasNode = conn.prepare(`
+            SELECT nel.node_id as id FROM node_entity_links nel
+            JOIN entities e ON e.id = nel.entity_id
+            WHERE LOWER(e.normalized_text) LIKE ?
+            LIMIT 1
+          `).get(`%${input.entity_name.toLowerCase()}%`) as { id: string } | undefined;
+
+          if (!aliasNode) {
+            throw new Error(`Entity not found: "${input.entity_name}"`);
+          }
+          collectedNodeIds.add(aliasNode.id);
+        } else {
+          collectedNodeIds.add(likeNode.id);
         }
-        collectedNodeIds.add(likeNode.id);
       } else {
         collectedNodeIds.add(centerNode.id);
       }
