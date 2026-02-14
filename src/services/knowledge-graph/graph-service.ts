@@ -60,6 +60,7 @@ interface BuildGraphOptions {
   resolution_mode?: ResolutionMode;
   classify_relationships?: boolean;
   rebuild?: boolean;
+  auto_temporal?: boolean;
 }
 
 interface BuildGraphResult {
@@ -184,6 +185,7 @@ export async function buildKnowledgeGraph(
   const resolutionMode = options.resolution_mode ?? 'fuzzy';
   const classifyRelationships = options.classify_relationships ?? false;
   const rebuild = options.rebuild ?? false;
+  const autoTemporal = options.auto_temporal ?? true;
 
   // Step 1: Handle rebuild vs existing graph
   if (rebuild) {
@@ -313,7 +315,7 @@ export async function buildKnowledgeGraph(
   }
 
   // Step 6: Build co-occurrence edges
-  buildCoOccurrenceEdges(db, resolutionResult.nodes, provenanceId);
+  buildCoOccurrenceEdges(db, resolutionResult.nodes, provenanceId, autoTemporal);
 
   // Step 7: Optionally classify relationships (rule-based first, then Gemini)
   if (classifyRelationships) {
@@ -458,6 +460,175 @@ export async function buildKnowledgeGraph(
 }
 
 // ============================================================
+// Temporal inference helpers
+// ============================================================
+
+/**
+ * Parse a date string into ISO format (YYYY-MM-DD).
+ *
+ * Handles: YYYY-MM-DD, MM/DD/YYYY, Month DD YYYY, DD Month YYYY
+ *
+ * @param dateStr - A normalized date string
+ * @returns ISO date string or null if unparseable
+ */
+export function parseToISODate(dateStr: string): string | null {
+  if (!dateStr || dateStr.trim().length === 0) return null;
+
+  const trimmed = dateStr.trim();
+
+  // Pattern 1: YYYY-MM-DD (already ISO)
+  const isoMatch = trimmed.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (isoMatch) {
+    const [, y, m, d] = isoMatch;
+    if (isValidDate(+y, +m, +d)) return trimmed;
+    return null;
+  }
+
+  // Pattern 2: MM/DD/YYYY
+  const usMatch = trimmed.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+  if (usMatch) {
+    const [, m, d, y] = usMatch;
+    if (isValidDate(+y, +m, +d)) {
+      return `${y}-${m.padStart(2, '0')}-${d.padStart(2, '0')}`;
+    }
+    return null;
+  }
+
+  // Pattern 3: Month DD, YYYY (e.g., "January 15, 2024")
+  const monthNameFirst = trimmed.match(
+    /^([A-Za-z]+)\s+(\d{1,2}),?\s+(\d{4})$/,
+  );
+  if (monthNameFirst) {
+    const monthNum = monthNameToNumber(monthNameFirst[1]);
+    if (monthNum && isValidDate(+monthNameFirst[3], monthNum, +monthNameFirst[2])) {
+      return `${monthNameFirst[3]}-${String(monthNum).padStart(2, '0')}-${monthNameFirst[2].padStart(2, '0')}`;
+    }
+    return null;
+  }
+
+  // Pattern 4: DD Month YYYY (e.g., "15 January 2024")
+  const dayFirst = trimmed.match(/^(\d{1,2})\s+([A-Za-z]+)\s+(\d{4})$/);
+  if (dayFirst) {
+    const monthNum = monthNameToNumber(dayFirst[2]);
+    if (monthNum && isValidDate(+dayFirst[3], monthNum, +dayFirst[1])) {
+      return `${dayFirst[3]}-${String(monthNum).padStart(2, '0')}-${dayFirst[1].padStart(2, '0')}`;
+    }
+    return null;
+  }
+
+  return null;
+}
+
+/** Map month name (full or abbreviated) to number 1-12 */
+function monthNameToNumber(name: string): number | null {
+  const months: Record<string, number> = {
+    january: 1, jan: 1, february: 2, feb: 2, march: 3, mar: 3,
+    april: 4, apr: 4, may: 5, june: 6, jun: 6,
+    july: 7, jul: 7, august: 8, aug: 8, september: 9, sep: 9, sept: 9,
+    october: 10, oct: 10, november: 11, nov: 11, december: 12, dec: 12,
+  };
+  return months[name.toLowerCase()] ?? null;
+}
+
+/** Basic date validation */
+function isValidDate(year: number, month: number, day: number): boolean {
+  if (year < 1900 || year > 2100) return false;
+  if (month < 1 || month > 12) return false;
+  if (day < 1 || day > 31) return false;
+  return true;
+}
+
+/**
+ * Batch-query date entities for multiple chunks and infer temporal bounds.
+ *
+ * Returns a Map of chunkId -> temporal bounds. Uses a single query
+ * to avoid N+1 queries during edge creation.
+ *
+ * @param conn - Database connection
+ * @param chunkIds - Array of chunk IDs to query
+ * @returns Map of chunkId -> temporal bounds
+ */
+function batchInferTemporalBounds(
+  conn: ReturnType<DatabaseService['getConnection']>,
+  chunkIds: string[],
+): Map<string, { valid_from?: string; valid_until?: string }> {
+  const result = new Map<string, { valid_from?: string; valid_until?: string }>();
+  if (chunkIds.length === 0) return result;
+
+  try {
+    const placeholders = chunkIds.map(() => '?').join(',');
+    const rows = conn.prepare(`
+      SELECT em.chunk_id, e.normalized_text
+      FROM entities e
+      JOIN entity_mentions em ON em.entity_id = e.id
+      WHERE em.chunk_id IN (${placeholders}) AND e.entity_type = 'date'
+      ORDER BY em.chunk_id, e.normalized_text ASC
+    `).all(...chunkIds) as Array<{ chunk_id: string; normalized_text: string }>;
+
+    // Group parsed dates by chunk
+    const chunkDateMap = new Map<string, string[]>();
+    for (const row of rows) {
+      const parsed = parseToISODate(row.normalized_text);
+      if (parsed) {
+        if (!chunkDateMap.has(row.chunk_id)) {
+          chunkDateMap.set(row.chunk_id, []);
+        }
+        chunkDateMap.get(row.chunk_id)!.push(parsed);
+      }
+    }
+
+    for (const [chunkId, dates] of chunkDateMap) {
+      const uniqueDates = [...new Set(dates)].sort();
+      if (uniqueDates.length === 0) continue;
+      if (uniqueDates.length === 1) {
+        result.set(chunkId, { valid_from: uniqueDates[0] });
+      } else {
+        result.set(chunkId, {
+          valid_from: uniqueDates[0],
+          valid_until: uniqueDates[uniqueDates.length - 1],
+        });
+      }
+    }
+  } catch {
+    // Gracefully handle query errors
+  }
+
+  return result;
+}
+
+/**
+ * Check if new temporal bounds are more specific (narrower) than existing ones.
+ *
+ * @param existing - Current temporal bounds on the edge
+ * @param newBounds - Proposed new temporal bounds
+ * @returns true if newBounds should replace existing
+ */
+export function isMoreSpecificTemporal(
+  existing: { valid_from: string | null; valid_until: string | null },
+  newBounds: { valid_from?: string; valid_until?: string },
+): boolean {
+  const hasExistingFrom = existing.valid_from !== null;
+  const hasExistingUntil = existing.valid_until !== null;
+  const hasNewFrom = newBounds.valid_from !== undefined;
+  const hasNewUntil = newBounds.valid_until !== undefined;
+
+  // No existing temporal data: always accept new
+  if (!hasExistingFrom && !hasExistingUntil) return true;
+
+  // New data narrows the from bound (later start)
+  if (hasNewFrom && hasExistingFrom && newBounds.valid_from! > existing.valid_from!) return true;
+
+  // New data narrows the until bound (earlier end)
+  if (hasNewUntil && hasExistingUntil && newBounds.valid_until! < existing.valid_until!) return true;
+
+  // New data fills in a missing bound
+  if (hasNewFrom && !hasExistingFrom) return true;
+  if (hasNewUntil && !hasExistingUntil) return true;
+
+  return false;
+}
+
+// ============================================================
 // buildCoOccurrenceEdges - Deterministic edge creation
 // ============================================================
 
@@ -475,12 +646,14 @@ export async function buildKnowledgeGraph(
  * @param db - DatabaseService instance
  * @param nodes - Resolved knowledge nodes
  * @param provenanceId - Provenance record ID for edge creation
+ * @param autoTemporal - When true, infer temporal bounds from co-located date entities
  * @returns Number of edges created
  */
 function buildCoOccurrenceEdges(
   db: DatabaseService,
   nodes: KnowledgeNode[],
   provenanceId: string,
+  autoTemporal: boolean = true,
 ): number {
   const conn = db.getConnection();
   const now = new Date().toISOString();
@@ -544,6 +717,27 @@ function buildCoOccurrenceEdges(
     console.error(
       `[KnowledgeGraph] Capping co-occurrence analysis to ${MAX_COOCCURRENCE_ENTITIES} nodes (had ${nodes.length})`,
     );
+  }
+
+  // Pre-compute temporal bounds for all chunks if auto_temporal is enabled
+  let chunkTemporalMap = new Map<string, { valid_from?: string; valid_until?: string }>();
+  if (autoTemporal) {
+    const allChunkIds = new Set<string>();
+    for (const chunkSet of nodeChunkMap.values()) {
+      for (const chunkId of chunkSet) {
+        allChunkIds.add(chunkId);
+      }
+    }
+    if (allChunkIds.size > 0) {
+      chunkTemporalMap = batchInferTemporalBounds(conn, [...allChunkIds]);
+    }
+  }
+  let temporalEdgesSet = 0;
+
+  // Build a node type lookup for fast date-entity filtering
+  const nodeTypeMap = new Map<string, string>();
+  for (const node of nodeList) {
+    nodeTypeMap.set(node.id, node.entity_type);
   }
 
   for (let i = 0; i < nodeList.length; i++) {
@@ -630,12 +824,78 @@ function buildCoOccurrenceEdges(
           };
           insertKnowledgeEdge(conn, edge);
           edgeCount++;
+
+          // Auto-temporal: infer temporal bounds from co-located date entities
+          // Only for non-date entity pairs (date entities ARE the temporal context)
+          if (autoTemporal
+            && nodeTypeMap.get(sourceId) !== 'date'
+            && nodeTypeMap.get(targetId) !== 'date') {
+            const temporal = mergeTemporalFromChunks(sharedChunks, chunkTemporalMap);
+            if (temporal) {
+              try {
+                conn.prepare(
+                  'UPDATE knowledge_edges SET valid_from = ?, valid_until = ? WHERE id = ?',
+                ).run(temporal.valid_from ?? null, temporal.valid_until ?? null, edge.id);
+                temporalEdgesSet++;
+              } catch {
+                // valid_from/valid_until columns may not exist in older schemas
+              }
+            }
+          }
         }
       }
     }
   }
 
+  if (autoTemporal && temporalEdgesSet > 0) {
+    console.error(
+      `[KnowledgeGraph] Auto-temporal: set temporal bounds on ${temporalEdgesSet} co_located edges`,
+    );
+  }
+
   return edgeCount;
+}
+
+/**
+ * Merge temporal bounds from multiple shared chunks.
+ *
+ * When an edge is supported by multiple shared chunks, each chunk may
+ * have different date entities. We take the union: earliest valid_from
+ * across all chunks, latest valid_until across all chunks.
+ *
+ * @param sharedChunkIds - Chunk IDs shared by both endpoints
+ * @param chunkTemporalMap - Pre-computed temporal bounds per chunk
+ * @returns Merged temporal bounds or null
+ */
+function mergeTemporalFromChunks(
+  sharedChunkIds: string[],
+  chunkTemporalMap: Map<string, { valid_from?: string; valid_until?: string }>,
+): { valid_from?: string; valid_until?: string } | null {
+  let earliestFrom: string | undefined;
+  let latestUntil: string | undefined;
+
+  for (const chunkId of sharedChunkIds) {
+    const bounds = chunkTemporalMap.get(chunkId);
+    if (!bounds) continue;
+
+    if (bounds.valid_from) {
+      if (!earliestFrom || bounds.valid_from < earliestFrom) {
+        earliestFrom = bounds.valid_from;
+      }
+    }
+    if (bounds.valid_until) {
+      if (!latestUntil || bounds.valid_until > latestUntil) {
+        latestUntil = bounds.valid_until;
+      }
+    }
+  }
+
+  if (!earliestFrom && !latestUntil) return null;
+
+  const result: { valid_from?: string; valid_until?: string } = {};
+  if (earliestFrom) result.valid_from = earliestFrom;
+  if (latestUntil) result.valid_until = latestUntil;
+  return result;
 }
 
 // ============================================================

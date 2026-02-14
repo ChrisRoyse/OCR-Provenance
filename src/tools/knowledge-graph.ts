@@ -7,7 +7,9 @@
  *        ocr_knowledge_graph_export, ocr_knowledge_graph_merge,
  *        ocr_knowledge_graph_split, ocr_knowledge_graph_enrich,
  *        ocr_knowledge_graph_incremental_build,
- *        ocr_knowledge_graph_normalize_weights, ocr_knowledge_graph_prune_edges
+ *        ocr_knowledge_graph_normalize_weights, ocr_knowledge_graph_prune_edges,
+ *        ocr_knowledge_graph_scan_contradictions, ocr_knowledge_graph_entity_export,
+ *        ocr_knowledge_graph_entity_import, ocr_knowledge_graph_visualize
  *
  * CRITICAL: NEVER use console.log() - stdout is reserved for JSON-RPC protocol.
  *
@@ -45,6 +47,7 @@ import { classifyEdgesWithGemini } from '../services/knowledge-graph/rule-classi
 import { getEmbeddingService } from '../services/embedding/embedder.js';
 import { getEmbeddingClient } from '../services/embedding/nomic.js';
 import { computeHash } from '../utils/hash.js';
+import { sorensenDice } from '../services/knowledge-graph/string-similarity.js';
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // INPUT SCHEMAS
@@ -59,6 +62,8 @@ const BuildInput = z.object({
     .describe('Use Gemini AI for relationship type classification'),
   rebuild: z.boolean().default(false)
     .describe('Clear existing graph first'),
+  auto_temporal: z.boolean().default(true)
+    .describe('Automatically infer temporal bounds (valid_from/valid_until) on co_located edges from date entities in shared chunks'),
 });
 
 const QueryInput = z.object({
@@ -157,6 +162,8 @@ const IncrementalBuildInput = z.object({
     .describe('Resolution mode for matching against existing nodes'),
   classify_relationships: z.boolean().default(false)
     .describe('Use Gemini AI for relationship type classification'),
+  auto_temporal: z.boolean().default(true)
+    .describe('Automatically infer temporal bounds on co_located edges from co-located date entities'),
 });
 
 const ClassifyRelationshipsInput = z.object({
@@ -219,6 +226,50 @@ const EntitySearchSemanticInput = z.object({
   include_documents: z.boolean().default(false),
 });
 
+const ScanContradictionsInput = z.object({
+  scan_types: z.array(z.enum([
+    'conflicting_relationships',
+    'temporal_conflicts',
+    'amount_discrepancies',
+    'duplicate_nodes',
+  ])).default(['conflicting_relationships', 'temporal_conflicts', 'duplicate_nodes'])
+    .describe('Types of contradictions to scan for'),
+  entity_type: z.string().optional().describe('Filter scan to specific entity type'),
+  similarity_threshold: z.number().min(0.5).max(1.0).default(0.80)
+    .describe('Threshold for duplicate node detection'),
+  limit: z.number().min(1).max(100).default(20),
+});
+
+const EntityExportInput = z.object({
+  entity_types: z.array(z.string()).optional().describe('Filter by entity types'),
+  min_confidence: z.number().min(0).max(1).default(0.5),
+  format: z.enum(['json', 'csv']).default('json'),
+  include_aliases: z.boolean().default(true),
+  include_relationships: z.boolean().default(false),
+});
+
+const EntityImportInput = z.object({
+  entities: z.array(z.object({
+    canonical_name: z.string(),
+    entity_type: z.string(),
+    aliases: z.array(z.string()).optional(),
+    source_database: z.string().optional(),
+    external_id: z.string().optional(),
+  })).min(1).describe('Entities to import and match'),
+  match_threshold: z.number().min(0.5).max(1.0).default(0.85),
+  dry_run: z.boolean().default(true).describe('Preview matches without creating links'),
+});
+
+const VisualizeInput = z.object({
+  node_ids: z.array(z.string()).optional().describe('Specific nodes to visualize'),
+  entity_name: z.string().optional().describe('Center visualization on this entity'),
+  entity_type: z.string().optional().describe('Filter to entity type'),
+  max_nodes: z.number().min(1).max(50).default(25).describe('Max nodes in visualization'),
+  max_depth: z.number().min(1).max(3).default(2).describe('Max hops from center node'),
+  include_edge_labels: z.boolean().default(true),
+  layout: z.enum(['flowchart', 'graph']).default('graph'),
+});
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // HANDLERS
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -238,6 +289,7 @@ async function handleKnowledgeGraphBuild(
       resolution_mode: input.resolution_mode,
       classify_relationships: input.classify_relationships,
       rebuild: input.rebuild,
+      auto_temporal: input.auto_temporal,
     });
 
     return formatResponse(successResult(result));
@@ -1120,6 +1172,7 @@ async function handleKnowledgeGraphIncrementalBuild(
       document_ids: input.document_ids,
       resolution_mode: input.resolution_mode,
       classify_relationships: input.classify_relationships,
+      auto_temporal: input.auto_temporal,
     });
 
     return formatResponse(successResult(result));
@@ -1624,6 +1677,753 @@ async function handleKnowledgeGraphSearchEntities(
   }
 }
 
+/**
+ * Handle ocr_knowledge_graph_scan_contradictions - Proactively scan the entire KG
+ * for potential contradictions across multiple scan types
+ */
+async function handleKnowledgeGraphScanContradictions(
+  params: Record<string, unknown>
+): Promise<ToolResponse> {
+  try {
+    const input = validateInput(ScanContradictionsInput, params);
+    const { db } = requireDatabase();
+    const conn = db.getConnection();
+
+    const scanTypes = input.scan_types ?? ['conflicting_relationships', 'temporal_conflicts', 'duplicate_nodes'];
+    const limit = input.limit ?? 20;
+    const similarityThreshold = input.similarity_threshold ?? 0.80;
+
+    const contradictions: Array<{
+      type: string;
+      severity: string;
+      description: string;
+      involved_nodes: Array<{ id: string; canonical_name: string; entity_type: string }>;
+      involved_edges: Array<{ id: string; relationship_type: string }>;
+      suggested_action: string;
+    }> = [];
+
+    const entityTypeFilter = input.entity_type
+      ? ` AND n.entity_type = '${input.entity_type.replace(/'/g, "''")}'`
+      : '';
+
+    // --- conflicting_relationships ---
+    if (scanTypes.includes('conflicting_relationships')) {
+      const rows = conn.prepare(`
+        SELECT n.id as node_id, n.canonical_name, n.entity_type, e.relationship_type,
+          COUNT(DISTINCT CASE WHEN e.source_node_id = n.id THEN e.target_node_id ELSE e.source_node_id END) as partner_count
+        FROM knowledge_nodes n
+        JOIN knowledge_edges e ON (e.source_node_id = n.id OR e.target_node_id = n.id)
+        WHERE e.relationship_type NOT IN ('co_mentioned', 'co_located', 'references', 'related_to')
+        ${entityTypeFilter}
+        GROUP BY n.id, e.relationship_type
+        HAVING partner_count > 1
+        ORDER BY partner_count DESC
+        LIMIT ?
+      `).all(limit) as Array<{
+        node_id: string; canonical_name: string; entity_type: string;
+        relationship_type: string; partner_count: number;
+      }>;
+
+      for (const row of rows) {
+        // Get the conflicting partner nodes
+        const partners = conn.prepare(`
+          SELECT DISTINCT
+            CASE WHEN e.source_node_id = ? THEN e.target_node_id ELSE e.source_node_id END as partner_id,
+            CASE WHEN e.source_node_id = ? THEN tn.canonical_name ELSE sn.canonical_name END as partner_name,
+            CASE WHEN e.source_node_id = ? THEN tn.entity_type ELSE sn.entity_type END as partner_type,
+            e.id as edge_id
+          FROM knowledge_edges e
+          JOIN knowledge_nodes sn ON e.source_node_id = sn.id
+          JOIN knowledge_nodes tn ON e.target_node_id = tn.id
+          WHERE (e.source_node_id = ? OR e.target_node_id = ?)
+            AND e.relationship_type = ?
+          LIMIT 10
+        `).all(row.node_id, row.node_id, row.node_id, row.node_id, row.node_id, row.relationship_type) as Array<{
+          partner_id: string; partner_name: string; partner_type: string; edge_id: string;
+        }>;
+
+        const partnerNames = partners.map(p => p.partner_name).join(', ');
+        contradictions.push({
+          type: 'conflicting_relationships',
+          severity: row.partner_count > 3 ? 'high' : row.partner_count > 2 ? 'medium' : 'low',
+          description: `"${row.canonical_name}" has ${row.partner_count} different "${row.relationship_type}" relationships: ${partnerNames}`,
+          involved_nodes: [
+            { id: row.node_id, canonical_name: row.canonical_name, entity_type: row.entity_type },
+            ...partners.map(p => ({ id: p.partner_id, canonical_name: p.partner_name, entity_type: p.partner_type })),
+          ],
+          involved_edges: partners.map(p => ({ id: p.edge_id, relationship_type: row.relationship_type })),
+          suggested_action: `Review whether "${row.canonical_name}" should have multiple "${row.relationship_type}" relationships or if some nodes should be merged`,
+        });
+
+        if (contradictions.length >= limit) break;
+      }
+    }
+
+    // --- temporal_conflicts ---
+    // Requires valid_from/valid_until columns (schema v20+); gracefully skip on older schemas
+    if (scanTypes.includes('temporal_conflicts') && contradictions.length < limit) {
+      try {
+        const temporalRows = conn.prepare(`
+          SELECT e1.id as edge1_id, e2.id as edge2_id,
+                 e1.relationship_type,
+                 e1.valid_from as e1_from, e1.valid_until as e1_until,
+                 e2.valid_from as e2_from, e2.valid_until as e2_until,
+                 n.id as node_id, n.canonical_name, n.entity_type,
+                 CASE WHEN e1.source_node_id = n.id THEN e1.target_node_id ELSE e1.source_node_id END as partner1_id,
+                 CASE WHEN e2.source_node_id = n.id THEN e2.target_node_id ELSE e2.source_node_id END as partner2_id
+          FROM knowledge_edges e1
+          JOIN knowledge_edges e2 ON e1.id < e2.id
+            AND e1.relationship_type = e2.relationship_type
+            AND e1.relationship_type NOT IN ('co_mentioned', 'co_located', 'references', 'related_to')
+          JOIN knowledge_nodes n ON (
+            (e1.source_node_id = n.id OR e1.target_node_id = n.id)
+            AND (e2.source_node_id = n.id OR e2.target_node_id = n.id)
+          )
+          WHERE e1.valid_from IS NOT NULL AND e2.valid_from IS NOT NULL
+            AND (e1.valid_until IS NULL OR e1.valid_until >= e2.valid_from)
+            AND (e2.valid_until IS NULL OR e2.valid_until >= e1.valid_from)
+            AND CASE WHEN e1.source_node_id = n.id THEN e1.target_node_id ELSE e1.source_node_id END
+             != CASE WHEN e2.source_node_id = n.id THEN e2.target_node_id ELSE e2.source_node_id END
+          ${entityTypeFilter}
+          LIMIT ?
+        `).all(limit - contradictions.length) as Array<{
+          edge1_id: string; edge2_id: string; relationship_type: string;
+          e1_from: string; e1_until: string | null;
+          e2_from: string; e2_until: string | null;
+          node_id: string; canonical_name: string; entity_type: string;
+          partner1_id: string; partner2_id: string;
+        }>;
+
+        for (const row of temporalRows) {
+          const p1 = conn.prepare('SELECT canonical_name, entity_type FROM knowledge_nodes WHERE id = ?')
+            .get(row.partner1_id) as { canonical_name: string; entity_type: string } | undefined;
+          const p2 = conn.prepare('SELECT canonical_name, entity_type FROM knowledge_nodes WHERE id = ?')
+            .get(row.partner2_id) as { canonical_name: string; entity_type: string } | undefined;
+
+          const range1 = `${row.e1_from} to ${row.e1_until ?? 'present'}`;
+          const range2 = `${row.e2_from} to ${row.e2_until ?? 'present'}`;
+
+          contradictions.push({
+            type: 'temporal_conflicts',
+            severity: 'medium',
+            description: `"${row.canonical_name}" has overlapping "${row.relationship_type}" edges: "${p1?.canonical_name ?? row.partner1_id}" (${range1}) and "${p2?.canonical_name ?? row.partner2_id}" (${range2})`,
+            involved_nodes: [
+              { id: row.node_id, canonical_name: row.canonical_name, entity_type: row.entity_type },
+              ...(p1 ? [{ id: row.partner1_id, canonical_name: p1.canonical_name, entity_type: p1.entity_type }] : []),
+              ...(p2 ? [{ id: row.partner2_id, canonical_name: p2.canonical_name, entity_type: p2.entity_type }] : []),
+            ],
+            involved_edges: [
+              { id: row.edge1_id, relationship_type: row.relationship_type },
+              { id: row.edge2_id, relationship_type: row.relationship_type },
+            ],
+            suggested_action: `Set valid_until on one edge to resolve the temporal overlap, or verify both relationships were genuinely concurrent`,
+          });
+
+          if (contradictions.length >= limit) break;
+        }
+      } catch {
+        // valid_from/valid_until columns may not exist in older schema versions - skip
+      }
+    }
+
+    // --- amount_discrepancies ---
+    if (scanTypes.includes('amount_discrepancies') && contradictions.length < limit) {
+      // Find amount-type nodes connected to the same entity via different edges
+      const amountNodes = conn.prepare(`
+        SELECT n.id, n.canonical_name, n.normalized_name
+        FROM knowledge_nodes n
+        WHERE n.entity_type = 'amount'
+      `).all() as Array<{ id: string; canonical_name: string; normalized_name: string }>;
+
+      // Group amount nodes by their connected partner nodes
+      const partnerAmounts = new Map<string, Array<{ node_id: string; canonical_name: string; amount_val: number }>>();
+
+      for (const amountNode of amountNodes) {
+        const parsed = parseFloat(amountNode.canonical_name.replace(/[$,\s\u20AC\u00A3\u00A5]/g, ''));
+        if (isNaN(parsed)) continue;
+
+        const partners = conn.prepare(`
+          SELECT DISTINCT
+            CASE WHEN e.source_node_id = ? THEN e.target_node_id ELSE e.source_node_id END as partner_id
+          FROM knowledge_edges e
+          WHERE (e.source_node_id = ? OR e.target_node_id = ?)
+            AND e.relationship_type NOT IN ('co_mentioned', 'co_located')
+        `).all(amountNode.id, amountNode.id, amountNode.id) as Array<{ partner_id: string }>;
+
+        for (const partner of partners) {
+          const key = partner.partner_id;
+          if (!partnerAmounts.has(key)) partnerAmounts.set(key, []);
+          partnerAmounts.get(key)!.push({
+            node_id: amountNode.id,
+            canonical_name: amountNode.canonical_name,
+            amount_val: parsed,
+          });
+        }
+      }
+
+      // Flag partners with multiple amounts that differ by more than 10%
+      for (const [partnerId, amounts] of partnerAmounts.entries()) {
+        if (amounts.length < 2) continue;
+        if (contradictions.length >= limit) break;
+
+        for (let i = 0; i < amounts.length; i++) {
+          for (let j = i + 1; j < amounts.length; j++) {
+            const maxVal = Math.max(Math.abs(amounts[i].amount_val), Math.abs(amounts[j].amount_val));
+            if (maxVal === 0) continue;
+            const diff = Math.abs(amounts[i].amount_val - amounts[j].amount_val) / maxVal;
+            if (diff > 0.10) {
+              const partnerNode = conn.prepare('SELECT canonical_name, entity_type FROM knowledge_nodes WHERE id = ?')
+                .get(partnerId) as { canonical_name: string; entity_type: string } | undefined;
+              if (!partnerNode) continue;
+
+              contradictions.push({
+                type: 'amount_discrepancies',
+                severity: diff > 0.5 ? 'high' : diff > 0.25 ? 'medium' : 'low',
+                description: `Different amounts associated with "${partnerNode.canonical_name}": "${amounts[i].canonical_name}" vs "${amounts[j].canonical_name}" (${(diff * 100).toFixed(1)}% difference)`,
+                involved_nodes: [
+                  { id: partnerId, canonical_name: partnerNode.canonical_name, entity_type: partnerNode.entity_type },
+                  { id: amounts[i].node_id, canonical_name: amounts[i].canonical_name, entity_type: 'amount' },
+                  { id: amounts[j].node_id, canonical_name: amounts[j].canonical_name, entity_type: 'amount' },
+                ],
+                involved_edges: [],
+                suggested_action: `Verify which amount is correct for "${partnerNode.canonical_name}" or confirm both are valid in different contexts`,
+              });
+
+              if (contradictions.length >= limit) break;
+            }
+          }
+          if (contradictions.length >= limit) break;
+        }
+      }
+    }
+
+    // --- duplicate_nodes ---
+    if (scanTypes.includes('duplicate_nodes') && contradictions.length < limit) {
+      // Compare nodes of the same entity_type using Sorensen-Dice
+      let nodesSql = 'SELECT id, canonical_name, entity_type, aliases FROM knowledge_nodes';
+      const nodesParams: string[] = [];
+      if (input.entity_type) {
+        nodesSql += ' WHERE entity_type = ?';
+        nodesParams.push(input.entity_type);
+      }
+      nodesSql += ' ORDER BY entity_type, canonical_name';
+
+      const allNodes = conn.prepare(nodesSql).all(...nodesParams) as Array<{
+        id: string; canonical_name: string; entity_type: string; aliases: string | null;
+      }>;
+
+      // Group by entity_type for comparison
+      const nodesByType = new Map<string, typeof allNodes>();
+      for (const node of allNodes) {
+        if (!nodesByType.has(node.entity_type)) nodesByType.set(node.entity_type, []);
+        nodesByType.get(node.entity_type)!.push(node);
+      }
+
+      for (const [, nodes] of nodesByType.entries()) {
+        if (contradictions.length >= limit) break;
+        // Compare all pairs within the same type (capped for performance)
+        const maxCompare = Math.min(nodes.length, 200);
+        for (let i = 0; i < maxCompare; i++) {
+          if (contradictions.length >= limit) break;
+          for (let j = i + 1; j < maxCompare; j++) {
+            if (contradictions.length >= limit) break;
+            const sim = sorensenDice(nodes[i].canonical_name, nodes[j].canonical_name);
+            if (sim >= similarityThreshold && sim < 1.0) {
+              contradictions.push({
+                type: 'duplicate_nodes',
+                severity: sim >= 0.95 ? 'high' : sim >= 0.90 ? 'medium' : 'low',
+                description: `Potential duplicate nodes: "${nodes[i].canonical_name}" and "${nodes[j].canonical_name}" (similarity: ${(sim * 100).toFixed(1)}%)`,
+                involved_nodes: [
+                  { id: nodes[i].id, canonical_name: nodes[i].canonical_name, entity_type: nodes[i].entity_type },
+                  { id: nodes[j].id, canonical_name: nodes[j].canonical_name, entity_type: nodes[j].entity_type },
+                ],
+                involved_edges: [],
+                suggested_action: `Consider merging these nodes using ocr_knowledge_graph_merge with source="${nodes[j].id}" and target="${nodes[i].id}"`,
+              });
+            }
+          }
+        }
+      }
+    }
+
+    return formatResponse(successResult({
+      scan_types: scanTypes,
+      entity_type_filter: input.entity_type ?? null,
+      total_contradictions: contradictions.length,
+      contradictions: contradictions.slice(0, limit),
+    }));
+  } catch (error) {
+    return handleError(error);
+  }
+}
+
+/**
+ * Handle ocr_knowledge_graph_entity_export - Export entity/node data for cross-database matching
+ */
+async function handleKnowledgeGraphEntityExport(
+  params: Record<string, unknown>
+): Promise<ToolResponse> {
+  try {
+    const input = validateInput(EntityExportInput, params);
+    const { db } = requireDatabase();
+    const conn = db.getConnection();
+
+    let sql = `
+      SELECT kn.id, kn.canonical_name, kn.normalized_name, kn.entity_type,
+             kn.aliases, kn.document_count, kn.mention_count, kn.avg_confidence
+      FROM knowledge_nodes kn
+      WHERE kn.avg_confidence >= ?
+    `;
+    const sqlParams: unknown[] = [input.min_confidence];
+
+    if (input.entity_types && input.entity_types.length > 0) {
+      const placeholders = input.entity_types.map(() => '?').join(',');
+      sql += ` AND kn.entity_type IN (${placeholders})`;
+      sqlParams.push(...input.entity_types);
+    }
+
+    sql += ' ORDER BY kn.document_count DESC, kn.canonical_name ASC';
+
+    const nodes = conn.prepare(sql).all(...sqlParams) as Array<{
+      id: string; canonical_name: string; normalized_name: string;
+      entity_type: string; aliases: string | null;
+      document_count: number; mention_count: number; avg_confidence: number;
+    }>;
+
+    const entities: Array<Record<string, unknown>> = [];
+
+    for (const node of nodes) {
+      let aliases: string[] = [];
+      if (input.include_aliases && node.aliases) {
+        try { aliases = JSON.parse(node.aliases); } catch { /* ignore */ }
+      }
+
+      const entity: Record<string, unknown> = {
+        node_id: node.id,
+        canonical_name: node.canonical_name,
+        normalized_name: node.normalized_name,
+        entity_type: node.entity_type,
+        document_count: node.document_count,
+        mention_count: node.mention_count,
+        avg_confidence: node.avg_confidence,
+      };
+      if (input.include_aliases) {
+        entity.aliases = aliases;
+      }
+
+      if (input.include_relationships) {
+        const edges = conn.prepare(`
+          SELECT e.id, e.relationship_type, e.weight, e.evidence_count,
+                 CASE WHEN e.source_node_id = ? THEN e.target_node_id ELSE e.source_node_id END as partner_id,
+                 CASE WHEN e.source_node_id = ? THEN tn.canonical_name ELSE sn.canonical_name END as partner_name,
+                 CASE WHEN e.source_node_id = ? THEN tn.entity_type ELSE sn.entity_type END as partner_type
+          FROM knowledge_edges e
+          JOIN knowledge_nodes sn ON e.source_node_id = sn.id
+          JOIN knowledge_nodes tn ON e.target_node_id = tn.id
+          WHERE e.source_node_id = ? OR e.target_node_id = ?
+          ORDER BY e.weight DESC
+          LIMIT 50
+        `).all(node.id, node.id, node.id, node.id, node.id) as Array<{
+          id: string; relationship_type: string; weight: number; evidence_count: number;
+          partner_id: string; partner_name: string; partner_type: string;
+        }>;
+
+        entity.relationships = edges.map(e => ({
+          edge_id: e.id,
+          relationship_type: e.relationship_type,
+          weight: e.weight,
+          evidence_count: e.evidence_count,
+          partner_node_id: e.partner_id,
+          partner_name: e.partner_name,
+          partner_type: e.partner_type,
+        }));
+      }
+
+      entities.push(entity);
+    }
+
+    if (input.format === 'csv') {
+      // Build CSV string
+      const headers = ['node_id', 'canonical_name', 'normalized_name', 'entity_type',
+        'document_count', 'mention_count', 'avg_confidence'];
+      if (input.include_aliases) headers.push('aliases');
+
+      const csvRows = [headers.join(',')];
+      for (const entity of entities) {
+        const row = [
+          entity.node_id,
+          `"${String(entity.canonical_name).replace(/"/g, '""')}"`,
+          `"${String(entity.normalized_name).replace(/"/g, '""')}"`,
+          entity.entity_type,
+          entity.document_count,
+          entity.mention_count,
+          entity.avg_confidence,
+        ];
+        if (input.include_aliases) {
+          row.push(`"${(entity.aliases as string[] || []).join('; ').replace(/"/g, '""')}"`);
+        }
+        csvRows.push(row.join(','));
+      }
+
+      return formatResponse(successResult({
+        format: 'csv',
+        total_entities: entities.length,
+        csv: csvRows.join('\n'),
+      }));
+    }
+
+    return formatResponse(successResult({
+      format: 'json',
+      total_entities: entities.length,
+      entities,
+    }));
+  } catch (error) {
+    return handleError(error);
+  }
+}
+
+/**
+ * Handle ocr_knowledge_graph_entity_import - Import entities from another DB and match
+ */
+async function handleKnowledgeGraphEntityImport(
+  params: Record<string, unknown>
+): Promise<ToolResponse> {
+  try {
+    const input = validateInput(EntityImportInput, params);
+    const { db } = requireDatabase();
+    const conn = db.getConnection();
+
+    const matchThreshold = input.match_threshold ?? 0.85;
+
+    const matched: Array<{
+      imported_entity: string;
+      imported_type: string;
+      match_method: string;
+      local_node_id: string;
+      local_canonical_name: string;
+      similarity: number;
+    }> = [];
+    const unmatched: Array<{ canonical_name: string; entity_type: string }> = [];
+    const ambiguous: Array<{
+      imported_entity: string;
+      imported_type: string;
+      candidates: Array<{ node_id: string; canonical_name: string; similarity: number; method: string }>;
+    }> = [];
+
+    for (const importedEntity of input.entities) {
+      const candidates: Array<{
+        node_id: string; canonical_name: string; similarity: number; method: string;
+      }> = [];
+      const lowerName = importedEntity.canonical_name.toLowerCase();
+
+      // Strategy 1: Exact canonical_name match (case-insensitive)
+      const exactRows = conn.prepare(
+        `SELECT id, canonical_name FROM knowledge_nodes
+         WHERE LOWER(canonical_name) = ? AND entity_type = ?`
+      ).all(lowerName, importedEntity.entity_type) as Array<{ id: string; canonical_name: string }>;
+
+      for (const row of exactRows) {
+        candidates.push({ node_id: row.id, canonical_name: row.canonical_name, similarity: 1.0, method: 'exact' });
+      }
+
+      // Strategy 2: FTS5 search
+      if (candidates.length === 0) {
+        try {
+          const escaped = importedEntity.canonical_name.replace(/["*()\\+:^-]/g, ' ').trim();
+          if (escaped.length > 0) {
+            const ftsRows = conn.prepare(`
+              SELECT kn.id, kn.canonical_name FROM knowledge_nodes_fts fts
+              JOIN knowledge_nodes kn ON kn.rowid = fts.rowid
+              WHERE knowledge_nodes_fts MATCH ? AND kn.entity_type = ?
+              LIMIT 10
+            `).all(escaped, importedEntity.entity_type) as Array<{ id: string; canonical_name: string }>;
+
+            for (const row of ftsRows) {
+              const sim = sorensenDice(importedEntity.canonical_name, row.canonical_name);
+              if (sim >= matchThreshold) {
+                candidates.push({ node_id: row.id, canonical_name: row.canonical_name, similarity: sim, method: 'fts' });
+              }
+            }
+          }
+        } catch {
+          // FTS table may not exist
+        }
+      }
+
+      // Strategy 3: Fuzzy match using Sorensen-Dice on all nodes of same type
+      if (candidates.length === 0) {
+        const typeNodes = conn.prepare(
+          'SELECT id, canonical_name FROM knowledge_nodes WHERE entity_type = ?'
+        ).all(importedEntity.entity_type) as Array<{ id: string; canonical_name: string }>;
+
+        for (const node of typeNodes) {
+          const sim = sorensenDice(importedEntity.canonical_name, node.canonical_name);
+          if (sim >= matchThreshold) {
+            candidates.push({ node_id: node.id, canonical_name: node.canonical_name, similarity: sim, method: 'fuzzy' });
+          }
+        }
+      }
+
+      // Also check aliases
+      if (importedEntity.aliases && importedEntity.aliases.length > 0) {
+        for (const alias of importedEntity.aliases) {
+          const aliasLower = alias.toLowerCase();
+          const aliasRows = conn.prepare(
+            `SELECT id, canonical_name FROM knowledge_nodes
+             WHERE LOWER(canonical_name) = ? AND entity_type = ?`
+          ).all(aliasLower, importedEntity.entity_type) as Array<{ id: string; canonical_name: string }>;
+          for (const row of aliasRows) {
+            if (!candidates.some(c => c.node_id === row.id)) {
+              candidates.push({ node_id: row.id, canonical_name: row.canonical_name, similarity: 1.0, method: 'alias_exact' });
+            }
+          }
+        }
+      }
+
+      // Deduplicate candidates by node_id, keeping the highest similarity
+      const deduped = new Map<string, typeof candidates[0]>();
+      for (const c of candidates) {
+        const existing = deduped.get(c.node_id);
+        if (!existing || c.similarity > existing.similarity) {
+          deduped.set(c.node_id, c);
+        }
+      }
+      const uniqueCandidates = [...deduped.values()].sort((a, b) => b.similarity - a.similarity);
+
+      if (uniqueCandidates.length === 0) {
+        unmatched.push({ canonical_name: importedEntity.canonical_name, entity_type: importedEntity.entity_type });
+      } else if (uniqueCandidates.length === 1) {
+        const best = uniqueCandidates[0];
+        matched.push({
+          imported_entity: importedEntity.canonical_name,
+          imported_type: importedEntity.entity_type,
+          match_method: best.method,
+          local_node_id: best.node_id,
+          local_canonical_name: best.canonical_name,
+          similarity: Number(best.similarity.toFixed(4)),
+        });
+
+        // If not dry_run, store external link in node metadata
+        if (!input.dry_run) {
+          const node = conn.prepare('SELECT metadata FROM knowledge_nodes WHERE id = ?')
+            .get(best.node_id) as { metadata: string | null } | undefined;
+          const meta = node?.metadata ? JSON.parse(node.metadata) : {};
+          const externalLinks: Array<Record<string, unknown>> = meta.external_links ?? [];
+          externalLinks.push({
+            canonical_name: importedEntity.canonical_name,
+            entity_type: importedEntity.entity_type,
+            source_database: importedEntity.source_database ?? null,
+            external_id: importedEntity.external_id ?? null,
+            matched_at: new Date().toISOString(),
+            similarity: best.similarity,
+            match_method: best.method,
+          });
+          meta.external_links = externalLinks;
+          conn.prepare('UPDATE knowledge_nodes SET metadata = ?, updated_at = ? WHERE id = ?')
+            .run(JSON.stringify(meta), new Date().toISOString(), best.node_id);
+        }
+      } else {
+        // Multiple candidates = ambiguous
+        ambiguous.push({
+          imported_entity: importedEntity.canonical_name,
+          imported_type: importedEntity.entity_type,
+          candidates: uniqueCandidates.slice(0, 5).map(c => ({
+            node_id: c.node_id,
+            canonical_name: c.canonical_name,
+            similarity: Number(c.similarity.toFixed(4)),
+            method: c.method,
+          })),
+        });
+      }
+    }
+
+    return formatResponse(successResult({
+      dry_run: input.dry_run,
+      total_imported: input.entities.length,
+      matched: { count: matched.length, entities: matched },
+      unmatched: { count: unmatched.length, entities: unmatched },
+      ambiguous: { count: ambiguous.length, entities: ambiguous },
+    }));
+  } catch (error) {
+    return handleError(error);
+  }
+}
+
+/**
+ * Handle ocr_knowledge_graph_visualize - Generate Mermaid-format graph visualization
+ */
+async function handleKnowledgeGraphVisualize(
+  params: Record<string, unknown>
+): Promise<ToolResponse> {
+  try {
+    const input = validateInput(VisualizeInput, params);
+    const { db } = requireDatabase();
+    const conn = db.getConnection();
+
+    const maxNodes = input.max_nodes ?? 25;
+    const maxDepth = input.max_depth ?? 2;
+    const collectedNodeIds = new Set<string>();
+
+    if (input.entity_name) {
+      // Find the center node by name
+      const centerNode = conn.prepare(
+        `SELECT id FROM knowledge_nodes WHERE LOWER(canonical_name) = ? LIMIT 1`
+      ).get(input.entity_name.toLowerCase()) as { id: string } | undefined;
+
+      if (!centerNode) {
+        // Try LIKE match
+        const likeNode = conn.prepare(
+          `SELECT id FROM knowledge_nodes WHERE LOWER(canonical_name) LIKE ? LIMIT 1`
+        ).get(`%${input.entity_name.toLowerCase()}%`) as { id: string } | undefined;
+
+        if (!likeNode) {
+          throw new Error(`Entity not found: "${input.entity_name}"`);
+        }
+        collectedNodeIds.add(likeNode.id);
+      } else {
+        collectedNodeIds.add(centerNode.id);
+      }
+
+      // BFS to max_depth
+      let frontier = new Set(collectedNodeIds);
+      for (let depth = 0; depth < maxDepth && collectedNodeIds.size < maxNodes; depth++) {
+        const nextFrontier = new Set<string>();
+        for (const nodeId of frontier) {
+          if (collectedNodeIds.size >= maxNodes) break;
+          const neighbors = conn.prepare(`
+            SELECT DISTINCT
+              CASE WHEN source_node_id = ? THEN target_node_id ELSE source_node_id END as neighbor_id
+            FROM knowledge_edges
+            WHERE source_node_id = ? OR target_node_id = ?
+          `).all(nodeId, nodeId, nodeId) as Array<{ neighbor_id: string }>;
+
+          for (const n of neighbors) {
+            if (!collectedNodeIds.has(n.neighbor_id) && collectedNodeIds.size < maxNodes) {
+              collectedNodeIds.add(n.neighbor_id);
+              nextFrontier.add(n.neighbor_id);
+            }
+          }
+        }
+        frontier = nextFrontier;
+      }
+    } else if (input.node_ids && input.node_ids.length > 0) {
+      // Use specified nodes + direct edges
+      for (const nid of input.node_ids) {
+        collectedNodeIds.add(nid);
+      }
+      // Also add direct neighbors up to max_nodes
+      for (const nid of input.node_ids) {
+        if (collectedNodeIds.size >= maxNodes) break;
+        const neighbors = conn.prepare(`
+          SELECT DISTINCT
+            CASE WHEN source_node_id = ? THEN target_node_id ELSE source_node_id END as neighbor_id
+          FROM knowledge_edges
+          WHERE source_node_id = ? OR target_node_id = ?
+        `).all(nid, nid, nid) as Array<{ neighbor_id: string }>;
+
+        for (const n of neighbors) {
+          if (collectedNodeIds.size >= maxNodes) break;
+          collectedNodeIds.add(n.neighbor_id);
+        }
+      }
+    } else {
+      // Top nodes by edge_count
+      let topSql = 'SELECT id FROM knowledge_nodes';
+      const topParams: unknown[] = [];
+      if (input.entity_type) {
+        topSql += ' WHERE entity_type = ?';
+        topParams.push(input.entity_type);
+      }
+      topSql += ' ORDER BY edge_count DESC LIMIT ?';
+      topParams.push(maxNodes);
+
+      const topNodes = conn.prepare(topSql).all(...topParams) as Array<{ id: string }>;
+      for (const n of topNodes) {
+        collectedNodeIds.add(n.id);
+      }
+    }
+
+    if (collectedNodeIds.size === 0) {
+      return formatResponse(successResult({
+        node_count: 0,
+        edge_count: 0,
+        mermaid: `graph LR\n  empty["No nodes found"]`,
+      }));
+    }
+
+    // Fetch node details
+    const nodeIdArray = [...collectedNodeIds];
+    const nodePlaceholders = nodeIdArray.map(() => '?').join(',');
+
+    const nodes = conn.prepare(
+      `SELECT id, canonical_name, entity_type FROM knowledge_nodes WHERE id IN (${nodePlaceholders})`
+    ).all(...nodeIdArray) as Array<{ id: string; canonical_name: string; entity_type: string }>;
+
+    // Fetch edges between collected nodes
+    const edges = conn.prepare(
+      `SELECT id, source_node_id, target_node_id, relationship_type, weight
+       FROM knowledge_edges
+       WHERE source_node_id IN (${nodePlaceholders}) AND target_node_id IN (${nodePlaceholders})`
+    ).all(...nodeIdArray, ...nodeIdArray) as Array<{
+      id: string; source_node_id: string; target_node_id: string;
+      relationship_type: string; weight: number;
+    }>;
+
+    // Generate Mermaid markdown
+    const direction = input.layout === 'flowchart' ? 'TD' : 'LR';
+    const lines: string[] = [`graph ${direction}`];
+
+    // Sanitize text for Mermaid (escape quotes and special chars)
+    const sanitizeMermaid = (text: string): string =>
+      text.replace(/"/g, "'").replace(/[[\]{}()<>|#&]/g, ' ').trim();
+
+    // Node shape by entity_type
+    const nodeShape = (entityType: string, label: string): string => {
+      const safe = sanitizeMermaid(label);
+      switch (entityType) {
+        case 'person': return `(["${safe}<br/>(person)"])`;
+        case 'organization': return `["${safe}<br/>(organization)"]`;
+        case 'date': return `(("${safe}<br/>(date)"))`;
+        case 'location': return `{{"${safe}<br/>(location)"}}`;
+        default: return `["${safe}<br/>(${sanitizeMermaid(entityType)})"]`;
+      }
+    };
+
+    // Build a short stable ID for each node (Mermaid needs short IDs)
+    const nodeIdMap = new Map<string, string>();
+    let nodeCounter = 0;
+    for (const node of nodes) {
+      const shortId = `n${nodeCounter++}`;
+      nodeIdMap.set(node.id, shortId);
+      lines.push(`  ${shortId}${nodeShape(node.entity_type, node.canonical_name)}`);
+    }
+
+    // Add edges
+    for (const edge of edges) {
+      const srcShort = nodeIdMap.get(edge.source_node_id);
+      const tgtShort = nodeIdMap.get(edge.target_node_id);
+      if (!srcShort || !tgtShort) continue;
+
+      if (input.include_edge_labels) {
+        const label = sanitizeMermaid(edge.relationship_type);
+        lines.push(`  ${srcShort} -->|${label}| ${tgtShort}`);
+      } else {
+        lines.push(`  ${srcShort} --> ${tgtShort}`);
+      }
+    }
+
+    const mermaid = lines.join('\n');
+
+    return formatResponse(successResult({
+      node_count: nodes.length,
+      edge_count: edges.length,
+      mermaid,
+    }));
+  } catch (error) {
+    return handleError(error);
+  }
+}
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // TOOL DEFINITIONS FOR MCP REGISTRATION
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -1718,5 +2518,25 @@ export const knowledgeGraphTools: Record<string, ToolDefinition> = {
     description: 'Search knowledge graph entities by semantic similarity. Requires embeddings generated via ocr_knowledge_graph_embed_entities.',
     inputSchema: EntitySearchSemanticInput.shape,
     handler: handleKnowledgeGraphSearchEntities,
+  },
+  'ocr_knowledge_graph_scan_contradictions': {
+    description: 'Proactively scan the entire knowledge graph for potential contradictions: conflicting relationships (same entity with multiple partners for exclusive relationship types), temporal conflicts (overlapping date ranges on conflicting edges), amount discrepancies (different amounts for same entity pair), and duplicate nodes (fuzzy name matching).',
+    inputSchema: ScanContradictionsInput.shape,
+    handler: handleKnowledgeGraphScanContradictions,
+  },
+  'ocr_knowledge_graph_entity_export': {
+    description: 'Export entity/node data in JSON or CSV format for cross-database matching. Includes canonical name, type, aliases, confidence, and optionally relationships.',
+    inputSchema: EntityExportInput.shape,
+    handler: handleKnowledgeGraphEntityExport,
+  },
+  'ocr_knowledge_graph_entity_import': {
+    description: 'Import entities from another database export and match against existing KG nodes using exact, FTS, and fuzzy matching. Supports dry_run mode to preview matches. When not dry_run, stores external_links in node metadata.',
+    inputSchema: EntityImportInput.shape,
+    handler: handleKnowledgeGraphEntityImport,
+  },
+  'ocr_knowledge_graph_visualize': {
+    description: 'Generate a Mermaid-format graph visualization of the knowledge graph. Can center on an entity name, show specific nodes, or show the most connected nodes. Nodes are shaped by entity type (person=rounded, org=rectangle, date=circle, location=hexagon).',
+    inputSchema: VisualizeInput.shape,
+    handler: handleKnowledgeGraphVisualize,
   },
 };
