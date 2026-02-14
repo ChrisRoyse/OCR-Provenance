@@ -207,6 +207,8 @@ export const ProcessPendingInput = z.object({
     .describe('Auto-build/update knowledge graph after entity extraction (requires auto_extract_entities=true)'),
   auto_extract_vlm_entities: z.boolean().default(false)
     .describe('Auto-extract entities from VLM image descriptions after VLM processing. Requires GEMINI_API_KEY.'),
+  auto_extract_from_extractions: z.boolean().default(false)
+    .describe('Auto-extract entities from structured extractions after processing'),
 });
 
 /**
@@ -263,6 +265,8 @@ export const SearchSemanticInput = z.object({
     .describe('Rescue borderline results (within 0.1 of threshold) if they contain entities matching query terms'),
   deduplicate_by_entity: z.boolean().default(false)
     .describe('Deduplicate results by primary entity (max 2 results per entity)'),
+  min_entity_confidence: z.number().min(0).max(1).optional()
+    .describe('Minimum entity confidence score (0-1) for including entities in results'),
 });
 
 /**
@@ -287,6 +291,8 @@ export const SearchInput = z.object({
     .describe('Re-rank results using Gemini AI for contextual relevance scoring'),
   deduplicate_by_entity: z.boolean().default(false)
     .describe('Deduplicate results by primary entity (max 2 results per entity)'),
+  min_entity_confidence: z.number().min(0).max(1).optional()
+    .describe('Minimum entity confidence score (0-1) for including entities in results'),
 });
 
 /**
@@ -314,6 +320,8 @@ export const SearchHybridInput = z.object({
     .describe('Entity boost factor: results containing entities matching query terms get score boost in RRF fusion'),
   deduplicate_by_entity: z.boolean().default(false)
     .describe('Deduplicate results by primary entity (max 2 results per entity)'),
+  min_entity_confidence: z.number().min(0).max(1).optional()
+    .describe('Minimum entity confidence score (0-1) for including entities in results'),
 });
 
 /**

@@ -59,6 +59,7 @@ import {
 import { incrementalBuildGraph } from '../services/knowledge-graph/incremental-builder.js';
 import { buildKnowledgeGraph } from '../services/knowledge-graph/graph-service.js';
 import { extractEntitiesFromVLM } from '../services/knowledge-graph/vlm-entity-extractor.js';
+import { mapExtractionEntitiesToDB } from '../services/knowledge-graph/extraction-entity-mapper.js';
 import {
   processSegmentsAndStoreEntities,
   MAX_CHARS_PER_CALL,
@@ -962,6 +963,7 @@ export async function handleProcessPending(
     };
     const entityResults: AutoEntityResult[] = [];
     const vlmEntityResults: Array<{ document_id: string; entities_created: number; descriptions_processed: number }> = [];
+    const extractionEntityResults: Array<{ document_id: string; entities_created: number; extractions_processed: number }> = [];
     const successfulDocIds: string[] = [];
 
     // Default images output directory
@@ -1299,6 +1301,58 @@ export async function handleProcessPending(
           }
         }
 
+        // Step 7b: Auto-extract entities from structured extractions if enabled
+        if (input.auto_extract_from_extractions && input.page_schema) {
+          try {
+            const conn = db.getConnection();
+            const extractionCount = (conn.prepare(
+              'SELECT COUNT(*) as cnt FROM extractions WHERE document_id = ?'
+            ).get(doc.id) as { cnt: number }).cnt;
+            if (extractionCount > 0) {
+              console.error(`[INFO] Auto-pipeline: extracting entities from ${extractionCount} structured extractions for ${doc.id}`);
+              const entityProvId = uuidv4();
+              const now = new Date().toISOString();
+              const entityHash = computeHash(JSON.stringify({ document_id: doc.id, source: 'extraction' }));
+              db.insertProvenance({
+                id: entityProvId,
+                type: ProvenanceType.ENTITY_EXTRACTION,
+                created_at: now,
+                processed_at: now,
+                source_file_created_at: null,
+                source_file_modified_at: null,
+                source_type: 'ENTITY_EXTRACTION',
+                source_path: doc.file_path,
+                source_id: doc.provenance_id,
+                root_document_id: doc.provenance_id,
+                location: null,
+                content_hash: entityHash,
+                input_hash: computeHash(doc.id),
+                file_hash: doc.file_hash,
+                processor: 'extraction-entity-mapper',
+                processor_version: '1.0.0',
+                processing_params: { source: 'extraction' },
+                processing_duration_ms: null,
+                processing_quality_score: null,
+                parent_id: doc.provenance_id,
+                parent_ids: JSON.stringify([doc.provenance_id]),
+                chain_depth: 2,
+                chain_path: JSON.stringify(['DOCUMENT', 'OCR_RESULT', 'ENTITY_EXTRACTION']),
+              });
+              const extractionResult = mapExtractionEntitiesToDB(conn, doc.id, entityProvId);
+              extractionEntityResults.push({
+                document_id: doc.id,
+                entities_created: extractionResult.entities_created,
+                extractions_processed: extractionResult.extractions_processed,
+              });
+              console.error(`[INFO] Auto-pipeline: created ${extractionResult.entities_created} entities from extractions for ${doc.id}`);
+            }
+          } catch (extError) {
+            const extMsg = extError instanceof Error ? extError.message : String(extError);
+            console.error(`[WARN] Extraction entity extraction failed for ${doc.id}: ${extMsg}`);
+            results.errors.push({ document_id: doc.id, error: `Extraction entity extraction failed: ${extMsg}` });
+          }
+        }
+
       } catch (error) {
         const errorMsg = error instanceof Error ? error.message : String(error);
         console.error(`[ERROR] Document ${doc.id} failed: ${errorMsg}`);
@@ -1311,7 +1365,8 @@ export async function handleProcessPending(
     // Step 8: Auto-build knowledge graph if enabled and no KG exists yet
     // Wrapped in try-catch: KG build failure must not crash the pipeline response.
     // Include documents with VLM entity extraction in KG build consideration.
-    const hasEntities = entityResults.length > 0 || vlmEntityResults.some(r => r.entities_created > 0);
+    const hasEntities = entityResults.length > 0 || vlmEntityResults.some(r => r.entities_created > 0)
+      || extractionEntityResults.some(r => r.entities_created > 0);
     let kgBuildResult: Record<string, unknown> | undefined;
     if (input.auto_build_kg && successfulDocIds.length > 0 && hasEntities) {
       try {
@@ -1378,6 +1433,15 @@ export async function handleProcessPending(
         total_entities_created: vlmEntityResults.reduce((sum, r) => sum + r.entities_created, 0),
         total_descriptions_processed: vlmEntityResults.reduce((sum, r) => sum + r.descriptions_processed, 0),
         per_document: vlmEntityResults,
+      };
+    }
+
+    if (input.auto_extract_from_extractions && extractionEntityResults.length > 0) {
+      response.extraction_entity_extraction = {
+        documents_extracted: extractionEntityResults.length,
+        total_entities_created: extractionEntityResults.reduce((sum, r) => sum + r.entities_created, 0),
+        total_extractions_processed: extractionEntityResults.reduce((sum, r) => sum + r.extractions_processed, 0),
+        per_document: extractionEntityResults,
       };
     }
 

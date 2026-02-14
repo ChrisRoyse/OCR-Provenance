@@ -14,9 +14,13 @@ import { v4 as uuidv4 } from 'uuid';
 import { formatResponse, handleError, type ToolDefinition } from './shared.js';
 import { validateInput } from '../utils/validation.js';
 import { requireDatabase } from '../server/state.js';
+import { successResult } from '../server/types.js';
 import { FormFillClient } from '../services/ocr/form-fill.js';
 import { ProvenanceType } from '../models/provenance.js';
 import { computeHash } from '../utils/hash.js';
+import {
+  listKnowledgeNodes,
+} from '../services/storage/database/knowledge-graph-operations.js';
 
 const FormFillInput = z.object({
   file_path: z.string().min(1).describe('Path to form file (PDF or image)'),
@@ -198,6 +202,130 @@ async function handleFormFillStatus(params: Record<string, unknown>) {
   }
 }
 
+const FormFillSuggestFieldsInput = z.object({
+  document_id: z.string().min(1).describe('Document ID to suggest field values from'),
+  field_names: z.array(z.string().min(1)).min(1)
+    .describe('Field names to find entity values for (e.g., ["patient_name", "date_of_birth", "address"])'),
+  entity_types: z.array(z.enum([
+    'person', 'organization', 'date', 'amount', 'case_number',
+    'location', 'statute', 'exhibit', 'medication', 'diagnosis', 'medical_device', 'other',
+  ])).optional().describe('Limit suggestions to specific entity types'),
+});
+
+function inferEntityTypeFromFieldName(fieldName: string): string | null {
+  const lower = fieldName.toLowerCase().replace(/[_-]/g, ' ');
+  if (/name|patient|client|attorney|doctor|nurse|physician|guardian/.test(lower)) return 'person';
+  if (/org|company|employer|hospital|clinic|facility|institution|firm/.test(lower)) return 'organization';
+  if (/date|dob|birth|effective|filed|admitted|discharged|signed/.test(lower)) return 'date';
+  if (/amount|total|fee|cost|price|balance|payment|charge/.test(lower)) return 'amount';
+  if (/case|docket|file|claim|number|mrn|id/.test(lower)) return 'case_number';
+  if (/address|city|state|zip|county|location|place/.test(lower)) return 'location';
+  if (/statute|law|code|regulation|section/.test(lower)) return 'statute';
+  if (/exhibit|attachment|appendix/.test(lower)) return 'exhibit';
+  if (/medication|drug|prescription|rx/.test(lower)) return 'medication';
+  if (/diagnosis|condition|icd|disease/.test(lower)) return 'diagnosis';
+  return null;
+}
+
+async function handleFormFillSuggestFields(params: Record<string, unknown>) {
+  try {
+    const input = validateInput(FormFillSuggestFieldsInput, params);
+    const { db } = requireDatabase();
+    const conn = db.getConnection();
+
+    const entities = conn.prepare(`
+      SELECT e.id, e.raw_text, e.entity_type, e.confidence, e.normalized_text,
+             COUNT(em.id) as mention_count
+      FROM entities e
+      LEFT JOIN entity_mentions em ON em.entity_id = e.id
+      WHERE e.document_id = ?
+      GROUP BY e.id
+      ORDER BY e.confidence DESC, mention_count DESC
+    `).all(input.document_id) as Array<{
+      id: string; raw_text: string; entity_type: string;
+      confidence: number; normalized_text: string; mention_count: number;
+    }>;
+
+    if (entities.length === 0) {
+      return formatResponse(successResult({
+        document_id: input.document_id,
+        suggestions: {},
+        message: 'No entities found for this document. Run ocr_entity_extract first.',
+      }));
+    }
+
+    let kgNodes: Array<{ canonical_name: string; entity_type: string; document_count: number; avg_confidence: number }> = [];
+    try {
+      kgNodes = listKnowledgeNodes(conn, {
+        document_filter: [input.document_id],
+        limit: 200,
+      }).map(n => ({
+        canonical_name: n.canonical_name,
+        entity_type: n.entity_type,
+        document_count: n.document_count,
+        avg_confidence: n.avg_confidence,
+      }));
+    } catch {
+      // KG may not exist yet
+    }
+
+    const suggestions: Record<string, Array<{
+      value: string; entity_type: string; confidence: number;
+      source: 'entity' | 'knowledge_graph';
+      mention_count?: number; document_count?: number;
+    }>> = {};
+
+    const entityTypeFilter = input.entity_types ? new Set<string>(input.entity_types) : null;
+
+    for (const fieldName of input.field_names) {
+      const inferredType = inferEntityTypeFromFieldName(fieldName);
+      const candidates: Array<{
+        value: string; entity_type: string; confidence: number;
+        source: 'entity' | 'knowledge_graph';
+        mention_count?: number; document_count?: number;
+      }> = [];
+
+      for (const entity of entities) {
+        if (entityTypeFilter && !entityTypeFilter.has(entity.entity_type)) continue;
+        if (inferredType && entity.entity_type !== inferredType) continue;
+        candidates.push({
+          value: entity.raw_text,
+          entity_type: entity.entity_type,
+          confidence: entity.confidence,
+          source: 'entity',
+          mention_count: entity.mention_count,
+        });
+      }
+
+      for (const node of kgNodes) {
+        if (entityTypeFilter && !entityTypeFilter.has(node.entity_type)) continue;
+        if (inferredType && node.entity_type !== inferredType) continue;
+        if (!candidates.some(c => c.value === node.canonical_name)) {
+          candidates.push({
+            value: node.canonical_name,
+            entity_type: node.entity_type,
+            confidence: node.avg_confidence,
+            source: 'knowledge_graph',
+            document_count: node.document_count,
+          });
+        }
+      }
+
+      candidates.sort((a, b) => b.confidence - a.confidence);
+      suggestions[fieldName] = candidates.slice(0, 5);
+    }
+
+    return formatResponse(successResult({
+      document_id: input.document_id,
+      total_entities: entities.length,
+      total_kg_nodes: kgNodes.length,
+      suggestions,
+    }));
+  } catch (error) {
+    return handleError(error);
+  }
+}
+
 export const formFillTools: Record<string, ToolDefinition> = {
   'ocr_form_fill': {
     description: 'Fill a PDF or image form using Datalab API. Provide field names and values, optionally save filled form to disk.',
@@ -208,5 +336,10 @@ export const formFillTools: Record<string, ToolDefinition> = {
     description: 'Get status and details of form fill operations',
     inputSchema: FormFillStatusInput.shape,
     handler: handleFormFillStatus,
+  },
+  'ocr_form_fill_suggest_fields': {
+    description: 'Suggest field values for form filling from extracted entities and knowledge graph. Maps field names to entity types and returns ranked suggestions.',
+    inputSchema: FormFillSuggestFieldsInput.shape,
+    handler: handleFormFillSuggestFields,
   },
 };

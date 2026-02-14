@@ -2,7 +2,7 @@
  * OCR Provenance MCP Server
  *
  * Entry point for the MCP server using stdio transport.
- * Exposes 89 OCR, search, provenance, clustering, and knowledge graph tools via JSON-RPC.
+ * Exposes 98 OCR, search, provenance, clustering, and knowledge graph tools via JSON-RPC.
  *
  * CRITICAL: NEVER use console.log() - stdout is reserved for JSON-RPC protocol.
  * Use console.error() for all logging.
@@ -39,6 +39,7 @@ import { entityAnalysisTools } from './tools/entity-analysis.js';
 import { comparisonTools } from './tools/comparison.js';
 import { clusteringTools } from './tools/clustering.js';
 import { knowledgeGraphTools } from './tools/knowledge-graph.js';
+import { questionAnswerTools } from './tools/question-answer.js';
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // SERVER INITIALIZATION
@@ -149,7 +150,7 @@ for (const [name, tool] of Object.entries(reportTools)) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// FORM FILL TOOLS (2) - Extracted to src/tools/form-fill.ts
+// FORM FILL TOOLS (3) - Extracted to src/tools/form-fill.ts
 // ═══════════════════════════════════════════════════════════════════════════════
 
 // Register form fill tools from extracted module
@@ -176,7 +177,7 @@ for (const [name, tool] of Object.entries(fileManagementTools)) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// ENTITY ANALYSIS TOOLS (7) - src/tools/entity-analysis.ts
+// ENTITY ANALYSIS TOOLS (8) - src/tools/entity-analysis.ts
 // ═══════════════════════════════════════════════════════════════════════════════
 
 // Register entity analysis tools from extracted module
@@ -203,11 +204,20 @@ for (const [name, tool] of Object.entries(clusteringTools)) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// KNOWLEDGE GRAPH TOOLS (12) - src/tools/knowledge-graph.ts
+// KNOWLEDGE GRAPH TOOLS (18) - src/tools/knowledge-graph.ts
 // ═══════════════════════════════════════════════════════════════════════════════
 
 // Register knowledge graph tools from extracted module
 for (const [name, tool] of Object.entries(knowledgeGraphTools)) {
+  server.tool(name, tool.description, tool.inputSchema as Record<string, unknown>, tool.handler);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// QUESTION ANSWER TOOLS (1) - src/tools/question-answer.ts
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// Register question answer tools from extracted module
+for (const [name, tool] of Object.entries(questionAnswerTools)) {
   server.tool(name, tool.description, tool.inputSchema as Record<string, unknown>, tool.handler);
 }
 
@@ -219,7 +229,7 @@ async function main() {
   const transport = new StdioServerTransport();
   await server.connect(transport);
   console.error('OCR Provenance MCP Server running on stdio');
-  console.error('Tools registered: 89');
+  console.error('Tools registered: 98');
 }
 
 main().catch((error) => {

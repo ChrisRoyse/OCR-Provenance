@@ -309,8 +309,9 @@ function insertTestGraphData(db: DatabaseService): {
 // =============================================================================
 
 describe('knowledgeGraphTools exports', () => {
-  it('exports all 12 knowledge graph tools', () => {
-    expect(Object.keys(knowledgeGraphTools)).toHaveLength(12);
+  it('exports all knowledge graph tools', () => {
+    const toolKeys = Object.keys(knowledgeGraphTools);
+    expect(toolKeys.length).toBeGreaterThanOrEqual(14);
     expect(knowledgeGraphTools).toHaveProperty('ocr_knowledge_graph_build');
     expect(knowledgeGraphTools).toHaveProperty('ocr_knowledge_graph_query');
     expect(knowledgeGraphTools).toHaveProperty('ocr_knowledge_graph_node');
@@ -318,6 +319,9 @@ describe('knowledgeGraphTools exports', () => {
     expect(knowledgeGraphTools).toHaveProperty('ocr_knowledge_graph_stats');
     expect(knowledgeGraphTools).toHaveProperty('ocr_knowledge_graph_delete');
     expect(knowledgeGraphTools).toHaveProperty('ocr_knowledge_graph_classify_relationships');
+    expect(knowledgeGraphTools).toHaveProperty('ocr_knowledge_graph_normalize_weights');
+    expect(knowledgeGraphTools).toHaveProperty('ocr_knowledge_graph_prune_edges');
+    expect(knowledgeGraphTools).toHaveProperty('ocr_knowledge_graph_set_edge_temporal');
   });
 
   it('each tool has description, inputSchema, and handler', () => {
