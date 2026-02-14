@@ -1,14 +1,11 @@
 /**
- * Migration v15 to v16 Tests
+ * Migration v20 to v21 Tests
  *
- * Tests the v15->v16 migration which adds:
- * - KNOWLEDGE_GRAPH to provenance type and source_type CHECK constraints
- * - knowledge_nodes table (12 columns)
- * - knowledge_edges table (10 columns)
- * - node_entity_links table (6 columns)
- * - 8 new indexes: idx_kn_entity_type, idx_kn_normalized_name, idx_kn_document_count,
- *   idx_ke_source_node, idx_ke_target_node, idx_ke_relationship_type,
- *   idx_nel_node_id, idx_nel_document_id
+ * Tests the v20->v21 migration which:
+ * - Drops and recreates entity_embeddings table with correct schema:
+ *   node_id, original_text, original_text_length, entity_type, document_count, model_name
+ *   (v20 table had entity_id, embedding_model, dimensions which didn't match embed_entities code)
+ * - Drops and recreates vec_entity_embeddings with entity_embedding_id PK (was 'id')
  *
  * Uses REAL databases (better-sqlite3 temp files), NO mocks.
  */
@@ -24,6 +21,7 @@ import {
   getIndexNames,
   getTableNames,
   getTableColumns,
+  virtualTableExists,
   insertTestProvenance,
   insertTestDocument,
 } from './helpers.js';
@@ -31,12 +29,12 @@ import { migrateToLatest } from '../../../src/services/storage/migrations/operat
 
 const sqliteVecAvailable = isSqliteVecAvailable();
 
-describe('Migration v15 to v16 (Knowledge Graph)', () => {
+describe('Migration v20 to v21 (Entity Embeddings Schema Fix)', () => {
   let tmpDir: string;
   let db: Database.Database;
 
   beforeEach(() => {
-    tmpDir = createTestDir('ocr-mig-v16');
+    tmpDir = createTestDir('ocr-mig-v21');
     const result = createTestDb(tmpDir);
     db = result.db;
   });
@@ -47,10 +45,12 @@ describe('Migration v15 to v16 (Knowledge Graph)', () => {
   });
 
   /**
-   * Create a minimal but valid v15 schema.
-   * v15 = v14 + clusters + document_clusters + CLUSTERING in provenance CHECK.
+   * Create a minimal but valid v20 schema.
+   * v20 = v19 + entity_embeddings (v20 placeholder schema with entity_id, embedding_model, dimensions)
+   *      + vec_entity_embeddings (with 'id' PK instead of 'entity_embedding_id')
+   *      + temporal edge columns + node scoring columns + chunks.ocr_quality_score
    */
-  function createV15Schema(): void {
+  function createV20Schema(): void {
     // eslint-disable-next-line @typescript-eslint/no-require-imports
     const sqliteVec = require('sqlite-vec');
     sqliteVec.load(db);
@@ -66,19 +66,19 @@ describe('Migration v15 to v16 (Knowledge Graph)', () => {
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL
       );
-      INSERT INTO schema_version VALUES (1, 15, datetime('now'), datetime('now'));
+      INSERT INTO schema_version VALUES (1, 20, datetime('now'), datetime('now'));
     `);
 
-    // Provenance (v15 CHECK constraints: includes CLUSTERING but NOT KNOWLEDGE_GRAPH)
+    // Provenance
     db.exec(`
       CREATE TABLE provenance (
         id TEXT PRIMARY KEY,
-        type TEXT NOT NULL CHECK (type IN ('DOCUMENT', 'OCR_RESULT', 'CHUNK', 'IMAGE', 'VLM_DESCRIPTION', 'EMBEDDING', 'EXTRACTION', 'FORM_FILL', 'ENTITY_EXTRACTION', 'COMPARISON', 'CLUSTERING')),
+        type TEXT NOT NULL CHECK (type IN ('DOCUMENT', 'OCR_RESULT', 'CHUNK', 'IMAGE', 'VLM_DESCRIPTION', 'EMBEDDING', 'EXTRACTION', 'FORM_FILL', 'ENTITY_EXTRACTION', 'COMPARISON', 'CLUSTERING', 'KNOWLEDGE_GRAPH')),
         created_at TEXT NOT NULL,
         processed_at TEXT NOT NULL,
         source_file_created_at TEXT,
         source_file_modified_at TEXT,
-        source_type TEXT NOT NULL CHECK (source_type IN ('FILE', 'OCR', 'CHUNKING', 'IMAGE_EXTRACTION', 'VLM', 'VLM_DEDUP', 'EMBEDDING', 'EXTRACTION', 'FORM_FILL', 'ENTITY_EXTRACTION', 'COMPARISON', 'CLUSTERING')),
+        source_type TEXT NOT NULL CHECK (source_type IN ('FILE', 'OCR', 'CHUNKING', 'IMAGE_EXTRACTION', 'VLM', 'VLM_DEDUP', 'EMBEDDING', 'EXTRACTION', 'FORM_FILL', 'ENTITY_EXTRACTION', 'COMPARISON', 'CLUSTERING', 'KNOWLEDGE_GRAPH')),
         source_path TEXT,
         source_id TEXT,
         root_document_id TEXT NOT NULL,
@@ -164,7 +164,7 @@ describe('Migration v15 to v16 (Knowledge Graph)', () => {
       );
     `);
 
-    // Chunks
+    // Chunks (v20: has ocr_quality_score)
     db.exec(`
       CREATE TABLE chunks (
         id TEXT PRIMARY KEY,
@@ -183,6 +183,7 @@ describe('Migration v15 to v16 (Knowledge Graph)', () => {
         created_at TEXT NOT NULL,
         embedding_status TEXT NOT NULL CHECK (embedding_status IN ('pending', 'complete', 'failed')),
         embedded_at TEXT,
+        ocr_quality_score REAL,
         FOREIGN KEY (document_id) REFERENCES documents(id),
         FOREIGN KEY (ocr_result_id) REFERENCES ocr_results(id),
         FOREIGN KEY (provenance_id) REFERENCES provenance(id)
@@ -288,12 +289,12 @@ describe('Migration v15 to v16 (Knowledge Graph)', () => {
       );
     `);
 
-    // Entities
+    // Entities (v18+)
     db.exec(`
       CREATE TABLE entities (
         id TEXT PRIMARY KEY NOT NULL,
         document_id TEXT NOT NULL REFERENCES documents(id),
-        entity_type TEXT NOT NULL CHECK (entity_type IN ('person', 'organization', 'date', 'amount', 'case_number', 'location', 'statute', 'exhibit', 'other')),
+        entity_type TEXT NOT NULL CHECK (entity_type IN ('person', 'organization', 'date', 'amount', 'case_number', 'location', 'statute', 'exhibit', 'medication', 'diagnosis', 'medical_device', 'other')),
         raw_text TEXT NOT NULL,
         normalized_text TEXT NOT NULL,
         confidence REAL NOT NULL DEFAULT 0.0,
@@ -336,7 +337,7 @@ describe('Migration v15 to v16 (Knowledge Graph)', () => {
       );
     `);
 
-    // Clusters (v15)
+    // Clusters
     db.exec(`
       CREATE TABLE clusters (
         id TEXT PRIMARY KEY NOT NULL,
@@ -359,7 +360,7 @@ describe('Migration v15 to v16 (Knowledge Graph)', () => {
       );
     `);
 
-    // Document clusters (v15)
+    // Document clusters
     db.exec(`
       CREATE TABLE document_clusters (
         id TEXT PRIMARY KEY NOT NULL,
@@ -374,15 +375,120 @@ describe('Migration v15 to v16 (Knowledge Graph)', () => {
       );
     `);
 
+    // Knowledge nodes (v20: has importance_score, resolution_type)
+    db.exec(`
+      CREATE TABLE knowledge_nodes (
+        id TEXT PRIMARY KEY,
+        entity_type TEXT NOT NULL CHECK (entity_type IN ('person', 'organization', 'date', 'amount', 'case_number', 'location', 'statute', 'exhibit', 'medication', 'diagnosis', 'medical_device', 'other')),
+        canonical_name TEXT NOT NULL,
+        normalized_name TEXT NOT NULL,
+        aliases TEXT,
+        document_count INTEGER NOT NULL DEFAULT 1,
+        mention_count INTEGER NOT NULL DEFAULT 0,
+        edge_count INTEGER NOT NULL DEFAULT 0,
+        avg_confidence REAL NOT NULL DEFAULT 0.0,
+        metadata TEXT,
+        provenance_id TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        importance_score REAL,
+        resolution_type TEXT
+      );
+    `);
+
+    // Knowledge edges (v20: has temporal columns)
+    db.exec(`
+      CREATE TABLE knowledge_edges (
+        id TEXT PRIMARY KEY,
+        source_node_id TEXT NOT NULL,
+        target_node_id TEXT NOT NULL,
+        relationship_type TEXT NOT NULL CHECK (relationship_type IN (
+          'co_mentioned', 'co_located', 'works_at', 'represents',
+          'located_in', 'filed_in', 'cites', 'references',
+          'party_to', 'related_to', 'precedes', 'occurred_at'
+        )),
+        weight REAL NOT NULL DEFAULT 1.0,
+        evidence_count INTEGER NOT NULL DEFAULT 1,
+        document_ids TEXT NOT NULL,
+        metadata TEXT,
+        provenance_id TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        valid_from TEXT,
+        valid_until TEXT,
+        normalized_weight REAL DEFAULT 0,
+        contradiction_count INTEGER DEFAULT 0,
+        FOREIGN KEY (source_node_id) REFERENCES knowledge_nodes(id),
+        FOREIGN KEY (target_node_id) REFERENCES knowledge_nodes(id),
+        FOREIGN KEY (provenance_id) REFERENCES provenance(id)
+      );
+    `);
+
+    // Node entity links
+    db.exec(`
+      CREATE TABLE node_entity_links (
+        id TEXT PRIMARY KEY,
+        node_id TEXT NOT NULL,
+        entity_id TEXT NOT NULL UNIQUE,
+        document_id TEXT NOT NULL,
+        similarity_score REAL NOT NULL DEFAULT 1.0,
+        resolution_method TEXT,
+        created_at TEXT NOT NULL,
+        FOREIGN KEY (node_id) REFERENCES knowledge_nodes(id),
+        FOREIGN KEY (entity_id) REFERENCES entities(id),
+        FOREIGN KEY (document_id) REFERENCES documents(id)
+      );
+    `);
+
+    // Entity extraction segments (v19)
+    db.exec(`
+      CREATE TABLE entity_extraction_segments (
+        id TEXT PRIMARY KEY,
+        document_id TEXT NOT NULL REFERENCES documents(id),
+        ocr_result_id TEXT NOT NULL REFERENCES ocr_results(id),
+        segment_index INTEGER NOT NULL,
+        text TEXT NOT NULL,
+        character_start INTEGER NOT NULL,
+        character_end INTEGER NOT NULL,
+        text_length INTEGER NOT NULL,
+        overlap_previous INTEGER NOT NULL DEFAULT 0,
+        overlap_next INTEGER NOT NULL DEFAULT 0,
+        extraction_status TEXT NOT NULL DEFAULT 'pending'
+          CHECK (extraction_status IN ('pending', 'processing', 'complete', 'failed')),
+        entity_count INTEGER DEFAULT 0,
+        extracted_at TEXT,
+        error_message TEXT,
+        provenance_id TEXT REFERENCES provenance(id),
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        UNIQUE(document_id, segment_index)
+      );
+    `);
+
+    // entity_embeddings (v20 PLACEHOLDER schema - wrong columns that v21 will fix)
+    db.exec(`
+      CREATE TABLE entity_embeddings (
+        id TEXT PRIMARY KEY,
+        entity_id TEXT NOT NULL REFERENCES entities(id),
+        node_id TEXT REFERENCES knowledge_nodes(id),
+        embedding_model TEXT NOT NULL,
+        dimensions INTEGER NOT NULL,
+        content_hash TEXT NOT NULL,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        provenance_id TEXT REFERENCES provenance(id)
+      );
+    `);
+
     // FTS tables
     db.exec(`CREATE VIRTUAL TABLE chunks_fts USING fts5(text, content='chunks', content_rowid='rowid', tokenize='porter unicode61');`);
-    db.exec(`CREATE TABLE fts_index_metadata (id INTEGER PRIMARY KEY, last_rebuild_at TEXT, chunks_indexed INTEGER NOT NULL DEFAULT 0, tokenizer TEXT NOT NULL DEFAULT 'porter unicode61', schema_version INTEGER NOT NULL DEFAULT 15, content_hash TEXT);`);
-    db.exec(`INSERT INTO fts_index_metadata VALUES (1, NULL, 0, 'porter unicode61', 15, NULL);`);
-    db.exec(`INSERT INTO fts_index_metadata VALUES (2, NULL, 0, 'porter unicode61', 15, NULL);`);
-    db.exec(`INSERT INTO fts_index_metadata VALUES (3, NULL, 0, 'porter unicode61', 15, NULL);`);
+    db.exec(`CREATE TABLE fts_index_metadata (id INTEGER PRIMARY KEY, last_rebuild_at TEXT, chunks_indexed INTEGER NOT NULL DEFAULT 0, tokenizer TEXT NOT NULL DEFAULT 'porter unicode61', schema_version INTEGER NOT NULL DEFAULT 20, content_hash TEXT);`);
+    db.exec(`INSERT INTO fts_index_metadata VALUES (1, NULL, 0, 'porter unicode61', 20, NULL);`);
+    db.exec(`INSERT INTO fts_index_metadata VALUES (2, NULL, 0, 'porter unicode61', 20, NULL);`);
+    db.exec(`INSERT INTO fts_index_metadata VALUES (3, NULL, 0, 'porter unicode61', 20, NULL);`);
     db.exec(`CREATE VIRTUAL TABLE vlm_fts USING fts5(original_text, content='embeddings', content_rowid='rowid', tokenize='porter unicode61');`);
     db.exec(`CREATE VIRTUAL TABLE extractions_fts USING fts5(extraction_json, content='extractions', content_rowid='rowid', tokenize='porter unicode61');`);
     db.exec(`CREATE VIRTUAL TABLE IF NOT EXISTS vec_embeddings USING vec0(embedding_id TEXT PRIMARY KEY, vector FLOAT[768]);`);
+    db.exec(`CREATE VIRTUAL TABLE knowledge_nodes_fts USING fts5(canonical_name, content='knowledge_nodes', content_rowid='rowid');`);
+    // v20 vec_entity_embeddings with WRONG PK name ('id' instead of 'entity_embedding_id')
+    db.exec(`CREATE VIRTUAL TABLE vec_entity_embeddings USING vec0(id TEXT PRIMARY KEY, embedding float[768] distance_metric=cosine);`);
 
     // Triggers
     db.exec(`CREATE TRIGGER chunks_fts_ai AFTER INSERT ON chunks BEGIN INSERT INTO chunks_fts(rowid, text) VALUES (new.rowid, new.text); END;`);
@@ -394,8 +500,11 @@ describe('Migration v15 to v16 (Knowledge Graph)', () => {
     db.exec(`CREATE TRIGGER extractions_fts_ai AFTER INSERT ON extractions BEGIN INSERT INTO extractions_fts(rowid, extraction_json) VALUES (new.rowid, new.extraction_json); END;`);
     db.exec(`CREATE TRIGGER extractions_fts_ad AFTER DELETE ON extractions BEGIN INSERT INTO extractions_fts(extractions_fts, rowid, extraction_json) VALUES('delete', old.rowid, old.extraction_json); END;`);
     db.exec(`CREATE TRIGGER extractions_fts_au AFTER UPDATE OF extraction_json ON extractions BEGIN INSERT INTO extractions_fts(extractions_fts, rowid, extraction_json) VALUES('delete', old.rowid, old.extraction_json); INSERT INTO extractions_fts(rowid, extraction_json) VALUES (new.rowid, new.extraction_json); END;`);
+    db.exec(`CREATE TRIGGER knowledge_nodes_fts_insert AFTER INSERT ON knowledge_nodes BEGIN INSERT INTO knowledge_nodes_fts(rowid, canonical_name) VALUES (new.rowid, new.canonical_name); END;`);
+    db.exec(`CREATE TRIGGER knowledge_nodes_fts_delete AFTER DELETE ON knowledge_nodes BEGIN INSERT INTO knowledge_nodes_fts(knowledge_nodes_fts, rowid, canonical_name) VALUES ('delete', old.rowid, old.canonical_name); END;`);
+    db.exec(`CREATE TRIGGER knowledge_nodes_fts_update AFTER UPDATE ON knowledge_nodes BEGIN INSERT INTO knowledge_nodes_fts(knowledge_nodes_fts, rowid, canonical_name) VALUES ('delete', old.rowid, old.canonical_name); INSERT INTO knowledge_nodes_fts(rowid, canonical_name) VALUES (new.rowid, new.canonical_name); END;`);
 
-    // All 43 indexes from v15
+    // Indexes
     db.exec('CREATE INDEX idx_documents_file_path ON documents(file_path);');
     db.exec('CREATE INDEX idx_documents_file_hash ON documents(file_hash);');
     db.exec('CREATE INDEX idx_documents_status ON documents(status);');
@@ -439,141 +548,111 @@ describe('Migration v15 to v16 (Knowledge Graph)', () => {
     db.exec('CREATE INDEX idx_doc_clusters_document ON document_clusters(document_id);');
     db.exec('CREATE INDEX idx_doc_clusters_cluster ON document_clusters(cluster_id);');
     db.exec('CREATE INDEX idx_doc_clusters_run ON document_clusters(run_id);');
+    db.exec('CREATE INDEX idx_kn_entity_type ON knowledge_nodes(entity_type);');
+    db.exec('CREATE INDEX idx_kn_normalized_name ON knowledge_nodes(normalized_name);');
+    db.exec('CREATE INDEX idx_kn_document_count ON knowledge_nodes(document_count);');
+    db.exec('CREATE INDEX idx_ke_source_node ON knowledge_edges(source_node_id);');
+    db.exec('CREATE INDEX idx_ke_target_node ON knowledge_edges(target_node_id);');
+    db.exec('CREATE INDEX idx_ke_relationship_type ON knowledge_edges(relationship_type);');
+    db.exec('CREATE INDEX idx_nel_node_id ON node_entity_links(node_id);');
+    db.exec('CREATE INDEX idx_nel_document_id ON node_entity_links(document_id);');
+    db.exec('CREATE INDEX idx_knowledge_nodes_canonical_lower ON knowledge_nodes(canonical_name COLLATE NOCASE);');
+    db.exec('CREATE INDEX idx_entity_mentions_chunk_id ON entity_mentions(chunk_id);');
+    db.exec('CREATE INDEX idx_segments_document ON entity_extraction_segments(document_id);');
+    db.exec('CREATE INDEX idx_segments_status ON entity_extraction_segments(extraction_status);');
+    db.exec('CREATE INDEX idx_segments_doc_status ON entity_extraction_segments(document_id, extraction_status);');
+    // v20 entity_embeddings indexes
+    db.exec('CREATE INDEX idx_entity_embeddings_entity_id ON entity_embeddings(entity_id);');
+    db.exec('CREATE INDEX idx_entity_embeddings_node_id ON entity_embeddings(node_id);');
+    db.exec('CREATE INDEX idx_entity_embeddings_content_hash ON entity_embeddings(content_hash);');
   }
 
-  it.skipIf(!sqliteVecAvailable)('creates knowledge_nodes table from v15 schema', () => {
-    createV15Schema();
-    migrateToLatest(db);
+  it.skipIf(!sqliteVecAvailable)('entity_embeddings has v20 wrong columns before migration', () => {
+    createV20Schema();
 
-    const tables = getTableNames(db);
-    expect(tables).toContain('knowledge_nodes');
+    // Verify v20 placeholder schema has wrong columns
+    const columns = getTableColumns(db, 'entity_embeddings');
+    expect(columns).toContain('entity_id');
+    expect(columns).toContain('embedding_model');
+    expect(columns).toContain('dimensions');
+    // Should NOT have v21 columns yet
+    expect(columns).not.toContain('original_text');
+    expect(columns).not.toContain('entity_type');
   });
 
-  it.skipIf(!sqliteVecAvailable)('creates knowledge_edges table from v15 schema', () => {
-    createV15Schema();
+  it.skipIf(!sqliteVecAvailable)('entity_embeddings rebuilt with correct schema after migration', () => {
+    createV20Schema();
     migrateToLatest(db);
 
-    const tables = getTableNames(db);
-    expect(tables).toContain('knowledge_edges');
-  });
-
-  it.skipIf(!sqliteVecAvailable)('creates node_entity_links table from v15 schema', () => {
-    createV15Schema();
-    migrateToLatest(db);
-
-    const tables = getTableNames(db);
-    expect(tables).toContain('node_entity_links');
-  });
-
-  it.skipIf(!sqliteVecAvailable)('knowledge_nodes table has correct columns', () => {
-    createV15Schema();
-    migrateToLatest(db);
-
-    const columns = getTableColumns(db, 'knowledge_nodes');
-    expect(columns).toContain('id');
-    expect(columns).toContain('entity_type');
-    expect(columns).toContain('canonical_name');
-    expect(columns).toContain('normalized_name');
-    expect(columns).toContain('aliases');
-    expect(columns).toContain('document_count');
-    expect(columns).toContain('mention_count');
-    expect(columns).toContain('avg_confidence');
-    expect(columns).toContain('metadata');
-    expect(columns).toContain('provenance_id');
-    expect(columns).toContain('created_at');
-    expect(columns).toContain('updated_at');
-    expect(columns).toContain('importance_score');
-    expect(columns).toContain('resolution_type');
-    expect(columns.length).toBe(15);
-  });
-
-  it.skipIf(!sqliteVecAvailable)('knowledge_edges table has correct columns', () => {
-    createV15Schema();
-    migrateToLatest(db);
-
-    const columns = getTableColumns(db, 'knowledge_edges');
-    expect(columns).toContain('id');
-    expect(columns).toContain('source_node_id');
-    expect(columns).toContain('target_node_id');
-    expect(columns).toContain('relationship_type');
-    expect(columns).toContain('weight');
-    expect(columns).toContain('evidence_count');
-    expect(columns).toContain('document_ids');
-    expect(columns).toContain('metadata');
-    expect(columns).toContain('provenance_id');
-    expect(columns).toContain('created_at');
-    expect(columns).toContain('valid_from');
-    expect(columns).toContain('valid_until');
-    expect(columns).toContain('normalized_weight');
-    expect(columns).toContain('contradiction_count');
-    expect(columns.length).toBe(14);
-  });
-
-  it.skipIf(!sqliteVecAvailable)('node_entity_links table has correct columns', () => {
-    createV15Schema();
-    migrateToLatest(db);
-
-    const columns = getTableColumns(db, 'node_entity_links');
+    const columns = getTableColumns(db, 'entity_embeddings');
+    // v21 correct columns
     expect(columns).toContain('id');
     expect(columns).toContain('node_id');
-    expect(columns).toContain('entity_id');
-    expect(columns).toContain('document_id');
-    expect(columns).toContain('similarity_score');
+    expect(columns).toContain('original_text');
+    expect(columns).toContain('original_text_length');
+    expect(columns).toContain('entity_type');
+    expect(columns).toContain('document_count');
+    expect(columns).toContain('model_name');
+    expect(columns).toContain('content_hash');
     expect(columns).toContain('created_at');
-    expect(columns.length).toBe(7);
+    expect(columns).toContain('provenance_id');
+    // v20 wrong columns should be gone
+    expect(columns).not.toContain('entity_id');
+    expect(columns).not.toContain('embedding_model');
+    expect(columns).not.toContain('dimensions');
   });
 
-  it.skipIf(!sqliteVecAvailable)('KNOWLEDGE_GRAPH type accepted in provenance after migration', () => {
-    createV15Schema();
+  it.skipIf(!sqliteVecAvailable)('vec_entity_embeddings virtual table exists after migration', () => {
+    createV20Schema();
     migrateToLatest(db);
 
-    const now = new Date().toISOString();
-
-    expect(() => {
-      db.prepare(`
-        INSERT INTO provenance (id, type, created_at, processed_at, source_type, root_document_id,
-          content_hash, processor, processor_version, processing_params, parent_ids, chain_depth)
-        VALUES ('prov-kg-1', 'KNOWLEDGE_GRAPH', ?, ?, 'KNOWLEDGE_GRAPH', 'prov-kg-1',
-          'sha256:kg1', 'knowledge-graph-builder', '1.0.0', '{}', '[]', 2)
-      `).run(now, now);
-    }).not.toThrow();
-
-    const row = db.prepare('SELECT type, source_type FROM provenance WHERE id = ?').get('prov-kg-1') as { type: string; source_type: string };
-    expect(row.type).toBe('KNOWLEDGE_GRAPH');
-    expect(row.source_type).toBe('KNOWLEDGE_GRAPH');
+    expect(virtualTableExists(db, 'vec_entity_embeddings')).toBe(true);
   });
 
-  it.skipIf(!sqliteVecAvailable)('KNOWLEDGE_GRAPH type NOT accepted before migration (v15 CHECK)', () => {
-    createV15Schema();
-
-    const now = new Date().toISOString();
-    expect(() => {
-      db.prepare(`
-        INSERT INTO provenance (id, type, created_at, processed_at, source_type, root_document_id,
-          content_hash, processor, processor_version, processing_params, parent_ids, chain_depth)
-        VALUES ('prov-bad-1', 'KNOWLEDGE_GRAPH', ?, ?, 'KNOWLEDGE_GRAPH', 'prov-bad-1',
-          'sha256:badkg', 'test', '1.0', '{}', '[]', 2)
-      `).run(now, now);
-    }).toThrow();
-  });
-
-  it.skipIf(!sqliteVecAvailable)('all 8 knowledge graph indexes exist', () => {
-    createV15Schema();
+  it.skipIf(!sqliteVecAvailable)('entity_embeddings indexes recreated after migration', () => {
+    createV20Schema();
     migrateToLatest(db);
 
     const indexes = getIndexNames(db);
-    expect(indexes).toContain('idx_kn_entity_type');
-    expect(indexes).toContain('idx_kn_normalized_name');
-    expect(indexes).toContain('idx_kn_document_count');
-    expect(indexes).toContain('idx_ke_source_node');
-    expect(indexes).toContain('idx_ke_target_node');
-    expect(indexes).toContain('idx_ke_relationship_type');
-    expect(indexes).toContain('idx_nel_node_id');
-    expect(indexes).toContain('idx_nel_document_id');
+    expect(indexes).toContain('idx_entity_embeddings_node_id');
+    expect(indexes).toContain('idx_entity_embeddings_content_hash');
+    // v20 entity_id index should be gone (table was dropped and recreated)
+    expect(indexes).not.toContain('idx_entity_embeddings_entity_id');
   });
 
-  it.skipIf(!sqliteVecAvailable)('schema version is 16 after migration', () => {
-    createV15Schema();
+  it.skipIf(!sqliteVecAvailable)('can insert entity embedding with v21 schema after migration', () => {
+    createV20Schema();
+    migrateToLatest(db);
+
+    const now = new Date().toISOString();
+
+    // Create a knowledge node to reference
+    db.prepare(`
+      INSERT INTO knowledge_nodes (id, entity_type, canonical_name, normalized_name,
+        document_count, mention_count, avg_confidence, provenance_id, created_at, updated_at)
+      VALUES ('kn-emb', 'person', 'John Smith', 'john smith', 2, 5, 0.9, 'prov-placeholder', ?, ?)
+    `).run(now, now);
+
+    expect(() => {
+      db.prepare(`
+        INSERT INTO entity_embeddings (id, node_id, original_text, original_text_length,
+          entity_type, document_count, model_name, content_hash, created_at)
+        VALUES ('ee-1', 'kn-emb', 'John Smith', 10, 'person', 2,
+          'nomic-embed-text-v1.5', 'sha256:embhash', ?)
+      `).run(now);
+    }).not.toThrow();
+
+    const emb = db.prepare('SELECT * FROM entity_embeddings WHERE id = ?').get('ee-1') as Record<string, unknown>;
+    expect(emb).toBeDefined();
+    expect(emb.node_id).toBe('kn-emb');
+    expect(emb.original_text).toBe('John Smith');
+    expect(emb.entity_type).toBe('person');
+    expect(emb.document_count).toBe(2);
+    expect(emb.model_name).toBe('nomic-embed-text-v1.5');
+  });
+
+  it.skipIf(!sqliteVecAvailable)('schema version is latest after migration', () => {
+    createV20Schema();
     migrateToLatest(db);
 
     const version = (db.prepare('SELECT version FROM schema_version').get() as { version: number }).version;
@@ -581,236 +660,71 @@ describe('Migration v15 to v16 (Knowledge Graph)', () => {
   });
 
   it.skipIf(!sqliteVecAvailable)('FK integrity clean after migration', () => {
-    createV15Schema();
+    createV20Schema();
     migrateToLatest(db);
 
     const violations = db.pragma('foreign_key_check') as unknown[];
     expect(violations.length).toBe(0);
   });
 
-  it.skipIf(!sqliteVecAvailable)('preserves existing provenance rows during migration', () => {
-    createV15Schema();
+  it.skipIf(!sqliteVecAvailable)('existing data survives migration', () => {
+    createV20Schema();
 
     const now = new Date().toISOString();
-    db.prepare(`
-      INSERT INTO provenance (id, type, created_at, processed_at, source_type, root_document_id,
-        content_hash, processor, processor_version, processing_params, parent_ids, chain_depth)
-      VALUES ('prov-pre-1', 'DOCUMENT', ?, ?, 'FILE', 'prov-pre-1',
-        'sha256:existing1', 'test', '1.0', '{}', '[]', 0)
-    `).run(now, now);
-    db.prepare(`
-      INSERT INTO provenance (id, type, created_at, processed_at, source_type, root_document_id,
-        content_hash, processor, processor_version, processing_params, parent_ids, chain_depth)
-      VALUES ('prov-pre-2', 'CLUSTERING', ?, ?, 'CLUSTERING', 'prov-pre-1',
-        'sha256:existing2', 'clustering', '1.0', '{}', '["prov-pre-1"]', 2)
-    `).run(now, now);
+    insertTestProvenance(db, 'prov-surv21', 'DOCUMENT', 'prov-surv21');
+    insertTestDocument(db, 'doc-surv21', 'prov-surv21', 'complete');
 
-    const countBefore = (db.prepare('SELECT COUNT(*) as cnt FROM provenance').get() as { cnt: number }).cnt;
+    // Insert a knowledge node
+    db.prepare(`
+      INSERT INTO knowledge_nodes (id, entity_type, canonical_name, normalized_name,
+        document_count, mention_count, avg_confidence, provenance_id, created_at, updated_at,
+        importance_score, resolution_type)
+      VALUES ('kn-surv21', 'organization', 'Test Corp', 'test corp', 1, 2, 0.88,
+        'prov-placeholder', ?, ?, 0.75, 'exact')
+    `).run(now, now);
 
     migrateToLatest(db);
 
-    const countAfter = (db.prepare('SELECT COUNT(*) as cnt FROM provenance').get() as { cnt: number }).cnt;
-    expect(countAfter).toBe(countBefore);
+    const doc = db.prepare('SELECT * FROM documents WHERE id = ?').get('doc-surv21') as Record<string, unknown>;
+    expect(doc).toBeDefined();
+    expect(doc.status).toBe('complete');
 
-    const row1 = db.prepare('SELECT * FROM provenance WHERE id = ?').get('prov-pre-1') as { type: string; content_hash: string };
-    expect(row1).toBeDefined();
-    expect(row1.type).toBe('DOCUMENT');
-    expect(row1.content_hash).toBe('sha256:existing1');
-
-    const row2 = db.prepare('SELECT * FROM provenance WHERE id = ?').get('prov-pre-2') as { type: string; content_hash: string };
-    expect(row2).toBeDefined();
-    expect(row2.type).toBe('CLUSTERING');
+    const node = db.prepare('SELECT * FROM knowledge_nodes WHERE id = ?').get('kn-surv21') as Record<string, unknown>;
+    expect(node).toBeDefined();
+    expect(node.canonical_name).toBe('Test Corp');
+    expect(node.importance_score).toBe(0.75);
+    expect(node.resolution_type).toBe('exact');
   });
 
-  it.skipIf(!sqliteVecAvailable)('invalid provenance type rejected after migration', () => {
-    createV15Schema();
+  it.skipIf(!sqliteVecAvailable)('knowledge_nodes_fts has porter tokenizer after v22 migration', () => {
+    createV20Schema();
     migrateToLatest(db);
 
-    const now = new Date().toISOString();
-    expect(() => {
-      db.prepare(`
-        INSERT INTO provenance (id, type, created_at, processed_at, source_type, root_document_id,
-          content_hash, processor, processor_version, processing_params, parent_ids, chain_depth)
-        VALUES ('prov-invalid', 'INVALID_TYPE', ?, ?, 'FILE', 'prov-invalid',
-          'sha256:invalid', 'test', '1.0', '{}', '[]', 0)
-      `).run(now, now);
-    }).toThrow();
+    // After v22, the FTS table is recreated with porter unicode61 tokenizer
+    // We verify by checking the table exists and triggers use correct naming
+    const tables = getTableNames(db);
+    expect(tables).toContain('knowledge_nodes_fts');
+
+    const triggers = db.prepare(`
+      SELECT name FROM sqlite_master WHERE type = 'trigger' AND name LIKE 'knowledge_nodes_fts%'
+    `).all() as Array<{ name: string }>;
+    const triggerNames = triggers.map(t => t.name);
+    // v22 fixes trigger naming to _ai/_ad/_au
+    expect(triggerNames).toContain('knowledge_nodes_fts_ai');
+    expect(triggerNames).toContain('knowledge_nodes_fts_ad');
+    expect(triggerNames).toContain('knowledge_nodes_fts_au');
+    // Old naming should be gone
+    expect(triggerNames).not.toContain('knowledge_nodes_fts_insert');
+    expect(triggerNames).not.toContain('knowledge_nodes_fts_delete');
+    expect(triggerNames).not.toContain('knowledge_nodes_fts_update');
   });
 
   it.skipIf(!sqliteVecAvailable)('idempotent - running migration twice does not error', () => {
-    createV15Schema();
+    createV20Schema();
     migrateToLatest(db);
     expect(() => migrateToLatest(db)).not.toThrow();
 
     const version = (db.prepare('SELECT version FROM schema_version').get() as { version: number }).version;
     expect(version).toBe(22);
-  });
-
-  it.skipIf(!sqliteVecAvailable)('FK relationships work for knowledge_nodes', () => {
-    createV15Schema();
-    migrateToLatest(db);
-
-    const now = new Date().toISOString();
-
-    // Create provenance
-    db.prepare(`
-      INSERT INTO provenance (id, type, created_at, processed_at, source_type, root_document_id,
-        content_hash, processor, processor_version, processing_params, parent_ids, chain_depth)
-      VALUES ('prov-kn-fk', 'KNOWLEDGE_GRAPH', ?, ?, 'KNOWLEDGE_GRAPH', 'prov-kn-fk',
-        'sha256:knfk', 'test', '1.0.0', '{}', '[]', 2)
-    `).run(now, now);
-
-    // Insert node with valid FK
-    expect(() => {
-      db.prepare(`
-        INSERT INTO knowledge_nodes (id, entity_type, canonical_name, normalized_name,
-          document_count, mention_count, avg_confidence, provenance_id, created_at, updated_at)
-        VALUES ('kn-1', 'person', 'Test', 'test', 1, 1, 0.9, 'prov-kn-fk', ?, ?)
-      `).run(now, now);
-    }).not.toThrow();
-
-    // v18 migration recreates knowledge_nodes WITHOUT FK REFERENCES on provenance_id
-    // (knowledge_nodes provenance is intentionally detached), so invalid provenance_id
-    // no longer causes an FK violation.
-    db.pragma('foreign_keys = ON');
-    expect(() => {
-      db.prepare(`
-        INSERT INTO knowledge_nodes (id, entity_type, canonical_name, normalized_name,
-          document_count, mention_count, avg_confidence, provenance_id, created_at, updated_at)
-        VALUES ('kn-bad', 'person', 'Bad', 'bad', 1, 1, 0.9, 'nonexistent-prov', ?, ?)
-      `).run(now, now);
-    }).not.toThrow();
-  });
-
-  it.skipIf(!sqliteVecAvailable)('FK relationships work for knowledge_edges', () => {
-    createV15Schema();
-    migrateToLatest(db);
-
-    const now = new Date().toISOString();
-
-    // Create provenance and two nodes
-    db.prepare(`
-      INSERT INTO provenance (id, type, created_at, processed_at, source_type, root_document_id,
-        content_hash, processor, processor_version, processing_params, parent_ids, chain_depth)
-      VALUES ('prov-ke-fk', 'KNOWLEDGE_GRAPH', ?, ?, 'KNOWLEDGE_GRAPH', 'prov-ke-fk',
-        'sha256:kefk', 'test', '1.0.0', '{}', '[]', 2)
-    `).run(now, now);
-
-    db.prepare(`
-      INSERT INTO knowledge_nodes (id, entity_type, canonical_name, normalized_name,
-        document_count, mention_count, avg_confidence, provenance_id, created_at, updated_at)
-      VALUES ('kn-src', 'person', 'Source', 'source', 1, 1, 0.9, 'prov-ke-fk', ?, ?)
-    `).run(now, now);
-    db.prepare(`
-      INSERT INTO knowledge_nodes (id, entity_type, canonical_name, normalized_name,
-        document_count, mention_count, avg_confidence, provenance_id, created_at, updated_at)
-      VALUES ('kn-tgt', 'person', 'Target', 'target', 1, 1, 0.9, 'prov-ke-fk', ?, ?)
-    `).run(now, now);
-
-    // Insert edge with valid FKs
-    expect(() => {
-      db.prepare(`
-        INSERT INTO knowledge_edges (id, source_node_id, target_node_id, relationship_type,
-          weight, evidence_count, document_ids, provenance_id, created_at)
-        VALUES ('ke-1', 'kn-src', 'kn-tgt', 'co_mentioned', 1.0, 1, '["doc-1"]', 'prov-ke-fk', ?)
-      `).run(now);
-    }).not.toThrow();
-
-    // Insert edge with invalid source FK should fail
-    db.pragma('foreign_keys = ON');
-    expect(() => {
-      db.prepare(`
-        INSERT INTO knowledge_edges (id, source_node_id, target_node_id, relationship_type,
-          weight, evidence_count, document_ids, provenance_id, created_at)
-        VALUES ('ke-bad', 'nonexistent', 'kn-tgt', 'co_mentioned', 1.0, 1, '[]', 'prov-ke-fk', ?)
-      `).run(now);
-    }).toThrow();
-  });
-
-  it.skipIf(!sqliteVecAvailable)('can insert and query knowledge graph data after migration', () => {
-    createV15Schema();
-    migrateToLatest(db);
-
-    const now = new Date().toISOString();
-
-    // Create document + entity chain
-    insertTestProvenance(db, 'prov-doc-kg', 'DOCUMENT', 'prov-doc-kg');
-    insertTestDocument(db, 'doc-kg', 'prov-doc-kg', 'complete');
-
-    // Create KG provenance
-    db.prepare(`
-      INSERT INTO provenance (id, type, created_at, processed_at, source_type, root_document_id,
-        content_hash, processor, processor_version, processing_params, parent_ids, chain_depth)
-      VALUES ('prov-kg-data', 'KNOWLEDGE_GRAPH', ?, ?, 'KNOWLEDGE_GRAPH', 'prov-doc-kg',
-        'sha256:kgdata', 'knowledge-graph-builder', '1.0.0', '{}', '["prov-doc-kg"]', 2)
-    `).run(now, now);
-
-    // Insert knowledge node
-    const aliases = JSON.stringify(['John', 'J. Smith']);
-    db.prepare(`
-      INSERT INTO knowledge_nodes (id, entity_type, canonical_name, normalized_name,
-        aliases, document_count, mention_count, avg_confidence, provenance_id, created_at, updated_at)
-      VALUES ('kn-data', 'person', 'John Smith', 'john smith', ?, 2, 3, 0.85, 'prov-kg-data', ?, ?)
-    `).run(aliases, now, now);
-
-    // Query and verify
-    const node = db.prepare('SELECT * FROM knowledge_nodes WHERE id = ?').get('kn-data') as Record<string, unknown>;
-    expect(node).toBeDefined();
-    expect(node.canonical_name).toBe('John Smith');
-    expect(node.entity_type).toBe('person');
-    expect(node.document_count).toBe(2);
-    expect(node.mention_count).toBe(3);
-    expect(node.avg_confidence).toBe(0.85);
-
-    const parsedAliases = JSON.parse(node.aliases as string);
-    expect(parsedAliases).toEqual(['John', 'J. Smith']);
-  });
-
-  it.skipIf(!sqliteVecAvailable)('existing data survives migration', () => {
-    createV15Schema();
-
-    const now = new Date().toISOString();
-
-    // Insert test data before migration
-    db.prepare(`
-      INSERT INTO provenance (id, type, created_at, processed_at, source_type, root_document_id,
-        content_hash, processor, processor_version, processing_params, parent_ids, chain_depth)
-      VALUES ('prov-surv-1', 'DOCUMENT', ?, ?, 'FILE', 'prov-surv-1',
-        'sha256:survdoc', 'file-ingester', '1.0.0', '{}', '[]', 0)
-    `).run(now, now);
-
-    db.prepare(`
-      INSERT INTO documents (id, file_path, file_name, file_hash, file_size, file_type,
-        status, provenance_id, created_at)
-      VALUES ('doc-surv', '/test/survive.pdf', 'survive.pdf', 'sha256:survdocfile',
-        2048, 'pdf', 'complete', 'prov-surv-1', ?)
-    `).run(now);
-
-    migrateToLatest(db);
-
-    const doc = db.prepare('SELECT * FROM documents WHERE id = ?').get('doc-surv') as Record<string, unknown>;
-    expect(doc).toBeDefined();
-    expect(doc.file_name).toBe('survive.pdf');
-    expect(doc.status).toBe('complete');
-  });
-
-  it.skipIf(!sqliteVecAvailable)('fresh database init creates all 3 knowledge graph tables', () => {
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const sqliteVec = require('sqlite-vec');
-    sqliteVec.load(db);
-
-    migrateToLatest(db);
-
-    const tables = getTableNames(db);
-    expect(tables).toContain('knowledge_nodes');
-    expect(tables).toContain('knowledge_edges');
-    expect(tables).toContain('node_entity_links');
-
-    const version = (db.prepare('SELECT version FROM schema_version').get() as { version: number }).version;
-    expect(version).toBe(22);
-
-    const indexes = getIndexNames(db);
-    expect(indexes).toContain('idx_kn_entity_type');
-    expect(indexes).toContain('idx_nel_node_id');
   });
 });

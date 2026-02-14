@@ -1066,6 +1066,11 @@ export function migrateToLatest(db: Database.Database): void {
     migrateV20ToV21(db);
     bumpVersion(21);
   }
+
+  if (currentVersion < 22) {
+    migrateV21ToV22(db);
+    bumpVersion(22);
+  }
 }
 
 /**
@@ -2185,6 +2190,67 @@ function migrateV20ToV21(db: Database.Database): void {
       `Failed to migrate from v20 to v21 (entity embeddings schema fix): ${cause}`,
       'migrate',
       'entity_embeddings',
+      error
+    );
+  }
+}
+
+/**
+ * Migrate from schema version 21 to version 22
+ *
+ * Fixes FTS tokenizer and trigger inconsistencies (F-S3, F-S4, F-S5):
+ * - F-S3: knowledge_nodes_fts was created WITHOUT `porter unicode61` tokenizer
+ *   in v18 migration (fresh DB has it). Recreated with correct tokenizer.
+ * - F-S4: v18 update trigger fires on ANY column update. Fixed to fire only
+ *   on `canonical_name` changes (AFTER UPDATE OF canonical_name).
+ * - F-S5: v18 triggers use `_insert/_delete/_update` naming. Fixed to use
+ *   `_ai/_ad/_au` naming convention matching fresh schema definitions.
+ *
+ * @param db - Database instance from better-sqlite3
+ * @throws MigrationError if migration fails
+ */
+function migrateV21ToV22(db: Database.Database): void {
+  try {
+    db.exec('BEGIN TRANSACTION');
+
+    // Step 1: Drop old FTS table and ALL trigger name variants
+    // (covers both v18 naming and fresh-schema naming)
+    db.exec('DROP TRIGGER IF EXISTS knowledge_nodes_fts_insert');
+    db.exec('DROP TRIGGER IF EXISTS knowledge_nodes_fts_delete');
+    db.exec('DROP TRIGGER IF EXISTS knowledge_nodes_fts_update');
+    db.exec('DROP TRIGGER IF EXISTS knowledge_nodes_fts_ai');
+    db.exec('DROP TRIGGER IF EXISTS knowledge_nodes_fts_ad');
+    db.exec('DROP TRIGGER IF EXISTS knowledge_nodes_fts_au');
+    db.exec('DROP TABLE IF EXISTS knowledge_nodes_fts');
+
+    // Step 2: Recreate FTS table with porter tokenizer (matching schema-definitions.ts)
+    db.exec(CREATE_KNOWLEDGE_NODES_FTS_TABLE);
+
+    // Step 3: Create triggers with correct _ai/_ad/_au naming and
+    // AFTER UPDATE OF canonical_name scoping (matching schema-definitions.ts)
+    for (const trigger of CREATE_KNOWLEDGE_NODES_FTS_TRIGGERS) {
+      db.exec(trigger);
+    }
+
+    // Step 4: Repopulate FTS from existing knowledge_nodes data
+    const nodeCount = db.prepare('SELECT COUNT(*) as cnt FROM knowledge_nodes').get() as { cnt: number };
+    if (nodeCount.cnt > 0) {
+      db.exec(`
+        INSERT INTO knowledge_nodes_fts(rowid, canonical_name)
+        SELECT rowid, canonical_name FROM knowledge_nodes
+      `);
+    }
+
+    db.exec('COMMIT');
+  } catch (error) {
+    try {
+      db.exec('ROLLBACK');
+    } catch { /* ignore rollback errors */ }
+    const cause = error instanceof Error ? error.message : String(error);
+    throw new MigrationError(
+      `Failed to migrate from v21 to v22 (FTS tokenizer/trigger fix): ${cause}`,
+      'migrate',
+      'knowledge_nodes_fts',
       error
     );
   }

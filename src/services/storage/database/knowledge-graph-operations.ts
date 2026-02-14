@@ -737,7 +737,7 @@ export function findPaths(
               nextFrontier.add(neighbor);
             }
             // Only store path if we haven't exceeded max paths and depth is within budget
-            if (forwardDepth + backwardDepth < maxHops) {
+            if (forwardDepth + backwardDepth <= maxHops) {
               forwardVisited.get(neighbor)!.push({
                 nodePath: newNodePath,
                 edgePath: newEdgePath,
@@ -806,7 +806,7 @@ export function findPaths(
               backwardVisited.set(neighbor, []);
               nextFrontier.add(neighbor);
             }
-            if (forwardDepth + backwardDepth < maxHops) {
+            if (forwardDepth + backwardDepth <= maxHops) {
               backwardVisited.get(neighbor)!.push({
                 nodePath: newNodePath,
                 edgePath: newEdgePath,

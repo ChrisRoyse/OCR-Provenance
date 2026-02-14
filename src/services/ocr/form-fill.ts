@@ -170,7 +170,10 @@ export class FormFillClient {
 
         // Check for error response
         if (this.isErrorResponse(response)) {
-          reject(mapPythonError(response.category, response.error, response.details ?? {}));
+          const resp = response as unknown as Record<string, unknown>;
+          const category = (resp.category as string) ?? 'FORM_FILL_API_ERROR';
+          const error = (resp.error as string) ?? 'Form fill failed';
+          reject(mapPythonError(category, error, (resp.details as Record<string, unknown>) ?? {}));
           return;
         }
 
@@ -180,7 +183,12 @@ export class FormFillClient {
   }
 
   private isErrorResponse(response: unknown): response is PythonErrorResponse {
-    return typeof response === 'object' && response !== null && 'error' in response && 'category' in response;
+    if (typeof response !== 'object' || response === null) return false;
+    // Standard error response with error + category
+    if ('error' in response && 'category' in response) return true;
+    // Failed status response from Python FormFillResult (has error but no category)
+    if ('status' in response && (response as Record<string, unknown>).status === 'failed') return true;
+    return false;
   }
 
   private toFormFillResult(r: PythonFormFillResponse): FormFillResult {
