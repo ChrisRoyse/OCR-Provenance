@@ -171,8 +171,6 @@ export const IngestFilesInput = z.object({
   file_paths: z
     .array(z.string().min(1, 'File path cannot be empty'))
     .min(1, 'At least one file path is required'),
-  file_urls: z.array(z.string().url()).optional()
-    .describe('URLs of files to ingest (Datalab supports file_url parameter)'),
 });
 
 /**

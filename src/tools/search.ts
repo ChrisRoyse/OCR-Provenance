@@ -2181,6 +2181,8 @@ export const searchTools: Record<string, ToolDefinition> = {
         .describe('Re-rank results using Gemini AI for contextual relevance scoring'),
       deduplicate_by_entity: z.boolean().default(false)
         .describe('Deduplicate results by primary entity (max 2 results per entity)'),
+      min_entity_confidence: z.number().min(0).max(1).optional()
+        .describe('Minimum entity confidence score (0-1) for including entities in results'),
     },
     handler: handleSearch,
   },
@@ -2218,6 +2220,8 @@ export const searchTools: Record<string, ToolDefinition> = {
         .describe('Rescue borderline results (within 0.1 of threshold) if they contain entities matching query terms'),
       deduplicate_by_entity: z.boolean().default(false)
         .describe('Deduplicate results by primary entity (max 2 results per entity)'),
+      min_entity_confidence: z.number().min(0).max(1).optional()
+        .describe('Minimum entity confidence score (0-1) for including entities in results'),
     },
     handler: handleSearchSemantic,
   },
@@ -2257,6 +2261,8 @@ export const searchTools: Record<string, ToolDefinition> = {
         .describe('Entity boost factor: results containing entities matching query terms get score boost in RRF fusion'),
       deduplicate_by_entity: z.boolean().default(false)
         .describe('Deduplicate results by primary entity (max 2 results per entity)'),
+      min_entity_confidence: z.number().min(0).max(1).optional()
+        .describe('Minimum entity confidence score (0-1) for including entities in results'),
     },
     handler: handleSearchHybrid,
   },
@@ -2325,6 +2331,8 @@ export const searchTools: Record<string, ToolDefinition> = {
         .describe('Maximum total context length in characters'),
       include_relationship_summary: z.boolean().default(false)
         .describe('Include AI-generated narrative summary of entity relationships'),
+      min_entity_confidence: z.number().min(0).max(1).optional()
+        .describe('Minimum entity confidence for included entities'),
     },
     handler: handleRagContext,
   },

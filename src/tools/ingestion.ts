@@ -1871,7 +1871,6 @@ export const ingestionTools: Record<string, ToolDefinition> = {
     description: 'Ingest specific files into the current database. Supports local file paths and optional file URLs for Datalab direct URL processing.',
     inputSchema: {
       file_paths: z.array(z.string().min(1)).min(1).describe('Array of file paths to ingest'),
-      file_urls: z.array(z.string().url()).optional().describe('URLs of files to ingest (Datalab supports file_url parameter)'),
     },
     handler: handleIngestFiles,
   },

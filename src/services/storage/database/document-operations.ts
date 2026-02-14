@@ -318,6 +318,25 @@ function deleteDerivedRecords(db: Database.Database, documentId: string, caller:
   // Delete comparisons referencing this document
   db.prepare('DELETE FROM comparisons WHERE document_id_1 = ? OR document_id_2 = ?').run(documentId, documentId);
 
+  // Clean up entity_embeddings BEFORE graph cleanup (entity_embeddings.node_id -> knowledge_nodes.id)
+  try {
+    db.prepare(
+      `DELETE FROM vec_entity_embeddings WHERE entity_embedding_id IN (
+         SELECT ee.id FROM entity_embeddings ee
+         JOIN node_entity_links nel ON nel.node_id = ee.node_id
+         WHERE nel.document_id = ?
+       )`
+    ).run(documentId);
+    db.prepare(
+      `DELETE FROM entity_embeddings WHERE node_id IN (
+         SELECT DISTINCT node_id FROM node_entity_links WHERE document_id = ?
+       )`
+    ).run(documentId);
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : String(e);
+    if (!msg.includes('no such table')) throw e;
+  }
+
   // Clean up knowledge graph data (must come before entities deletion since links reference entities)
   cleanupGraphForDocument(db, documentId);
 

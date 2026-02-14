@@ -317,7 +317,6 @@ async function runClusteringWorker(
     };
 
     const shell = new PythonShell(workerPath, options);
-    let output = '';
     let stderr = '';
 
     const timer = setTimeout(() => {
@@ -333,8 +332,9 @@ async function runClusteringWorker(
       );
     }, WORKER_TIMEOUT_MS);
 
+    const outputChunks: string[] = [];
     shell.on('message', (msg: string) => {
-      output += msg;
+      outputChunks.push(msg);
     });
 
     shell.on('stderr', (err: string) => {
@@ -353,6 +353,7 @@ async function runClusteringWorker(
         if (stderr) console.error('[ClusterWorker] Stderr:', stderr.substring(0, 1000));
       }
 
+      const output = outputChunks.join('\n');
       if (!output.trim()) {
         if (err) {
           reject(new ClusteringError(
