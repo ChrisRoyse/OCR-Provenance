@@ -706,7 +706,7 @@ export async function handleSearchSemantic(
     if (input.include_entities || input.rerank) {
       const chunkIds = results.map(r => r.chunk_id).filter((id): id is string => id != null);
       if (chunkIds.length > 0) {
-        entityMap = getEntitiesForChunks(conn, chunkIds);
+        entityMap = getEntitiesForChunks(conn, chunkIds, input.min_entity_confidence);
       }
       // Enrich VLM/image results with page co-occurrence entities
       if (!entityMap) entityMap = new Map();
@@ -977,7 +977,7 @@ export async function handleSearch(
     if (input.include_entities || input.rerank) {
       const chunkIds = rankedResults.map(r => r.chunk_id).filter((id): id is string => id != null);
       if (chunkIds.length > 0) {
-        bm25EntityMap = getEntitiesForChunks(conn, chunkIds);
+        bm25EntityMap = getEntitiesForChunks(conn, chunkIds, input.min_entity_confidence);
       }
       // Enrich VLM/image results with page co-occurrence entities
       if (!bm25EntityMap) bm25EntityMap = new Map();
@@ -1195,7 +1195,7 @@ export async function handleSearchHybrid(
           // Get entities for all result chunks
           const boostChunkIds = rawResults.map(r => r.chunk_id).filter((id): id is string => id != null);
           if (boostChunkIds.length > 0) {
-            const boostEntityMap = getEntitiesForChunks(conn, boostChunkIds);
+            const boostEntityMap = getEntitiesForChunks(conn, boostChunkIds, input.min_entity_confidence);
             const matchedNodeSet = new Set(matchedNodeIds);
             let boostedCount = 0;
 
@@ -1230,7 +1230,7 @@ export async function handleSearchHybrid(
     if (input.include_entities || input.rerank) {
       const chunkIds = rawResults.map(r => r.chunk_id).filter((id): id is string => id != null);
       if (chunkIds.length > 0) {
-        hybridEntityMap = getEntitiesForChunks(conn, chunkIds);
+        hybridEntityMap = getEntitiesForChunks(conn, chunkIds, input.min_entity_confidence);
       }
       // Enrich VLM/image results with page co-occurrence entities
       if (!hybridEntityMap) hybridEntityMap = new Map();
@@ -1379,6 +1379,8 @@ const RagContextInput = z.object({
     .describe('Maximum total context length in characters'),
   include_relationship_summary: z.boolean().default(false)
     .describe('Include narrative summary of entity relationships'),
+  min_entity_confidence: z.number().min(0).max(1).optional()
+    .describe('Minimum entity confidence for included entities'),
 });
 
 /**
@@ -1473,7 +1475,7 @@ async function handleRagContext(
         .filter((id): id is string => id != null);
       if (chunkIds.length > 0) {
         try {
-          entityMap = getEntitiesForChunks(conn, chunkIds);
+          entityMap = getEntitiesForChunks(conn, chunkIds, input.min_entity_confidence);
         } catch (err) {
           console.error(`[RAG] Entity enrichment failed: ${err instanceof Error ? err.message : String(err)}`);
         }

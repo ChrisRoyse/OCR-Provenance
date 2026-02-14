@@ -12,6 +12,7 @@
 
 import { z } from 'zod';
 import * as fs from 'fs';
+import { v4 as uuidv4 } from 'uuid';
 import { requireDatabase } from '../server/state.js';
 import { successResult } from '../server/types.js';
 import { MCPError } from '../server/errors.js';
@@ -20,6 +21,9 @@ import { validateInput } from '../utils/validation.js';
 import { getVLMService } from '../services/vlm/service.js';
 import { VLMPipeline } from '../services/vlm/pipeline.js';
 import { GeminiClient } from '../services/gemini/client.js';
+import { ProvenanceType } from '../models/provenance.js';
+import { computeHash } from '../utils/hash.js';
+import { extractEntitiesFromVLM } from '../services/knowledge-graph/vlm-entity-extractor.js';
 
 
 // ===============================================================================
@@ -30,6 +34,7 @@ const VLMDescribeInput = z.object({
   image_path: z.string().min(1),
   context_text: z.string().optional(),
   use_thinking: z.boolean().default(false),
+  enrich_with_entities: z.boolean().default(false),
 });
 
 const VLMClassifyInput = z.object({
@@ -39,10 +44,12 @@ const VLMClassifyInput = z.object({
 const VLMProcessDocumentInput = z.object({
   document_id: z.string().min(1),
   batch_size: z.number().int().min(1).max(20).default(5),
+  auto_extract_entities: z.boolean().default(false),
 });
 
 const VLMProcessPendingInput = z.object({
   limit: z.number().int().min(1).max(500).default(50),
+  auto_extract_entities: z.boolean().default(false),
 });
 
 const VLMAnalyzePDFInput = z.object({
@@ -65,8 +72,9 @@ export async function handleVLMDescribe(
   try {
     const input = validateInput(VLMDescribeInput, params);
     const imagePath = input.image_path;
-    const contextText = input.context_text;
+    let contextText = input.context_text;
     const useThinking = input.use_thinking ?? false;
+    const enrichWithEntities = input.enrich_with_entities ?? false;
 
     // Validate image path exists
     if (!fs.existsSync(imagePath)) {
@@ -75,6 +83,41 @@ export async function handleVLMDescribe(
         `Image file not found: ${imagePath}`,
         { image_path: imagePath }
       );
+    }
+
+    // Enrich context with known entities from the same page
+    let entityContextProvided = false;
+    if (enrichWithEntities) {
+      try {
+        const { db } = requireDatabase();
+        const conn = db.getConnection();
+
+        // Look up the image record by extracted_path to get document_id and page_number
+        const imageRecord = conn.prepare(
+          'SELECT document_id, page_number FROM images WHERE extracted_path = ? LIMIT 1'
+        ).get(imagePath) as { document_id: string; page_number: number } | undefined;
+
+        if (imageRecord) {
+          const pageEntities = conn.prepare(`
+            SELECT DISTINCT e.entity_type, e.normalized_text
+            FROM entities e
+            JOIN entity_mentions em ON e.id = em.entity_id
+            WHERE em.document_id = ? AND em.page_number = ?
+            ORDER BY e.confidence DESC
+            LIMIT 20
+          `).all(imageRecord.document_id, imageRecord.page_number) as Array<{ entity_type: string; normalized_text: string }>;
+
+          if (pageEntities.length > 0) {
+            const entitySummary = pageEntities
+              .map(e => `${e.entity_type}: ${e.normalized_text}`)
+              .join(', ');
+            contextText = (contextText ?? '') + `\nKnown entities on this page: ${entitySummary}`;
+            entityContextProvided = true;
+          }
+        }
+      } catch (err) {
+        console.error(`[WARN] Entity enrichment failed: ${(err as Error).message}`);
+      }
     }
 
     const vlm = getVLMService();
@@ -97,6 +140,7 @@ export async function handleVLMDescribe(
       processing_time_ms: result.processingTimeMs,
       tokens_used: result.tokensUsed,
       confidence: result.analysis.confidence,
+      entity_context_provided: entityContextProvided,
     }));
   } catch (error) {
     return handleError(error);
@@ -162,7 +206,8 @@ export async function handleVLMProcessDocument(
       );
     }
 
-    const pipeline = new VLMPipeline(db.getConnection(), {
+    const conn = db.getConnection();
+    const pipeline = new VLMPipeline(conn, {
       config: {
         batchSize,
         concurrency: 5,
@@ -176,7 +221,47 @@ export async function handleVLMProcessDocument(
 
     const result = await pipeline.processDocument(documentId);
 
-    return formatResponse(successResult({
+    // Auto-extract entities from VLM descriptions if requested
+    let vlmEntityResult: { entities_created: number; descriptions_processed: number } | undefined;
+    if (input.auto_extract_entities && result.successful > 0) {
+      try {
+        const now = new Date().toISOString();
+        const entityProvId = uuidv4();
+        const entityHash = computeHash(JSON.stringify({ document_id: documentId, source: 'vlm-auto' }));
+
+        db.insertProvenance({
+          id: entityProvId,
+          type: ProvenanceType.ENTITY_EXTRACTION,
+          created_at: now,
+          processed_at: now,
+          source_file_created_at: null,
+          source_file_modified_at: null,
+          source_type: 'ENTITY_EXTRACTION',
+          source_path: doc.file_path,
+          source_id: doc.provenance_id,
+          root_document_id: doc.provenance_id,
+          location: null,
+          content_hash: entityHash,
+          input_hash: computeHash(documentId),
+          file_hash: doc.file_hash,
+          processor: 'vlm-auto-entity-extraction',
+          processor_version: '1.0.0',
+          processing_params: { auto_extract: true },
+          processing_duration_ms: null,
+          processing_quality_score: null,
+          parent_id: doc.provenance_id,
+          parent_ids: JSON.stringify([doc.provenance_id]),
+          chain_depth: 2,
+          chain_path: JSON.stringify(['DOCUMENT', 'VLM_DESC', 'ENTITY_EXTRACTION']),
+        });
+
+        vlmEntityResult = await extractEntitiesFromVLM(conn, documentId, entityProvId);
+      } catch (err) {
+        console.error(`[WARN] VLM entity extraction failed: ${(err as Error).message}`);
+      }
+    }
+
+    const responseData: Record<string, unknown> = {
       document_id: documentId,
       total: result.total,
       successful: result.successful,
@@ -190,7 +275,16 @@ export async function handleVLMProcessDocument(
         tokens_used: r.tokensUsed,
         error: r.error,
       })),
-    }));
+    };
+
+    if (vlmEntityResult) {
+      responseData.vlm_entity_extraction = {
+        entities_created: vlmEntityResult.entities_created,
+        descriptions_processed: vlmEntityResult.descriptions_processed,
+      };
+    }
+
+    return formatResponse(successResult(responseData));
   } catch (error) {
     return handleError(error);
   }
@@ -207,8 +301,9 @@ export async function handleVLMProcessPending(
     const limit = input.limit ?? 50;
 
     const { db, vector } = requireDatabase();
+    const conn = db.getConnection();
 
-    const pipeline = new VLMPipeline(db.getConnection(), {
+    const pipeline = new VLMPipeline(conn, {
       config: {
         batchSize: 10,
         concurrency: 5,
@@ -222,13 +317,85 @@ export async function handleVLMProcessPending(
 
     const result = await pipeline.processPending(limit);
 
-    return formatResponse(successResult({
+    // Auto-extract entities from VLM descriptions if requested
+    const vlmEntityResults: Array<{ document_id: string; entities_created: number; descriptions_processed: number }> = [];
+    if (input.auto_extract_entities && result.successful > 0) {
+      try {
+        // Find distinct document IDs from successfully processed images
+        const successfulImageIds = result.results
+          .filter(r => r.success)
+          .map(r => r.imageId);
+
+        if (successfulImageIds.length > 0) {
+          const placeholders = successfulImageIds.map(() => '?').join(',');
+          const documentIds = conn.prepare(
+            `SELECT DISTINCT document_id FROM images WHERE id IN (${placeholders})`
+          ).all(...successfulImageIds) as Array<{ document_id: string }>;
+
+          for (const { document_id: docId } of documentIds) {
+            try {
+              const doc = db.getDocument(docId);
+              if (!doc) continue;
+
+              const now = new Date().toISOString();
+              const entityProvId = uuidv4();
+              const entityHash = computeHash(JSON.stringify({ document_id: docId, source: 'vlm-auto-pending' }));
+
+              db.insertProvenance({
+                id: entityProvId,
+                type: ProvenanceType.ENTITY_EXTRACTION,
+                created_at: now,
+                processed_at: now,
+                source_file_created_at: null,
+                source_file_modified_at: null,
+                source_type: 'ENTITY_EXTRACTION',
+                source_path: doc.file_path,
+                source_id: doc.provenance_id,
+                root_document_id: doc.provenance_id,
+                location: null,
+                content_hash: entityHash,
+                input_hash: computeHash(docId),
+                file_hash: doc.file_hash,
+                processor: 'vlm-auto-entity-extraction',
+                processor_version: '1.0.0',
+                processing_params: { auto_extract: true, source: 'process_pending' },
+                processing_duration_ms: null,
+                processing_quality_score: null,
+                parent_id: doc.provenance_id,
+                parent_ids: JSON.stringify([doc.provenance_id]),
+                chain_depth: 2,
+                chain_path: JSON.stringify(['DOCUMENT', 'VLM_DESC', 'ENTITY_EXTRACTION']),
+              });
+
+              const vlmResult = await extractEntitiesFromVLM(conn, docId, entityProvId);
+              vlmEntityResults.push({
+                document_id: docId,
+                entities_created: vlmResult.entities_created,
+                descriptions_processed: vlmResult.descriptions_processed,
+              });
+            } catch (err) {
+              console.error(`[WARN] VLM entity extraction failed for document ${docId}: ${(err as Error).message}`);
+            }
+          }
+        }
+      } catch (err) {
+        console.error(`[WARN] VLM entity extraction failed: ${(err as Error).message}`);
+      }
+    }
+
+    const responseData: Record<string, unknown> = {
       processed: result.total,
       successful: result.successful,
       failed: result.failed,
       total_tokens: result.totalTokens,
       processing_time_ms: result.totalTimeMs,
-    }));
+    };
+
+    if (vlmEntityResults.length > 0) {
+      responseData.vlm_entity_extraction = vlmEntityResults;
+    }
+
+    return formatResponse(successResult(responseData));
   } catch (error) {
     return handleError(error);
   }
@@ -339,6 +506,7 @@ export const vlmTools: Record<string, ToolDefinition> = {
       image_path: z.string().min(1).describe('Path to image file (PNG, JPG, JPEG, GIF, WEBP)'),
       context_text: z.string().optional().describe('Surrounding text context from document'),
       use_thinking: z.boolean().default(false).describe('Use extended reasoning (thinking mode) for complex analysis'),
+      enrich_with_entities: z.boolean().default(false).describe('Enrich VLM context with known entities from the same page'),
     },
     handler: handleVLMDescribe,
   },
@@ -356,6 +524,7 @@ export const vlmTools: Record<string, ToolDefinition> = {
     inputSchema: {
       document_id: z.string().min(1).describe('Document ID'),
       batch_size: z.number().int().min(1).max(20).default(5).describe('Images per batch'),
+      auto_extract_entities: z.boolean().default(false).describe('Auto-extract entities from VLM descriptions after processing'),
     },
     handler: handleVLMProcessDocument,
   },
@@ -364,6 +533,7 @@ export const vlmTools: Record<string, ToolDefinition> = {
     description: 'Process all images pending VLM description across all documents',
     inputSchema: {
       limit: z.number().int().min(1).max(500).default(50).describe('Maximum images to process'),
+      auto_extract_entities: z.boolean().default(false).describe('Auto-extract entities from VLM descriptions after processing'),
     },
     handler: handleVLMProcessPending,
   },

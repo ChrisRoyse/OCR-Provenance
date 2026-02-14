@@ -6,7 +6,8 @@
  *        ocr_knowledge_graph_stats, ocr_knowledge_graph_delete,
  *        ocr_knowledge_graph_export, ocr_knowledge_graph_merge,
  *        ocr_knowledge_graph_split, ocr_knowledge_graph_enrich,
- *        ocr_knowledge_graph_incremental_build
+ *        ocr_knowledge_graph_incremental_build,
+ *        ocr_knowledge_graph_normalize_weights, ocr_knowledge_graph_prune_edges
  *
  * CRITICAL: NEVER use console.log() - stdout is reserved for JSON-RPC protocol.
  *
@@ -41,6 +42,9 @@ import {
 import { exportGraphML, exportCSV, exportJSONLD } from '../services/knowledge-graph/export-service.js';
 import { incrementalBuildGraph } from '../services/knowledge-graph/incremental-builder.js';
 import { classifyEdgesWithGemini } from '../services/knowledge-graph/rule-classifier.js';
+import { getEmbeddingService } from '../services/embedding/embedder.js';
+import { getEmbeddingClient } from '../services/embedding/nomic.js';
+import { computeHash } from '../utils/hash.js';
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // INPUT SCHEMAS
@@ -69,6 +73,16 @@ const QueryInput = z.object({
   include_documents: z.boolean().default(false),
   max_depth: z.number().int().min(1).max(5).default(1),
   limit: z.number().int().min(1).max(200).default(50),
+  time_range: z.object({
+    from: z.string().optional().describe('ISO date string - only include edges valid after this date'),
+    until: z.string().optional().describe('ISO date string - only include edges valid before this date'),
+  }).optional().describe('Filter edges by temporal validity range'),
+});
+
+const SetEdgeTemporalInput = z.object({
+  edge_id: z.string().min(1).describe('Edge ID to update'),
+  valid_from: z.string().optional().describe('ISO date when relationship becomes valid (e.g., employment start)'),
+  valid_until: z.string().optional().describe('ISO date when relationship ends (null = still valid)'),
 });
 
 const NodeInput = z.object({
@@ -84,6 +98,8 @@ const PathsInput = z.object({
   relationship_filter: z.array(z.string()).optional(),
   include_evidence_chunks: z.boolean().default(false)
     .describe('Include document chunks that provide evidence for each edge in the path'),
+  include_contradictions: z.boolean().default(false)
+    .describe('Flag edges with known contradictions from document comparisons'),
 });
 
 const StatsInput = z.object({});
@@ -151,6 +167,57 @@ const ClassifyRelationshipsInput = z.object({
   batch_size: z.number().int().min(1).max(50).default(20)
     .describe('Edges per Gemini API call'),
 });
+const NormalizeWeightsInput = z.object({
+  type_multipliers: z.record(z.number()).optional()
+    .describe('Custom multipliers per relationship type (default: co_located=1.5, co_mentioned=1.0, works_at=2.0, represents=2.0)'),
+  document_filter: z.array(z.string()).optional()
+    .describe('Only normalize edges referencing these documents'),
+});
+
+const PruneEdgesInput = z.object({
+  min_weight: z.number().min(0).optional()
+    .describe('Remove edges with normalized_weight below this threshold'),
+  min_evidence_count: z.number().int().min(1).optional()
+    .describe('Remove edges with evidence_count below this value'),
+  relationship_types: z.array(z.string()).optional()
+    .describe('Only prune edges of these types'),
+  dry_run: z.boolean().default(true)
+    .describe('If true, report what would be pruned without deleting'),
+  confirm: z.literal(true).optional()
+    .describe('Must be true for actual deletion (when dry_run=false)'),
+});
+
+const ContradictionsInput = z.object({
+  entity_name: z.string().optional().describe('Filter by entity name'),
+  entity_type: z.enum([
+    'person', 'organization', 'date', 'amount', 'case_number',
+    'location', 'statute', 'exhibit', 'medication', 'diagnosis', 'medical_device', 'other',
+  ]).optional(),
+  min_contradiction_count: z.number().int().min(1).default(1)
+    .describe('Minimum contradiction count on edges'),
+  document_filter: z.array(z.string()).optional(),
+  limit: z.number().int().min(1).max(200).default(50),
+});
+
+const EntityEmbedInput = z.object({
+  document_filter: z.array(z.string()).optional()
+    .describe('Only embed nodes from these documents'),
+  limit: z.number().int().min(1).max(5000).default(500)
+    .describe('Maximum nodes to embed'),
+  force: z.boolean().default(false)
+    .describe('Re-embed nodes that already have embeddings'),
+});
+
+const EntitySearchSemanticInput = z.object({
+  query: z.string().min(1).max(500).describe('Search query for entity similarity'),
+  entity_type: z.enum([
+    'person', 'organization', 'date', 'amount', 'case_number',
+    'location', 'statute', 'exhibit', 'medication', 'diagnosis', 'medical_device', 'other',
+  ]).optional(),
+  similarity_threshold: z.number().min(0).max(1).default(0.7),
+  limit: z.number().int().min(1).max(100).default(20),
+  include_documents: z.boolean().default(false),
+});
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // HANDLERS
@@ -200,7 +267,77 @@ async function handleKnowledgeGraphQuery(
       limit: input.limit,
     });
 
+    // Post-filter edges by time_range
+    if (input.time_range && result.edges) {
+      const conn = db.getConnection();
+      result.edges = result.edges.filter(edge => {
+        try {
+          const temporal = conn.prepare(
+            'SELECT valid_from, valid_until FROM knowledge_edges WHERE id = ?'
+          ).get(edge.id) as { valid_from: string | null; valid_until: string | null } | undefined;
+          if (!temporal) return true;
+          if (input.time_range!.from && temporal.valid_until && temporal.valid_until < input.time_range!.from) return false;
+          if (input.time_range!.until && temporal.valid_from && temporal.valid_from > input.time_range!.until) return false;
+          return true;
+        } catch { return true; }
+      });
+      result.total_edges = result.edges.length;
+    }
+
     return formatResponse(successResult(result));
+  } catch (error) {
+    return handleError(error);
+  }
+}
+
+/**
+ * Handle ocr_knowledge_graph_set_edge_temporal - Set temporal bounds on an edge
+ */
+async function handleSetEdgeTemporal(
+  params: Record<string, unknown>
+): Promise<ToolResponse> {
+  try {
+    const input = validateInput(SetEdgeTemporalInput, params);
+    const { db } = requireDatabase();
+    const conn = db.getConnection();
+
+    // Verify edge exists
+    const edge = conn.prepare(
+      'SELECT id, source_node_id, target_node_id, relationship_type, valid_from, valid_until FROM knowledge_edges WHERE id = ?'
+    ).get(input.edge_id) as {
+      id: string;
+      source_node_id: string;
+      target_node_id: string;
+      relationship_type: string;
+      valid_from: string | null;
+      valid_until: string | null;
+    } | undefined;
+
+    if (!edge) {
+      throw new Error(`Edge not found: ${input.edge_id}`);
+    }
+
+    const now = new Date().toISOString();
+    conn.prepare(
+      'UPDATE knowledge_edges SET valid_from = ?, valid_until = ?, updated_at = ? WHERE id = ?'
+    ).run(
+      input.valid_from ?? null,
+      input.valid_until ?? null,
+      now,
+      input.edge_id,
+    );
+
+    return formatResponse(successResult({
+      edge_id: input.edge_id,
+      source_node_id: edge.source_node_id,
+      target_node_id: edge.target_node_id,
+      relationship_type: edge.relationship_type,
+      valid_from: input.valid_from ?? null,
+      valid_until: input.valid_until ?? null,
+      previous_valid_from: edge.valid_from,
+      previous_valid_until: edge.valid_until,
+      updated_at: now,
+    }));
   } catch (error) {
     return handleError(error);
   }
@@ -242,6 +379,22 @@ async function handleKnowledgeGraphPaths(
       relationship_filter: input.relationship_filter,
       include_evidence_chunks: input.include_evidence_chunks,
     });
+
+    // Annotate edges with contradiction info if requested
+    if (input.include_contradictions && result.paths) {
+      const conn = db.getConnection();
+      for (const p of result.paths) {
+        for (const edge of (p.edges || [])) {
+          const edgeRow = conn.prepare(
+            `SELECT contradiction_count FROM knowledge_edges WHERE id = ?`
+          ).get(edge.id) as { contradiction_count: number } | undefined;
+          if (edgeRow) {
+            (edge as Record<string, unknown>).has_contradiction = edgeRow.contradiction_count > 0;
+            (edge as Record<string, unknown>).contradiction_count = edgeRow.contradiction_count;
+          }
+        }
+      }
+    }
 
     return formatResponse(successResult(result));
   } catch (error) {
@@ -998,6 +1151,479 @@ async function handleKnowledgeGraphClassifyRelationships(
   }
 }
 
+
+/**
+ * Handle ocr_knowledge_graph_normalize_weights - Normalize edge weights
+ * using log(evidence_count + 1) * type_multiplier formula
+ */
+async function handleKnowledgeGraphNormalizeWeights(
+  params: Record<string, unknown>
+): Promise<ToolResponse> {
+  try {
+    const input = validateInput(NormalizeWeightsInput, params);
+    const { db } = requireDatabase();
+    const conn = db.getConnection();
+
+    const defaultMultipliers: Record<string, number> = {
+      co_located: 1.5,
+      co_mentioned: 1.0,
+      works_at: 2.0,
+      represents: 2.0,
+      located_in: 1.5,
+      filed_in: 1.5,
+      cites: 1.5,
+      references: 1.0,
+      party_to: 2.0,
+      related_to: 1.0,
+      precedes: 1.0,
+      occurred_at: 1.0,
+    };
+
+    const multipliers = { ...defaultMultipliers, ...input.type_multipliers };
+
+    let edgeSql = 'SELECT id, relationship_type, evidence_count FROM knowledge_edges';
+    const edgeParams: string[] = [];
+
+    if (input.document_filter && input.document_filter.length > 0) {
+      const docPlaceholders = input.document_filter.map(() => '?').join(',');
+      edgeSql += ` WHERE EXISTS (
+        SELECT 1 FROM json_each(document_ids) jd
+        WHERE jd.value IN (${docPlaceholders})
+      )`;
+      edgeParams.push(...input.document_filter);
+    }
+
+    const edges = conn.prepare(edgeSql).all(...edgeParams) as Array<{
+      id: string;
+      relationship_type: string;
+      evidence_count: number;
+    }>;
+
+    const updateStmt = conn.prepare(
+      'UPDATE knowledge_edges SET normalized_weight = ? WHERE id = ?'
+    );
+
+    let edgesNormalized = 0;
+    const typeCounts: Record<string, number> = {};
+
+    conn.transaction(() => {
+      for (const edge of edges) {
+        const typeMultiplier = multipliers[edge.relationship_type] ?? 1.0;
+        const normalizedWeight = Math.log(edge.evidence_count + 1) * typeMultiplier;
+
+        updateStmt.run(normalizedWeight, edge.id);
+        edgesNormalized++;
+
+        typeCounts[edge.relationship_type] =
+          (typeCounts[edge.relationship_type] || 0) + 1;
+      }
+    })();
+
+    return formatResponse(successResult({
+      edges_normalized: edgesNormalized,
+      multipliers_used: multipliers,
+      type_distribution: typeCounts,
+    }));
+  } catch (error) {
+    return handleError(error);
+  }
+}
+
+/**
+ * Handle ocr_knowledge_graph_prune_edges - Remove low-quality edges
+ * by normalized_weight threshold and/or minimum evidence count
+ */
+async function handleKnowledgeGraphPruneEdges(
+  params: Record<string, unknown>
+): Promise<ToolResponse> {
+  try {
+    const input = validateInput(PruneEdgesInput, params);
+    const { db } = requireDatabase();
+    const conn = db.getConnection();
+
+    if (!input.min_weight && !input.min_evidence_count) {
+      throw new Error(
+        'At least one of min_weight or min_evidence_count must be specified'
+      );
+    }
+
+    const conditions: string[] = [];
+    const queryParams: (string | number)[] = [];
+
+    if (input.min_weight !== undefined) {
+      conditions.push('(normalized_weight IS NULL OR normalized_weight < ?)');
+      queryParams.push(input.min_weight);
+    }
+
+    if (input.min_evidence_count !== undefined) {
+      conditions.push('evidence_count < ?');
+      queryParams.push(input.min_evidence_count);
+    }
+
+    if (input.relationship_types && input.relationship_types.length > 0) {
+      const typePlaceholders = input.relationship_types.map(() => '?').join(',');
+      conditions.push(`relationship_type IN (${typePlaceholders})`);
+      queryParams.push(...input.relationship_types);
+    }
+
+    const whereClause = conditions.length > 0
+      ? `WHERE ${conditions.join(' AND ')}`
+      : '';
+
+    const totalEdges = (
+      conn.prepare('SELECT COUNT(*) as cnt FROM knowledge_edges').get() as {
+        cnt: number;
+      }
+    ).cnt;
+
+    const matchSql = `SELECT id, source_node_id, target_node_id, relationship_type,
+                             weight, evidence_count, normalized_weight
+                      FROM knowledge_edges ${whereClause}`;
+    const matchingEdges = conn.prepare(matchSql).all(...queryParams) as Array<{
+      id: string;
+      source_node_id: string;
+      target_node_id: string;
+      relationship_type: string;
+      weight: number;
+      evidence_count: number;
+      normalized_weight: number | null;
+    }>;
+
+    if (input.dry_run) {
+      const typeSummary: Record<string, number> = {};
+      for (const edge of matchingEdges) {
+        typeSummary[edge.relationship_type] =
+          (typeSummary[edge.relationship_type] || 0) + 1;
+      }
+
+      return formatResponse(successResult({
+        dry_run: true,
+        edges_analyzed: totalEdges,
+        edges_would_be_pruned: matchingEdges.length,
+        edges_would_remain: totalEdges - matchingEdges.length,
+        prune_percentage: totalEdges > 0
+          ? Math.round((matchingEdges.length / totalEdges) * 10000) / 100
+          : 0,
+        type_distribution: typeSummary,
+        sample_edges: matchingEdges.slice(0, 20).map((e) => ({
+          id: e.id,
+          source_node_id: e.source_node_id,
+          target_node_id: e.target_node_id,
+          relationship_type: e.relationship_type,
+          weight: e.weight,
+          evidence_count: e.evidence_count,
+          normalized_weight: e.normalized_weight,
+        })),
+      }));
+    }
+
+    if (!input.confirm) {
+      throw new Error(
+        'Must set confirm=true to delete edges (when dry_run=false)'
+      );
+    }
+
+    const affectedNodeIds = new Set<string>();
+    const deleteStmt = conn.prepare('DELETE FROM knowledge_edges WHERE id = ?');
+
+    let edgesPruned = 0;
+    conn.transaction(() => {
+      for (const edge of matchingEdges) {
+        deleteStmt.run(edge.id);
+        affectedNodeIds.add(edge.source_node_id);
+        affectedNodeIds.add(edge.target_node_id);
+        edgesPruned++;
+      }
+
+      const updateEdgeCount = conn.prepare(
+        `UPDATE knowledge_nodes SET edge_count = (
+           SELECT COUNT(*) FROM knowledge_edges
+           WHERE source_node_id = knowledge_nodes.id
+              OR target_node_id = knowledge_nodes.id
+         ) WHERE id = ?`
+      );
+      for (const nodeId of affectedNodeIds) {
+        updateEdgeCount.run(nodeId);
+      }
+    })();
+
+    return formatResponse(successResult({
+      dry_run: false,
+      edges_analyzed: totalEdges,
+      edges_pruned: edgesPruned,
+      edges_remaining: totalEdges - edgesPruned,
+      nodes_affected: affectedNodeIds.size,
+    }));
+  } catch (error) {
+    return handleError(error);
+  }
+}
+/**
+ * Handle ocr_knowledge_graph_contradictions - Query contradictions across KG
+ */
+async function handleKnowledgeGraphContradictions(
+  params: Record<string, unknown>
+): Promise<ToolResponse> {
+  try {
+    const input = validateInput(ContradictionsInput, params);
+    const { db } = requireDatabase();
+    const conn = db.getConnection();
+
+    // Query edges with contradiction_count > 0
+    let sql = `
+      SELECT ke.id, ke.source_node_id, ke.target_node_id,
+             ke.relationship_type, ke.evidence_count, ke.contradiction_count,
+             ke.weight, ke.normalized_weight,
+             sn.canonical_name as source_name, sn.entity_type as source_type,
+             tn.canonical_name as target_name, tn.entity_type as target_type
+      FROM knowledge_edges ke
+      JOIN knowledge_nodes sn ON ke.source_node_id = sn.id
+      JOIN knowledge_nodes tn ON ke.target_node_id = tn.id
+      WHERE ke.contradiction_count >= ?
+    `;
+    const params_list: unknown[] = [input.min_contradiction_count ?? 1];
+
+    if (input.entity_name) {
+      sql += ` AND (sn.canonical_name LIKE ? OR tn.canonical_name LIKE ?)`;
+      params_list.push(`%${input.entity_name}%`, `%${input.entity_name}%`);
+    }
+    if (input.entity_type) {
+      sql += ` AND (sn.entity_type = ? OR tn.entity_type = ?)`;
+      params_list.push(input.entity_type, input.entity_type);
+    }
+    if (input.document_filter && input.document_filter.length > 0) {
+      const docPlaceholders = input.document_filter.map(() => '?').join(',');
+      sql += ` AND (sn.id IN (SELECT DISTINCT nel.node_id FROM node_entity_links nel JOIN entities e ON nel.entity_id = e.id WHERE e.document_id IN (${docPlaceholders}))
+               OR tn.id IN (SELECT DISTINCT nel.node_id FROM node_entity_links nel JOIN entities e ON nel.entity_id = e.id WHERE e.document_id IN (${docPlaceholders})))`;
+      params_list.push(...input.document_filter, ...input.document_filter);
+    }
+
+    sql += ` ORDER BY ke.contradiction_count DESC LIMIT ?`;
+    params_list.push(input.limit ?? 50);
+
+    const rows = conn.prepare(sql).all(...params_list) as Array<{
+      id: string; source_node_id: string; target_node_id: string;
+      relationship_type: string; evidence_count: number; contradiction_count: number;
+      weight: number; normalized_weight: number | null;
+      source_name: string; source_type: string;
+      target_name: string; target_type: string;
+    }>;
+
+    return formatResponse(successResult({
+      total: rows.length,
+      contradictions: rows.map(r => ({
+        edge_id: r.id,
+        source: { node_id: r.source_node_id, name: r.source_name, type: r.source_type },
+        target: { node_id: r.target_node_id, name: r.target_name, type: r.target_type },
+        relationship_type: r.relationship_type,
+        contradiction_count: r.contradiction_count,
+        evidence_count: r.evidence_count,
+        weight: r.weight,
+      })),
+    }));
+  } catch (error) {
+    return handleError(error);
+  }
+}
+
+/**
+ * Handle ocr_knowledge_graph_embed_entities - Generate embeddings for KG nodes
+ */
+async function handleKnowledgeGraphEmbedEntities(
+  params: Record<string, unknown>
+): Promise<ToolResponse> {
+  try {
+    const input = validateInput(EntityEmbedInput, params);
+    const { db } = requireDatabase();
+    const conn = db.getConnection();
+
+    // Get nodes to embed
+    let sql = `
+      SELECT kn.id, kn.canonical_name, kn.entity_type, kn.aliases,
+             kn.document_count, kn.avg_confidence
+      FROM knowledge_nodes kn
+    `;
+    const sqlParams: unknown[] = [];
+
+    if (input.document_filter && input.document_filter.length > 0) {
+      const placeholders = input.document_filter.map(() => '?').join(',');
+      sql += ` WHERE kn.id IN (
+        SELECT DISTINCT nel.node_id FROM node_entity_links nel
+        JOIN entities e ON nel.entity_id = e.id
+        WHERE e.document_id IN (${placeholders})
+      )`;
+      sqlParams.push(...input.document_filter);
+    }
+
+    if (!input.force) {
+      sql += input.document_filter ? ' AND' : ' WHERE';
+      sql += ` kn.id NOT IN (SELECT node_id FROM entity_embeddings)`;
+    }
+
+    sql += ` ORDER BY kn.document_count DESC LIMIT ?`;
+    sqlParams.push(input.limit ?? 500);
+
+    const nodes = conn.prepare(sql).all(...sqlParams) as Array<{
+      id: string; canonical_name: string; entity_type: string;
+      aliases: string | null; document_count: number; avg_confidence: number;
+    }>;
+
+    if (nodes.length === 0) {
+      return formatResponse(successResult({
+        embedded: 0, skipped: 0, errors: 0,
+        message: 'No nodes to embed (all already embedded or no nodes found)',
+      }));
+    }
+
+    // Build texts for embedding
+    const texts: string[] = [];
+    for (const node of nodes) {
+      let aliases: string[] = [];
+      if (node.aliases) {
+        try { aliases = JSON.parse(node.aliases); } catch { /* ignore */ }
+      }
+      const aliasText = aliases.length > 0 ? ` Also known as: ${aliases.join(', ')}.` : '';
+      texts.push(`${node.canonical_name} (${node.entity_type}).${aliasText}`);
+    }
+
+    // Generate embeddings via nomic
+    const client = getEmbeddingClient();
+    const embedResults = await client.embedChunks(texts);
+
+    // Store embeddings
+    let embedded = 0;
+    let errors = 0;
+
+    const insertEmb = conn.prepare(`
+      INSERT OR REPLACE INTO entity_embeddings (id, node_id, original_text, original_text_length,
+        entity_type, document_count, model_name, content_hash, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, 'nomic-embed-text-v1.5', ?, datetime('now'))
+    `);
+    const insertVec = conn.prepare(`
+      INSERT OR REPLACE INTO vec_entity_embeddings (entity_embedding_id, vector)
+      VALUES (?, ?)
+    `);
+
+    const transaction = conn.transaction(() => {
+      for (let i = 0; i < nodes.length; i++) {
+        try {
+          const vector = embedResults[i];
+          if (!vector || vector.length === 0) { errors++; continue; }
+
+          const embId = uuidv4();
+          const contentHash = computeHash(texts[i]);
+          insertEmb.run(embId, nodes[i].id, texts[i], texts[i].length,
+            nodes[i].entity_type, nodes[i].document_count, contentHash);
+          insertVec.run(embId, Buffer.from(vector.buffer));
+          embedded++;
+        } catch {
+          errors++;
+        }
+      }
+    });
+    transaction();
+
+    return formatResponse(successResult({
+      embedded,
+      skipped: nodes.length - embedded - errors,
+      errors,
+      total_nodes_processed: nodes.length,
+    }));
+  } catch (error) {
+    return handleError(error);
+  }
+}
+
+/**
+ * Handle ocr_knowledge_graph_search_entities - Semantic entity search
+ */
+async function handleKnowledgeGraphSearchEntities(
+  params: Record<string, unknown>
+): Promise<ToolResponse> {
+  try {
+    const input = validateInput(EntitySearchSemanticInput, params);
+    const { db } = requireDatabase();
+    const conn = db.getConnection();
+
+    // Embed the query
+    const embedService = getEmbeddingService();
+    const queryVector = await embedService.embedSearchQuery(input.query);
+    if (!queryVector) {
+      return formatResponse({ error: 'Failed to embed query' });
+    }
+
+    // Search vec_entity_embeddings
+    let sql = `
+      SELECT vee.distance,
+             ee.id as embedding_id, ee.node_id, ee.original_text, ee.entity_type,
+             ee.document_count,
+             kn.canonical_name, kn.aliases, kn.avg_confidence, kn.edge_count
+      FROM vec_entity_embeddings vee
+      JOIN entity_embeddings ee ON vee.entity_embedding_id = ee.id
+      JOIN knowledge_nodes kn ON ee.node_id = kn.id
+      WHERE vee.vector MATCH ?
+        AND vee.k = ?
+    `;
+    const sqlParams: unknown[] = [Buffer.from(queryVector.buffer), (input.limit ?? 20) * 2];
+
+    if (input.entity_type) {
+      sql += ` AND ee.entity_type = ?`;
+      sqlParams.push(input.entity_type);
+    }
+
+    const rows = conn.prepare(sql).all(...sqlParams) as Array<{
+      distance: number; embedding_id: string; node_id: string;
+      original_text: string; entity_type: string; document_count: number;
+      canonical_name: string; aliases: string | null;
+      avg_confidence: number; edge_count: number;
+    }>;
+
+    // Filter by similarity threshold (distance is cosine distance, lower = more similar)
+    const threshold = input.similarity_threshold ?? 0.7;
+    const filtered = rows
+      .filter(r => (1 - r.distance) >= threshold)
+      .slice(0, input.limit ?? 20);
+
+    const results = filtered.map(r => {
+      let aliases: string[] = [];
+      if (r.aliases) {
+        try { aliases = JSON.parse(r.aliases); } catch { /* ignore */ }
+      }
+
+      const result: Record<string, unknown> = {
+        node_id: r.node_id,
+        canonical_name: r.canonical_name,
+        entity_type: r.entity_type,
+        similarity: Number((1 - r.distance).toFixed(4)),
+        aliases,
+        avg_confidence: r.avg_confidence,
+        document_count: r.document_count,
+        edge_count: r.edge_count,
+      };
+
+      if (input.include_documents) {
+        const docs = conn.prepare(`
+          SELECT DISTINCT e.document_id
+          FROM node_entity_links nel
+          JOIN entities e ON nel.entity_id = e.id
+          WHERE nel.node_id = ?
+        `).all(r.node_id) as Array<{ document_id: string }>;
+        result.document_ids = docs.map(d => d.document_id);
+      }
+
+      return result;
+    });
+
+    return formatResponse(successResult({
+      query: input.query,
+      total: results.length,
+      results,
+    }));
+  } catch (error) {
+    return handleError(error);
+  }
+}
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // TOOL DEFINITIONS FOR MCP REGISTRATION
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -1062,5 +1688,35 @@ export const knowledgeGraphTools: Record<string, ToolDefinition> = {
     description: 'Classify knowledge graph edge relationships using Gemini semantic analysis. Analyzes text context where entities co-occur to assign specific relationship types (works_at, represents, located_in, etc.) instead of generic co_mentioned/co_located.',
     inputSchema: ClassifyRelationshipsInput.shape,
     handler: handleKnowledgeGraphClassifyRelationships,
+  },
+  'ocr_knowledge_graph_normalize_weights': {
+    description: 'Normalize edge weights using log(evidence_count+1) * type_multiplier formula. Updates normalized_weight on all matching edges. Supports custom multipliers per relationship type and optional document filtering.',
+    inputSchema: NormalizeWeightsInput.shape,
+    handler: handleKnowledgeGraphNormalizeWeights,
+  },
+  'ocr_knowledge_graph_prune_edges': {
+    description: 'Prune low-quality edges from the knowledge graph by normalized_weight threshold and/or minimum evidence count. Supports dry_run mode to preview before deleting.',
+    inputSchema: PruneEdgesInput.shape,
+    handler: handleKnowledgeGraphPruneEdges,
+  },
+  'ocr_knowledge_graph_set_edge_temporal': {
+    description: 'Set temporal bounds (valid_from, valid_until) on a knowledge graph edge to track when relationships are valid',
+    inputSchema: SetEdgeTemporalInput.shape,
+    handler: handleSetEdgeTemporal,
+  },
+  'ocr_knowledge_graph_contradictions': {
+    description: 'Query edges with contradictions detected from document comparisons. Filter by entity name, type, or document.',
+    inputSchema: ContradictionsInput.shape,
+    handler: handleKnowledgeGraphContradictions,
+  },
+  'ocr_knowledge_graph_embed_entities': {
+    description: 'Generate semantic embeddings for KG nodes using nomic-embed-text-v1.5. Enables entity-level semantic search via ocr_knowledge_graph_search_entities.',
+    inputSchema: EntityEmbedInput.shape,
+    handler: handleKnowledgeGraphEmbedEntities,
+  },
+  'ocr_knowledge_graph_search_entities': {
+    description: 'Search knowledge graph entities by semantic similarity. Requires embeddings generated via ocr_knowledge_graph_embed_entities.',
+    inputSchema: EntitySearchSemanticInput.shape,
+    handler: handleKnowledgeGraphSearchEntities,
   },
 };

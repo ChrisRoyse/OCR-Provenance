@@ -87,6 +87,14 @@ const ExtractionEntityExtractInput = z.object({
   document_id: z.string().min(1).describe('Document ID with structured extractions'),
 });
 
+const CoreferenceResolveInput = z.object({
+  document_id: z.string().min(1).describe('Document ID to resolve coreferences in'),
+  max_chunks: z.number().int().min(1).max(50).default(10)
+    .describe('Maximum chunks to process for coreference resolution'),
+  merge_into_kg: z.boolean().default(false)
+    .describe('Automatically merge resolved coreferences into knowledge graph'),
+});
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // KNOWLEDGE GRAPH AUTO-MERGE
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -1178,6 +1186,161 @@ async function handleEntityExtractionStats(params: Record<string, unknown>) {
   }
 }
 
+/**
+ * ocr_coreference_resolve - Resolve coreferences (pronouns, abbreviations, descriptions) to entities
+ */
+async function handleCoreferenceResolve(params: Record<string, unknown>) {
+  try {
+    const input = validateInput(CoreferenceResolveInput, params);
+    const { db } = requireDatabase();
+    const conn = db.getConnection();
+
+    const doc = db.getDocument(input.document_id);
+    if (!doc) {
+      return formatResponse({ error: `Document not found: ${input.document_id}` });
+    }
+
+    // Get entities for this document
+    const entities = conn.prepare(`
+      SELECT id, raw_text, entity_type, confidence
+      FROM entities WHERE document_id = ?
+      ORDER BY confidence DESC
+    `).all(input.document_id) as Array<{
+      id: string; raw_text: string; entity_type: string; confidence: number;
+    }>;
+
+    if (entities.length === 0) {
+      return formatResponse({
+        document_id: input.document_id,
+        message: 'No entities found. Run ocr_entity_extract first.',
+        resolutions: [],
+      });
+    }
+
+    // Get chunks
+    const chunks = conn.prepare(`
+      SELECT id, text, page_number, chunk_index
+      FROM chunks WHERE document_id = ?
+      ORDER BY chunk_index ASC
+      LIMIT ?
+    `).all(input.document_id, input.max_chunks) as Array<{
+      id: string; text: string; page_number: number | null; chunk_index: number;
+    }>;
+
+    if (chunks.length === 0) {
+      return formatResponse({
+        document_id: input.document_id,
+        message: 'No chunks found.',
+        resolutions: [],
+      });
+    }
+
+    // Build entity list for Gemini prompt (top 50 by confidence)
+    const entityList = entities.slice(0, 50).map(e => `- "${e.raw_text}" (${e.entity_type})`).join('\n');
+
+    const gemini = new GeminiClient();
+    const resolutions: Array<{
+      pronoun_or_description: string;
+      resolved_to: string;
+      entity_type: string;
+      chunk_id: string;
+      confidence: number;
+    }> = [];
+
+    const startTime = Date.now();
+
+    // Process chunks sequentially with cooldown
+    for (let i = 0; i < chunks.length; i++) {
+      const chunk = chunks[i];
+      const prompt = `Analyze this text and identify any pronouns, abbreviations, or descriptions that refer to the known entities listed below. Return ONLY a JSON array of resolutions.
+
+## Known Entities:
+${entityList}
+
+## Text:
+${chunk.text.slice(0, 3000)}
+
+## Instructions:
+Return a JSON array where each element has:
+- "reference": the pronoun/description/abbreviation found in the text (e.g., "he", "the patient", "Dr. S")
+- "resolved_to": the full entity name from the known entities list
+- "entity_type": the entity type
+- "confidence": confidence score 0-1
+
+Only include clear, unambiguous resolutions. Return [] if no resolutions found.
+Return ONLY the JSON array, no other text.`;
+
+      try {
+        const result = await gemini.fast(prompt);
+        const text = result.text || '[]';
+        // Extract JSON array from response
+        const jsonMatch = text.match(/\[[\s\S]*?\]/);
+        if (jsonMatch) {
+          const parsed = JSON.parse(jsonMatch[0]) as Array<{
+            reference: string;
+            resolved_to: string;
+            entity_type: string;
+            confidence: number;
+          }>;
+          for (const r of parsed) {
+            if (r.reference && r.resolved_to && r.confidence > 0.5) {
+              resolutions.push({
+                pronoun_or_description: r.reference,
+                resolved_to: r.resolved_to,
+                entity_type: r.entity_type || 'other',
+                chunk_id: chunk.id,
+                confidence: r.confidence,
+              });
+            }
+          }
+        }
+      } catch (geminiError) {
+        console.error(`[WARN] Coreference resolution failed for chunk ${chunk.id}: ${geminiError instanceof Error ? geminiError.message : String(geminiError)}`);
+      }
+
+      // 2s cooldown between Gemini calls
+      if (i < chunks.length - 1) {
+        await new Promise(resolve => setTimeout(resolve, 2000));
+      }
+    }
+
+    // Optionally merge into KG by creating additional entity mentions
+    let kgMergeResult: { mentions_created: number } | undefined;
+    if (input.merge_into_kg && resolutions.length > 0) {
+      let mentionsCreated = 0;
+      for (const res of resolutions) {
+        // Find the entity this resolves to
+        const entity = entities.find(e => e.raw_text === res.resolved_to);
+        if (entity) {
+          try {
+            const mentionId = uuidv4();
+            conn.prepare(`
+              INSERT INTO entity_mentions (id, entity_id, document_id, chunk_id, character_start, character_end, context_text)
+              VALUES (?, ?, ?, ?, 0, 0, ?)
+            `).run(mentionId, entity.id, input.document_id, res.chunk_id, `[coref: "${res.pronoun_or_description}" -> "${res.resolved_to}"]`);
+            mentionsCreated++;
+          } catch {
+            // Skip if mention creation fails (e.g. FK constraint)
+          }
+        }
+      }
+      kgMergeResult = { mentions_created: mentionsCreated };
+    }
+
+    return formatResponse({
+      document_id: input.document_id,
+      chunks_analyzed: chunks.length,
+      entities_available: entities.length,
+      total_resolutions: resolutions.length,
+      resolutions,
+      kg_merge: kgMergeResult ?? null,
+      processing_duration_ms: Date.now() - startTime,
+    });
+  } catch (error) {
+    return handleError(error);
+  }
+}
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // TOOL DEFINITIONS
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -1220,5 +1383,10 @@ export const entityAnalysisTools: Record<string, ToolDefinition> = {
         .describe('Filter by document IDs'),
     },
     handler: handleEntityExtractionStats,
+  },
+  'ocr_coreference_resolve': {
+    description: 'Resolve coreferences (pronouns, abbreviations, descriptions) to their corresponding entities using Gemini AI. Optionally merge resolutions into knowledge graph.',
+    inputSchema: CoreferenceResolveInput.shape,
+    handler: handleCoreferenceResolve,
   },
 };

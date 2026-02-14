@@ -1070,10 +1070,14 @@ export interface ChunkEntityInfo {
 export function getEntitiesForChunks(
   db: Database.Database,
   chunkIds: string[],
+  minConfidence?: number,
 ): Map<string, ChunkEntityInfo[]> {
   if (chunkIds.length === 0) return new Map();
 
   const placeholders = chunkIds.map(() => '?').join(',');
+  const confidenceClause = minConfidence != null ? `AND kn.avg_confidence >= ?` : '';
+  const params: unknown[] = [...chunkIds];
+  if (minConfidence != null) params.push(minConfidence);
   const rows = db.prepare(`
     SELECT em.chunk_id, kn.id as node_id, kn.entity_type, kn.canonical_name,
            kn.aliases as aliases_json, kn.avg_confidence as confidence, kn.document_count
@@ -1082,7 +1086,8 @@ export function getEntitiesForChunks(
     JOIN node_entity_links nel ON nel.entity_id = e.id
     JOIN knowledge_nodes kn ON nel.node_id = kn.id
     WHERE em.chunk_id IN (${placeholders})
-  `).all(...chunkIds) as Array<{
+    ${confidenceClause}
+  `).all(...params) as Array<{
     chunk_id: string; node_id: string; entity_type: string;
     canonical_name: string; aliases_json: string | null;
     confidence: number; document_count: number;
