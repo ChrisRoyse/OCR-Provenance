@@ -72,7 +72,7 @@ export class BM25SearchService {
 
     const ftsQuery = phraseSearch
       ? `"${query.replace(/"/g, '""')}"`
-      : this.buildFTSQuery(query);
+      : sanitizeFTS5Query(query);
 
     let sql = `
       SELECT
@@ -134,10 +134,6 @@ export class BM25SearchService {
     }));
   }
 
-  private buildFTSQuery(query: string): string {
-    return sanitizeFTS5Query(query);
-  }
-
   /**
    * Search VLM description embeddings using FTS5
    * Queries vlm_fts JOIN embeddings JOIN images JOIN documents
@@ -163,7 +159,7 @@ export class BM25SearchService {
 
     const ftsQuery = phraseSearch
       ? `"${query.replace(/"/g, '""')}"`
-      : this.buildFTSQuery(query);
+      : sanitizeFTS5Query(query);
 
     let sql = `
       SELECT
@@ -248,7 +244,7 @@ export class BM25SearchService {
 
     const ftsQuery = phraseSearch
       ? `"${query.replace(/"/g, '""')}"`
-      : this.buildFTSQuery(query);
+      : sanitizeFTS5Query(query);
 
     let sql = `
       SELECT

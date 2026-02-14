@@ -67,7 +67,6 @@ async function handleFileUpload(params: Record<string, unknown>) {
     const { db } = requireDatabase();
     const conn = db.getConnection();
 
-    // Sanitize file path to prevent directory traversal
     const safeFilePath = sanitizePath(input.file_path);
 
     // Compute file hash for dedup check
@@ -276,7 +275,6 @@ async function handleFileDelete(params: Record<string, unknown>) {
         const msg = datalabError instanceof Error ? datalabError.message : String(datalabError);
         console.error(`[WARN] Failed to delete from Datalab: ${msg}`);
         datalabDeleteError = msg;
-        // Continue with local delete even if Datalab delete fails
       }
     }
 

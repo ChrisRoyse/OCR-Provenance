@@ -477,7 +477,8 @@ describe('Entity Operations', () => {
   describe('all entity types', () => {
     it.skipIf(!sqliteVecAvailable)('accepts all valid entity types', () => {
       const now = new Date().toISOString();
-      const types = ['person', 'organization', 'date', 'amount', 'case_number', 'location', 'statute', 'exhibit', 'other'];
+      // TS-06: Include v18 entity types (medication, diagnosis, medical_device)
+      const types = ['person', 'organization', 'date', 'amount', 'case_number', 'location', 'statute', 'exhibit', 'medication', 'diagnosis', 'medical_device', 'other'];
 
       for (let i = 0; i < types.length; i++) {
         expect(() => {

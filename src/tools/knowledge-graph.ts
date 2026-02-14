@@ -271,6 +271,20 @@ const VisualizeInput = z.object({
   layout: z.enum(['flowchart', 'graph']).default('graph'),
 });
 
+/**
+ * Parse a JSON-encoded aliases string into an array.
+ * Returns an empty array if the input is null, undefined, or malformed JSON.
+ */
+function parseAliases(aliasesJson: string | null | undefined): string[] {
+  if (!aliasesJson) return [];
+  try {
+    const parsed = JSON.parse(aliasesJson);
+    return Array.isArray(parsed) ? parsed.filter((a: unknown) => typeof a === 'string' && a.length > 0) : [];
+  } catch {
+    return [];
+  }
+}
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // HANDLERS
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -601,14 +615,8 @@ async function handleKnowledgeGraphMerge(
       }
 
       // 2. Merge aliases
-      let sourceAliases: string[] = [];
-      if (sourceNode.aliases) {
-        try { sourceAliases = JSON.parse(sourceNode.aliases); } catch { /* malformed alias JSON - treat as empty */ }
-      }
-      let targetAliases: string[] = [];
-      if (targetNode.aliases) {
-        try { targetAliases = JSON.parse(targetNode.aliases); } catch { /* malformed alias JSON - treat as empty */ }
-      }
+      const sourceAliases = parseAliases(sourceNode.aliases);
+      const targetAliases = parseAliases(targetNode.aliases);
 
       // Add source canonical name and its aliases to target aliases
       const mergedAliases = new Set([
@@ -1544,10 +1552,7 @@ async function handleKnowledgeGraphEmbedEntities(
     // Build texts for embedding
     const texts: string[] = [];
     for (const node of nodes) {
-      let aliases: string[] = [];
-      if (node.aliases) {
-        try { aliases = JSON.parse(node.aliases); } catch { /* ignore */ }
-      }
+      const aliases = parseAliases(node.aliases);
       const aliasText = aliases.length > 0 ? ` Also known as: ${aliases.join(', ')}.` : '';
       texts.push(`${node.canonical_name} (${node.entity_type}).${aliasText}`);
     }
@@ -1651,10 +1656,7 @@ async function handleKnowledgeGraphSearchEntities(
       .slice(0, input.limit ?? 20);
 
     const results = filtered.map(r => {
-      let aliases: string[] = [];
-      if (r.aliases) {
-        try { aliases = JSON.parse(r.aliases); } catch { /* ignore */ }
-      }
+      const aliases = parseAliases(r.aliases);
 
       const result: Record<string, unknown> = {
         node_id: r.node_id,
@@ -2006,10 +2008,7 @@ async function handleKnowledgeGraphEntityExport(
     const entities: Array<Record<string, unknown>> = [];
 
     for (const node of nodes) {
-      let aliases: string[] = [];
-      if (input.include_aliases && node.aliases) {
-        try { aliases = JSON.parse(node.aliases); } catch { /* ignore */ }
-      }
+      const aliases = input.include_aliases ? parseAliases(node.aliases) : [];
 
       const entity: Record<string, unknown> = {
         node_id: node.id,

@@ -175,7 +175,7 @@ async function runHybridSearch(
   searchLimit: number,
   documentFilter: string[] | undefined,
   semanticWeight: number,
-): Promise<{ results: QASearchResult[]; mode_used: string; warnings: string[]; _degraded: boolean }> {
+): Promise<{ results: QASearchResult[]; mode_used: string; warnings: string[] }> {
   const warnings: string[] = [];
   // BM25 results
   let bm25Results: Array<{
@@ -229,12 +229,11 @@ async function runHybridSearch(
 
   // If both are empty, no results
   if (bm25Results.length === 0 && semanticResults.length === 0) {
-    return { results: [], mode_used: 'hybrid', warnings, _degraded: warnings.length > 0 };
+    return { results: [], mode_used: 'hybrid', warnings };
   }
 
   // If only one side has results, return that side directly
   if (semanticResults.length === 0) {
-    const degraded = warnings.length > 0;
     return {
       results: bm25Results.map(r => ({
         chunk_id: r.chunk_id,
@@ -243,9 +242,8 @@ async function runHybridSearch(
         page_number: r.page_number,
         score: r.bm25_score,
       })),
-      mode_used: degraded ? 'bm25_only' : 'bm25_fallback',
+      mode_used: warnings.length > 0 ? 'bm25_only' : 'bm25_fallback',
       warnings,
-      _degraded: degraded,
     };
   }
 
@@ -260,7 +258,6 @@ async function runHybridSearch(
       })),
       mode_used: 'semantic_fallback',
       warnings,
-      _degraded: warnings.length > 0,
     };
   }
 
@@ -326,7 +323,6 @@ async function runHybridSearch(
     })),
     mode_used: 'hybrid',
     warnings,
-    _degraded: warnings.length > 0,
   };
 }
 
@@ -514,6 +510,22 @@ function gatherDocumentLevelEntities(
   return { entityContext, entities };
 }
 
+/** Format KG edge rows into a relationship context string. */
+function formatKGPathRows(
+  pathRows: Array<{ source_name: string; target_name: string; relationship_type: string; weight: number }>,
+): string {
+  if (pathRows.length === 0) return '';
+
+  let kgContext = '\n\n## Entity Relationships:\n';
+  for (const p of pathRows) {
+    kgContext += `- ${p.source_name} --[${p.relationship_type}]--> ${p.target_name} (weight: ${p.weight.toFixed(2)})\n`;
+  }
+  return kgContext;
+}
+
+/** Type alias for the edge row shape returned by all KG path queries. */
+type KGPathRow = { source_name: string; target_name: string; relationship_type: string; weight: number };
+
 /**
  * Gather KG relationship context between top entities.
  * Queries knowledge_edges joined with knowledge_nodes for edges
@@ -526,14 +538,12 @@ function gatherKGPathContext(
   if (entities.length < 2) return '';
 
   try {
-    // Use node_ids directly for more precise edge lookup
     const nodeIds = entities
       .slice(0, 10)
       .map(e => e.node_id)
       .filter(id => id !== '');
 
     if (nodeIds.length < 2) {
-      // Fall back to name-based lookup
       return gatherKGPathsByName(conn, entities);
     }
 
@@ -548,22 +558,14 @@ function gatherKGPathContext(
         AND ke.target_node_id IN (${placeholders})
       ORDER BY ke.weight DESC
       LIMIT 20
-    `).all(...nodeIds, ...nodeIds) as Array<{
-      source_name: string; target_name: string; relationship_type: string; weight: number;
-    }>;
+    `).all(...nodeIds, ...nodeIds) as KGPathRow[];
 
     if (pathRows.length === 0) {
-      // Try broader lookup: edges where at least one endpoint is in our entity set
       return gatherKGPathsBroad(conn, nodeIds);
     }
 
-    let kgContext = '\n\n## Entity Relationships:\n';
-    for (const p of pathRows) {
-      kgContext += `- ${p.source_name} --[${p.relationship_type}]--> ${p.target_name} (weight: ${p.weight.toFixed(2)})\n`;
-    }
-    return kgContext;
+    return formatKGPathRows(pathRows);
   } catch {
-    // KG may not exist
     return '';
   }
 }
@@ -587,17 +589,9 @@ function gatherKGPathsBroad(
          OR ke.target_node_id IN (${placeholders})
       ORDER BY ke.weight DESC
       LIMIT 20
-    `).all(...nodeIds, ...nodeIds) as Array<{
-      source_name: string; target_name: string; relationship_type: string; weight: number;
-    }>;
+    `).all(...nodeIds, ...nodeIds) as KGPathRow[];
 
-    if (pathRows.length === 0) return '';
-
-    let kgContext = '\n\n## Entity Relationships:\n';
-    for (const p of pathRows) {
-      kgContext += `- ${p.source_name} --[${p.relationship_type}]--> ${p.target_name} (weight: ${p.weight.toFixed(2)})\n`;
-    }
-    return kgContext;
+    return formatKGPathRows(pathRows);
   } catch {
     return '';
   }
@@ -623,17 +617,9 @@ function gatherKGPathsByName(
          OR LOWER(tn.canonical_name) IN (${placeholders})
       ORDER BY ke.weight DESC
       LIMIT 20
-    `).all(...topEntityNames, ...topEntityNames) as Array<{
-      source_name: string; target_name: string; relationship_type: string; weight: number;
-    }>;
+    `).all(...topEntityNames, ...topEntityNames) as KGPathRow[];
 
-    if (pathRows.length === 0) return '';
-
-    let kgContext = '\n\n## Entity Relationships:\n';
-    for (const p of pathRows) {
-      kgContext += `- ${p.source_name} --[${p.relationship_type}]--> ${p.target_name} (weight: ${p.weight.toFixed(2)})\n`;
-    }
-    return kgContext;
+    return formatKGPathRows(pathRows);
   } catch {
     return '';
   }
@@ -687,27 +673,21 @@ async function handleQuestionAnswer(params: Record<string, unknown>): Promise<To
     let searchResults: QASearchResult[];
     let modeUsed: string = searchMode;
     const responseWarnings: string[] = [];
-    let isDegraded = false;
 
     if (searchMode === 'bm25') {
       searchResults = runBM25Search(conn, input.question, searchLimit, documentFilter);
     } else if (searchMode === 'semantic') {
       searchResults = await runSemanticSearch(input.question, searchLimit, documentFilter);
-      // Fall back to BM25 if semantic fails
       if (searchResults.length === 0) {
         searchResults = runBM25Search(conn, input.question, searchLimit, documentFilter);
         if (searchResults.length > 0) modeUsed = 'bm25_fallback';
       }
     } else {
-      // Hybrid mode (default)
       const hybridResult = await runHybridSearch(conn, input.question, searchLimit, documentFilter, semanticWeight);
       searchResults = hybridResult.results;
       modeUsed = hybridResult.mode_used;
       if (hybridResult.warnings.length > 0) {
         responseWarnings.push(...hybridResult.warnings);
-      }
-      if (hybridResult._degraded) {
-        isDegraded = true;
       }
     }
 
@@ -846,8 +826,6 @@ ${input.question}
 
     if (responseWarnings.length > 0) {
       responseData.warnings = responseWarnings;
-    }
-    if (isDegraded) {
       responseData._degraded = true;
       responseData.actual_mode = modeUsed;
     }

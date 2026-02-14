@@ -283,7 +283,7 @@ export async function buildKnowledgeGraph(
     clusterContext,
   );
 
-  // Step 5: Store nodes and links with per-node provenance (P1.1)
+  // Step 6: Store nodes and links with per-node provenance (P1.1)
   for (const node of resolutionResult.nodes) {
     insertKnowledgeNode(conn, node);
 
@@ -314,10 +314,10 @@ export async function buildKnowledgeGraph(
     insertNodeEntityLink(conn, link);
   }
 
-  // Step 6: Build co-occurrence edges
+  // Step 7: Build co-occurrence edges
   buildCoOccurrenceEdges(db, resolutionResult.nodes, provenanceId, autoTemporal);
 
-  // Step 7: Optionally classify relationships (rule-based first, then Gemini)
+  // Step 8: Optionally classify relationships (rule-based first, then Gemini)
   if (classifyRelationships) {
     // Collect co_located edges for classification
     const coLocatedEdges: KnowledgeEdge[] = [];
@@ -336,21 +336,18 @@ export async function buildKnowledgeGraph(
       // Query cluster context for document-level hints
       const clusterTagMap = new Map<string, string | null>();
       try {
-        const allDocIds = [...new Set(documentIds)];
-        if (allDocIds.length > 0) {
-          const placeholders = allDocIds.map(() => '?').join(',');
-          const clusterRows = conn.prepare(
-            `SELECT dc.document_id, c.classification_tag
-             FROM document_clusters dc
-             JOIN clusters c ON dc.cluster_id = c.id
-             WHERE dc.document_id IN (${placeholders})`,
-          ).all(...allDocIds) as { document_id: string; classification_tag: string | null }[];
-          for (const row of clusterRows) {
-            clusterTagMap.set(row.document_id, row.classification_tag);
-          }
+        const placeholders = documentIds.map(() => '?').join(',');
+        const clusterRows = conn.prepare(
+          `SELECT dc.document_id, c.classification_tag
+           FROM document_clusters dc
+           JOIN clusters c ON dc.cluster_id = c.id
+           WHERE dc.document_id IN (${placeholders})`,
+        ).all(...documentIds) as { document_id: string; classification_tag: string | null }[];
+        for (const row of clusterRows) {
+          clusterTagMap.set(row.document_id, row.classification_tag);
         }
       } catch {
-        // Cluster tables may not exist in older schemas - skip
+        // Cluster tables may not exist in older schemas
       }
 
       const unclassifiedEdges: KnowledgeEdge[] = [];
@@ -441,7 +438,7 @@ export async function buildKnowledgeGraph(
     }
   }
 
-  // Step 8: Gather stats and return result
+  // Step 9: Gather stats and return result
   const processingDurationMs = Date.now() - startTime;
   const stats = getGraphStatsFromDb(conn);
 

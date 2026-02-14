@@ -73,7 +73,6 @@ async function handleFormFill(params: Record<string, unknown>) {
     if (input.output_path && result.outputBase64) {
       const { writeFileSync, mkdirSync } = await import('fs');
       const { dirname: dirPath } = await import('path');
-      // Sanitize output path to prevent directory traversal
       const safeOutputPath = sanitizePath(input.output_path);
       mkdirSync(dirPath(safeOutputPath), { recursive: true });
       writeFileSync(safeOutputPath, Buffer.from(result.outputBase64, 'base64'));
@@ -145,7 +144,7 @@ async function handleFormFill(params: Record<string, unknown>) {
       fields_not_found: result.fieldsNotFound,
       page_count: result.pageCount,
       cost_cents: result.costCents,
-      output_saved: input.output_path ? true : false,
+      output_saved: !!input.output_path,
       provenance_id: provId,
       processing_duration_ms: result.processingDurationMs,
     });
