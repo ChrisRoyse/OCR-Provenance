@@ -120,31 +120,30 @@ describe('ocr_convert_raw tool definition', () => {
   });
 });
 
-describe('IngestFilesInput with file_urls', () => {
-  it('should accept file_urls as optional array of URLs', async () => {
+describe('IngestFilesInput validation', () => {
+  it('should accept valid file_paths', async () => {
+    const { IngestFilesInput } = await import('../../../src/utils/validation.js');
+    const input = IngestFilesInput.parse({
+      file_paths: ['/tmp/test.pdf'],
+    });
+    expect(input.file_paths).toEqual(['/tmp/test.pdf']);
+  });
+
+  it('should reject empty file_paths', async () => {
+    const { IngestFilesInput } = await import('../../../src/utils/validation.js');
+    expect(() =>
+      IngestFilesInput.parse({
+        file_paths: [],
+      })
+    ).toThrow();
+  });
+
+  it('should strip unknown properties like file_urls', async () => {
     const { IngestFilesInput } = await import('../../../src/utils/validation.js');
     const input = IngestFilesInput.parse({
       file_paths: ['/tmp/test.pdf'],
       file_urls: ['https://example.com/doc.pdf'],
     });
-    expect(input.file_urls).toEqual(['https://example.com/doc.pdf']);
-  });
-
-  it('should accept input without file_urls', async () => {
-    const { IngestFilesInput } = await import('../../../src/utils/validation.js');
-    const input = IngestFilesInput.parse({
-      file_paths: ['/tmp/test.pdf'],
-    });
-    expect(input.file_urls).toBeUndefined();
-  });
-
-  it('should reject invalid URLs in file_urls', async () => {
-    const { IngestFilesInput } = await import('../../../src/utils/validation.js');
-    expect(() =>
-      IngestFilesInput.parse({
-        file_paths: ['/tmp/test.pdf'],
-        file_urls: ['not-a-url'],
-      })
-    ).toThrow();
+    expect((input as Record<string, unknown>).file_urls).toBeUndefined();
   });
 });

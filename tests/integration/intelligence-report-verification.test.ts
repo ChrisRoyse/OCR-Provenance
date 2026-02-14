@@ -11,6 +11,7 @@
  */
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { existsSync } from 'fs';
 import Database from 'better-sqlite3';
 import { classifyByRules } from '../../src/services/knowledge-graph/rule-classifier.js';
 import { buildKGEntityHints } from '../../src/utils/entity-extraction-helpers.js';
@@ -21,9 +22,11 @@ import type { EntityType } from '../../src/models/entity.js';
 // ═══════════════════════════════════════════════════════════════════════════════
 
 const DB_PATH = `${process.env.HOME}/.ocr-provenance/databases/bridginglife-benchmark.db`;
+const benchmarkExists = existsSync(DB_PATH);
 let conn: Database.Database;
 
 beforeAll(() => {
+  if (!benchmarkExists) return;
   conn = new Database(DB_PATH, { readonly: true });
   conn.pragma('journal_mode = WAL');
   conn.pragma('foreign_keys = ON');
@@ -37,7 +40,7 @@ afterAll(() => {
 // HELPER: Verify database has expected data
 // ═══════════════════════════════════════════════════════════════════════════════
 
-describe('Database sanity checks', () => {
+describe.skipIf(!benchmarkExists)('Database sanity checks', () => {
   it('should have expected tables', () => {
     const tables = conn.prepare(
       "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
@@ -75,7 +78,7 @@ describe('Database sanity checks', () => {
 // data structures that support hybrid search (BM25 FTS + chunks + entities + KG).
 // ═══════════════════════════════════════════════════════════════════════════════
 
-describe('R1: QA Hybrid Search infrastructure', () => {
+describe.skipIf(!benchmarkExists)('R1: QA Hybrid Search infrastructure', () => {
   it('should have FTS5 index for BM25 search', () => {
     // Verify FTS5 table exists (required for BM25 leg of hybrid search)
     const ftsTable = conn.prepare(
@@ -163,7 +166,7 @@ describe('R1: QA Hybrid Search infrastructure', () => {
 // Verifies the entity dossier tool can return comprehensive profiles.
 // ═══════════════════════════════════════════════════════════════════════════════
 
-describe('R2: Entity Dossier', () => {
+describe.skipIf(!benchmarkExists)('R2: Entity Dossier', () => {
   let sampleNode: {
     id: string; canonical_name: string; entity_type: string;
     aliases: string | null; document_count: number; mention_count: number;
@@ -289,7 +292,7 @@ describe('R2: Entity Dossier', () => {
       `).all(...chunkIds) as Array<{ normalized_text: string; raw_text: string }>;
 
       // At least some entities should have co-located dates
-      expect(dateRows.length, 'Expected co-located date entities for timeline').toBeGreaterThanOrEqual(0);
+      expect(dateRows.length, 'Expected co-located date entities for timeline (need benchmark data)').toBeGreaterThan(0);
     }
   });
 });
@@ -300,7 +303,7 @@ describe('R2: Entity Dossier', () => {
 // on co_located edges.
 // ═══════════════════════════════════════════════════════════════════════════════
 
-describe('R3: Auto-Temporal Extraction', () => {
+describe.skipIf(!benchmarkExists)('R3: Auto-Temporal Extraction', () => {
   // The benchmark DB may be at schema v19 (pre-temporal columns) or v20+.
   // Detect which schema version we have.
   let hasTemporalColumns = false;
@@ -377,7 +380,7 @@ describe('R3: Auto-Temporal Extraction', () => {
 // Tests via direct SQL queries (same queries as the handler).
 // ═══════════════════════════════════════════════════════════════════════════════
 
-describe('R4: Proactive Contradiction Scanner', () => {
+describe.skipIf(!benchmarkExists)('R4: Proactive Contradiction Scanner', () => {
   it('should find conflicting_relationships (nodes with multiple same-type edges to different partners)', () => {
     const rows = conn.prepare(`
       SELECT n.id as node_id, n.canonical_name, n.entity_type, e.relationship_type,
@@ -446,7 +449,7 @@ describe('R4: Proactive Contradiction Scanner', () => {
         )
         WHERE e1.valid_from IS NOT NULL AND e2.valid_from IS NOT NULL
       `).get() as { cnt: number };
-      expect(temporalRows.cnt, 'Temporal conflicts count should be non-negative').toBeGreaterThanOrEqual(0);
+      expect(typeof temporalRows.cnt).toBe('number');
     } else {
       // Pre-v20 schema: temporal_conflicts scan_type is gracefully skipped by handler
       // Verify the handler's skip behavior by confirming columns are absent
@@ -499,7 +502,7 @@ describe('R4: Proactive Contradiction Scanner', () => {
 // Tests the rule-based relationship classifier with new expanded rules.
 // ═══════════════════════════════════════════════════════════════════════════════
 
-describe('R5: Expanded Rule Classifier', () => {
+describe.skipIf(!benchmarkExists)('R5: Expanded Rule Classifier', () => {
   it('should classify person + organization as works_at', () => {
     const result = classifyByRules('person', 'organization');
     expect(result).not.toBeNull();
@@ -632,39 +635,17 @@ describe('R5: Expanded Rule Classifier', () => {
 // Verifies that the CoreferenceResolveInput schema includes resolution_scope.
 // ═══════════════════════════════════════════════════════════════════════════════
 
-describe('R6: Document-Level Coreference', () => {
-  it('should have resolution_scope field in CoreferenceResolveInput schema', () => {
-    // Import the z schema indirectly by verifying the tool definition exists
-    // and has the resolution_scope parameter
-    // We verify by checking the source code parses correctly with the schema
-    const { z } = require('zod');
-
-    const CoreferenceResolveInput = z.object({
-      document_id: z.string().min(1),
-      max_chunks: z.number().int().min(1).max(50).default(10),
-      merge_into_kg: z.boolean().default(false),
-      resolution_scope: z.enum(['chunk', 'document']).default('chunk'),
-    });
-
-    // Test chunk scope
-    const chunkResult = CoreferenceResolveInput.parse({
-      document_id: 'test-doc',
-      resolution_scope: 'chunk',
-    });
-    expect(chunkResult.resolution_scope).toBe('chunk');
-
-    // Test document scope
-    const docResult = CoreferenceResolveInput.parse({
-      document_id: 'test-doc',
-      resolution_scope: 'document',
-    });
-    expect(docResult.resolution_scope).toBe('document');
-
-    // Test default is chunk
-    const defaultResult = CoreferenceResolveInput.parse({
-      document_id: 'test-doc',
-    });
-    expect(defaultResult.resolution_scope).toBe('chunk');
+describe.skipIf(!benchmarkExists)('R6: Document-Level Coreference', () => {
+  it('should have resolution_scope field in CoreferenceResolveInput schema', async () => {
+    // Validate the actual tool definition includes resolution_scope
+    const { entityAnalysisTools } = await import('../../src/tools/entity-analysis.js');
+    const toolDef = entityAnalysisTools['ocr_coreference_resolve'];
+    expect(toolDef, 'ocr_coreference_resolve tool should be defined').toBeDefined();
+    const schemaKeys = Object.keys(toolDef.inputSchema);
+    expect(schemaKeys).toContain('resolution_scope');
+    expect(schemaKeys).toContain('document_id');
+    expect(schemaKeys).toContain('merge_into_kg');
+    expect(schemaKeys).toContain('max_chunks');
   });
 
   it('should have entities and chunks in the database to support coreference resolution', () => {
@@ -690,7 +671,7 @@ describe('R6: Document-Level Coreference', () => {
       WHERE aliases IS NOT NULL AND aliases != '[]'
     `).get() as { cnt: number };
 
-    expect(nodesWithAliases.cnt, 'Expected KG nodes with aliases for document-level context').toBeGreaterThanOrEqual(0);
+    expect(nodesWithAliases.cnt, 'Expected KG nodes with aliases for document-level context').toBeGreaterThan(0);
   });
 });
 
@@ -699,7 +680,7 @@ describe('R6: Document-Level Coreference', () => {
 // Verifies the confidence update mechanism works with dry_run=true.
 // ═══════════════════════════════════════════════════════════════════════════════
 
-describe('R7: Dynamic Entity Confidence', () => {
+describe.skipIf(!benchmarkExists)('R7: Dynamic Entity Confidence', () => {
   it('should have entities with confidence scores to update', () => {
     const entityCount = (conn.prepare(
       'SELECT COUNT(*) as cnt FROM entities WHERE confidence > 0'
@@ -800,7 +781,7 @@ describe('R7: Dynamic Entity Confidence', () => {
 // Verifies the entity_export handler can produce structured data.
 // ═══════════════════════════════════════════════════════════════════════════════
 
-describe('R8: Cross-Database Entity Linking (Entity Export)', () => {
+describe.skipIf(!benchmarkExists)('R8: Cross-Database Entity Linking (Entity Export)', () => {
   it('should export entity data with canonical_names', () => {
     const nodes = conn.prepare(`
       SELECT kn.id, kn.canonical_name, kn.normalized_name, kn.entity_type,
@@ -888,7 +869,7 @@ describe('R8: Cross-Database Entity Linking (Entity Export)', () => {
 // Verifies the Mermaid graph generation.
 // ═══════════════════════════════════════════════════════════════════════════════
 
-describe('R9: KG Visualization (Mermaid)', () => {
+describe.skipIf(!benchmarkExists)('R9: KG Visualization (Mermaid)', () => {
   it('should generate a mermaid graph string with graph directive', () => {
     // Simulate what the handler does: get top nodes, get edges, build mermaid
     const topNodes = conn.prepare(`
@@ -981,7 +962,7 @@ describe('R9: KG Visualization (Mermaid)', () => {
 // Verifies that buildKGEntityHints returns a properly formatted hint string.
 // ═══════════════════════════════════════════════════════════════════════════════
 
-describe('R10: Entity Extraction Hints', () => {
+describe.skipIf(!benchmarkExists)('R10: Entity Extraction Hints', () => {
   it('should return a string (not undefined)', () => {
     const hints = buildKGEntityHints(conn);
     expect(hints, 'buildKGEntityHints should return a string, not undefined').toBeDefined();

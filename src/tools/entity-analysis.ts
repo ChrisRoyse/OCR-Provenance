@@ -1405,17 +1405,18 @@ Return ONLY the JSON array, no other text.`;
       let mentionsCreated = 0;
       for (const res of resolutions) {
         // Find the entity this resolves to
-        const entity = entities.find(e => e.raw_text === res.resolved_to);
+        const entity = entities.find(e => e.normalized_text === res.resolved_to || e.raw_text === res.resolved_to);
         if (entity) {
           try {
             const mentionId = uuidv4();
             conn.prepare(`
               INSERT INTO entity_mentions (id, entity_id, document_id, chunk_id, character_start, character_end, context_text)
-              VALUES (?, ?, ?, ?, 0, 0, ?)
+              VALUES (?, ?, ?, ?, NULL, NULL, ?)
             `).run(mentionId, entity.id, input.document_id, res.chunk_id, `[coref: "${res.pronoun_or_description}" -> "${res.resolved_to}"]`);
             mentionsCreated++;
-          } catch {
-            // Skip if mention creation fails (e.g. FK constraint)
+          } catch (e: unknown) {
+            const msg = e instanceof Error ? e.message : String(e);
+            console.error(`[coreference] Failed to insert entity mention: ${msg}`);
           }
         }
       }

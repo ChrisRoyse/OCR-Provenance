@@ -213,7 +213,6 @@ export class NomicEmbeddingClient {
       };
 
       const shell = new PythonShell(this.workerPath, options);
-      let output = '';
       let stderr = '';
 
       // Timeout: kill the Python process if CUDA hangs
@@ -230,8 +229,9 @@ export class NomicEmbeddingClient {
         );
       }, NomicEmbeddingClient.WORKER_TIMEOUT_MS);
 
+      const outputChunks: string[] = [];
       shell.on('message', (msg: string) => {
-        output += msg;
+        outputChunks.push(msg);
       });
 
       shell.on('stderr', (err: string) => {
@@ -260,6 +260,7 @@ export class NomicEmbeddingClient {
           return;
         }
 
+        const output = outputChunks.join('\n');
         if (!output.trim()) {
           reject(new EmbeddingError('Worker produced no output', 'WORKER_ERROR', { stderr: stderr.substring(0, 1000) }));
           return;

@@ -81,9 +81,9 @@ export function normalizeEntity(rawText: string, entityType: string): string {
       const parsed = Date.parse(trimmed);
       if (!isNaN(parsed)) {
         const d = new Date(parsed);
-        const year = d.getFullYear();
-        const month = String(d.getMonth() + 1).padStart(2, '0');
-        const day = String(d.getDate()).padStart(2, '0');
+        const year = d.getUTCFullYear();
+        const month = String(d.getUTCMonth() + 1).padStart(2, '0');
+        const day = String(d.getUTCDate()).padStart(2, '0');
         return `${year}-${month}-${day}`;
       }
       return trimmed.toLowerCase();

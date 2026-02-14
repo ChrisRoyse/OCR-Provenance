@@ -40,7 +40,7 @@ const AI_LOWER_THRESHOLD = 0.70;
  * Person names use a lower threshold (0.75) to catch OCR name variants.
  * All other types use the default threshold (0.85).
  */
-function getFuzzyThreshold(entityType: string): number {
+export function getFuzzyThreshold(entityType: string): number {
   return entityType === 'person' ? PERSON_FUZZY_MERGE_THRESHOLD : FUZZY_MERGE_THRESHOLD;
 }
 

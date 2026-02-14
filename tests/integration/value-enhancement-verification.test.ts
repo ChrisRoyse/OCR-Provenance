@@ -343,7 +343,7 @@ describe.skipIf(!sqliteVecAvailable)('VALUE ENHANCEMENT VERIFICATION: Phases 1-5
     });
 
     it('should accept all valid entity types', () => {
-      const validTypes = ['person', 'organization', 'date', 'amount', 'case_number', 'location', 'statute', 'exhibit', 'other'];
+      const validTypes = ['person', 'organization', 'date', 'amount', 'case_number', 'location', 'statute', 'exhibit', 'other', 'medication', 'diagnosis', 'medical_device'];
       const entityProvId = crypto.randomUUID();
       db.prepare(`
         INSERT INTO provenance (id, type, created_at, processed_at, source_type, root_document_id, content_hash, processor, processor_version, processing_params, parent_ids, chain_depth)
@@ -513,28 +513,14 @@ describe.skipIf(!sqliteVecAvailable)('VALUE ENHANCEMENT VERIFICATION: Phases 1-5
       expect(MIN_CACHE_CHARS / MIN_CACHE_TOKENS).toBe(4);
     });
 
-    it('should validate file_urls parameter in IngestFilesInput', async () => {
+    it('should validate IngestFilesInput requires file_paths', async () => {
       const { IngestFilesInput } = await import('../../src/utils/validation.js');
 
-      // Valid: file_urls with proper URLs
+      // Valid: file_paths with proper paths
       const valid = IngestFilesInput.safeParse({
         file_paths: ['/test.pdf'],
-        file_urls: ['https://example.com/doc.pdf'],
       });
       expect(valid.success).toBe(true);
-
-      // Valid: without file_urls (optional)
-      const withoutUrls = IngestFilesInput.safeParse({
-        file_paths: ['/test.pdf'],
-      });
-      expect(withoutUrls.success).toBe(true);
-
-      // Invalid: file_urls with non-URL string
-      const invalid = IngestFilesInput.safeParse({
-        file_paths: ['/test.pdf'],
-        file_urls: ['not-a-url'],
-      });
-      expect(invalid.success).toBe(false);
 
       // Invalid: empty file_paths
       const noFiles = IngestFilesInput.safeParse({

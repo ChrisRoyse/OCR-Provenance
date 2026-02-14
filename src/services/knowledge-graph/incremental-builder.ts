@@ -29,6 +29,7 @@ import { getProvenanceTracker } from '../provenance/tracker.js';
 import {
   resolveEntities,
   computeTypeSimilarity,
+  getFuzzyThreshold,
   type ResolutionMode,
   type ClusterContext,
 } from './resolution-service.js';
@@ -54,9 +55,6 @@ import { parseToISODate, isMoreSpecificTemporal } from './graph-service.js';
 // ============================================================
 // Types
 // ============================================================
-
-/** Fuzzy merge threshold (same as resolution-service) */
-const FUZZY_MERGE_THRESHOLD = 0.85;
 
 /** Maximum entities per document for co-occurrence */
 const MAX_COOCCURRENCE_ENTITIES = 200;
@@ -263,7 +261,7 @@ export async function incrementalBuildGraph(
             proxyEntity,
             clusterContext,
           );
-          if (score >= FUZZY_MERGE_THRESHOLD) {
+          if (score >= getFuzzyThreshold(entity.entity_type)) {
             if (!bestMatch || score > bestMatch.score) {
               bestMatch = { node, score };
             }

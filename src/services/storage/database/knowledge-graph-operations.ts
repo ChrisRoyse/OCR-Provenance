@@ -992,6 +992,51 @@ export function cleanupGraphForDocument(
 
   const nodeIdsToDelete = nodesToDelete.map((r) => r.id);
 
+  // Step 3b: Clean up entity_embeddings for nodes being deleted
+  if (nodeIdsToDelete.length > 0) {
+    const embPlaceholders = nodeIdsToDelete.map(() => '?').join(',');
+    try {
+      // Delete vec_entity_embeddings first (references entity_embeddings.id)
+      db.prepare(
+        `DELETE FROM vec_entity_embeddings WHERE entity_embedding_id IN (
+           SELECT id FROM entity_embeddings WHERE node_id IN (${embPlaceholders})
+         )`
+      ).run(...nodeIdsToDelete);
+      // Then delete entity_embeddings
+      db.prepare(
+        `DELETE FROM entity_embeddings WHERE node_id IN (${embPlaceholders})`
+      ).run(...nodeIdsToDelete);
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e);
+      if (!msg.includes('no such table')) throw e;
+    }
+  }
+
+  // Step 3c: Decrement edge_count on surviving nodes connected to deleted nodes
+  if (nodeIdsToDelete.length > 0) {
+    const delPlaceholders = nodeIdsToDelete.map(() => '?').join(',');
+    // Find edges where one endpoint is being deleted and the other survives
+    const edgesToDelete = db.prepare(
+      `SELECT source_node_id, target_node_id FROM knowledge_edges
+       WHERE source_node_id IN (${delPlaceholders}) OR target_node_id IN (${delPlaceholders})`
+    ).all(...nodeIdsToDelete, ...nodeIdsToDelete) as { source_node_id: string; target_node_id: string }[];
+
+    const nodeIdsToDeleteSet = new Set(nodeIdsToDelete);
+    const survivorDecrements = new Map<string, number>();
+    for (const edge of edgesToDelete) {
+      if (!nodeIdsToDeleteSet.has(edge.source_node_id)) {
+        survivorDecrements.set(edge.source_node_id, (survivorDecrements.get(edge.source_node_id) ?? 0) + 1);
+      }
+      if (!nodeIdsToDeleteSet.has(edge.target_node_id)) {
+        survivorDecrements.set(edge.target_node_id, (survivorDecrements.get(edge.target_node_id) ?? 0) + 1);
+      }
+    }
+    const decrementStmt = db.prepare('UPDATE knowledge_nodes SET edge_count = MAX(0, edge_count - ?) WHERE id = ?');
+    for (const [nodeId, count] of survivorDecrements) {
+      decrementStmt.run(count, nodeId);
+    }
+  }
+
   // Step 4: Delete edges where at least one endpoint is being deleted
   let edgesDeleted = 0;
   if (nodeIdsToDelete.length > 0) {
@@ -1041,6 +1086,15 @@ export function deleteAllGraphData(db: Database.Database): {
   edges_deleted: number;
   links_deleted: number;
 } {
+  // Clean up entity_embeddings before deleting nodes
+  try {
+    db.prepare('DELETE FROM vec_entity_embeddings').run();
+    db.prepare('DELETE FROM entity_embeddings').run();
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : String(e);
+    if (!msg.includes('no such table')) throw e;
+  }
+
   // Order matters due to FKs: links -> edges -> nodes
   const linksResult = db.prepare('DELETE FROM node_entity_links').run();
   const edgesResult = db.prepare('DELETE FROM knowledge_edges').run();

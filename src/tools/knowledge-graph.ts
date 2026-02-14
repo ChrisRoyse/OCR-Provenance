@@ -370,13 +370,11 @@ async function handleSetEdgeTemporal(
       throw new Error(`Edge not found: ${input.edge_id}`);
     }
 
-    const now = new Date().toISOString();
     conn.prepare(
-      'UPDATE knowledge_edges SET valid_from = ?, valid_until = ?, updated_at = ? WHERE id = ?'
+      'UPDATE knowledge_edges SET valid_from = ?, valid_until = ? WHERE id = ?'
     ).run(
       input.valid_from ?? null,
       input.valid_until ?? null,
-      now,
       input.edge_id,
     );
 
@@ -389,7 +387,6 @@ async function handleSetEdgeTemporal(
       valid_until: input.valid_until ?? null,
       previous_valid_from: edge.valid_from,
       previous_valid_until: edge.valid_until,
-      updated_at: now,
     }));
   } catch (error) {
     return handleError(error);
@@ -1305,27 +1302,35 @@ async function handleKnowledgeGraphPruneEdges(
       );
     }
 
-    const conditions: string[] = [];
+    const pruneConditions: string[] = [];
     const queryParams: (string | number)[] = [];
 
     if (input.min_weight !== undefined) {
-      conditions.push('(normalized_weight IS NULL OR normalized_weight < ?)');
+      pruneConditions.push('(normalized_weight IS NULL OR normalized_weight < ?)');
       queryParams.push(input.min_weight);
     }
 
     if (input.min_evidence_count !== undefined) {
-      conditions.push('evidence_count < ?');
+      pruneConditions.push('evidence_count < ?');
       queryParams.push(input.min_evidence_count);
     }
 
+    // Weight and evidence are OR-combined (prune if EITHER is below threshold)
+    const pruneClause = pruneConditions.length > 0
+      ? `(${pruneConditions.join(' OR ')})`
+      : '';
+
+    const allConditions: string[] = [];
+    if (pruneClause) allConditions.push(pruneClause);
+
     if (input.relationship_types && input.relationship_types.length > 0) {
       const typePlaceholders = input.relationship_types.map(() => '?').join(',');
-      conditions.push(`relationship_type IN (${typePlaceholders})`);
+      allConditions.push(`relationship_type IN (${typePlaceholders})`);
       queryParams.push(...input.relationship_types);
     }
 
-    const whereClause = conditions.length > 0
-      ? `WHERE ${conditions.join(' AND ')}`
+    const whereClause = allConditions.length > 0
+      ? `WHERE ${allConditions.join(' AND ')}`
       : '';
 
     const totalEdges = (
