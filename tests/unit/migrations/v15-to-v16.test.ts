@@ -482,7 +482,9 @@ describe('Migration v15 to v16 (Knowledge Graph)', () => {
     expect(columns).toContain('provenance_id');
     expect(columns).toContain('created_at');
     expect(columns).toContain('updated_at');
-    expect(columns.length).toBe(13);
+    expect(columns).toContain('importance_score');
+    expect(columns).toContain('resolution_type');
+    expect(columns.length).toBe(15);
   });
 
   it.skipIf(!sqliteVecAvailable)('knowledge_edges table has correct columns', () => {
@@ -500,7 +502,11 @@ describe('Migration v15 to v16 (Knowledge Graph)', () => {
     expect(columns).toContain('metadata');
     expect(columns).toContain('provenance_id');
     expect(columns).toContain('created_at');
-    expect(columns.length).toBe(10);
+    expect(columns).toContain('valid_from');
+    expect(columns).toContain('valid_until');
+    expect(columns).toContain('normalized_weight');
+    expect(columns).toContain('contradiction_count');
+    expect(columns.length).toBe(14);
   });
 
   it.skipIf(!sqliteVecAvailable)('node_entity_links table has correct columns', () => {
@@ -571,7 +577,7 @@ describe('Migration v15 to v16 (Knowledge Graph)', () => {
     migrateToLatest(db);
 
     const version = (db.prepare('SELECT version FROM schema_version').get() as { version: number }).version;
-    expect(version).toBe(19);
+    expect(version).toBe(20);
   });
 
   it.skipIf(!sqliteVecAvailable)('FK integrity clean after migration', () => {
@@ -637,7 +643,7 @@ describe('Migration v15 to v16 (Knowledge Graph)', () => {
     expect(() => migrateToLatest(db)).not.toThrow();
 
     const version = (db.prepare('SELECT version FROM schema_version').get() as { version: number }).version;
-    expect(version).toBe(19);
+    expect(version).toBe(20);
   });
 
   it.skipIf(!sqliteVecAvailable)('FK relationships work for knowledge_nodes', () => {
@@ -801,7 +807,7 @@ describe('Migration v15 to v16 (Knowledge Graph)', () => {
     expect(tables).toContain('node_entity_links');
 
     const version = (db.prepare('SELECT version FROM schema_version').get() as { version: number }).version;
-    expect(version).toBe(19);
+    expect(version).toBe(20);
 
     const indexes = getIndexNames(db);
     expect(indexes).toContain('idx_kn_entity_type');

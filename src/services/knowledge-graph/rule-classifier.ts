@@ -37,19 +37,44 @@ const RULE_MATRIX: Array<{
   result: RelationshipType;
   confidence: number;
 }> = [
+  // --- Legal: Person/Organization relationships ---
   { source_type: 'person', target_type: 'organization', result: 'works_at', confidence: 0.75 },
+  { source_type: 'person', target_type: 'location', result: 'located_in', confidence: 0.70 },
   { source_type: 'organization', target_type: 'location', result: 'located_in', confidence: 0.80 },
+
+  // --- Legal: Case/Statute/Filing relationships ---
   { source_type: 'case_number', target_type: 'date', result: 'filed_in', confidence: 0.85 },
   { source_type: 'statute', target_type: 'case_number', result: 'cites', confidence: 0.90 },
-  { source_type: 'case_number', target_type: 'statute', result: 'cites', confidence: 0.90 },
-  { source_type: 'person', target_type: 'location', result: 'located_in', confidence: 0.70 },
   { source_type: 'organization', target_type: 'case_number', result: 'party_to', confidence: 0.75 },
   { source_type: 'person', target_type: 'case_number', result: 'party_to', confidence: 0.75 },
+  { source_type: 'location', target_type: 'case_number', result: 'filed_in', confidence: 0.75 },
+
+  // --- Legal: Exhibit relationships ---
+  { source_type: 'exhibit', target_type: 'case_number', result: 'references', confidence: 0.85 },
+  { source_type: 'exhibit', target_type: 'person', result: 'references', confidence: 0.70 },
+  { source_type: 'exhibit', target_type: 'organization', result: 'references', confidence: 0.70 },
+
+  // --- Legal: Statute/Citation relationships ---
+  { source_type: 'statute', target_type: 'person', result: 'cites', confidence: 0.70 },
+  { source_type: 'statute', target_type: 'organization', result: 'cites', confidence: 0.70 },
+
+  // --- Temporal: Date associations ---
+  { source_type: 'date', target_type: 'person', result: 'occurred_at', confidence: 0.70 },
+  { source_type: 'date', target_type: 'organization', result: 'occurred_at', confidence: 0.70 },
+  { source_type: 'date', target_type: 'location', result: 'occurred_at', confidence: 0.70 },
+
+  // --- Financial: Amount associations ---
+  { source_type: 'amount', target_type: 'case_number', result: 'party_to', confidence: 0.70 },
+  { source_type: 'amount', target_type: 'person', result: 'references', confidence: 0.65 },
+  { source_type: 'amount', target_type: 'organization', result: 'references', confidence: 0.65 },
+
+  // --- Medical: Person/Treatment relationships ---
   { source_type: 'person', target_type: 'medication', result: 'references', confidence: 0.75 },
   { source_type: 'person', target_type: 'diagnosis', result: 'references', confidence: 0.75 },
-  { source_type: 'medication', target_type: 'diagnosis', result: 'related_to', confidence: 0.80 },
   { source_type: 'person', target_type: 'medical_device', result: 'references', confidence: 0.75 },
+  { source_type: 'medication', target_type: 'diagnosis', result: 'related_to', confidence: 0.80 },
   { source_type: 'medical_device', target_type: 'diagnosis', result: 'related_to', confidence: 0.80 },
+  { source_type: 'medication', target_type: 'medical_device', result: 'related_to', confidence: 0.75 },
 ];
 
 /**

@@ -32,6 +32,8 @@ import {
   CREATE_KNOWLEDGE_NODES_FTS_TABLE,
   CREATE_KNOWLEDGE_NODES_FTS_TRIGGERS,
   CREATE_ENTITY_EXTRACTION_SEGMENTS_TABLE,
+  CREATE_ENTITY_EMBEDDINGS_TABLE,
+  CREATE_VEC_ENTITY_EMBEDDINGS_TABLE,
 } from './schema-definitions.js';
 import {
   configurePragmas,
@@ -1054,6 +1056,11 @@ export function migrateToLatest(db: Database.Database): void {
     migrateV18ToV19(db);
     bumpVersion(19);
   }
+
+  if (currentVersion < 20) {
+    migrateV19ToV20(db);
+    bumpVersion(20);
+  }
 }
 
 /**
@@ -1762,6 +1769,12 @@ function migrateV16ToV17(db: Database.Database): void {
     }
 
     // Step 3: Recreate knowledge_edges with expanded CHECK constraint
+    // Include v20 columns (valid_from, valid_until, normalized_weight, contradiction_count)
+    // so that SELECT * works regardless of whether the source table was created fresh (with v20 cols)
+    // or via earlier migrations (without them).
+    const keColumns = db.pragma('table_info(knowledge_edges)') as Array<{ name: string }>;
+    const hasV20Cols = keColumns.some(c => c.name === 'valid_from');
+
     db.exec(`
       CREATE TABLE knowledge_edges_new (
         id TEXT PRIMARY KEY,
@@ -1778,14 +1791,23 @@ function migrateV16ToV17(db: Database.Database): void {
         metadata TEXT,
         provenance_id TEXT NOT NULL,
         created_at TEXT NOT NULL,
+        valid_from TEXT,
+        valid_until TEXT,
+        normalized_weight REAL DEFAULT 0,
+        contradiction_count INTEGER DEFAULT 0,
         FOREIGN KEY (source_node_id) REFERENCES knowledge_nodes(id),
         FOREIGN KEY (target_node_id) REFERENCES knowledge_nodes(id),
         FOREIGN KEY (provenance_id) REFERENCES provenance(id)
       )
     `);
 
-    // Step 4: Copy existing edges
-    db.exec('INSERT INTO knowledge_edges_new SELECT * FROM knowledge_edges');
+    // Step 4: Copy existing edges (use explicit columns if source lacks v20 columns)
+    if (hasV20Cols) {
+      db.exec('INSERT INTO knowledge_edges_new SELECT * FROM knowledge_edges');
+    } else {
+      db.exec(`INSERT INTO knowledge_edges_new (id, source_node_id, target_node_id, relationship_type, weight, evidence_count, document_ids, metadata, provenance_id, created_at)
+        SELECT id, source_node_id, target_node_id, relationship_type, weight, evidence_count, document_ids, metadata, provenance_id, created_at FROM knowledge_edges`);
+    }
 
     // Step 5: Drop old edges table
     db.exec('DROP TABLE knowledge_edges');
@@ -1896,6 +1918,11 @@ function migrateV17ToV18(db: Database.Database): void {
     db.exec('CREATE INDEX IF NOT EXISTS idx_entities_normalized_text ON entities(normalized_text)');
 
     // Step 2: Recreate knowledge_nodes table with expanded CHECK constraint
+    // Include v20 columns (importance_score, resolution_type) so that SELECT * works
+    // regardless of whether the source table was created fresh (with v20 cols) or via earlier migrations.
+    const knColsV18 = db.pragma('table_info(knowledge_nodes)') as Array<{ name: string }>;
+    const hasV20NodeCols = knColsV18.some(c => c.name === 'importance_score');
+
     db.exec(`
       CREATE TABLE knowledge_nodes_new (
         id TEXT PRIMARY KEY,
@@ -1910,10 +1937,17 @@ function migrateV17ToV18(db: Database.Database): void {
         metadata TEXT,
         provenance_id TEXT NOT NULL,
         created_at TEXT NOT NULL,
-        updated_at TEXT NOT NULL
+        updated_at TEXT NOT NULL,
+        importance_score REAL,
+        resolution_type TEXT
       )
     `);
-    db.exec('INSERT INTO knowledge_nodes_new SELECT * FROM knowledge_nodes');
+    if (hasV20NodeCols) {
+      db.exec('INSERT INTO knowledge_nodes_new SELECT * FROM knowledge_nodes');
+    } else {
+      db.exec(`INSERT INTO knowledge_nodes_new (id, entity_type, canonical_name, normalized_name, aliases, document_count, mention_count, edge_count, avg_confidence, metadata, provenance_id, created_at, updated_at)
+        SELECT id, entity_type, canonical_name, normalized_name, aliases, document_count, mention_count, edge_count, avg_confidence, metadata, provenance_id, created_at, updated_at FROM knowledge_nodes`);
+    }
 
     // Drop FTS table and triggers before dropping knowledge_nodes (FTS references it)
     db.exec('DROP TRIGGER IF EXISTS knowledge_nodes_fts_insert');
@@ -2006,6 +2040,116 @@ function migrateV18ToV19(db: Database.Database): void {
       `Failed to migrate from v18 to v19 (entity extraction segments): ${cause}`,
       'migrate',
       'entity_extraction_segments',
+      error
+    );
+  }
+}
+
+/**
+ * Migrate from schema version 19 to version 20
+ *
+ * Changes in v20:
+ * - knowledge_edges: Added valid_from, valid_until (TEXT) for temporal bounds
+ * - knowledge_edges: Added normalized_weight (REAL DEFAULT 0) for weight normalization
+ * - knowledge_edges: Added contradiction_count (INTEGER DEFAULT 0) for contradiction tracking
+ * - knowledge_nodes: Added importance_score (REAL) for node ranking
+ * - knowledge_nodes: Added resolution_type (TEXT) for entity resolution tracking
+ * - entity_embeddings: New table for entity vector embeddings
+ * - vec_entity_embeddings: New sqlite-vec virtual table for entity semantic search
+ * - 3 new indexes: idx_entity_embeddings_entity_id, idx_entity_embeddings_node_id,
+ *   idx_entity_embeddings_content_hash
+ *
+ * Note: knowledge_nodes.updated_at already exists from the v16 schema, so it is NOT added here.
+ *
+ * @param db - Database instance from better-sqlite3
+ * @throws MigrationError if migration fails
+ */
+function migrateV19ToV20(db: Database.Database): void {
+  try {
+    db.exec('PRAGMA foreign_keys = OFF');
+
+    // Step 1: Add new columns to knowledge_edges
+    const edgeCols = db.pragma('table_info(knowledge_edges)') as Array<{ name: string }>;
+    const edgeColNames = new Set(edgeCols.map(c => c.name));
+
+    try {
+      if (!edgeColNames.has('valid_from')) {
+        db.exec('ALTER TABLE knowledge_edges ADD COLUMN valid_from TEXT');
+      }
+    } catch (e) {
+      console.error('v19->v20: valid_from column may already exist:', e);
+    }
+
+    try {
+      if (!edgeColNames.has('valid_until')) {
+        db.exec('ALTER TABLE knowledge_edges ADD COLUMN valid_until TEXT');
+      }
+    } catch (e) {
+      console.error('v19->v20: valid_until column may already exist:', e);
+    }
+
+    try {
+      if (!edgeColNames.has('normalized_weight')) {
+        db.exec('ALTER TABLE knowledge_edges ADD COLUMN normalized_weight REAL DEFAULT 0');
+      }
+    } catch (e) {
+      console.error('v19->v20: normalized_weight column may already exist:', e);
+    }
+
+    try {
+      if (!edgeColNames.has('contradiction_count')) {
+        db.exec('ALTER TABLE knowledge_edges ADD COLUMN contradiction_count INTEGER DEFAULT 0');
+      }
+    } catch (e) {
+      console.error('v19->v20: contradiction_count column may already exist:', e);
+    }
+
+    // Step 2: Add new columns to knowledge_nodes
+    const nodeCols = db.pragma('table_info(knowledge_nodes)') as Array<{ name: string }>;
+    const nodeColNames = new Set(nodeCols.map(c => c.name));
+
+    try {
+      if (!nodeColNames.has('importance_score')) {
+        db.exec('ALTER TABLE knowledge_nodes ADD COLUMN importance_score REAL');
+      }
+    } catch (e) {
+      console.error('v19->v20: importance_score column may already exist:', e);
+    }
+
+    try {
+      if (!nodeColNames.has('resolution_type')) {
+        db.exec('ALTER TABLE knowledge_nodes ADD COLUMN resolution_type TEXT');
+      }
+    } catch (e) {
+      console.error('v19->v20: resolution_type column may already exist:', e);
+    }
+
+    // Step 3: Create entity_embeddings table and indexes
+    db.exec(CREATE_ENTITY_EMBEDDINGS_TABLE);
+    db.exec('CREATE INDEX IF NOT EXISTS idx_entity_embeddings_entity_id ON entity_embeddings(entity_id)');
+    db.exec('CREATE INDEX IF NOT EXISTS idx_entity_embeddings_node_id ON entity_embeddings(node_id)');
+    db.exec('CREATE INDEX IF NOT EXISTS idx_entity_embeddings_content_hash ON entity_embeddings(content_hash)');
+
+    // Step 4: Create vec_entity_embeddings virtual table (sqlite-vec, outside transaction)
+    db.exec(CREATE_VEC_ENTITY_EMBEDDINGS_TABLE);
+
+    db.exec('PRAGMA foreign_keys = ON');
+
+    // FK integrity check
+    const fkViolations = db.pragma('foreign_key_check') as unknown[];
+    if (fkViolations.length > 0) {
+      throw new Error(
+        `Foreign key integrity check failed after v19->v20 migration: ${fkViolations.length} violation(s). ` +
+        `First: ${JSON.stringify(fkViolations[0])}`
+      );
+    }
+  } catch (error) {
+    db.exec('PRAGMA foreign_keys = ON');
+    const cause = error instanceof Error ? error.message : String(error);
+    throw new MigrationError(
+      `Failed to migrate from v19 to v20 (entity embeddings, temporal edges, node scoring): ${cause}`,
+      'migrate',
+      'knowledge_edges',
       error
     );
   }
