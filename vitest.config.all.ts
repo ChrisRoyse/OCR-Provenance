@@ -17,24 +17,23 @@ if (existsSync(envPath)) {
   }
 }
 
+/**
+ * Full test config - includes manual + GPU tests excluded from default run.
+ * Usage: npm run test:all
+ */
 export default defineConfig({
   test: {
     globals: true,
     environment: 'node',
     include: ['tests/**/*.test.ts'],
-    exclude: [
-      'node_modules',
-      'dist',
-      'tests/manual/**',           // One-time verification tests (run with test:manual)
-      'tests/unit/embedding/**',   // GPU embedding tests (run with test:gpu)
-    ],
+    exclude: ['node_modules', 'dist'],
     coverage: {
       provider: 'v8',
       reporter: ['text', 'json', 'html'],
       include: ['src/**/*.ts'],
       exclude: ['src/**/*.d.ts', 'src/**/*.test.ts'],
     },
-    testTimeout: 30000,
+    testTimeout: 120000,
     hookTimeout: 30000,
   },
 });
