@@ -1,18 +1,19 @@
 /**
- * Unit Tests for QW-4: Document Re-OCR Tool (ocr_reprocess)
+ * Unit tests for ingestion handlers (ocr_convert_raw, ocr_reprocess)
  *
- * Tests the handleReprocess handler in src/tools/ingestion.ts.
- * Uses real SQLite databases with synthetic data via actual DB operations.
+ * Tests validation schemas and handler behavior for ingestion tools.
  *
- * @module tests/unit/tools/ingestion-reprocess
+ * Merged from: ingestion-convert-raw.test.ts, ingestion-reprocess.test.ts
  */
 
 import { describe, it, expect, beforeEach, afterEach, afterAll } from 'vitest';
+import { z } from 'zod';
 import { mkdtempSync, rmSync, existsSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import { v4 as uuidv4 } from 'uuid';
 
+import { validateInput, ValidationError } from '../../../src/utils/validation.js';
 import { ingestionTools } from '../../../src/tools/ingestion.js';
 import {
   state,
@@ -23,9 +24,9 @@ import {
 import { DatabaseService } from '../../../src/services/storage/database/index.js';
 import { computeHash } from '../../../src/utils/hash.js';
 
-// ═══════════════════════════════════════════════════════════════════════════════
+// =============================================================================
 // SQLITE-VEC AVAILABILITY CHECK
-// ═══════════════════════════════════════════════════════════════════════════════
+// =============================================================================
 
 function isSqliteVecAvailable(): boolean {
   try {
@@ -37,9 +38,9 @@ function isSqliteVecAvailable(): boolean {
 }
 const sqliteVecAvailable = isSqliteVecAvailable();
 
-// ═══════════════════════════════════════════════════════════════════════════════
-// TEST HELPERS
-// ═══════════════════════════════════════════════════════════════════════════════
+// =============================================================================
+// SHARED HELPERS
+// =============================================================================
 
 interface ToolResponse {
   success: boolean;
@@ -63,11 +64,150 @@ function createUniqueName(prefix: string): string {
 const tempDirs: string[] = [];
 afterAll(() => { for (const dir of tempDirs) cleanupTempDir(dir); });
 
-const handleReprocess = ingestionTools['ocr_reprocess'].handler;
+// =============================================================================
+// ocr_convert_raw VALIDATION
+// =============================================================================
 
-// ═══════════════════════════════════════════════════════════════════════════════
-// TEST DATA HELPERS
-// ═══════════════════════════════════════════════════════════════════════════════
+const ConvertRawSchema = z.object({
+  file_path: z.string().min(1),
+  ocr_mode: z.enum(['fast', 'balanced', 'accurate']).default('balanced'),
+  max_pages: z.number().int().min(1).max(7000).optional(),
+  page_range: z.string().optional(),
+});
+
+describe('ocr_convert_raw validation', () => {
+  it('should validate minimal input with defaults', () => {
+    const input = validateInput(ConvertRawSchema, { file_path: '/tmp/test.pdf' });
+    expect(input.file_path).toBe('/tmp/test.pdf');
+    expect(input.ocr_mode).toBe('balanced');
+    expect(input.max_pages).toBeUndefined();
+    expect(input.page_range).toBeUndefined();
+  });
+
+  it('should accept all valid ocr modes', () => {
+    for (const mode of ['fast', 'balanced', 'accurate']) {
+      const input = validateInput(ConvertRawSchema, {
+        file_path: '/tmp/test.pdf',
+        ocr_mode: mode,
+      });
+      expect(input.ocr_mode).toBe(mode);
+    }
+  });
+
+  it('should reject empty file_path', () => {
+    expect(() =>
+      validateInput(ConvertRawSchema, { file_path: '' })
+    ).toThrow(ValidationError);
+  });
+
+  it('should reject missing file_path', () => {
+    expect(() =>
+      validateInput(ConvertRawSchema, {})
+    ).toThrow(ValidationError);
+  });
+
+  it('should reject invalid ocr_mode', () => {
+    expect(() =>
+      validateInput(ConvertRawSchema, {
+        file_path: '/tmp/test.pdf',
+        ocr_mode: 'invalid',
+      })
+    ).toThrow(ValidationError);
+  });
+
+  it('should accept max_pages within range', () => {
+    const input = validateInput(ConvertRawSchema, {
+      file_path: '/tmp/test.pdf',
+      max_pages: 100,
+    });
+    expect(input.max_pages).toBe(100);
+  });
+
+  it('should reject max_pages below 1', () => {
+    expect(() =>
+      validateInput(ConvertRawSchema, {
+        file_path: '/tmp/test.pdf',
+        max_pages: 0,
+      })
+    ).toThrow(ValidationError);
+  });
+
+  it('should reject max_pages above 7000', () => {
+    expect(() =>
+      validateInput(ConvertRawSchema, {
+        file_path: '/tmp/test.pdf',
+        max_pages: 7001,
+      })
+    ).toThrow(ValidationError);
+  });
+
+  it('should accept page_range string', () => {
+    const input = validateInput(ConvertRawSchema, {
+      file_path: '/tmp/test.pdf',
+      page_range: '0-5,10',
+    });
+    expect(input.page_range).toBe('0-5,10');
+  });
+
+  it('should reject non-integer max_pages', () => {
+    expect(() =>
+      validateInput(ConvertRawSchema, {
+        file_path: '/tmp/test.pdf',
+        max_pages: 1.5,
+      })
+    ).toThrow(ValidationError);
+  });
+});
+
+describe('ocr_convert_raw tool definition', () => {
+  it('should be registered in ingestionTools', async () => {
+    expect(ingestionTools).toHaveProperty('ocr_convert_raw');
+    expect(ingestionTools['ocr_convert_raw'].description).toContain('raw results');
+    expect(ingestionTools['ocr_convert_raw'].handler).toBeDefined();
+    expect(typeof ingestionTools['ocr_convert_raw'].handler).toBe('function');
+  });
+
+  it('should have correct inputSchema keys', async () => {
+    const schema = ingestionTools['ocr_convert_raw'].inputSchema;
+
+    expect(schema).toHaveProperty('file_path');
+    expect(schema).toHaveProperty('ocr_mode');
+    expect(schema).toHaveProperty('max_pages');
+    expect(schema).toHaveProperty('page_range');
+  });
+});
+
+describe('IngestFilesInput validation', () => {
+  it('should accept valid file_paths', async () => {
+    const { IngestFilesInput } = await import('../../../src/utils/validation.js');
+    const input = IngestFilesInput.parse({
+      file_paths: ['/tmp/test.pdf'],
+    });
+    expect(input.file_paths).toEqual(['/tmp/test.pdf']);
+  });
+
+  it('should reject empty file_paths', async () => {
+    const { IngestFilesInput } = await import('../../../src/utils/validation.js');
+    expect(() =>
+      IngestFilesInput.parse({
+        file_paths: [],
+      })
+    ).toThrow();
+  });
+
+  it('should strip unknown properties like file_urls', async () => {
+    const { IngestFilesInput } = await import('../../../src/utils/validation.js');
+    const input = IngestFilesInput.parse({
+      file_paths: ['/tmp/test.pdf'],
+      file_urls: ['https://example.com/doc.pdf'],
+    });
+    expect((input as Record<string, unknown>).file_urls).toBeUndefined();
+  });
+});
+
+// =============================================================================
+// ocr_reprocess HANDLER
+// =============================================================================
 
 function insertTestDoc(
   db: DatabaseService, status: 'pending' | 'processing' | 'complete' | 'failed',
@@ -121,9 +261,7 @@ function insertTestDoc(
   return { docId, provId };
 }
 
-// ═══════════════════════════════════════════════════════════════════════════════
-// TESTS
-// ═══════════════════════════════════════════════════════════════════════════════
+const handleReprocess = ingestionTools['ocr_reprocess'].handler;
 
 describe('QW-4: Document Re-OCR Tool (ocr_reprocess)', () => {
   let tempDir: string;
@@ -192,7 +330,6 @@ describe('QW-4: Document Re-OCR Tool (ocr_reprocess)', () => {
     const { docId } = insertTestDoc(db, 'failed');
     const response = await handleReprocess({ document_id: docId });
     const parsed = parseResponse(response);
-    // The pipeline may fail (no real file), but the status validation should pass
     if (!parsed.success) {
       expect(parsed.error!.message).not.toContain("must be 'complete' or 'failed'");
     }
@@ -214,13 +351,10 @@ describe('QW-4: Document Re-OCR Tool (ocr_reprocess)', () => {
     state.currentDatabaseName = dbName;
 
     const { docId } = insertTestDoc(db, 'complete');
-    // Verify OCR result exists
     expect(db.getOCRResultByDocumentId(docId)).not.toBeNull();
 
-    // Call reprocess -- pipeline will fail (no real file)
     await handleReprocess({ document_id: docId });
 
-    // After cleanup, the document still exists but status changed
     const doc = db.getDocument(docId);
     expect(doc).not.toBeNull();
   });

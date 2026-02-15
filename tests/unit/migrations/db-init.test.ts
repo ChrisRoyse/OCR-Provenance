@@ -132,14 +132,6 @@ describe('Database Initialization Details', () => {
   // ── sqlite-vec Virtual Table ───────────────────────────────────────────
 
   it.skipIf(!sqliteVecAvailable)(
-    'should create vec_embeddings virtual table',
-    () => {
-      initializeDatabase(ctx.db);
-      expect(virtualTableExists(ctx.db!, 'vec_embeddings')).toBe(true);
-    }
-  );
-
-  it.skipIf(!sqliteVecAvailable)(
     'should be able to insert 768-dimensional vectors',
     () => {
       initializeDatabase(ctx.db);

@@ -79,37 +79,6 @@ describe('Schema State (read-only)', () => {
       }
     );
 
-    it.skipIf(!sqliteVecAvailable)('should create schema_version table', () => {
-      expect(getTableNames(ctx.db!)).toContain('schema_version');
-    });
-
-    it.skipIf(!sqliteVecAvailable)('should create provenance table', () => {
-      expect(getTableNames(ctx.db!)).toContain('provenance');
-    });
-
-    it.skipIf(!sqliteVecAvailable)('should create database_metadata table', () => {
-      expect(getTableNames(ctx.db!)).toContain('database_metadata');
-    });
-
-    it.skipIf(!sqliteVecAvailable)('should create documents table', () => {
-      expect(getTableNames(ctx.db!)).toContain('documents');
-    });
-
-    it.skipIf(!sqliteVecAvailable)('should create ocr_results table', () => {
-      expect(getTableNames(ctx.db!)).toContain('ocr_results');
-    });
-
-    it.skipIf(!sqliteVecAvailable)('should create chunks table', () => {
-      expect(getTableNames(ctx.db!)).toContain('chunks');
-    });
-
-    it.skipIf(!sqliteVecAvailable)('should create embeddings table', () => {
-      expect(getTableNames(ctx.db!)).toContain('embeddings');
-    });
-
-    it.skipIf(!sqliteVecAvailable)('should create vec_embeddings virtual table', () => {
-      expect(virtualTableExists(ctx.db!, 'vec_embeddings')).toBe(true);
-    });
   });
 
   // ── Column Verification ──────────────────────────────────────────────────
@@ -282,11 +251,6 @@ describe('Schema State (read-only)', () => {
       }
     });
 
-    for (const indexName of expectedIndexes) {
-      it.skipIf(!sqliteVecAvailable)(`should have ${indexName} index`, () => {
-        expect(getIndexNames(ctx.db!)).toContain(indexName);
-      });
-    }
   });
 });
 
