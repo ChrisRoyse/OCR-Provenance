@@ -543,7 +543,8 @@ async function handleFormFillSuggestFields(params: Record<string, unknown>) {
         document_count: n.document_count,
         avg_confidence: n.avg_confidence,
       }));
-    } catch {
+    } catch (err) {
+      console.error(`[form-fill] KG nodes query in suggest_fields failed: ${err instanceof Error ? err.message : String(err)}`);
       // KG may not exist yet
     }
 

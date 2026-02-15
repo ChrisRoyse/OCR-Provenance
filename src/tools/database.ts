@@ -200,7 +200,8 @@ function getKGHealthMetrics(db: DatabaseService): Record<string, unknown> {
       total_edges: totalEdges,
       temporal_coverage_pct: totalEdges > 0 ? (temporalEdges / totalEdges) * 100 : 0,
     };
-  } catch {
+  } catch (err) {
+    console.error(`[database] KG health metrics query failed: ${err instanceof Error ? err.message : String(err)}`);
     // KG tables may not exist on fresh databases
     return defaults;
   }

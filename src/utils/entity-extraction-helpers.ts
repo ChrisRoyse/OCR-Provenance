@@ -263,7 +263,8 @@ export function buildKGEntityHints(conn: Database.Database): string | undefined 
        ORDER BY mention_count DESC
        LIMIT ?`
     ).all(KG_HINT_MAX_NODES) as KGHintRow[];
-  } catch {
+  } catch (err) {
+    console.error(`[entity-extraction-helpers] KG hints query failed: ${err instanceof Error ? err.message : String(err)}`);
     // KG tables may not exist yet
     return undefined;
   }

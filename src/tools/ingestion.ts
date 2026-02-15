@@ -57,6 +57,10 @@ import { ENTITY_TYPES } from '../models/entity.js';
 import {
   deleteEntitiesByDocument,
 } from '../services/storage/database/entity-operations.js';
+import {
+  reassignDocumentToCluster,
+  type ClusterReassignmentResult,
+} from '../services/storage/database/cluster-operations.js';
 import { incrementalBuildGraph } from '../services/knowledge-graph/incremental-builder.js';
 import { buildKnowledgeGraph } from '../services/knowledge-graph/graph-service.js';
 import { extractEntitiesFromVLM } from '../services/knowledge-graph/vlm-entity-extractor.js';
@@ -1518,8 +1522,29 @@ export async function handleProcessPending(
       response.coreference_resolution = { enabled: true };
     }
 
-    if (input.auto_reassign_clusters) {
-      response.cluster_reassignment = { enabled: true, documents: successfulDocIds.length };
+    if (input.auto_reassign_clusters && successfulDocIds.length > 0) {
+      try {
+        const conn = db.getConnection();
+        const results: ClusterReassignmentResult[] = [];
+        for (const docId of successfulDocIds) {
+          try {
+            results.push(reassignDocumentToCluster(conn, docId));
+          } catch (docErr) {
+            const msg = docErr instanceof Error ? docErr.message : String(docErr);
+            console.error(`[ingestion] cluster reassignment failed for doc ${docId}: ${msg}`);
+            results.push({ document_id: docId, reassigned: false, error: msg });
+          }
+        }
+        response.cluster_reassignment = {
+          enabled: true,
+          documents: successfulDocIds.length,
+          results,
+        };
+      } catch (clusterErr) {
+        const msg = clusterErr instanceof Error ? clusterErr.message : String(clusterErr);
+        console.error(`[ingestion] cluster reassignment failed: ${msg}`);
+        response.cluster_reassignment = { enabled: true, error: msg };
+      }
     }
 
     // Semantic duplicate detection via entity overlap
@@ -1579,16 +1604,16 @@ export async function handleProcessPending(
                 });
               }
             }
-          } catch {
-            // Skip failed doc comparison
+          } catch (docCompErr) {
+            console.error(`[ingestion] semantic duplicate check failed for doc ${docId}: ${docCompErr instanceof Error ? docCompErr.message : String(docCompErr)}`);
           }
         }
 
         if (semanticDuplicateWarnings.length > 0) {
           response.semantic_duplicate_warnings = semanticDuplicateWarnings;
         }
-      } catch {
-        // Semantic duplicate check failed - skip
+      } catch (semDupErr) {
+        console.error(`[ingestion] semantic duplicate check failed: ${semDupErr instanceof Error ? semDupErr.message : String(semDupErr)}`);
       }
     }
 
@@ -1689,7 +1714,8 @@ export async function handleOCRStatus(
                 ? Math.round((docsWithEntities / stats.total_documents) * 100)
                 : 0,
             };
-          } catch {
+          } catch (statusErr) {
+            console.error(`[ingestion] entity/KG status query failed: ${statusErr instanceof Error ? statusErr.message : String(statusErr)}`);
             return {};
           }
         })(),

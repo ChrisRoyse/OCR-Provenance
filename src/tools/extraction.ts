@@ -425,7 +425,8 @@ export async function handleExtractImagesBatch(
           total_image_pages: totalPages,
         };
       }
-    } catch {
+    } catch (err) {
+      console.error(`[extraction] entity_context batch query failed: ${err instanceof Error ? err.message : String(err)}`);
       // Graceful degradation if entity tables don't exist
     }
 

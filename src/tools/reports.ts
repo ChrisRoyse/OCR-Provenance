@@ -212,7 +212,8 @@ function getAggregateEntityQualityMetrics(conn: Database.Database): Record<strin
       totalMentions = (conn.prepare(
         'SELECT COUNT(*) as cnt FROM entity_mentions'
       ).get() as { cnt: number }).cnt;
-    } catch {
+    } catch (err) {
+      console.error(`[reports] entity_mentions count query failed: ${err instanceof Error ? err.message : String(err)}`);
       // entity_mentions may not exist
     }
 
@@ -225,7 +226,8 @@ function getAggregateEntityQualityMetrics(conn: Database.Database): Record<strin
       kgLinked = (conn.prepare(
         'SELECT COUNT(DISTINCT entity_id) as cnt FROM node_entity_links'
       ).get() as { cnt: number }).cnt;
-    } catch {
+    } catch (err) {
+      console.error(`[reports] node_entity_links count query failed: ${err instanceof Error ? err.message : String(err)}`);
       // node_entity_links may not exist
     }
 
@@ -266,7 +268,8 @@ function getAggregateEntityQualityMetrics(conn: Database.Database): Record<strin
       kg_link_coverage_pct: totalEntities > 0 ? (kgLinked / totalEntities) * 100 : 0,
       low_coverage_documents: [...zeroEntityDocs, ...lowCoverageDocs].slice(0, 10),
     };
-  } catch {
+  } catch (err) {
+    console.error(`[reports] aggregate entity quality metrics failed: ${err instanceof Error ? err.message : String(err)}`);
     return defaults;
   }
 }
