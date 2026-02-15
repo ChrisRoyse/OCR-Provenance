@@ -1,13 +1,10 @@
 /**
- * Migration v17 to v18 Tests
+ * Migration v18 to v19 Tests
  *
- * Tests the v17->v18 migration which:
- * - Recreates entities table with expanded CHECK constraint
- *   (adds 'medication', 'diagnosis', 'medical_device' entity types)
- * - Recreates knowledge_nodes table with expanded CHECK constraint
- *   (same new entity types) and includes importance_score, resolution_type columns
- * - Recreates knowledge_nodes_fts FTS5 table and triggers
- * - Repopulates FTS from existing knowledge_nodes data
+ * Tests the v18->v19 migration which adds:
+ * - entity_extraction_segments table for chunked entity extraction with provenance
+ *   (stores 50K-character segments with 10% overlap for focused Gemini extraction)
+ * - 3 new indexes: idx_segments_document, idx_segments_status, idx_segments_doc_status
  *
  * Uses REAL databases (better-sqlite3 temp files), NO mocks.
  */
@@ -23,19 +20,20 @@ import {
   getIndexNames,
   getTableNames,
   getTableColumns,
+  virtualTableExists,
   insertTestProvenance,
   insertTestDocument,
-} from './helpers.js';
-import { migrateToLatest } from '../../../src/services/storage/migrations/operations.js';
+} from '../unit/migrations/helpers.js';
+import { migrateToLatest } from '../../src/services/storage/migrations/operations.js';
 
 const sqliteVecAvailable = isSqliteVecAvailable();
 
-describe('Migration v17 to v18 (Medical Entity Types)', () => {
+describe('Migration v18 to v19 (Entity Extraction Segments)', () => {
   let tmpDir: string;
   let db: Database.Database;
 
   beforeEach(() => {
-    tmpDir = createTestDir('ocr-mig-v18');
+    tmpDir = createTestDir('ocr-mig-v19');
     const result = createTestDb(tmpDir);
     db = result.db;
   });
@@ -46,14 +44,11 @@ describe('Migration v17 to v18 (Medical Entity Types)', () => {
   });
 
   /**
-   * Create a minimal but valid v17 schema.
-   * v17 = v16 + edge_count on knowledge_nodes, resolution_method on node_entity_links,
-   *        expanded CHECK on knowledge_edges, canonical_lower index, chunk_id index on entity_mentions,
-   *        knowledge_nodes_fts FTS5 table + triggers.
-   *
-   * Entities table CHECK constraint at v17 does NOT include medication/diagnosis/medical_device.
+   * Create a minimal but valid v18 schema.
+   * v18 = v17 + expanded entity type CHECK on entities and knowledge_nodes
+   *        (adds medication, diagnosis, medical_device)
    */
-  function createV17Schema(): void {
+  function createV18Schema(): void {
     // eslint-disable-next-line @typescript-eslint/no-require-imports
     const sqliteVec = require('sqlite-vec');
     sqliteVec.load(db);
@@ -61,7 +56,6 @@ describe('Migration v17 to v18 (Medical Entity Types)', () => {
     db.pragma('journal_mode = WAL');
     db.pragma('foreign_keys = ON');
 
-    // Schema version
     db.exec(`
       CREATE TABLE schema_version (
         id INTEGER PRIMARY KEY CHECK (id = 1),
@@ -69,10 +63,9 @@ describe('Migration v17 to v18 (Medical Entity Types)', () => {
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL
       );
-      INSERT INTO schema_version VALUES (1, 17, datetime('now'), datetime('now'));
+      INSERT INTO schema_version VALUES (1, 18, datetime('now'), datetime('now'));
     `);
 
-    // Provenance (v16+: includes KNOWLEDGE_GRAPH)
     db.exec(`
       CREATE TABLE provenance (
         id TEXT PRIMARY KEY,
@@ -103,7 +96,6 @@ describe('Migration v17 to v18 (Medical Entity Types)', () => {
       );
     `);
 
-    // Database metadata
     db.exec(`
       CREATE TABLE database_metadata (
         id INTEGER PRIMARY KEY CHECK (id = 1),
@@ -119,7 +111,6 @@ describe('Migration v17 to v18 (Medical Entity Types)', () => {
       INSERT INTO database_metadata VALUES (1, 'test', '1.0.0', datetime('now'), datetime('now'), 0, 0, 0, 0);
     `);
 
-    // Documents
     db.exec(`
       CREATE TABLE documents (
         id TEXT PRIMARY KEY,
@@ -143,7 +134,6 @@ describe('Migration v17 to v18 (Medical Entity Types)', () => {
       );
     `);
 
-    // OCR results
     db.exec(`
       CREATE TABLE ocr_results (
         id TEXT PRIMARY KEY,
@@ -167,7 +157,6 @@ describe('Migration v17 to v18 (Medical Entity Types)', () => {
       );
     `);
 
-    // Chunks
     db.exec(`
       CREATE TABLE chunks (
         id TEXT PRIMARY KEY,
@@ -192,7 +181,6 @@ describe('Migration v17 to v18 (Medical Entity Types)', () => {
       );
     `);
 
-    // Images
     db.exec(`
       CREATE TABLE images (
         id TEXT PRIMARY KEY,
@@ -215,7 +203,6 @@ describe('Migration v17 to v18 (Medical Entity Types)', () => {
       );
     `);
 
-    // Embeddings
     db.exec(`
       CREATE TABLE embeddings (
         id TEXT PRIMARY KEY,
@@ -240,7 +227,6 @@ describe('Migration v17 to v18 (Medical Entity Types)', () => {
       );
     `);
 
-    // Extractions
     db.exec(`
       CREATE TABLE extractions (
         id TEXT PRIMARY KEY NOT NULL,
@@ -253,7 +239,6 @@ describe('Migration v17 to v18 (Medical Entity Types)', () => {
       );
     `);
 
-    // Form fills
     db.exec(`
       CREATE TABLE form_fills (
         id TEXT PRIMARY KEY NOT NULL,
@@ -271,7 +256,6 @@ describe('Migration v17 to v18 (Medical Entity Types)', () => {
       );
     `);
 
-    // Uploaded files
     db.exec(`
       CREATE TABLE uploaded_files (
         id TEXT PRIMARY KEY NOT NULL,
@@ -291,12 +275,11 @@ describe('Migration v17 to v18 (Medical Entity Types)', () => {
       );
     `);
 
-    // Entities (v17 CHECK: does NOT include medication/diagnosis/medical_device)
     db.exec(`
       CREATE TABLE entities (
         id TEXT PRIMARY KEY NOT NULL,
         document_id TEXT NOT NULL REFERENCES documents(id),
-        entity_type TEXT NOT NULL CHECK (entity_type IN ('person', 'organization', 'date', 'amount', 'case_number', 'location', 'statute', 'exhibit', 'other')),
+        entity_type TEXT NOT NULL CHECK (entity_type IN ('person', 'organization', 'date', 'amount', 'case_number', 'location', 'statute', 'exhibit', 'medication', 'diagnosis', 'medical_device', 'other')),
         raw_text TEXT NOT NULL,
         normalized_text TEXT NOT NULL,
         confidence REAL NOT NULL DEFAULT 0.0,
@@ -306,7 +289,6 @@ describe('Migration v17 to v18 (Medical Entity Types)', () => {
       );
     `);
 
-    // Entity mentions
     db.exec(`
       CREATE TABLE entity_mentions (
         id TEXT PRIMARY KEY NOT NULL,
@@ -321,7 +303,6 @@ describe('Migration v17 to v18 (Medical Entity Types)', () => {
       );
     `);
 
-    // Comparisons
     db.exec(`
       CREATE TABLE comparisons (
         id TEXT PRIMARY KEY NOT NULL,
@@ -339,22 +320,15 @@ describe('Migration v17 to v18 (Medical Entity Types)', () => {
       );
     `);
 
-    // Clusters
     db.exec(`
       CREATE TABLE clusters (
         id TEXT PRIMARY KEY NOT NULL,
         run_id TEXT NOT NULL,
         cluster_index INTEGER NOT NULL,
-        label TEXT,
-        description TEXT,
-        classification_tag TEXT,
+        label TEXT, description TEXT, classification_tag TEXT,
         document_count INTEGER NOT NULL DEFAULT 0,
-        centroid_json TEXT,
-        top_terms_json TEXT,
-        coherence_score REAL,
-        algorithm TEXT NOT NULL,
-        algorithm_params_json TEXT,
-        silhouette_score REAL,
+        centroid_json TEXT, top_terms_json TEXT, coherence_score REAL,
+        algorithm TEXT NOT NULL, algorithm_params_json TEXT, silhouette_score REAL,
         content_hash TEXT NOT NULL,
         provenance_id TEXT NOT NULL REFERENCES provenance(id),
         created_at TEXT NOT NULL DEFAULT (datetime('now')),
@@ -362,27 +336,23 @@ describe('Migration v17 to v18 (Medical Entity Types)', () => {
       );
     `);
 
-    // Document clusters
     db.exec(`
       CREATE TABLE document_clusters (
         id TEXT PRIMARY KEY NOT NULL,
         document_id TEXT NOT NULL REFERENCES documents(id),
         cluster_id TEXT NOT NULL REFERENCES clusters(id),
         run_id TEXT NOT NULL,
-        similarity_to_centroid REAL,
-        membership_probability REAL,
+        similarity_to_centroid REAL, membership_probability REAL,
         is_noise INTEGER NOT NULL DEFAULT 0,
         assigned_at TEXT NOT NULL DEFAULT (datetime('now')),
         UNIQUE(document_id, run_id)
       );
     `);
 
-    // Knowledge nodes (v17: has edge_count but NO importance_score, resolution_type)
-    // CHECK constraint at v17 does NOT include medication/diagnosis/medical_device
     db.exec(`
       CREATE TABLE knowledge_nodes (
         id TEXT PRIMARY KEY,
-        entity_type TEXT NOT NULL CHECK (entity_type IN ('person', 'organization', 'date', 'amount', 'case_number', 'location', 'statute', 'exhibit', 'other')),
+        entity_type TEXT NOT NULL CHECK (entity_type IN ('person', 'organization', 'date', 'amount', 'case_number', 'location', 'statute', 'exhibit', 'medication', 'diagnosis', 'medical_device', 'other')),
         canonical_name TEXT NOT NULL,
         normalized_name TEXT NOT NULL,
         aliases TEXT,
@@ -393,11 +363,12 @@ describe('Migration v17 to v18 (Medical Entity Types)', () => {
         metadata TEXT,
         provenance_id TEXT NOT NULL,
         created_at TEXT NOT NULL,
-        updated_at TEXT NOT NULL
+        updated_at TEXT NOT NULL,
+        importance_score REAL,
+        resolution_type TEXT
       );
     `);
 
-    // Knowledge edges (v17: expanded CHECK, has valid_from/valid_until/normalized_weight/contradiction_count)
     db.exec(`
       CREATE TABLE knowledge_edges (
         id TEXT PRIMARY KEY,
@@ -414,8 +385,7 @@ describe('Migration v17 to v18 (Medical Entity Types)', () => {
         metadata TEXT,
         provenance_id TEXT NOT NULL,
         created_at TEXT NOT NULL,
-        valid_from TEXT,
-        valid_until TEXT,
+        valid_from TEXT, valid_until TEXT,
         normalized_weight REAL DEFAULT 0,
         contradiction_count INTEGER DEFAULT 0,
         FOREIGN KEY (source_node_id) REFERENCES knowledge_nodes(id),
@@ -424,7 +394,6 @@ describe('Migration v17 to v18 (Medical Entity Types)', () => {
       );
     `);
 
-    // Node entity links (v17: has resolution_method)
     db.exec(`
       CREATE TABLE node_entity_links (
         id TEXT PRIMARY KEY,
@@ -440,17 +409,15 @@ describe('Migration v17 to v18 (Medical Entity Types)', () => {
       );
     `);
 
-    // FTS tables
+    // FTS tables and virtual tables
     db.exec(`CREATE VIRTUAL TABLE chunks_fts USING fts5(text, content='chunks', content_rowid='rowid', tokenize='porter unicode61');`);
-    db.exec(`CREATE TABLE fts_index_metadata (id INTEGER PRIMARY KEY, last_rebuild_at TEXT, chunks_indexed INTEGER NOT NULL DEFAULT 0, tokenizer TEXT NOT NULL DEFAULT 'porter unicode61', schema_version INTEGER NOT NULL DEFAULT 17, content_hash TEXT);`);
-    db.exec(`INSERT INTO fts_index_metadata VALUES (1, NULL, 0, 'porter unicode61', 17, NULL);`);
-    db.exec(`INSERT INTO fts_index_metadata VALUES (2, NULL, 0, 'porter unicode61', 17, NULL);`);
-    db.exec(`INSERT INTO fts_index_metadata VALUES (3, NULL, 0, 'porter unicode61', 17, NULL);`);
+    db.exec(`CREATE TABLE fts_index_metadata (id INTEGER PRIMARY KEY, last_rebuild_at TEXT, chunks_indexed INTEGER NOT NULL DEFAULT 0, tokenizer TEXT NOT NULL DEFAULT 'porter unicode61', schema_version INTEGER NOT NULL DEFAULT 18, content_hash TEXT);`);
+    db.exec(`INSERT INTO fts_index_metadata VALUES (1, NULL, 0, 'porter unicode61', 18, NULL);`);
+    db.exec(`INSERT INTO fts_index_metadata VALUES (2, NULL, 0, 'porter unicode61', 18, NULL);`);
+    db.exec(`INSERT INTO fts_index_metadata VALUES (3, NULL, 0, 'porter unicode61', 18, NULL);`);
     db.exec(`CREATE VIRTUAL TABLE vlm_fts USING fts5(original_text, content='embeddings', content_rowid='rowid', tokenize='porter unicode61');`);
     db.exec(`CREATE VIRTUAL TABLE extractions_fts USING fts5(extraction_json, content='extractions', content_rowid='rowid', tokenize='porter unicode61');`);
     db.exec(`CREATE VIRTUAL TABLE IF NOT EXISTS vec_embeddings USING vec0(embedding_id TEXT PRIMARY KEY, vector FLOAT[768]);`);
-
-    // Knowledge nodes FTS (v17)
     db.exec(`CREATE VIRTUAL TABLE knowledge_nodes_fts USING fts5(canonical_name, content='knowledge_nodes', content_rowid='rowid');`);
 
     // Triggers
@@ -463,12 +430,11 @@ describe('Migration v17 to v18 (Medical Entity Types)', () => {
     db.exec(`CREATE TRIGGER extractions_fts_ai AFTER INSERT ON extractions BEGIN INSERT INTO extractions_fts(rowid, extraction_json) VALUES (new.rowid, new.extraction_json); END;`);
     db.exec(`CREATE TRIGGER extractions_fts_ad AFTER DELETE ON extractions BEGIN INSERT INTO extractions_fts(extractions_fts, rowid, extraction_json) VALUES('delete', old.rowid, old.extraction_json); END;`);
     db.exec(`CREATE TRIGGER extractions_fts_au AFTER UPDATE OF extraction_json ON extractions BEGIN INSERT INTO extractions_fts(extractions_fts, rowid, extraction_json) VALUES('delete', old.rowid, old.extraction_json); INSERT INTO extractions_fts(rowid, extraction_json) VALUES (new.rowid, new.extraction_json); END;`);
-    // v17 FTS triggers for knowledge_nodes (using _insert/_delete/_update naming)
     db.exec(`CREATE TRIGGER knowledge_nodes_fts_insert AFTER INSERT ON knowledge_nodes BEGIN INSERT INTO knowledge_nodes_fts(rowid, canonical_name) VALUES (new.rowid, new.canonical_name); END;`);
     db.exec(`CREATE TRIGGER knowledge_nodes_fts_delete AFTER DELETE ON knowledge_nodes BEGIN INSERT INTO knowledge_nodes_fts(knowledge_nodes_fts, rowid, canonical_name) VALUES ('delete', old.rowid, old.canonical_name); END;`);
     db.exec(`CREATE TRIGGER knowledge_nodes_fts_update AFTER UPDATE ON knowledge_nodes BEGIN INSERT INTO knowledge_nodes_fts(knowledge_nodes_fts, rowid, canonical_name) VALUES ('delete', old.rowid, old.canonical_name); INSERT INTO knowledge_nodes_fts(rowid, canonical_name) VALUES (new.rowid, new.canonical_name); END;`);
 
-    // Indexes (v17)
+    // All indexes
     db.exec('CREATE INDEX idx_documents_file_path ON documents(file_path);');
     db.exec('CREATE INDEX idx_documents_file_hash ON documents(file_hash);');
     db.exec('CREATE INDEX idx_documents_status ON documents(status);');
@@ -520,225 +486,198 @@ describe('Migration v17 to v18 (Medical Entity Types)', () => {
     db.exec('CREATE INDEX idx_ke_relationship_type ON knowledge_edges(relationship_type);');
     db.exec('CREATE INDEX idx_nel_node_id ON node_entity_links(node_id);');
     db.exec('CREATE INDEX idx_nel_document_id ON node_entity_links(document_id);');
-    // v17 indexes
     db.exec('CREATE INDEX idx_knowledge_nodes_canonical_lower ON knowledge_nodes(canonical_name COLLATE NOCASE);');
     db.exec('CREATE INDEX idx_entity_mentions_chunk_id ON entity_mentions(chunk_id);');
   }
 
-  it.skipIf(!sqliteVecAvailable)('entities table accepts medication type after migration', () => {
-    createV17Schema();
-    migrateToLatest(db);
-
-    const now = new Date().toISOString();
-    insertTestProvenance(db, 'prov-med-ent', 'ENTITY_EXTRACTION', 'prov-med-ent');
-    insertTestDocument(db, 'doc-med', 'prov-med-ent', 'complete');
-
-    expect(() => {
-      db.prepare(`
-        INSERT INTO entities (id, document_id, entity_type, raw_text, normalized_text,
-          confidence, provenance_id, created_at)
-        VALUES ('ent-med-1', 'doc-med', 'medication', 'Aspirin 81mg', 'aspirin 81mg',
-          0.95, 'prov-med-ent', ?)
-      `).run(now);
-    }).not.toThrow();
-
-    const row = db.prepare('SELECT entity_type FROM entities WHERE id = ?').get('ent-med-1') as { entity_type: string };
-    expect(row.entity_type).toBe('medication');
-  });
-
-  it.skipIf(!sqliteVecAvailable)('entities table accepts diagnosis type after migration', () => {
-    createV17Schema();
-    migrateToLatest(db);
-
-    const now = new Date().toISOString();
-    insertTestProvenance(db, 'prov-diag-ent', 'ENTITY_EXTRACTION', 'prov-diag-ent');
-    insertTestDocument(db, 'doc-diag', 'prov-diag-ent', 'complete');
-
-    expect(() => {
-      db.prepare(`
-        INSERT INTO entities (id, document_id, entity_type, raw_text, normalized_text,
-          confidence, provenance_id, created_at)
-        VALUES ('ent-diag-1', 'doc-diag', 'diagnosis', 'Type 2 Diabetes', 'type 2 diabetes',
-          0.90, 'prov-diag-ent', ?)
-      `).run(now);
-    }).not.toThrow();
-  });
-
-  it.skipIf(!sqliteVecAvailable)('entities table accepts medical_device type after migration', () => {
-    createV17Schema();
-    migrateToLatest(db);
-
-    const now = new Date().toISOString();
-    insertTestProvenance(db, 'prov-dev-ent', 'ENTITY_EXTRACTION', 'prov-dev-ent');
-    insertTestDocument(db, 'doc-dev', 'prov-dev-ent', 'complete');
-
-    expect(() => {
-      db.prepare(`
-        INSERT INTO entities (id, document_id, entity_type, raw_text, normalized_text,
-          confidence, provenance_id, created_at)
-        VALUES ('ent-dev-1', 'doc-dev', 'medical_device', 'Insulin Pump', 'insulin pump',
-          0.85, 'prov-dev-ent', ?)
-      `).run(now);
-    }).not.toThrow();
-  });
-
-  it.skipIf(!sqliteVecAvailable)('medication type NOT accepted before migration (v17 CHECK)', () => {
-    createV17Schema();
-
-    const now = new Date().toISOString();
-    insertTestProvenance(db, 'prov-bad-med', 'ENTITY_EXTRACTION', 'prov-bad-med');
-    insertTestDocument(db, 'doc-bad-med', 'prov-bad-med', 'complete');
-
-    expect(() => {
-      db.prepare(`
-        INSERT INTO entities (id, document_id, entity_type, raw_text, normalized_text,
-          confidence, provenance_id, created_at)
-        VALUES ('ent-bad-med', 'doc-bad-med', 'medication', 'Aspirin', 'aspirin',
-          0.95, 'prov-bad-med', ?)
-      `).run(now);
-    }).toThrow();
-  });
-
-  it.skipIf(!sqliteVecAvailable)('knowledge_nodes table accepts medication type after migration', () => {
-    createV17Schema();
-    migrateToLatest(db);
-
-    const now = new Date().toISOString();
-    insertTestProvenance(db, 'prov-kn-med', 'KNOWLEDGE_GRAPH', 'prov-kn-med');
-
-    expect(() => {
-      db.prepare(`
-        INSERT INTO knowledge_nodes (id, entity_type, canonical_name, normalized_name,
-          document_count, mention_count, avg_confidence, provenance_id, created_at, updated_at)
-        VALUES ('kn-med', 'medication', 'Aspirin', 'aspirin', 1, 1, 0.95, 'prov-kn-med', ?, ?)
-      `).run(now, now);
-    }).not.toThrow();
-
-    const row = db.prepare('SELECT entity_type FROM knowledge_nodes WHERE id = ?').get('kn-med') as { entity_type: string };
-    expect(row.entity_type).toBe('medication');
-  });
-
-  it.skipIf(!sqliteVecAvailable)('knowledge_nodes table accepts diagnosis type after migration', () => {
-    createV17Schema();
-    migrateToLatest(db);
-
-    const now = new Date().toISOString();
-    insertTestProvenance(db, 'prov-kn-diag', 'KNOWLEDGE_GRAPH', 'prov-kn-diag');
-
-    expect(() => {
-      db.prepare(`
-        INSERT INTO knowledge_nodes (id, entity_type, canonical_name, normalized_name,
-          document_count, mention_count, avg_confidence, provenance_id, created_at, updated_at)
-        VALUES ('kn-diag', 'diagnosis', 'Type 2 Diabetes', 'type 2 diabetes', 1, 1, 0.90, 'prov-kn-diag', ?, ?)
-      `).run(now, now);
-    }).not.toThrow();
-  });
-
-  it.skipIf(!sqliteVecAvailable)('knowledge_nodes has importance_score and resolution_type after migration', () => {
-    createV17Schema();
-    migrateToLatest(db);
-
-    const columns = getTableColumns(db, 'knowledge_nodes');
-    expect(columns).toContain('importance_score');
-    expect(columns).toContain('resolution_type');
-  });
-
-  it.skipIf(!sqliteVecAvailable)('knowledge_nodes_fts table exists after migration', () => {
-    createV17Schema();
+  it.skipIf(!sqliteVecAvailable)('entity_extraction_segments table exists after migration', () => {
+    createV18Schema();
     migrateToLatest(db);
 
     const tables = getTableNames(db);
-    expect(tables).toContain('knowledge_nodes_fts');
+    expect(tables).toContain('entity_extraction_segments');
   });
 
-  it.skipIf(!sqliteVecAvailable)('FTS triggers exist after migration', () => {
-    createV17Schema();
+  it.skipIf(!sqliteVecAvailable)('entity_extraction_segments has correct columns', () => {
+    createV18Schema();
     migrateToLatest(db);
 
-    const triggers = db.prepare(`
-      SELECT name FROM sqlite_master WHERE type = 'trigger' AND name LIKE 'knowledge_nodes_fts%'
-    `).all() as Array<{ name: string }>;
-    const triggerNames = triggers.map(t => t.name);
+    const columns = getTableColumns(db, 'entity_extraction_segments');
+    expect(columns).toContain('id');
+    expect(columns).toContain('document_id');
+    expect(columns).toContain('ocr_result_id');
+    expect(columns).toContain('segment_index');
+    expect(columns).toContain('text');
+    expect(columns).toContain('character_start');
+    expect(columns).toContain('character_end');
+    expect(columns).toContain('text_length');
+    expect(columns).toContain('overlap_previous');
+    expect(columns).toContain('overlap_next');
+    expect(columns).toContain('extraction_status');
+    expect(columns).toContain('entity_count');
+    expect(columns).toContain('extracted_at');
+    expect(columns).toContain('error_message');
+    expect(columns).toContain('provenance_id');
+    expect(columns).toContain('created_at');
+  });
 
-    // After v22 migration, triggers use _ai/_ad/_au naming
-    expect(triggerNames).toContain('knowledge_nodes_fts_ai');
-    expect(triggerNames).toContain('knowledge_nodes_fts_ad');
-    expect(triggerNames).toContain('knowledge_nodes_fts_au');
+  it.skipIf(!sqliteVecAvailable)('segment indexes exist after migration', () => {
+    createV18Schema();
+    migrateToLatest(db);
+
+    const indexes = getIndexNames(db);
+    expect(indexes).toContain('idx_segments_document');
+    expect(indexes).toContain('idx_segments_status');
+    expect(indexes).toContain('idx_segments_doc_status');
   });
 
   it.skipIf(!sqliteVecAvailable)('schema version is latest after migration', () => {
-    createV17Schema();
+    createV18Schema();
     migrateToLatest(db);
 
     const version = (db.prepare('SELECT version FROM schema_version').get() as { version: number }).version;
     expect(version).toBe(24);
   });
 
+  it.skipIf(!sqliteVecAvailable)('can insert and query segments after migration', () => {
+    createV18Schema();
+    migrateToLatest(db);
+
+    const now = new Date().toISOString();
+    insertTestProvenance(db, 'prov-seg-doc', 'DOCUMENT', 'prov-seg-doc');
+    insertTestDocument(db, 'doc-seg', 'prov-seg-doc', 'complete');
+
+    db.prepare(`
+      INSERT INTO provenance (id, type, created_at, processed_at, source_type, root_document_id,
+        content_hash, processor, processor_version, processing_params, parent_ids, chain_depth)
+      VALUES ('prov-ocr-seg', 'OCR_RESULT', ?, ?, 'OCR', 'prov-seg-doc',
+        'sha256:ocrseg', 'datalab', '1.0', '{}', '["prov-seg-doc"]', 1)
+    `).run(now, now);
+
+    db.prepare(`
+      INSERT INTO ocr_results (id, provenance_id, document_id, extracted_text, text_length,
+        datalab_request_id, datalab_mode, page_count, content_hash,
+        processing_started_at, processing_completed_at, processing_duration_ms)
+      VALUES ('ocr-seg', 'prov-ocr-seg', 'doc-seg', 'Sample text for segmentation testing.',
+        37, 'req-seg-1', 'balanced', 1, 'sha256:segtext', ?, ?, 500)
+    `).run(now, now);
+
+    expect(() => {
+      db.prepare(`
+        INSERT INTO entity_extraction_segments (id, document_id, ocr_result_id, segment_index,
+          text, character_start, character_end, text_length, overlap_previous, overlap_next,
+          extraction_status, entity_count, created_at)
+        VALUES ('seg-1', 'doc-seg', 'ocr-seg', 0, 'Sample text for segmentation testing.',
+          0, 37, 37, 0, 0, 'complete', 3, ?)
+      `).run(now);
+    }).not.toThrow();
+
+    const seg = db.prepare('SELECT * FROM entity_extraction_segments WHERE id = ?').get('seg-1') as Record<string, unknown>;
+    expect(seg).toBeDefined();
+    expect(seg.document_id).toBe('doc-seg');
+    expect(seg.segment_index).toBe(0);
+    expect(seg.character_start).toBe(0);
+    expect(seg.character_end).toBe(37);
+    expect(seg.text_length).toBe(37);
+    expect(seg.extraction_status).toBe('complete');
+    expect(seg.entity_count).toBe(3);
+  });
+
+  it.skipIf(!sqliteVecAvailable)('UNIQUE constraint on (document_id, segment_index)', () => {
+    createV18Schema();
+    migrateToLatest(db);
+
+    const now = new Date().toISOString();
+    insertTestProvenance(db, 'prov-seg-uniq', 'DOCUMENT', 'prov-seg-uniq');
+    insertTestDocument(db, 'doc-seg-uniq', 'prov-seg-uniq', 'complete');
+
+    db.prepare(`
+      INSERT INTO provenance (id, type, created_at, processed_at, source_type, root_document_id,
+        content_hash, processor, processor_version, processing_params, parent_ids, chain_depth)
+      VALUES ('prov-ocr-uniq', 'OCR_RESULT', ?, ?, 'OCR', 'prov-seg-uniq',
+        'sha256:ocruniq', 'datalab', '1.0', '{}', '["prov-seg-uniq"]', 1)
+    `).run(now, now);
+
+    db.prepare(`
+      INSERT INTO ocr_results (id, provenance_id, document_id, extracted_text, text_length,
+        datalab_request_id, datalab_mode, page_count, content_hash,
+        processing_started_at, processing_completed_at, processing_duration_ms)
+      VALUES ('ocr-uniq', 'prov-ocr-uniq', 'doc-seg-uniq', 'text', 4, 'req-uniq', 'balanced', 1,
+        'sha256:uniqtext', ?, ?, 100)
+    `).run(now, now);
+
+    db.prepare(`
+      INSERT INTO entity_extraction_segments (id, document_id, ocr_result_id, segment_index,
+        text, character_start, character_end, text_length, extraction_status, created_at)
+      VALUES ('seg-u1', 'doc-seg-uniq', 'ocr-uniq', 0, 'text', 0, 4, 4, 'pending', ?)
+    `).run(now);
+
+    expect(() => {
+      db.prepare(`
+        INSERT INTO entity_extraction_segments (id, document_id, ocr_result_id, segment_index,
+          text, character_start, character_end, text_length, extraction_status, created_at)
+        VALUES ('seg-u2', 'doc-seg-uniq', 'ocr-uniq', 0, 'text2', 0, 4, 4, 'pending', ?)
+      `).run(now);
+    }).toThrow();
+  });
+
+  it.skipIf(!sqliteVecAvailable)('extraction_status CHECK constraint works', () => {
+    createV18Schema();
+    migrateToLatest(db);
+
+    const now = new Date().toISOString();
+    insertTestProvenance(db, 'prov-seg-check', 'DOCUMENT', 'prov-seg-check');
+    insertTestDocument(db, 'doc-seg-check', 'prov-seg-check', 'complete');
+
+    db.prepare(`
+      INSERT INTO provenance (id, type, created_at, processed_at, source_type, root_document_id,
+        content_hash, processor, processor_version, processing_params, parent_ids, chain_depth)
+      VALUES ('prov-ocr-check', 'OCR_RESULT', ?, ?, 'OCR', 'prov-seg-check',
+        'sha256:ocrcheck', 'datalab', '1.0', '{}', '["prov-seg-check"]', 1)
+    `).run(now, now);
+
+    db.prepare(`
+      INSERT INTO ocr_results (id, provenance_id, document_id, extracted_text, text_length,
+        datalab_request_id, datalab_mode, page_count, content_hash,
+        processing_started_at, processing_completed_at, processing_duration_ms)
+      VALUES ('ocr-check', 'prov-ocr-check', 'doc-seg-check', 'text', 4, 'req-check', 'balanced', 1,
+        'sha256:checktext', ?, ?, 100)
+    `).run(now, now);
+
+    expect(() => {
+      db.prepare(`
+        INSERT INTO entity_extraction_segments (id, document_id, ocr_result_id, segment_index,
+          text, character_start, character_end, text_length, extraction_status, created_at)
+        VALUES ('seg-bad', 'doc-seg-check', 'ocr-check', 0, 'text', 0, 4, 4, 'invalid_status', ?)
+      `).run(now);
+    }).toThrow();
+  });
+
   it.skipIf(!sqliteVecAvailable)('FK integrity clean after migration', () => {
-    createV17Schema();
+    createV18Schema();
     migrateToLatest(db);
 
     const violations = db.pragma('foreign_key_check') as unknown[];
     expect(violations.length).toBe(0);
   });
 
-  it.skipIf(!sqliteVecAvailable)('preserves existing entities during migration', () => {
-    createV17Schema();
+  it.skipIf(!sqliteVecAvailable)('existing data survives migration', () => {
+    createV18Schema();
 
     const now = new Date().toISOString();
-    insertTestProvenance(db, 'prov-surv', 'ENTITY_EXTRACTION', 'prov-surv');
-    insertTestDocument(db, 'doc-surv', 'prov-surv', 'complete');
-
-    db.prepare(`
-      INSERT INTO entities (id, document_id, entity_type, raw_text, normalized_text,
-        confidence, provenance_id, created_at)
-      VALUES ('ent-surv-1', 'doc-surv', 'person', 'John Smith', 'john smith',
-        0.92, 'prov-surv', ?)
-    `).run(now);
+    insertTestProvenance(db, 'prov-surv19', 'DOCUMENT', 'prov-surv19');
+    insertTestDocument(db, 'doc-surv19', 'prov-surv19', 'complete');
 
     migrateToLatest(db);
 
-    const entity = db.prepare('SELECT * FROM entities WHERE id = ?').get('ent-surv-1') as Record<string, unknown>;
-    expect(entity).toBeDefined();
-    expect(entity.entity_type).toBe('person');
-    expect(entity.raw_text).toBe('John Smith');
-    expect(entity.normalized_text).toBe('john smith');
-    expect(entity.confidence).toBe(0.92);
-  });
-
-  it.skipIf(!sqliteVecAvailable)('preserves existing knowledge_nodes during migration', () => {
-    createV17Schema();
-
-    const now = new Date().toISOString();
-    insertTestProvenance(db, 'prov-kn-surv', 'KNOWLEDGE_GRAPH', 'prov-kn-surv');
-    db.prepare(`
-      INSERT INTO knowledge_nodes (id, entity_type, canonical_name, normalized_name,
-        document_count, mention_count, edge_count, avg_confidence, provenance_id, created_at, updated_at)
-      VALUES ('kn-surv', 'person', 'Jane Doe', 'jane doe', 2, 5, 3, 0.88, 'prov-kn-surv', ?, ?)
-    `).run(now, now);
-
-    migrateToLatest(db);
-
-    const node = db.prepare('SELECT * FROM knowledge_nodes WHERE id = ?').get('kn-surv') as Record<string, unknown>;
-    expect(node).toBeDefined();
-    expect(node.canonical_name).toBe('Jane Doe');
-    expect(node.entity_type).toBe('person');
-    expect(node.edge_count).toBe(3);
-    expect(node.avg_confidence).toBe(0.88);
-  });
-
-  it.skipIf(!sqliteVecAvailable)('entities indexes recreated after migration', () => {
-    createV17Schema();
-    migrateToLatest(db);
-
-    const indexes = getIndexNames(db);
-    expect(indexes).toContain('idx_entities_document_id');
-    expect(indexes).toContain('idx_entities_entity_type');
-    expect(indexes).toContain('idx_entities_normalized_text');
+    const doc = db.prepare('SELECT * FROM documents WHERE id = ?').get('doc-surv19') as Record<string, unknown>;
+    expect(doc).toBeDefined();
+    expect(doc.file_name).toBe('doc-surv19.pdf');
+    expect(doc.status).toBe('complete');
   });
 
   it.skipIf(!sqliteVecAvailable)('idempotent - running migration twice does not error', () => {
-    createV17Schema();
+    createV18Schema();
     migrateToLatest(db);
     expect(() => migrateToLatest(db)).not.toThrow();
 

@@ -1,17 +1,11 @@
 /**
- * Migration v19 to v20 Tests
+ * Migration v20 to v21 Tests
  *
- * Tests the v19->v20 migration which adds:
- * - knowledge_edges: valid_from, valid_until (TEXT) for temporal bounds
- * - knowledge_edges: normalized_weight (REAL DEFAULT 0) for weight normalization
- * - knowledge_edges: contradiction_count (INTEGER DEFAULT 0) for contradiction tracking
- * - knowledge_nodes: importance_score (REAL) for node ranking
- * - knowledge_nodes: resolution_type (TEXT) for entity resolution tracking
- * - chunks: ocr_quality_score (REAL)
- * - entity_embeddings: New table (placeholder, corrected by v21)
- * - vec_entity_embeddings: New sqlite-vec virtual table (placeholder, corrected by v21)
- * - 3 new indexes: idx_entity_embeddings_entity_id, idx_entity_embeddings_node_id,
- *   idx_entity_embeddings_content_hash
+ * Tests the v20->v21 migration which:
+ * - Drops and recreates entity_embeddings table with correct schema:
+ *   node_id, original_text, original_text_length, entity_type, document_count, model_name
+ *   (v20 table had entity_id, embedding_model, dimensions which didn't match embed_entities code)
+ * - Drops and recreates vec_entity_embeddings with entity_embedding_id PK (was 'id')
  *
  * Uses REAL databases (better-sqlite3 temp files), NO mocks.
  */
@@ -30,17 +24,17 @@ import {
   virtualTableExists,
   insertTestProvenance,
   insertTestDocument,
-} from './helpers.js';
-import { migrateToLatest } from '../../../src/services/storage/migrations/operations.js';
+} from '../unit/migrations/helpers.js';
+import { migrateToLatest } from '../../src/services/storage/migrations/operations.js';
 
 const sqliteVecAvailable = isSqliteVecAvailable();
 
-describe('Migration v19 to v20 (Entity Embeddings, Temporal Edges, Node Scoring)', () => {
+describe('Migration v20 to v21 (Entity Embeddings Schema Fix)', () => {
   let tmpDir: string;
   let db: Database.Database;
 
   beforeEach(() => {
-    tmpDir = createTestDir('ocr-mig-v20');
+    tmpDir = createTestDir('ocr-mig-v21');
     const result = createTestDb(tmpDir);
     db = result.db;
   });
@@ -51,22 +45,12 @@ describe('Migration v19 to v20 (Entity Embeddings, Temporal Edges, Node Scoring)
   });
 
   /**
-   * Create a minimal but valid v19 schema.
-   * v19 = v18 + entity_extraction_segments table + 3 indexes.
-   * knowledge_nodes does NOT have importance_score or resolution_type at v19
-   * (those were added by v18 migration but only when starting from v17;
-   * a pure v19 from v18 would already have them from v18's table rebuild).
-   *
-   * For this test we simulate a v19 database where knowledge_edges does NOT yet
-   * have valid_from/valid_until/normalized_weight/contradiction_count columns
-   * (because v17 migration already included them in the table rebuild, but
-   * v20 migration uses ALTER TABLE ADD COLUMN which is idempotent via column check).
-   *
-   * We create a v19 where knowledge_nodes DOES have importance_score/resolution_type
-   * (from v18 rebuild) and knowledge_edges DOES have the v17 temporal columns
-   * (from v17 rebuild) -- this tests the idempotent column-check logic in v20.
+   * Create a minimal but valid v20 schema.
+   * v20 = v19 + entity_embeddings (v20 placeholder schema with entity_id, embedding_model, dimensions)
+   *      + vec_entity_embeddings (with 'id' PK instead of 'entity_embedding_id')
+   *      + temporal edge columns + node scoring columns + chunks.ocr_quality_score
    */
-  function createV19Schema(): void {
+  function createV20Schema(): void {
     // eslint-disable-next-line @typescript-eslint/no-require-imports
     const sqliteVec = require('sqlite-vec');
     sqliteVec.load(db);
@@ -82,7 +66,7 @@ describe('Migration v19 to v20 (Entity Embeddings, Temporal Edges, Node Scoring)
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL
       );
-      INSERT INTO schema_version VALUES (1, 19, datetime('now'), datetime('now'));
+      INSERT INTO schema_version VALUES (1, 20, datetime('now'), datetime('now'));
     `);
 
     // Provenance
@@ -180,7 +164,7 @@ describe('Migration v19 to v20 (Entity Embeddings, Temporal Edges, Node Scoring)
       );
     `);
 
-    // Chunks (v19: does NOT have ocr_quality_score yet)
+    // Chunks (v20: has ocr_quality_score)
     db.exec(`
       CREATE TABLE chunks (
         id TEXT PRIMARY KEY,
@@ -199,6 +183,7 @@ describe('Migration v19 to v20 (Entity Embeddings, Temporal Edges, Node Scoring)
         created_at TEXT NOT NULL,
         embedding_status TEXT NOT NULL CHECK (embedding_status IN ('pending', 'complete', 'failed')),
         embedded_at TEXT,
+        ocr_quality_score REAL,
         FOREIGN KEY (document_id) REFERENCES documents(id),
         FOREIGN KEY (ocr_result_id) REFERENCES ocr_results(id),
         FOREIGN KEY (provenance_id) REFERENCES provenance(id)
@@ -390,7 +375,7 @@ describe('Migration v19 to v20 (Entity Embeddings, Temporal Edges, Node Scoring)
       );
     `);
 
-    // Knowledge nodes (v18: has importance_score, resolution_type)
+    // Knowledge nodes (v20: has importance_score, resolution_type)
     db.exec(`
       CREATE TABLE knowledge_nodes (
         id TEXT PRIMARY KEY,
@@ -411,7 +396,7 @@ describe('Migration v19 to v20 (Entity Embeddings, Temporal Edges, Node Scoring)
       );
     `);
 
-    // Knowledge edges (v17: already has valid_from/valid_until/normalized_weight/contradiction_count)
+    // Knowledge edges (v20: has temporal columns)
     db.exec(`
       CREATE TABLE knowledge_edges (
         id TEXT PRIMARY KEY,
@@ -478,16 +463,32 @@ describe('Migration v19 to v20 (Entity Embeddings, Temporal Edges, Node Scoring)
       );
     `);
 
+    // entity_embeddings (v20 PLACEHOLDER schema - wrong columns that v21 will fix)
+    db.exec(`
+      CREATE TABLE entity_embeddings (
+        id TEXT PRIMARY KEY,
+        entity_id TEXT NOT NULL REFERENCES entities(id),
+        node_id TEXT REFERENCES knowledge_nodes(id),
+        embedding_model TEXT NOT NULL,
+        dimensions INTEGER NOT NULL,
+        content_hash TEXT NOT NULL,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        provenance_id TEXT REFERENCES provenance(id)
+      );
+    `);
+
     // FTS tables
     db.exec(`CREATE VIRTUAL TABLE chunks_fts USING fts5(text, content='chunks', content_rowid='rowid', tokenize='porter unicode61');`);
-    db.exec(`CREATE TABLE fts_index_metadata (id INTEGER PRIMARY KEY, last_rebuild_at TEXT, chunks_indexed INTEGER NOT NULL DEFAULT 0, tokenizer TEXT NOT NULL DEFAULT 'porter unicode61', schema_version INTEGER NOT NULL DEFAULT 19, content_hash TEXT);`);
-    db.exec(`INSERT INTO fts_index_metadata VALUES (1, NULL, 0, 'porter unicode61', 19, NULL);`);
-    db.exec(`INSERT INTO fts_index_metadata VALUES (2, NULL, 0, 'porter unicode61', 19, NULL);`);
-    db.exec(`INSERT INTO fts_index_metadata VALUES (3, NULL, 0, 'porter unicode61', 19, NULL);`);
+    db.exec(`CREATE TABLE fts_index_metadata (id INTEGER PRIMARY KEY, last_rebuild_at TEXT, chunks_indexed INTEGER NOT NULL DEFAULT 0, tokenizer TEXT NOT NULL DEFAULT 'porter unicode61', schema_version INTEGER NOT NULL DEFAULT 20, content_hash TEXT);`);
+    db.exec(`INSERT INTO fts_index_metadata VALUES (1, NULL, 0, 'porter unicode61', 20, NULL);`);
+    db.exec(`INSERT INTO fts_index_metadata VALUES (2, NULL, 0, 'porter unicode61', 20, NULL);`);
+    db.exec(`INSERT INTO fts_index_metadata VALUES (3, NULL, 0, 'porter unicode61', 20, NULL);`);
     db.exec(`CREATE VIRTUAL TABLE vlm_fts USING fts5(original_text, content='embeddings', content_rowid='rowid', tokenize='porter unicode61');`);
     db.exec(`CREATE VIRTUAL TABLE extractions_fts USING fts5(extraction_json, content='extractions', content_rowid='rowid', tokenize='porter unicode61');`);
     db.exec(`CREATE VIRTUAL TABLE IF NOT EXISTS vec_embeddings USING vec0(embedding_id TEXT PRIMARY KEY, vector FLOAT[768]);`);
     db.exec(`CREATE VIRTUAL TABLE knowledge_nodes_fts USING fts5(canonical_name, content='knowledge_nodes', content_rowid='rowid');`);
+    // v20 vec_entity_embeddings with WRONG PK name ('id' instead of 'entity_embedding_id')
+    db.exec(`CREATE VIRTUAL TABLE vec_entity_embeddings USING vec0(id TEXT PRIMARY KEY, embedding float[768] distance_metric=cosine);`);
 
     // Triggers
     db.exec(`CREATE TRIGGER chunks_fts_ai AFTER INSERT ON chunks BEGIN INSERT INTO chunks_fts(rowid, text) VALUES (new.rowid, new.text); END;`);
@@ -557,26 +558,34 @@ describe('Migration v19 to v20 (Entity Embeddings, Temporal Edges, Node Scoring)
     db.exec('CREATE INDEX idx_nel_document_id ON node_entity_links(document_id);');
     db.exec('CREATE INDEX idx_knowledge_nodes_canonical_lower ON knowledge_nodes(canonical_name COLLATE NOCASE);');
     db.exec('CREATE INDEX idx_entity_mentions_chunk_id ON entity_mentions(chunk_id);');
-    // v19 segment indexes
     db.exec('CREATE INDEX idx_segments_document ON entity_extraction_segments(document_id);');
     db.exec('CREATE INDEX idx_segments_status ON entity_extraction_segments(extraction_status);');
     db.exec('CREATE INDEX idx_segments_doc_status ON entity_extraction_segments(document_id, extraction_status);');
+    // v20 entity_embeddings indexes
+    db.exec('CREATE INDEX idx_entity_embeddings_entity_id ON entity_embeddings(entity_id);');
+    db.exec('CREATE INDEX idx_entity_embeddings_node_id ON entity_embeddings(node_id);');
+    db.exec('CREATE INDEX idx_entity_embeddings_content_hash ON entity_embeddings(content_hash);');
   }
 
-  it.skipIf(!sqliteVecAvailable)('entity_embeddings table exists after migration', () => {
-    createV19Schema();
-    migrateToLatest(db);
+  it.skipIf(!sqliteVecAvailable)('entity_embeddings has v20 wrong columns before migration', () => {
+    createV20Schema();
 
-    const tables = getTableNames(db);
-    expect(tables).toContain('entity_embeddings');
+    // Verify v20 placeholder schema has wrong columns
+    const columns = getTableColumns(db, 'entity_embeddings');
+    expect(columns).toContain('entity_id');
+    expect(columns).toContain('embedding_model');
+    expect(columns).toContain('dimensions');
+    // Should NOT have v21 columns yet
+    expect(columns).not.toContain('original_text');
+    expect(columns).not.toContain('entity_type');
   });
 
-  it.skipIf(!sqliteVecAvailable)('entity_embeddings has correct columns (v21 schema)', () => {
-    createV19Schema();
+  it.skipIf(!sqliteVecAvailable)('entity_embeddings rebuilt with correct schema after migration', () => {
+    createV20Schema();
     migrateToLatest(db);
 
-    // After v21 migration, entity_embeddings is rebuilt with correct schema
     const columns = getTableColumns(db, 'entity_embeddings');
+    // v21 correct columns
     expect(columns).toContain('id');
     expect(columns).toContain('node_id');
     expect(columns).toContain('original_text');
@@ -587,54 +596,63 @@ describe('Migration v19 to v20 (Entity Embeddings, Temporal Edges, Node Scoring)
     expect(columns).toContain('content_hash');
     expect(columns).toContain('created_at');
     expect(columns).toContain('provenance_id');
+    // v20 wrong columns should be gone
+    expect(columns).not.toContain('entity_id');
+    expect(columns).not.toContain('embedding_model');
+    expect(columns).not.toContain('dimensions');
   });
 
   it.skipIf(!sqliteVecAvailable)('vec_entity_embeddings virtual table exists after migration', () => {
-    createV19Schema();
+    createV20Schema();
     migrateToLatest(db);
 
     expect(virtualTableExists(db, 'vec_entity_embeddings')).toBe(true);
   });
 
-  it.skipIf(!sqliteVecAvailable)('chunks has ocr_quality_score column after migration', () => {
-    createV19Schema();
-    migrateToLatest(db);
-
-    const columns = getTableColumns(db, 'chunks');
-    expect(columns).toContain('ocr_quality_score');
-  });
-
-  it.skipIf(!sqliteVecAvailable)('knowledge_edges has temporal columns after migration', () => {
-    createV19Schema();
-    migrateToLatest(db);
-
-    const columns = getTableColumns(db, 'knowledge_edges');
-    expect(columns).toContain('valid_from');
-    expect(columns).toContain('valid_until');
-    expect(columns).toContain('normalized_weight');
-    expect(columns).toContain('contradiction_count');
-  });
-
-  it.skipIf(!sqliteVecAvailable)('knowledge_nodes has importance_score and resolution_type', () => {
-    createV19Schema();
-    migrateToLatest(db);
-
-    const columns = getTableColumns(db, 'knowledge_nodes');
-    expect(columns).toContain('importance_score');
-    expect(columns).toContain('resolution_type');
-  });
-
-  it.skipIf(!sqliteVecAvailable)('entity_embeddings indexes exist after migration', () => {
-    createV19Schema();
+  it.skipIf(!sqliteVecAvailable)('entity_embeddings indexes recreated after migration', () => {
+    createV20Schema();
     migrateToLatest(db);
 
     const indexes = getIndexNames(db);
     expect(indexes).toContain('idx_entity_embeddings_node_id');
     expect(indexes).toContain('idx_entity_embeddings_content_hash');
+    // v20 entity_id index should be gone (table was dropped and recreated)
+    expect(indexes).not.toContain('idx_entity_embeddings_entity_id');
+  });
+
+  it.skipIf(!sqliteVecAvailable)('can insert entity embedding with v21 schema after migration', () => {
+    createV20Schema();
+    migrateToLatest(db);
+
+    const now = new Date().toISOString();
+
+    // Create a knowledge node to reference
+    db.prepare(`
+      INSERT INTO knowledge_nodes (id, entity_type, canonical_name, normalized_name,
+        document_count, mention_count, avg_confidence, provenance_id, created_at, updated_at)
+      VALUES ('kn-emb', 'person', 'John Smith', 'john smith', 2, 5, 0.9, 'prov-placeholder', ?, ?)
+    `).run(now, now);
+
+    expect(() => {
+      db.prepare(`
+        INSERT INTO entity_embeddings (id, node_id, original_text, original_text_length,
+          entity_type, document_count, model_name, content_hash, created_at)
+        VALUES ('ee-1', 'kn-emb', 'John Smith', 10, 'person', 2,
+          'nomic-embed-text-v1.5', 'sha256:embhash', ?)
+      `).run(now);
+    }).not.toThrow();
+
+    const emb = db.prepare('SELECT * FROM entity_embeddings WHERE id = ?').get('ee-1') as Record<string, unknown>;
+    expect(emb).toBeDefined();
+    expect(emb.node_id).toBe('kn-emb');
+    expect(emb.original_text).toBe('John Smith');
+    expect(emb.entity_type).toBe('person');
+    expect(emb.document_count).toBe(2);
+    expect(emb.model_name).toBe('nomic-embed-text-v1.5');
   });
 
   it.skipIf(!sqliteVecAvailable)('schema version is latest after migration', () => {
-    createV19Schema();
+    createV20Schema();
     migrateToLatest(db);
 
     const version = (db.prepare('SELECT version FROM schema_version').get() as { version: number }).version;
@@ -642,79 +660,67 @@ describe('Migration v19 to v20 (Entity Embeddings, Temporal Edges, Node Scoring)
   });
 
   it.skipIf(!sqliteVecAvailable)('FK integrity clean after migration', () => {
-    createV19Schema();
+    createV20Schema();
     migrateToLatest(db);
 
     const violations = db.pragma('foreign_key_check') as unknown[];
     expect(violations.length).toBe(0);
   });
 
-  it.skipIf(!sqliteVecAvailable)('can insert temporal edge data after migration', () => {
-    createV19Schema();
-    migrateToLatest(db);
-
-    const now = new Date().toISOString();
-
-    // Create two knowledge nodes
-    db.prepare(`
-      INSERT INTO knowledge_nodes (id, entity_type, canonical_name, normalized_name,
-        document_count, mention_count, avg_confidence, provenance_id, created_at, updated_at)
-      VALUES ('kn-src-v20', 'person', 'Alice', 'alice', 1, 1, 0.9, 'prov-placeholder', ?, ?)
-    `).run(now, now);
-    db.prepare(`
-      INSERT INTO knowledge_nodes (id, entity_type, canonical_name, normalized_name,
-        document_count, mention_count, avg_confidence, provenance_id, created_at, updated_at)
-      VALUES ('kn-tgt-v20', 'organization', 'Acme Corp', 'acme corp', 1, 1, 0.85, 'prov-placeholder', ?, ?)
-    `).run(now, now);
-
-    // Insert edge with temporal bounds
-    insertTestProvenance(db, 'prov-edge-v20', 'KNOWLEDGE_GRAPH', 'prov-edge-v20');
-
-    expect(() => {
-      db.prepare(`
-        INSERT INTO knowledge_edges (id, source_node_id, target_node_id, relationship_type,
-          weight, evidence_count, document_ids, provenance_id, created_at,
-          valid_from, valid_until, normalized_weight, contradiction_count)
-        VALUES ('ke-v20', 'kn-src-v20', 'kn-tgt-v20', 'works_at', 1.5, 2, '["doc-1"]',
-          'prov-edge-v20', ?, '2024-01-01', '2024-12-31', 0.75, 0)
-      `).run(now);
-    }).not.toThrow();
-
-    const edge = db.prepare('SELECT * FROM knowledge_edges WHERE id = ?').get('ke-v20') as Record<string, unknown>;
-    expect(edge.valid_from).toBe('2024-01-01');
-    expect(edge.valid_until).toBe('2024-12-31');
-    expect(edge.normalized_weight).toBe(0.75);
-    expect(edge.contradiction_count).toBe(0);
-  });
-
   it.skipIf(!sqliteVecAvailable)('existing data survives migration', () => {
-    createV19Schema();
+    createV20Schema();
 
     const now = new Date().toISOString();
-    insertTestProvenance(db, 'prov-surv20', 'DOCUMENT', 'prov-surv20');
-    insertTestDocument(db, 'doc-surv20', 'prov-surv20', 'complete');
+    insertTestProvenance(db, 'prov-surv21', 'DOCUMENT', 'prov-surv21');
+    insertTestDocument(db, 'doc-surv21', 'prov-surv21', 'complete');
 
-    // Insert a knowledge node before migration
+    // Insert a knowledge node
     db.prepare(`
       INSERT INTO knowledge_nodes (id, entity_type, canonical_name, normalized_name,
-        document_count, mention_count, avg_confidence, provenance_id, created_at, updated_at)
-      VALUES ('kn-surv20', 'location', 'New York', 'new york', 3, 7, 0.92, 'prov-placeholder', ?, ?)
+        document_count, mention_count, avg_confidence, provenance_id, created_at, updated_at,
+        importance_score, resolution_type)
+      VALUES ('kn-surv21', 'organization', 'Test Corp', 'test corp', 1, 2, 0.88,
+        'prov-placeholder', ?, ?, 0.75, 'exact')
     `).run(now, now);
 
     migrateToLatest(db);
 
-    const doc = db.prepare('SELECT * FROM documents WHERE id = ?').get('doc-surv20') as Record<string, unknown>;
+    const doc = db.prepare('SELECT * FROM documents WHERE id = ?').get('doc-surv21') as Record<string, unknown>;
     expect(doc).toBeDefined();
     expect(doc.status).toBe('complete');
 
-    const node = db.prepare('SELECT * FROM knowledge_nodes WHERE id = ?').get('kn-surv20') as Record<string, unknown>;
+    const node = db.prepare('SELECT * FROM knowledge_nodes WHERE id = ?').get('kn-surv21') as Record<string, unknown>;
     expect(node).toBeDefined();
-    expect(node.canonical_name).toBe('New York');
-    expect(node.document_count).toBe(3);
+    expect(node.canonical_name).toBe('Test Corp');
+    expect(node.importance_score).toBe(0.75);
+    expect(node.resolution_type).toBe('exact');
+  });
+
+  it.skipIf(!sqliteVecAvailable)('knowledge_nodes_fts has porter tokenizer after v22 migration', () => {
+    createV20Schema();
+    migrateToLatest(db);
+
+    // After v22, the FTS table is recreated with porter unicode61 tokenizer
+    // We verify by checking the table exists and triggers use correct naming
+    const tables = getTableNames(db);
+    expect(tables).toContain('knowledge_nodes_fts');
+
+    const triggers = db.prepare(`
+      SELECT name FROM sqlite_master WHERE type = 'trigger' AND name LIKE 'knowledge_nodes_fts%'
+    `).all() as Array<{ name: string }>;
+    const triggerNames = triggers.map(t => t.name);
+    // v22 fixes trigger naming to _ai/_ad/_au
+    expect(triggerNames).toContain('knowledge_nodes_fts_ai');
+    expect(triggerNames).toContain('knowledge_nodes_fts_ad');
+    expect(triggerNames).toContain('knowledge_nodes_fts_au');
+    // Old naming should be gone
+    expect(triggerNames).not.toContain('knowledge_nodes_fts_insert');
+    expect(triggerNames).not.toContain('knowledge_nodes_fts_delete');
+    expect(triggerNames).not.toContain('knowledge_nodes_fts_update');
   });
 
   it.skipIf(!sqliteVecAvailable)('idempotent - running migration twice does not error', () => {
-    createV19Schema();
+    createV20Schema();
     migrateToLatest(db);
     expect(() => migrateToLatest(db)).not.toThrow();
 
