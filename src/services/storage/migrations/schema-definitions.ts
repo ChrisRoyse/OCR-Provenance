@@ -8,7 +8,7 @@
  */
 
 /** Current schema version */
-export const SCHEMA_VERSION = 22;
+export const SCHEMA_VERSION = 23;
 
 /**
  * Database configuration pragmas for optimal performance and safety
@@ -571,7 +571,7 @@ CREATE TABLE IF NOT EXISTS knowledge_edges (
   id TEXT PRIMARY KEY,
   source_node_id TEXT NOT NULL,
   target_node_id TEXT NOT NULL,
-  relationship_type TEXT NOT NULL CHECK (relationship_type IN ('co_mentioned', 'co_located', 'works_at', 'represents', 'located_in', 'filed_in', 'cites', 'references', 'party_to', 'related_to', 'precedes', 'occurred_at')),
+  relationship_type TEXT NOT NULL CHECK (relationship_type IN ('co_mentioned', 'co_located', 'works_at', 'represents', 'located_in', 'filed_in', 'cites', 'references', 'party_to', 'related_to', 'precedes', 'occurred_at', 'treated_with', 'administered_via', 'managed_by', 'interacts_with')),
   weight REAL NOT NULL DEFAULT 1.0,
   evidence_count INTEGER NOT NULL DEFAULT 1,
   document_ids TEXT NOT NULL,

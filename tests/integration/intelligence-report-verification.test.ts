@@ -541,10 +541,10 @@ describe.skipIf(!benchmarkExists)('R5: Expanded Rule Classifier', () => {
     expect(result!.confidence).toBeGreaterThanOrEqual(0.7);
   });
 
-  it('should classify medication + medical_device as related_to (new R5 rule)', () => {
+  it('should classify medication + medical_device as administered_via (GAP-M8)', () => {
     const result = classifyByRules('medication', 'medical_device');
     expect(result).not.toBeNull();
-    expect(result!.type).toBe('related_to');
+    expect(result!.type).toBe('administered_via');
     expect(result!.confidence).toBeGreaterThanOrEqual(0.7);
   });
 
@@ -554,17 +554,17 @@ describe.skipIf(!benchmarkExists)('R5: Expanded Rule Classifier', () => {
     expect(result!.type).toBe('references');
   });
 
-  it('should classify medication + diagnosis as related_to (new R5 rule)', () => {
+  it('should classify medication + diagnosis as treated_with (GAP-M8)', () => {
     const result = classifyByRules('medication', 'diagnosis');
     expect(result).not.toBeNull();
-    expect(result!.type).toBe('related_to');
+    expect(result!.type).toBe('treated_with');
     expect(result!.confidence).toBeGreaterThanOrEqual(0.8);
   });
 
-  it('should classify medical_device + diagnosis as related_to (new R5 rule)', () => {
+  it('should classify medical_device + diagnosis as managed_by (GAP-M8)', () => {
     const result = classifyByRules('medical_device', 'diagnosis');
     expect(result).not.toBeNull();
-    expect(result!.type).toBe('related_to');
+    expect(result!.type).toBe('managed_by');
   });
 
   it('should classify person + diagnosis as references (new R5 rule)', () => {

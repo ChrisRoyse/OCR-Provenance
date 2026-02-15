@@ -11,7 +11,7 @@
 
 import { z } from 'zod';
 import { v4 as uuidv4 } from 'uuid';
-import { formatResponse, handleError, type ToolDefinition, type ToolResponse } from './shared.js';
+import { formatResponse, handleError, queryEntitiesForDocuments, fetchProvenanceChain, type ToolDefinition, type ToolResponse } from './shared.js';
 import { validateInput } from '../utils/validation.js';
 import { requireDatabase } from '../server/state.js';
 import { MCPError } from '../server/errors.js';
@@ -60,12 +60,18 @@ const ClusterListInput = z.object({
   classification_tag: z.string().optional().describe('Filter by classification tag'),
   limit: z.number().int().min(1).max(100).default(50),
   offset: z.number().int().min(0).default(0),
+  include_entities: z.boolean().default(false)
+    .describe('Include entities for documents in each cluster'),
 });
 
 const ClusterGetInput = z.object({
   cluster_id: z.string().min(1).describe('Cluster ID'),
   include_documents: z.boolean().default(true).describe('Include member document list'),
   include_provenance: z.boolean().default(false).describe('Include provenance chain'),
+  include_entities: z.boolean().default(false)
+    .describe('Include entities for documents in this cluster'),
+  include_shared_entities: z.boolean().default(false)
+    .describe('Include entity nodes shared across documents in this cluster'),
 });
 
 const ClusterAssignInput = z.object({
@@ -213,11 +219,40 @@ async function handleClusterGet(
     }
 
     if (input.include_provenance) {
+      result.provenance_chain = fetchProvenanceChain(db, cluster.provenance_id, 'clustering') ?? null;
+    }
+
+    if (input.include_entities) {
       try {
-        const chain = db.getProvenanceChain(cluster.provenance_id);
-        result.provenance_chain = chain;
-      } catch {
-        result.provenance_chain = null;
+        const docIds = getClusterDocuments(conn, input.cluster_id).map(d => d.document_id);
+        result.entities = queryEntitiesForDocuments(conn, docIds);
+      } catch (err) {
+        console.error(`[clustering] Entity query failed: ${err instanceof Error ? err.message : String(err)}`);
+        result.entities = [];
+      }
+    }
+
+    if (input.include_shared_entities) {
+      try {
+        const clusterEntityNodes = getClusterDocumentEntityNodes(conn, input.cluster_id);
+        // Query node details for shared entities
+        if (clusterEntityNodes.size > 0) {
+          const nodeIds = [...clusterEntityNodes];
+          const placeholders = nodeIds.map(() => '?').join(',');
+          const sharedNodes = conn.prepare(`
+            SELECT kn.id as node_id, kn.canonical_name, kn.entity_type, kn.document_count
+            FROM knowledge_nodes kn
+            WHERE kn.id IN (${placeholders}) AND kn.document_count > 1
+            ORDER BY kn.document_count DESC
+            LIMIT 50
+          `).all(...nodeIds) as Array<{ node_id: string; canonical_name: string; entity_type: string; document_count: number }>;
+          result.shared_entities = sharedNodes;
+        } else {
+          result.shared_entities = [];
+        }
+      } catch (err) {
+        console.error(`[clustering] Shared entity query failed: ${err instanceof Error ? err.message : String(err)}`);
+        result.shared_entities = [];
       }
     }
 
@@ -258,9 +293,8 @@ async function handleClusterAssign(
     if (entityWeight > 0) {
       try {
         docNodeIds = getDocumentEntityNodeIds(conn, input.document_id);
-      } catch {
-        // KG tables may not exist - fall back to pure cosine
-        console.error(`[WARN] KG tables not available for entity-weighted assignment, using pure cosine`);
+      } catch (err) {
+        console.error(`[clustering] KG tables not available for entity-weighted assignment, using pure cosine: ${err instanceof Error ? err.message : String(err)}`);
       }
     }
 
@@ -291,8 +325,8 @@ async function handleClusterAssign(
             const jaccard = union.size > 0 ? intersection.size / union.size : 0;
             similarity = (1 - entityWeight) * similarity + entityWeight * jaccard;
           }
-        } catch {
-          // KG query failed for this cluster - use pure cosine
+        } catch (err) {
+          console.error(`[clustering] KG entity overlap query failed for cluster ${cluster.id}: ${err instanceof Error ? err.message : String(err)}`);
         }
       }
 
@@ -327,7 +361,7 @@ async function handleClusterAssign(
       'UPDATE clusters SET document_count = document_count + 1 WHERE id = ?'
     ).run(bestClusterId);
 
-    // Create provenance record for cluster assignment (PROV-2)
+    // Create provenance record for cluster assignment
     const assignProvId = uuidv4();
     db.insertProvenance({
       id: assignProvId,
@@ -338,13 +372,13 @@ async function handleClusterAssign(
       source_file_modified_at: null,
       source_type: 'CLUSTERING',
       source_path: null,
-      source_id: doc.provenance_id,
-      root_document_id: doc.provenance_id,
+      source_id: input.document_id,
+      root_document_id: input.document_id,
       location: null,
       content_hash: '',
       input_hash: null,
       file_hash: null,
-      processor: 'cluster-assign',
+      processor: 'cluster-reassign',
       processor_version: '1.0.0',
       processing_params: {
         document_id: input.document_id,
@@ -403,8 +437,8 @@ async function handleClusterDelete(
     for (const { provenance_id } of provenanceIds) {
       try {
         deleteProvStmt.run(provenance_id);
-      } catch {
-        // Ignore provenance cleanup failures
+      } catch (err) {
+        console.error(`[clustering] Failed to delete provenance ${provenance_id}: ${err instanceof Error ? err.message : String(err)}`);
       }
     }
 

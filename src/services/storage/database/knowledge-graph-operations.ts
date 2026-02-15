@@ -1715,6 +1715,133 @@ export function getEvidenceChunksForEdge(
   }
 }
 
+// ============================================================
+// Entity Embeddings CRUD
+// ============================================================
+
+/**
+ * Row shape for entity_embeddings table
+ */
+export interface EntityEmbeddingRow {
+  id: string;
+  node_id: string;
+  original_text: string;
+  original_text_length: number;
+  entity_type: string;
+  document_count: number;
+  model_name: string;
+  content_hash: string;
+  created_at: string;
+  provenance_id: string | null;
+}
+
+/**
+ * Insert an entity embedding record.
+ *
+ * @param db - Database connection
+ * @param row - Entity embedding data
+ * @returns The entity embedding ID
+ */
+export function insertEntityEmbedding(
+  db: Database.Database,
+  row: EntityEmbeddingRow,
+): string {
+  const stmt = db.prepare(`
+    INSERT INTO entity_embeddings (id, node_id, original_text, original_text_length,
+      entity_type, document_count, model_name, content_hash, created_at, provenance_id)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+
+  runWithForeignKeyCheck(
+    stmt,
+    [
+      row.id,
+      row.node_id,
+      row.original_text,
+      row.original_text_length,
+      row.entity_type,
+      row.document_count,
+      row.model_name,
+      row.content_hash,
+      row.created_at,
+      row.provenance_id,
+    ],
+    `inserting entity_embedding: FK violation for node_id="${row.node_id}" or provenance_id="${row.provenance_id}"`,
+  );
+
+  return row.id;
+}
+
+/**
+ * Insert a vector into vec_entity_embeddings virtual table.
+ *
+ * @param db - Database connection
+ * @param entityEmbeddingId - Must match an existing entity_embeddings.id
+ * @param vector - 768-dimensional vector as Buffer (from Float32Array)
+ */
+export function insertVecEntityEmbedding(
+  db: Database.Database,
+  entityEmbeddingId: string,
+  vector: Buffer,
+): void {
+  db.prepare(
+    'INSERT INTO vec_entity_embeddings (entity_embedding_id, vector) VALUES (?, ?)',
+  ).run(entityEmbeddingId, vector);
+}
+
+/**
+ * Get entity embedding for a knowledge node.
+ * Returns null if no embedding exists for the node.
+ *
+ * @param db - Database connection
+ * @param nodeId - Knowledge node ID
+ * @returns Entity embedding row or null
+ */
+export function getEntityEmbeddingByNodeId(
+  db: Database.Database,
+  nodeId: string,
+): EntityEmbeddingRow | null {
+  const row = db.prepare(
+    'SELECT * FROM entity_embeddings WHERE node_id = ?',
+  ).get(nodeId) as EntityEmbeddingRow | undefined;
+  return row ?? null;
+}
+
+/**
+ * Delete entity embeddings for a knowledge node (both entity_embeddings and vec_entity_embeddings).
+ *
+ * @param db - Database connection
+ * @param nodeId - Knowledge node ID
+ * @returns Count of entity_embeddings records deleted
+ */
+export function deleteEntityEmbeddingsByNodeId(
+  db: Database.Database,
+  nodeId: string,
+): number {
+  // Delete from vec_entity_embeddings first (references entity_embeddings.id)
+  db.prepare(
+    `DELETE FROM vec_entity_embeddings WHERE entity_embedding_id IN (
+       SELECT id FROM entity_embeddings WHERE node_id = ?
+     )`,
+  ).run(nodeId);
+
+  const result = db.prepare(
+    'DELETE FROM entity_embeddings WHERE node_id = ?',
+  ).run(nodeId);
+
+  return result.changes;
+}
+
+/**
+ * Count total entity embeddings
+ */
+export function countEntityEmbeddings(db: Database.Database): number {
+  const row = db.prepare(
+    'SELECT COUNT(*) as cnt FROM entity_embeddings',
+  ).get() as { cnt: number };
+  return row.cnt;
+}
+
 /**
  * Delete graph data for specific documents
  */

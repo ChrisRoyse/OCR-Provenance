@@ -280,6 +280,10 @@ export const SearchSemanticInput = z.object({
     .describe('Deduplicate results by primary entity (max 2 results per entity)'),
   min_entity_confidence: z.number().min(0).max(1).optional()
     .describe('Minimum entity confidence score (0-1) for including entities in results'),
+  cluster_id: z.string().optional()
+    .describe('Filter results to documents in this cluster'),
+  include_cluster_context: z.boolean().default(false)
+    .describe('Include cluster membership info for each result'),
 });
 
 /**
@@ -307,6 +311,10 @@ export const SearchInput = z.object({
     .describe('Deduplicate results by primary entity (max 2 results per entity)'),
   min_entity_confidence: z.number().min(0).max(1).optional()
     .describe('Minimum entity confidence score (0-1) for including entities in results'),
+  cluster_id: z.string().optional()
+    .describe('Filter results to documents in this cluster'),
+  include_cluster_context: z.boolean().default(false)
+    .describe('Include cluster membership info for each result'),
 });
 
 /**
@@ -337,6 +345,10 @@ export const SearchHybridInput = z.object({
     .describe('Deduplicate results by primary entity (max 2 results per entity)'),
   min_entity_confidence: z.number().min(0).max(1).optional()
     .describe('Minimum entity confidence score (0-1) for including entities in results'),
+  cluster_id: z.string().optional()
+    .describe('Filter results to documents in this cluster'),
+  include_cluster_context: z.boolean().default(false)
+    .describe('Include cluster membership info for each result'),
 });
 
 /**

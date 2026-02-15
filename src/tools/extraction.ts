@@ -20,6 +20,7 @@ import { formatResponse, handleError, type ToolResponse, type ToolDefinition } f
 import { validateInput } from '../utils/validation.js';
 import { ImageExtractor } from '../services/images/extractor.js';
 import { insertImageBatch, getImagesByDocument, updateImageProvenance } from '../services/storage/database/image-operations.js';
+import { handleVLMProcessDocument } from './vlm.js';
 import { getProvenanceTracker } from '../services/provenance/index.js';
 import { ProvenanceType } from '../models/provenance.js';
 import { computeHash, computeFileHashSync } from '../utils/hash.js';
@@ -35,6 +36,10 @@ const ExtractImagesInput = z.object({
   min_size: z.number().int().min(10).max(1000).default(100),
   max_images: z.number().int().min(1).max(1000).default(500),
   output_dir: z.string().optional(),
+  auto_vlm_process: z.boolean().default(false)
+    .describe('Automatically run VLM processing on extracted images'),
+  include_provenance: z.boolean().default(false)
+    .describe('Include provenance chain for extracted images'),
 });
 
 const ExtractImagesBatchInput = z.object({
@@ -42,6 +47,8 @@ const ExtractImagesBatchInput = z.object({
   max_images_per_doc: z.number().int().min(1).max(1000).default(200),
   limit: z.number().int().min(1).max(100).default(50),
   status: z.enum(['pending', 'processing', 'complete', 'failed', 'all']).default('complete'),
+  auto_vlm_process: z.boolean().default(false)
+    .describe('Automatically run VLM processing on extracted images'),
 });
 
 const ExtractionCheckInput = z.object({});
@@ -183,6 +190,37 @@ export async function handleExtractImages(
 
     console.error(`[INFO] Stored ${storedImages.length} image records in database`);
 
+    let vlmResult: Record<string, unknown> | undefined;
+    if (input.auto_vlm_process && storedImages.length > 0) {
+      try {
+        const vlmResponse = await handleVLMProcessDocument({ document_id: documentId });
+        const vlmText = vlmResponse.content?.[0]?.text;
+        if (vlmText) {
+          vlmResult = JSON.parse(vlmText).data ?? JSON.parse(vlmText);
+        }
+      } catch (vlmErr) {
+        console.error(`[extraction] Auto VLM processing failed: ${vlmErr instanceof Error ? vlmErr.message : String(vlmErr)}`);
+        vlmResult = { error: `VLM processing failed: ${vlmErr instanceof Error ? vlmErr.message : String(vlmErr)}` };
+      }
+    }
+
+    let provenanceChains: Record<string, unknown> | undefined;
+    if (input.include_provenance && storedImages.length > 0) {
+      try {
+        const chains: Record<string, unknown> = {};
+        for (const img of storedImages) {
+          if (img.provenance_id) {
+            chains[img.id] = db.getProvenanceChain(img.provenance_id);
+          }
+        }
+        if (Object.keys(chains).length > 0) {
+          provenanceChains = chains;
+        }
+      } catch (provErr) {
+        console.error(`[extraction] Provenance chain query failed: ${provErr instanceof Error ? provErr.message : String(provErr)}`);
+      }
+    }
+
     return formatResponse(successResult({
       document_id: documentId,
       file_name: doc.file_name,
@@ -201,6 +239,8 @@ export async function handleExtractImages(
         file_size: img.file_size,
         vlm_status: img.vlm_status,
       })),
+      ...(vlmResult ? { vlm_processing: vlmResult } : {}),
+      ...(provenanceChains ? { provenance_chains: provenanceChains } : {}),
     }));
   } catch (error) {
     return handleError(error);
@@ -430,6 +470,21 @@ export async function handleExtractImagesBatch(
       // Graceful degradation if entity tables don't exist
     }
 
+    let batchVlmResults: Array<{ document_id: string; vlm_status: string }> | undefined;
+    if (input.auto_vlm_process && totalImages > 0) {
+      batchVlmResults = [];
+      const docsWithImages = results.filter(r => r.images_extracted > 0 && !r.error);
+      for (const docResult of docsWithImages) {
+        try {
+          await handleVLMProcessDocument({ document_id: docResult.document_id });
+          batchVlmResults.push({ document_id: docResult.document_id, vlm_status: 'complete' });
+        } catch (vlmErr) {
+          console.error(`[extraction] Auto VLM batch failed for ${docResult.document_id}: ${vlmErr instanceof Error ? vlmErr.message : String(vlmErr)}`);
+          batchVlmResults.push({ document_id: docResult.document_id, vlm_status: 'failed' });
+        }
+      }
+    }
+
     return formatResponse(successResult({
       processed: documents.length,
       successful,
@@ -438,6 +493,7 @@ export async function handleExtractImagesBatch(
       total_images: totalImages,
       results,
       ...(entityContext ? { entity_context: entityContext } : {}),
+      ...(batchVlmResults ? { vlm_processing: batchVlmResults } : {}),
     }));
   } catch (error) {
     return handleError(error);
@@ -484,6 +540,8 @@ export const extractionTools: Record<string, ToolDefinition> = {
       min_size: z.number().int().min(10).max(1000).default(100).describe('Minimum image dimension in pixels'),
       max_images: z.number().int().min(1).max(1000).default(500).describe('Maximum images to extract'),
       output_dir: z.string().optional().describe('Custom output directory (default: storage_path/images/{document_id}/)'),
+      auto_vlm_process: z.boolean().default(false).describe('Auto-trigger VLM processing after image extraction'),
+      include_provenance: z.boolean().default(false).describe('Include provenance chain for extracted images'),
     },
     handler: handleExtractImages,
   },
@@ -495,6 +553,7 @@ export const extractionTools: Record<string, ToolDefinition> = {
       max_images_per_doc: z.number().int().min(1).max(1000).default(200).describe('Maximum images per document'),
       limit: z.number().int().min(1).max(100).default(50).describe('Maximum documents to process'),
       status: z.enum(['pending', 'processing', 'complete', 'failed', 'all']).default('complete').describe('Filter by document status'),
+      auto_vlm_process: z.boolean().default(false).describe('Auto-trigger VLM processing after image extraction'),
     },
     handler: handleExtractImagesBatch,
   },

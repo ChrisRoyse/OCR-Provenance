@@ -11,7 +11,7 @@
 
 import { z } from 'zod';
 import { v4 as uuidv4 } from 'uuid';
-import { formatResponse, handleError, type ToolDefinition, type ToolResponse } from './shared.js';
+import { formatResponse, handleError, queryEntitiesForDocuments, fetchProvenanceChain, type ToolDefinition, type ToolResponse } from './shared.js';
 import { validateInput } from '../utils/validation.js';
 import { requireDatabase } from '../server/state.js';
 import { computeHash } from '../utils/hash.js';
@@ -34,6 +34,10 @@ const DocumentCompareInput = z.object({
   include_text_diff: z.boolean().default(true).describe('Include text-level diff operations'),
   include_entity_diff: z.boolean().default(true).describe('Include entity comparison'),
   max_diff_operations: z.number().int().min(1).max(10000).default(1000).describe('Maximum diff operations to return'),
+  include_entities: z.boolean().default(false)
+    .describe('Include full entity lists for both documents'),
+  include_provenance: z.boolean().default(false)
+    .describe('Include provenance chain for the comparison'),
 });
 
 const ComparisonListInput = z.object({
@@ -210,6 +214,25 @@ async function handleDocumentCompare(params: Record<string, unknown>): Promise<T
             }
             kgEdgesUpdated = uniqueEdgeIds.size;
             console.error(`[comparison] Updated contradiction_count on ${kgEdgesUpdated} KG edge(s)`);
+
+            // Create provenance record linking comparison to edge updates
+            const contradictionProvTracker = getProvenanceTracker(db);
+            contradictionProvTracker.createProvenance({
+              type: ProvenanceType.COMPARISON,
+              source_type: 'COMPARISON' as SourceType,
+              source_id: String(ocr1.provenance_id),
+              root_document_id: String(doc1.provenance_id),
+              content_hash: computeHash(JSON.stringify([...uniqueEdgeIds])),
+              processor: 'contradiction-edge-update',
+              processor_version: '1.0.0',
+              processing_params: {
+                document_id_1: input.document_id_1,
+                document_id_2: input.document_id_2,
+                edge_ids: [...uniqueEdgeIds],
+                contradictions_count: highContradictions.length,
+                edges_updated: kgEdgesUpdated,
+              },
+            });
           } catch (e: unknown) {
             // KG tables may not exist or edge may have been deleted - log but don't fail
             const msg = e instanceof Error ? e.message : String(e);
@@ -291,7 +314,7 @@ async function handleDocumentCompare(params: Record<string, unknown>): Promise<T
 
     insertComparison(conn, comparison);
 
-    return formatResponse({
+    const comparisonResponse: Record<string, unknown> = {
       comparison_id: comparisonId,
       document_1: { id: input.document_id_1, file_name: doc1.file_name },
       document_2: { id: input.document_id_2, file_name: doc2.file_name },
@@ -304,7 +327,22 @@ async function handleDocumentCompare(params: Record<string, unknown>): Promise<T
       kg_edges_updated: kgEdgesUpdated,
       provenance_id: provId,
       processing_duration_ms: processingDurationMs,
-    });
+    };
+
+    if (input.include_entities) {
+      try {
+        comparisonResponse.document_1_entities = queryEntitiesForDocuments(conn, [input.document_id_1]);
+        comparisonResponse.document_2_entities = queryEntitiesForDocuments(conn, [input.document_id_2]);
+      } catch (entErr) {
+        console.error(`[comparison] Entity query failed: ${entErr instanceof Error ? entErr.message : String(entErr)}`);
+      }
+    }
+
+    if (input.include_provenance) {
+      comparisonResponse.provenance_chain = fetchProvenanceChain(db, provId, 'comparison');
+    }
+
+    return formatResponse(comparisonResponse);
   } catch (error) {
     return handleError(error);
   }

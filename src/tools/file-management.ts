@@ -14,7 +14,7 @@ import { statSync } from 'fs';
 import { basename } from 'path';
 import { z } from 'zod';
 import { v4 as uuidv4 } from 'uuid';
-import { formatResponse, handleError, type ToolDefinition } from './shared.js';
+import { formatResponse, handleError, queryEntitiesForDocuments, fetchProvenanceChain, type ToolDefinition } from './shared.js';
 import { validateInput, sanitizePath } from '../utils/validation.js';
 import { requireDatabase } from '../server/state.js';
 import { FileManagerClient } from '../services/ocr/file-manager.js';
@@ -48,6 +48,10 @@ const FileListInput = z.object({
 
 const FileGetInput = z.object({
   file_id: z.string().min(1).describe('Uploaded file record ID'),
+  include_entities: z.boolean().default(false)
+    .describe('Include entities associated with this file'),
+  include_provenance: z.boolean().default(false)
+    .describe('Include provenance chain for this file'),
 });
 
 const FileDownloadInput = z.object({
@@ -152,6 +156,13 @@ async function handleFileUpload(params: Record<string, unknown>) {
       updateUploadedFileDatalabInfo(conn, uploadId, result.fileId, result.reference);
       updateUploadedFileStatus(conn, uploadId, 'complete');
 
+      const nextSteps: string[] = [
+        'Use ocr_ingest_document to create a document record and start OCR processing',
+        'Use ocr_process_pending to OCR process the ingested document',
+        'Use ocr_entity_extract to extract entities after OCR completes',
+        'Use ocr_kg_build to build knowledge graph from extracted entities',
+      ];
+
       return formatResponse({
         id: uploadId,
         datalab_file_id: result.fileId,
@@ -163,6 +174,7 @@ async function handleFileUpload(params: Record<string, unknown>) {
         upload_status: 'complete',
         provenance_id: provId,
         processing_duration_ms: result.processingDurationMs,
+        next_steps: nextSteps,
       });
     } catch (uploadError) {
       const errorMsg = uploadError instanceof Error ? uploadError.message : String(uploadError);
@@ -273,7 +285,26 @@ async function handleFileGet(params: Record<string, unknown>) {
       return formatResponse({ error: `Uploaded file not found: ${input.file_id}` });
     }
 
-    return formatResponse({ uploaded_file: file });
+    const response: Record<string, unknown> = { uploaded_file: file };
+
+    if (input.include_entities) {
+      try {
+        const doc = conn.prepare(
+          'SELECT id FROM documents WHERE file_hash = ? LIMIT 1'
+        ).get(file.file_hash) as { id: string } | undefined;
+        if (doc) {
+          response.entities = queryEntitiesForDocuments(conn, [doc.id]);
+        }
+      } catch (entErr) {
+        console.error(`[file-management] Entity query failed: ${entErr instanceof Error ? entErr.message : String(entErr)}`);
+      }
+    }
+
+    if (input.include_provenance) {
+      response.provenance_chain = fetchProvenanceChain(db, file.provenance_id, 'file-management');
+    }
+
+    return formatResponse(response);
   } catch (error) {
     return handleError(error);
   }

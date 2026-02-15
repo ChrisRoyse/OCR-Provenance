@@ -1481,6 +1481,20 @@ export async function handleProcessPending(
       errors: results.errors.length > 0 ? results.errors : undefined,
     };
 
+    try {
+      const totalDocCount = (db.getConnection().prepare(
+        'SELECT COUNT(*) as cnt FROM documents WHERE status = ?'
+      ).get('complete') as { cnt: number }).cnt;
+      if (totalDocCount > 1) {
+        response.next_steps = {
+          auto_compare_hint: 'Multiple documents available. Use ocr_document_compare to find contradictions between documents.',
+          document_count: totalDocCount,
+        };
+      }
+    } catch {
+      // documents table query may fail in edge cases - skip hint
+    }
+
     if (input.auto_extract_entities && entityResults.length > 0) {
       response.entity_extraction = {
         documents_extracted: entityResults.length,

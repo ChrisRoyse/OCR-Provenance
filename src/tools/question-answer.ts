@@ -22,6 +22,7 @@ import {
   getDocumentIdsForEntities,
   getEntitiesForChunks,
 } from '../services/storage/database/knowledge-graph-operations.js';
+import { getClusterSummariesForDocument } from '../services/storage/database/cluster-operations.js';
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // INPUT SCHEMA
@@ -49,6 +50,12 @@ const QuestionAnswerInput = z.object({
     .describe('Filter results by knowledge graph entities'),
   semantic_weight: z.number().min(0).max(1).default(0.5)
     .describe('Weight for semantic vs BM25 in hybrid mode (0=BM25 only, 1=semantic only, 0.5=balanced)'),
+  include_cluster_context: z.boolean().default(false)
+    .describe('Include cluster membership for result documents'),
+  include_contradictions: z.boolean().default(false)
+    .describe('Include contradiction summaries from document comparisons'),
+  prefer_recent: z.boolean().default(false)
+    .describe('Prefer more recent KG edges when building context (temporal weighting)'),
 });
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -738,10 +745,41 @@ async function handleQuestionAnswer(params: Record<string, unknown>): Promise<To
       entities = entityResult.entities;
     }
 
-    // Step 5: Add KG path context if requested
+    // Step 5: Add KG path context with optional temporal weighting
     let kgContext = '';
     if (input.include_kg_paths && entities.length >= 2) {
       kgContext = gatherKGPathContext(conn, entities);
+
+      if (input.prefer_recent && entities.length >= 2) {
+        try {
+          const nodeIds = entities.slice(0, 10).map(e => e.node_id).filter(id => id !== '');
+          if (nodeIds.length >= 2) {
+            const placeholders = nodeIds.map(() => '?').join(',');
+            const temporalEdges = conn.prepare(`
+              SELECT sn.canonical_name as source_name, tn.canonical_name as target_name,
+                     ke.relationship_type, ke.weight, ke.valid_from, ke.valid_until
+              FROM knowledge_edges ke
+              JOIN knowledge_nodes sn ON ke.source_node_id = sn.id
+              JOIN knowledge_nodes tn ON ke.target_node_id = tn.id
+              WHERE (ke.source_node_id IN (${placeholders}) OR ke.target_node_id IN (${placeholders}))
+                AND ke.valid_from IS NOT NULL
+              ORDER BY ke.valid_from DESC
+              LIMIT 10
+            `).all(...nodeIds, ...nodeIds) as Array<{
+              source_name: string; target_name: string; relationship_type: string;
+              weight: number; valid_from: string | null; valid_until: string | null;
+            }>;
+            if (temporalEdges.length > 0) {
+              kgContext += '\n\n## Recent Temporal Relationships:\n';
+              for (const e of temporalEdges) {
+                kgContext += `- ${e.source_name} --[${e.relationship_type}]--> ${e.target_name} (from: ${e.valid_from ?? 'N/A'})\n`;
+              }
+            }
+          }
+        } catch {
+          // Temporal columns may not exist
+        }
+      }
     }
 
     // Step 6: Generate answer using Gemini
@@ -817,6 +855,53 @@ ${input.question}
         confidence: e.confidence,
         mentions: e.mention_count,
       }));
+    }
+
+    if (input.include_cluster_context && topResults.length > 0) {
+      try {
+        const docClusterMap: Record<string, Array<{ cluster_id: string; label: string | null; run_id: string }>> = {};
+        const seenDocs = new Set<string>();
+        for (const r of topResults) {
+          if (seenDocs.has(r.document_id)) continue;
+          seenDocs.add(r.document_id);
+          const summaries = getClusterSummariesForDocument(conn, r.document_id);
+          if (summaries.length > 0) {
+            docClusterMap[r.document_id] = summaries.map(s => ({
+              cluster_id: s.id, label: s.label, run_id: s.run_id,
+            }));
+          }
+        }
+        if (Object.keys(docClusterMap).length > 0) {
+          responseData.cluster_context = docClusterMap;
+        }
+      } catch (clErr) {
+        console.error(`[qa] Cluster context failed: ${clErr instanceof Error ? clErr.message : String(clErr)}`);
+      }
+    }
+
+    if (input.include_contradictions && topResults.length > 0) {
+      try {
+        const docIds = [...new Set(topResults.map(r => r.document_id))];
+        const placeholders = docIds.map(() => '?').join(',');
+        const contradictions = conn.prepare(`
+          SELECT id, document_id_1, document_id_2, similarity_ratio, summary
+          FROM comparisons
+          WHERE document_id_1 IN (${placeholders}) OR document_id_2 IN (${placeholders})
+          ORDER BY created_at DESC LIMIT 10
+        `).all(...docIds, ...docIds) as Array<{
+          id: string; document_id_1: string; document_id_2: string;
+          similarity_ratio: number; summary: string;
+        }>;
+        if (contradictions.length > 0) {
+          responseData.contradictions = contradictions;
+        }
+      } catch (cErr) {
+        console.error(`[qa] Contradiction query failed: ${cErr instanceof Error ? cErr.message : String(cErr)}`);
+      }
+    }
+
+    if (input.prefer_recent) {
+      responseData.temporal_preference = 'recent';
     }
 
     if (entityFilterApplied) {

@@ -222,29 +222,39 @@ describe('classifyByRules', () => {
       expect(result).toEqual({ type: 'references', confidence: 0.75 });
     });
 
-    it('medication + diagnosis -> related_to (0.80)', () => {
-      const result = classifyByRules('medication', 'diagnosis');
-      expect(result).toEqual({ type: 'related_to', confidence: 0.80 });
-    });
-
-    it('diagnosis + medication -> related_to (reversed)', () => {
+    it('diagnosis + medication -> treated_with (0.85, GAP-M8)', () => {
       const result = classifyByRules('diagnosis', 'medication');
-      expect(result).toEqual({ type: 'related_to', confidence: 0.80 });
+      expect(result).toEqual({ type: 'treated_with', confidence: 0.85 });
     });
 
-    it('medical_device + diagnosis -> related_to (0.80)', () => {
-      const result = classifyByRules('medical_device', 'diagnosis');
-      expect(result).toEqual({ type: 'related_to', confidence: 0.80 });
+    it('medication + diagnosis -> treated_with (reversed, GAP-M8)', () => {
+      const result = classifyByRules('medication', 'diagnosis');
+      expect(result).toEqual({ type: 'treated_with', confidence: 0.85 });
     });
 
-    it('medication + medical_device -> related_to (0.75)', () => {
+    it('medication + medical_device -> administered_via (0.80, GAP-M8)', () => {
       const result = classifyByRules('medication', 'medical_device');
-      expect(result).toEqual({ type: 'related_to', confidence: 0.75 });
+      expect(result).toEqual({ type: 'administered_via', confidence: 0.80 });
     });
 
-    it('medical_device + medication -> related_to (reversed)', () => {
+    it('medical_device + medication -> administered_via (reversed, GAP-M8)', () => {
       const result = classifyByRules('medical_device', 'medication');
-      expect(result).toEqual({ type: 'related_to', confidence: 0.75 });
+      expect(result).toEqual({ type: 'administered_via', confidence: 0.80 });
+    });
+
+    it('diagnosis + medical_device -> managed_by (0.80, GAP-M8)', () => {
+      const result = classifyByRules('diagnosis', 'medical_device');
+      expect(result).toEqual({ type: 'managed_by', confidence: 0.80 });
+    });
+
+    it('medical_device + diagnosis -> managed_by (reversed, GAP-M8)', () => {
+      const result = classifyByRules('medical_device', 'diagnosis');
+      expect(result).toEqual({ type: 'managed_by', confidence: 0.80 });
+    });
+
+    it('medication + medication -> interacts_with (0.75, GAP-M8)', () => {
+      const result = classifyByRules('medication', 'medication');
+      expect(result).toEqual({ type: 'interacts_with', confidence: 0.75 });
     });
   });
 
@@ -269,7 +279,7 @@ describe('classifyByRules', () => {
   });
 
   describe('rule count validation', () => {
-    it('covers 25 unique rules (no duplicates)', () => {
+    it('covers 26 unique rules (no duplicates)', () => {
       // Count all type pairs that produce a match, checking both orderings
       const entityTypes = [
         'person', 'organization', 'date', 'amount', 'case_number',
@@ -289,8 +299,8 @@ describe('classifyByRules', () => {
         }
       }
 
-      // 25 unique type pairs should be covered
-      expect(matchedPairs.size).toBe(25);
+      // 26 unique type pairs should be covered (25 original + medication+medication from GAP-M8)
+      expect(matchedPairs.size).toBe(26);
     });
   });
 });
