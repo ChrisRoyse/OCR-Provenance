@@ -17,8 +17,8 @@ import {
   cleanupTestDir,
   createTestDb,
   closeDb,
-} from './helpers.js';
-import { migrateToLatest } from '../../../src/services/storage/migrations/operations.js';
+} from '../unit/migrations/helpers.js';
+import { migrateToLatest } from '../../src/services/storage/migrations/operations.js';
 
 const sqliteVecAvailable = isSqliteVecAvailable();
 
