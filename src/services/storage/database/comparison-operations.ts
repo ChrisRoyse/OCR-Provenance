@@ -85,27 +85,6 @@ interface ComparisonSummary {
 }
 
 /**
- * Delete a comparison and its associated provenance records.
- * Returns true if deleted, false if not found.
- */
-export function deleteComparison(db: Database.Database, comparisonId: string): boolean {
-  const comparison = getComparison(db, comparisonId);
-  if (!comparison) {
-    return false;
-  }
-
-  // Delete the comparison record
-  db.prepare('DELETE FROM comparisons WHERE id = ?').run(comparisonId);
-
-  // Delete associated provenance records
-  if (comparison.provenance_id) {
-    db.prepare('DELETE FROM provenance WHERE id = ?').run(comparison.provenance_id);
-  }
-
-  return true;
-}
-
-/**
  * Get comparison summaries for a document (lightweight: no JSON blobs)
  */
 export function getComparisonSummariesByDocument(

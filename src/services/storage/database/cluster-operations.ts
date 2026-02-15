@@ -365,8 +365,8 @@ export function reassignDocumentToCluster(
         .run(documentId, runRow.run_id);
     }
     db.prepare(
-      'INSERT INTO document_clusters (id, document_id, cluster_id, run_id) VALUES (?, ?, ?, ?)'
-    ).run(uuidv4(), documentId, bestClusterId, runRow.run_id);
+      'INSERT INTO document_clusters (id, document_id, cluster_id, run_id, similarity_to_centroid, membership_probability, is_noise, assigned_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
+    ).run(uuidv4(), documentId, bestClusterId, runRow.run_id, roundedOverlap, 1.0, 0, new Date().toISOString());
 
     return {
       document_id: documentId,

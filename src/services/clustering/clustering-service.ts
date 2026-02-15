@@ -15,6 +15,7 @@
 import { v4 as uuidv4 } from 'uuid';
 import { PythonShell, Options as PythonShellOptions } from 'python-shell';
 import path from 'path';
+import { fileURLToPath } from 'url';
 import Database from 'better-sqlite3';
 import { DatabaseService } from '../storage/database/index.js';
 import { VectorService } from '../storage/vector.js';
@@ -33,6 +34,8 @@ import {
   insertDocumentCluster,
 } from '../storage/database/cluster-operations.js';
 import { computeHash } from '../../utils/hash.js';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // ENTITY OVERLAP FOR KG-POWERED CLUSTERING
@@ -290,7 +293,7 @@ async function runClusteringWorker(
   config: ClusterRunConfig,
   distanceMatrix?: number[][]
 ): Promise<WorkerResult> {
-  const workerPath = path.join(process.cwd(), 'python', 'clustering_worker.py');
+  const workerPath = path.resolve(__dirname, '../../../python/clustering_worker.py');
 
   const workerInput: Record<string, unknown> = {
     embeddings,
