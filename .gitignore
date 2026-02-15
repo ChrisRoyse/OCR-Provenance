@@ -137,8 +137,10 @@ data/
 .claude-flow/learning/*.json
 
 # -----------------------------------------------------------------------------
-# Claude Settings Runtime
+# Claude Settings (user-specific, never commit)
 # -----------------------------------------------------------------------------
+.claude/settings.json
+.claude/projects/
 .claude/memory.db
 
 # -----------------------------------------------------------------------------
@@ -147,10 +149,11 @@ data/
 .swarm/
 
 # -----------------------------------------------------------------------------
-# Development Case Files
+# Development Case Files (user data - never commit)
 # -----------------------------------------------------------------------------
 data/
 memory/
+olddocs/
 
 # -----------------------------------------------------------------------------
 # Documentation (tracked locally only - excluded from git history)

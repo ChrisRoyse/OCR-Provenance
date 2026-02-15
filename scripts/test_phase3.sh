@@ -2,7 +2,8 @@
 # Phase 3 Test Script - OCR Processing Pipeline
 # Sends MCP JSON-RPC requests to the server
 
-SERVER="node /home/user/datalab/dist/index.js"
+SCRIPT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+SERVER="node ${SCRIPT_DIR}/dist/index.js"
 DB="test-legal-docs"
 
 # Helper: send a sequence of JSON-RPC messages to the MCP server

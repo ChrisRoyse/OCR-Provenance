@@ -143,7 +143,7 @@ async function processDocument(
       console.log(`[INFO] Running file-based extraction for ${doc.file_type}`);
       const extractor = new ImageExtractor();
       const extractedImages = await extractor.extractImages(doc.file_path, {
-        outputDir: `/home/user/.ocr-provenance/images/${doc.id}`,
+        outputDir: `${process.env.HOME || ''}/.ocr-provenance/images/${doc.id}`,
         minSize: 50,
         maxImages: 500,
       });

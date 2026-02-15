@@ -109,7 +109,7 @@ async function runPhase1(): Promise<TestResult[]> {
     'Database file exists with correct structure',
     async () => {
       // Clean up first - try both possible paths
-      const homeDir = process.env.HOME || '/home/user';
+      const homeDir = process.env.HOME || '';
       const defaultStoragePath = `${homeDir}/.ocr-provenance/databases`;
       try { rmSync(`${defaultStoragePath}/manual-test-001.db`); } catch {}
       try { rmSync('data/databases/manual-test-001.db'); } catch {}
@@ -721,7 +721,7 @@ async function runPhase7(): Promise<TestResult[]> {
       const data1 = parsed1.data as Record<string, unknown>;
 
       // Create a second test db
-      const homeDir = process.env.HOME || '/home/user';
+      const homeDir = process.env.HOME || '';
       const defaultStoragePath = `${homeDir}/.ocr-provenance/databases`;
       try { rmSync(`${defaultStoragePath}/manual-test-002.db`); } catch {}
 

@@ -11,7 +11,7 @@ from datetime import datetime
 from pathlib import Path
 
 DB_PATH = Path.home() / ".ocr-provenance" / "databases" / "default.db"
-RESIZED_DIR = Path("/home/user/datalab/data/images/resized")
+RESIZED_DIR = Path(__file__).resolve().parent.parent / "project" / "images" / "resized"
 
 def compute_hash(file_path: Path) -> str:
     """Compute SHA-256 hash of file."""

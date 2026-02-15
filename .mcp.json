@@ -5,7 +5,7 @@
       "args": [
         "dist/index.js"
       ],
-      "cwd": "/home/user/datalab",
+      "cwd": ".",
       "env": {
         "NODE_ENV": "production"
       }
