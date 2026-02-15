@@ -234,3 +234,106 @@ export function updateEntityConfidence(
   db.prepare('UPDATE entities SET confidence = ?, metadata = ? WHERE id = ?').run(confidence, metadata, entityId);
 }
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// SHARED ENTITY QUALITY QUERY HELPERS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/**
+ * Get the entity type distribution for a document.
+ * Returns an array of {entity_type, count} sorted by count descending.
+ * Returns empty array if entity tables do not exist.
+ */
+export function getEntityTypeDistribution(
+  db: Database.Database,
+  documentId: string,
+): Array<{ entity_type: string; count: number }> {
+  try {
+    return db.prepare(
+      'SELECT entity_type, COUNT(*) as count FROM entities WHERE document_id = ? GROUP BY entity_type ORDER BY count DESC'
+    ).all(documentId) as Array<{ entity_type: string; count: number }>;
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Get the total entity count for a document.
+ * Returns 0 if entity tables do not exist.
+ */
+export function getEntityCount(
+  db: Database.Database,
+  documentId: string,
+): number {
+  try {
+    return (db.prepare(
+      'SELECT COUNT(*) as cnt FROM entities WHERE document_id = ?'
+    ).get(documentId) as { cnt: number }).cnt;
+  } catch {
+    return 0;
+  }
+}
+
+/**
+ * Get the count of distinct pages with entity mentions for a document.
+ * Returns 0 if entity tables do not exist.
+ */
+export function getPagesWithEntities(
+  db: Database.Database,
+  documentId: string,
+): number {
+  try {
+    return (db.prepare(
+      'SELECT COUNT(DISTINCT page_number) as cnt FROM entity_mentions WHERE document_id = ?'
+    ).get(documentId) as { cnt: number }).cnt;
+  } catch {
+    return 0;
+  }
+}
+
+/**
+ * Get entity extraction segment stats for a document.
+ * Returns null if no segments exist or the table does not exist.
+ */
+export function getSegmentStats(
+  db: Database.Database,
+  documentId: string,
+): { total_segments: number; complete: number; failed: number; total_entities_extracted: number } | null {
+  try {
+    const segments = db.prepare(`
+      SELECT COUNT(*) as total,
+             SUM(CASE WHEN extraction_status = 'complete' THEN 1 ELSE 0 END) as complete,
+             SUM(CASE WHEN extraction_status = 'failed' THEN 1 ELSE 0 END) as failed,
+             SUM(entity_count) as total_entities_extracted
+      FROM entity_extraction_segments WHERE document_id = ?
+    `).get(documentId) as { total: number; complete: number; failed: number; total_entities_extracted: number | null };
+    if (segments.total > 0) {
+      return {
+        total_segments: segments.total,
+        complete: segments.complete || 0,
+        failed: segments.failed || 0,
+        total_entities_extracted: segments.total_entities_extracted || 0,
+      };
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Get the count of entities linked to KG nodes for a document.
+ * Returns 0 if KG tables do not exist.
+ */
+export function getKGLinkedEntityCount(
+  db: Database.Database,
+  documentId: string,
+): number {
+  try {
+    return (db.prepare(
+      'SELECT COUNT(DISTINCT nel.entity_id) as cnt FROM node_entity_links nel JOIN entities e ON e.id = nel.entity_id WHERE e.document_id = ?'
+    ).get(documentId) as { cnt: number }).cnt;
+  } catch {
+    return 0;
+  }
+}
+

@@ -136,6 +136,77 @@ export async function handleDatabaseSelect(
 }
 
 /**
+ * Query KG health metrics from the database.
+ * Returns zeros/defaults if KG tables do not exist (graceful degradation).
+ */
+function getKGHealthMetrics(db: DatabaseService): Record<string, unknown> {
+  const conn = db.getConnection();
+  const defaults = {
+    docs_with_entities: 0,
+    total_entities: 0,
+    linked_entities: 0,
+    entity_link_coverage: 0,
+    avg_edges_per_node: 0,
+    orphaned_nodes: 0,
+    contradiction_edges: 0,
+    temporal_edges: 0,
+    total_edges: 0,
+    temporal_coverage_pct: 0,
+  };
+
+  try {
+    const docsWithEntities = (conn.prepare(
+      'SELECT COUNT(DISTINCT document_id) as cnt FROM entities'
+    ).get() as { cnt: number }).cnt;
+
+    const totalEntities = (conn.prepare(
+      'SELECT COUNT(*) as cnt FROM entities'
+    ).get() as { cnt: number }).cnt;
+
+    const linkedEntities = (conn.prepare(
+      'SELECT COUNT(DISTINCT entity_id) as cnt FROM node_entity_links'
+    ).get() as { cnt: number }).cnt;
+
+    const avgEdgesPerNode = (conn.prepare(
+      'SELECT CAST(COUNT(*) AS REAL) / MAX(1, (SELECT COUNT(*) FROM knowledge_nodes)) as avg FROM knowledge_edges'
+    ).get() as { avg: number }).avg;
+
+    const orphanedNodes = (conn.prepare(`
+      SELECT COUNT(*) as cnt FROM knowledge_nodes kn
+      WHERE NOT EXISTS (SELECT 1 FROM knowledge_edges ke WHERE ke.source_node_id = kn.id OR ke.target_node_id = kn.id)
+    `).get() as { cnt: number }).cnt;
+
+    const contradictionEdges = (conn.prepare(
+      'SELECT COUNT(*) as cnt FROM knowledge_edges WHERE contradiction_count > 0'
+    ).get() as { cnt: number }).cnt;
+
+    const temporalEdges = (conn.prepare(
+      'SELECT COUNT(*) as cnt FROM knowledge_edges WHERE valid_from IS NOT NULL OR valid_until IS NOT NULL'
+    ).get() as { cnt: number }).cnt;
+
+    const totalEdges = (conn.prepare(
+      'SELECT COUNT(*) as cnt FROM knowledge_edges'
+    ).get() as { cnt: number }).cnt;
+
+    return {
+      docs_with_entities: docsWithEntities,
+      total_entities: totalEntities,
+      linked_entities: linkedEntities,
+      entity_link_coverage: totalEntities > 0 ? linkedEntities / totalEntities : 0,
+      avg_edges_per_node: avgEdgesPerNode,
+      orphaned_nodes: orphanedNodes,
+      contradiction_edges: contradictionEdges,
+      temporal_edges: temporalEdges,
+      total_edges: totalEdges,
+      temporal_coverage_pct: totalEdges > 0 ? (temporalEdges / totalEdges) * 100 : 0,
+    };
+  } catch {
+    // KG tables may not exist on fresh databases
+    return defaults;
+  }
+}
+
+/**
  * Build stats response from database and vector services
  */
 function buildStatsResponse(
@@ -166,6 +237,7 @@ function buildStatsResponse(
     vector_count: vector.getVectorCount(),
     ocr_quality: stats.ocr_quality,
     costs: stats.costs,
+    kg_health: getKGHealthMetrics(db),
   };
 }
 
@@ -250,7 +322,7 @@ export const databaseTools: Record<string, ToolDefinition> = {
     handler: handleDatabaseSelect,
   },
   'ocr_db_stats': {
-    description: 'Get detailed statistics for a database',
+    description: 'Get detailed statistics for a database including KG health metrics (entity coverage, link coverage, orphaned nodes, contradictions, temporal edges)',
     inputSchema: {
       database_name: z.string().optional().describe('Database name (uses current if not specified)'),
     },

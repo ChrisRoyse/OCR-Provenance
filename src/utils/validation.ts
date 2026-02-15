@@ -211,6 +211,10 @@ export const ProcessPendingInput = z.object({
     .describe('Auto-resolve coreferences (pronouns, abbreviations) after entity extraction. Requires auto_extract_entities=true and GEMINI_API_KEY.'),
   auto_scan_contradictions: z.boolean().default(false)
     .describe('Auto-scan for contradictions after knowledge graph build. Requires auto_build_kg=true.'),
+  auto_reassign_clusters: z.boolean().default(false)
+    .describe('After entity extraction + KG merge, reassign documents to clusters if clusters exist. Requires auto_extract_entities=true.'),
+  check_semantic_duplicates: z.boolean().default(false)
+    .describe('After OCR completes, check for semantically similar documents by entity overlap (Jaccard > 0.85). Informational only.'),
 });
 
 /**

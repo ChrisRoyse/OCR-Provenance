@@ -26,6 +26,13 @@ import { getComparisonSummariesByDocument } from '../services/storage/database/c
 import { getClusteringStats, getClusterSummariesForDocument } from '../services/storage/database/cluster-operations.js';
 import { getKnowledgeNodeSummariesByDocument } from '../services/storage/database/knowledge-graph-operations.js';
 import type Database from 'better-sqlite3';
+import {
+  getEntityCount,
+  getEntityTypeDistribution,
+  getPagesWithEntities,
+  getSegmentStats,
+  getKGLinkedEntityCount,
+} from '../services/storage/database/entity-operations.js';
 
 
 // ===============================================================================
@@ -114,6 +121,154 @@ function getKnowledgeGraphQualityMetrics(conn: Database.Database): KGQualityMetr
     relationship_type_distribution: relTypeDist,
     entity_type_distribution: entityTypeDist,
   };
+}
+
+// ===============================================================================
+// ENTITY QUALITY METRICS
+// ===============================================================================
+
+interface DocumentEntityQuality {
+  entity_count: number;
+  entity_density_per_page: number;
+  type_distribution: Array<{ entity_type: string; count: number }>;
+  pages_with_entities: number;
+  total_pages: number;
+  extraction_coverage_pct: number;
+  kg_linked_entities: number;
+  kg_link_coverage_pct: number;
+  segment_stats: {
+    total_segments: number;
+    complete: number;
+    failed: number;
+    total_entities_extracted: number;
+  } | null;
+}
+
+/**
+ * Get entity quality metrics for a single document.
+ * Returns zeros if entity tables do not exist.
+ * Uses shared helpers from entity-operations.ts.
+ */
+function getDocumentEntityQualityMetrics(
+  conn: Database.Database,
+  documentId: string,
+  pageCount: number | null,
+): DocumentEntityQuality {
+  const entityCount = getEntityCount(conn, documentId);
+  const typeDist = getEntityTypeDistribution(conn, documentId);
+  const pagesWithEntities = getPagesWithEntities(conn, documentId);
+  const kgLinked = getKGLinkedEntityCount(conn, documentId);
+  const segmentStats = getSegmentStats(conn, documentId);
+  const totalPages = pageCount ?? 0;
+
+  return {
+    entity_count: entityCount,
+    entity_density_per_page: totalPages > 0 ? entityCount / totalPages : 0,
+    type_distribution: typeDist,
+    pages_with_entities: pagesWithEntities,
+    total_pages: totalPages,
+    extraction_coverage_pct: totalPages > 0 ? (pagesWithEntities / totalPages) * 100 : 0,
+    kg_linked_entities: kgLinked,
+    kg_link_coverage_pct: entityCount > 0 ? (kgLinked / entityCount) * 100 : 0,
+    segment_stats: segmentStats,
+  };
+}
+
+/**
+ * Get aggregate entity quality metrics across all documents.
+ * Returns zeros if entity tables do not exist.
+ */
+function getAggregateEntityQualityMetrics(conn: Database.Database): Record<string, unknown> {
+  const defaults = {
+    total_entities: 0,
+    docs_with_entities: 0,
+    total_complete_docs: 0,
+    entity_extraction_coverage_pct: 0,
+    avg_entities_per_doc: 0,
+    total_entity_mentions: 0,
+    type_distribution: [] as Array<{ entity_type: string; count: number }>,
+    kg_linked_entities: 0,
+    kg_link_coverage_pct: 0,
+    low_coverage_documents: [] as Array<{ document_id: string; file_name: string; entity_count: number; page_count: number; density: number }>,
+  };
+
+  try {
+    const totalEntities = (conn.prepare(
+      'SELECT COUNT(*) as cnt FROM entities'
+    ).get() as { cnt: number }).cnt;
+
+    const docsWithEntities = (conn.prepare(
+      'SELECT COUNT(DISTINCT document_id) as cnt FROM entities'
+    ).get() as { cnt: number }).cnt;
+
+    const totalCompleteDocs = (conn.prepare(
+      "SELECT COUNT(*) as cnt FROM documents WHERE status = 'complete'"
+    ).get() as { cnt: number }).cnt;
+
+    const avgEntitiesPerDoc = totalCompleteDocs > 0 ? totalEntities / totalCompleteDocs : 0;
+
+    let totalMentions = 0;
+    try {
+      totalMentions = (conn.prepare(
+        'SELECT COUNT(*) as cnt FROM entity_mentions'
+      ).get() as { cnt: number }).cnt;
+    } catch {
+      // entity_mentions may not exist
+    }
+
+    const typeDist = conn.prepare(
+      'SELECT entity_type, COUNT(*) as count FROM entities GROUP BY entity_type ORDER BY count DESC'
+    ).all() as Array<{ entity_type: string; count: number }>;
+
+    let kgLinked = 0;
+    try {
+      kgLinked = (conn.prepare(
+        'SELECT COUNT(DISTINCT entity_id) as cnt FROM node_entity_links'
+      ).get() as { cnt: number }).cnt;
+    } catch {
+      // node_entity_links may not exist
+    }
+
+    // Documents with low entity coverage (< 1 entity per page)
+    const lowCoverageDocs = conn.prepare(`
+      SELECT e.document_id, d.file_name, COUNT(*) as entity_count, COALESCE(d.page_count, 1) as page_count,
+             CAST(COUNT(*) AS REAL) / MAX(1, COALESCE(d.page_count, 1)) as density
+      FROM entities e
+      JOIN documents d ON d.id = e.document_id
+      WHERE d.status = 'complete' AND d.page_count > 0
+      GROUP BY e.document_id
+      HAVING density < 1.0
+      ORDER BY density ASC
+      LIMIT 10
+    `).all() as Array<{ document_id: string; file_name: string; entity_count: number; page_count: number; density: number }>;
+
+    // Also find complete docs with zero entities
+    const zeroEntityDocs = conn.prepare(`
+      SELECT d.id as document_id, d.file_name, 0 as entity_count, COALESCE(d.page_count, 0) as page_count, 0.0 as density
+      FROM documents d
+      WHERE d.status = 'complete'
+        AND NOT EXISTS (SELECT 1 FROM entities e WHERE e.document_id = d.id)
+      ORDER BY d.file_name
+      LIMIT 10
+    `).all() as Array<{ document_id: string; file_name: string; entity_count: number; page_count: number; density: number }>;
+
+    const coveragePct = totalCompleteDocs > 0 ? (docsWithEntities / totalCompleteDocs) * 100 : 0;
+
+    return {
+      total_entities: totalEntities,
+      docs_with_entities: docsWithEntities,
+      total_complete_docs: totalCompleteDocs,
+      entity_extraction_coverage_pct: coveragePct,
+      avg_entities_per_doc: avgEntitiesPerDoc,
+      total_entity_mentions: totalMentions,
+      type_distribution: typeDist,
+      kg_linked_entities: kgLinked,
+      kg_link_coverage_pct: totalEntities > 0 ? (kgLinked / totalEntities) * 100 : 0,
+      low_coverage_documents: [...zeroEntityDocs, ...lowCoverageDocs].slice(0, 10),
+    };
+  } catch {
+    return defaults;
+  }
 }
 
 // ===============================================================================
@@ -475,6 +630,7 @@ export async function handleDocumentReport(
           nodes: kgNodes,
         };
       })(),
+      entity_quality: getDocumentEntityQualityMetrics(db.getConnection(), documentId, doc.page_count),
     }));
 
   } catch (error) {
@@ -640,6 +796,7 @@ export async function handleQualitySummary(
           entity_type_distribution: kgMetrics.entity_type_distribution,
         };
       })(),
+      entity_quality: getAggregateEntityQualityMetrics(db.getConnection()),
     }));
 
   } catch (error) {
@@ -939,7 +1096,7 @@ export const reportTools: Record<string, ToolDefinition> = {
   },
 
   'ocr_document_report': {
-    description: 'Get detailed report for a single document including all image analysis results',
+    description: 'Get detailed report for a single document including image analysis, entity quality metrics (density, type distribution, KG coverage), and knowledge graph details',
     inputSchema: {
       document_id: z.string().min(1).describe('Document ID'),
     },
@@ -947,7 +1104,7 @@ export const reportTools: Record<string, ToolDefinition> = {
   },
 
   'ocr_quality_summary': {
-    description: 'Get quick quality summary across all documents and images',
+    description: 'Get quick quality summary across all documents and images, including aggregate entity quality metrics and low-coverage document flagging',
     inputSchema: {},
     handler: handleQualitySummary,
   },
