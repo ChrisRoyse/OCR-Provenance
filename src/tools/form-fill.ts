@@ -279,7 +279,8 @@ async function handleFormFill(params: Record<string, unknown>) {
       }
     }
 
-    const result = await client.fillForm(input.file_path, {
+    const safeFilePath = sanitizePath(input.file_path);
+    const result = await client.fillForm(safeFilePath, {
       fieldData: input.field_data,
       context: input.context,
       confidenceThreshold: input.confidence_threshold,

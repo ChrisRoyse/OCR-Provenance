@@ -218,6 +218,45 @@ export class EmbeddingService {
   }
 }
 
+/**
+ * Result of stale embedding detection for a single embedding.
+ */
+export interface StaleEmbeddingInfo {
+  embedding_id: string;
+  chunk_id: string;
+  chunk_created_at: string;
+  embedding_created_at: string;
+}
+
+/**
+ * Detect embeddings that are stale because their source chunk was updated
+ * (re-OCR, text correction) after the embedding was generated.
+ *
+ * Compares chunks.created_at vs embeddings.created_at for the same chunk_id.
+ * Returns stale embedding IDs so callers can decide whether to re-embed.
+ *
+ * This is a detection mechanism only -- it does NOT auto-invalidate embeddings.
+ *
+ * @param db - DatabaseService instance
+ * @param documentId - Document ID to check
+ * @returns Array of stale embedding info objects
+ */
+export function detectStaleEmbeddings(
+  db: DatabaseService,
+  documentId: string,
+): StaleEmbeddingInfo[] {
+  const conn = db.getConnection();
+  const rows = conn.prepare(`
+    SELECT e.id AS embedding_id, e.chunk_id, c.created_at AS chunk_created_at, e.created_at AS embedding_created_at
+    FROM embeddings e
+    JOIN chunks c ON c.id = e.chunk_id
+    WHERE e.document_id = ?
+      AND c.created_at > e.created_at
+  `).all(documentId) as StaleEmbeddingInfo[];
+
+  return rows;
+}
+
 let _service: EmbeddingService | null = null;
 
 export function getEmbeddingService(): EmbeddingService {

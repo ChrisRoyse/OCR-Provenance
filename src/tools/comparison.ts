@@ -313,6 +313,14 @@ async function handleDocumentCompare(params: Record<string, unknown>): Promise<T
       processing_duration_ms: processingDurationMs,
     };
 
+    // F-INTEG-10: Delete stale comparisons for this document pair before inserting
+    // (handles re-OCR creating new comparisons alongside outdated ones)
+    conn.prepare(
+      `DELETE FROM comparisons WHERE
+        (document_id_1 = ? AND document_id_2 = ?) OR
+        (document_id_1 = ? AND document_id_2 = ?)`
+    ).run(input.document_id_1, input.document_id_2, input.document_id_2, input.document_id_1);
+
     insertComparison(conn, comparison);
 
     const comparisonResponse: Record<string, unknown> = {

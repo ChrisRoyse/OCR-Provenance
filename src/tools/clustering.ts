@@ -17,6 +17,7 @@ import { requireDatabase } from '../server/state.js';
 import { MCPError } from '../server/errors.js';
 import { successResult } from '../server/types.js';
 import { ProvenanceType } from '../models/provenance.js';
+import { computeHash } from '../utils/hash.js';
 import {
   runClustering,
   computeDocumentEmbeddings,
@@ -372,10 +373,16 @@ async function handleClusterAssign(
       source_file_modified_at: null,
       source_type: 'CLUSTERING',
       source_path: null,
-      source_id: input.document_id,
-      root_document_id: input.document_id,
+      source_id: doc.provenance_id,
+      root_document_id: doc.provenance_id,
       location: null,
-      content_hash: '',
+      content_hash: computeHash(JSON.stringify({
+        document_id: input.document_id,
+        cluster_id: bestClusterId,
+        run_id: input.run_id,
+        entity_weight: input.entity_weight,
+        similarity_to_centroid: dc.similarity_to_centroid,
+      })),
       input_hash: null,
       file_hash: null,
       processor: 'cluster-reassign',

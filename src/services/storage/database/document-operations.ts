@@ -318,6 +318,18 @@ function deleteDerivedRecords(db: Database.Database, documentId: string, caller:
   // Delete comparisons referencing this document
   db.prepare('DELETE FROM comparisons WHERE document_id_1 = ? OR document_id_2 = ?').run(documentId, documentId);
 
+  // Delete form_fills linked to this document via source_file_hash
+  // (form_fills has no document_id FK — it joins through source_file_hash)
+  try {
+    const docRow = db.prepare('SELECT file_hash FROM documents WHERE id = ?').get(documentId) as { file_hash: string } | undefined;
+    if (docRow) {
+      db.prepare('DELETE FROM form_fills WHERE source_file_hash = ?').run(docRow.file_hash);
+    }
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : String(e);
+    if (!msg.includes('no such table')) throw e;
+  }
+
   // Clean up entity_embeddings BEFORE graph cleanup (entity_embeddings.node_id -> knowledge_nodes.id)
   try {
     db.prepare(
@@ -343,6 +355,16 @@ function deleteDerivedRecords(db: Database.Database, documentId: string, caller:
   // Delete extraction segments (may not exist in pre-v19 schemas)
   try {
     db.prepare('DELETE FROM entity_extraction_segments WHERE document_id = ?').run(documentId);
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : String(e);
+    if (!msg.includes('no such table')) throw e;
+  }
+
+  // Delete node_entity_links BEFORE entities (node_entity_links.entity_id -> entities.id, no CASCADE)
+  try {
+    db.prepare(
+      'DELETE FROM node_entity_links WHERE entity_id IN (SELECT id FROM entities WHERE document_id = ?)'
+    ).run(documentId);
   } catch (e: unknown) {
     const msg = e instanceof Error ? e.message : String(e);
     if (!msg.includes('no such table')) throw e;

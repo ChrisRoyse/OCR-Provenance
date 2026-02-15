@@ -71,7 +71,7 @@ import {
   SEGMENT_OVERLAP_CHARS,
 } from '../utils/entity-extraction-helpers.js';
 import { handleCoreferenceResolve, createEntityExtractionProvenance } from './entity-analysis.js';
-import { handleKnowledgeGraphScanContradictions } from './knowledge-graph.js';
+import { handleKnowledgeGraphScanContradictions, handleKnowledgeGraphEmbedEntities } from './knowledge-graph.js';
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // TYPE DEFINITIONS
@@ -503,14 +503,16 @@ export async function handleIngestDirectory(
     const input = validateInput(IngestDirectoryInput, params);
     const { db } = requireDatabase();
 
+    const safeDirPath = sanitizePath(input.directory_path);
+
     // Validate directory exists - FAIL FAST
-    if (!existsSync(input.directory_path)) {
-      throw pathNotFoundError(input.directory_path);
+    if (!existsSync(safeDirPath)) {
+      throw pathNotFoundError(safeDirPath);
     }
 
-    const dirStats = statSync(input.directory_path);
+    const dirStats = statSync(safeDirPath);
     if (!dirStats.isDirectory()) {
-      throw pathNotDirectoryError(input.directory_path);
+      throw pathNotDirectoryError(safeDirPath);
     }
 
     const fileTypes = input.file_types ?? [...DEFAULT_FILE_TYPES];
@@ -546,7 +548,7 @@ export async function handleIngestDirectory(
       return files;
     };
 
-    const files = collectFiles(input.directory_path);
+    const files = collectFiles(safeDirPath);
 
     // Ingest each file
     for (const filePath of files) {
@@ -605,7 +607,7 @@ export async function handleIngestDirectory(
           file_hash: fileHash,
           processor: 'file-scanner',
           processor_version: '1.0.0',
-          processing_params: { directory_path: input.directory_path, recursive: input.recursive },
+          processing_params: { directory_path: safeDirPath, recursive: input.recursive },
           processing_duration_ms: null,
           processing_quality_score: null,
           parent_id: null,
@@ -653,7 +655,7 @@ export async function handleIngestDirectory(
     }
 
     const result = {
-      directory_path: input.directory_path,
+      directory_path: safeDirPath,
       files_found: files.length,
       files_ingested: items.filter(i => i.status === 'pending').length,
       files_skipped: items.filter(i => i.status === 'skipped').length,
@@ -966,6 +968,9 @@ export async function handleProcessPending(
     if (input.auto_scan_contradictions && !input.auto_build_kg) {
       throw new Error('auto_scan_contradictions requires auto_build_kg=true');
     }
+    if (input.auto_embed_entities && !input.auto_build_kg) {
+      throw new Error('auto_embed_entities requires auto_build_kg=true');
+    }
     if (input.auto_reassign_clusters && !input.auto_extract_entities) {
       throw new Error('auto_reassign_clusters requires auto_extract_entities=true');
     }
@@ -975,9 +980,19 @@ export async function handleProcessPending(
     if (input.auto_extract_vlm_entities && !process.env.GEMINI_API_KEY) {
       throw new Error('auto_extract_vlm_entities requires GEMINI_API_KEY');
     }
+    if (!process.env.DATALAB_API_KEY) {
+      throw new Error('DATALAB_API_KEY environment variable is required for OCR processing');
+    }
 
-    // Get pending documents - CRITICAL: use 'status' not 'statusFilter'
-    const pendingDocs = db.listDocuments({ status: 'pending', limit: input.max_concurrent ?? 3 });
+    // Atomic document claiming: UPDATE then SELECT to prevent concurrent callers
+    // from processing the same documents (F-INTEG-3)
+    const claimLimit = input.max_concurrent ?? 3;
+    const conn = db.getConnection();
+    conn.prepare(
+      `UPDATE documents SET status = 'processing', modified_at = ?
+       WHERE id IN (SELECT id FROM documents WHERE status = 'pending' ORDER BY created_at ASC LIMIT ?)`
+    ).run(new Date().toISOString(), claimLimit);
+    const pendingDocs = db.listDocuments({ status: 'processing', limit: claimLimit });
 
     if (pendingDocs.length === 0) {
       return formatResponse(successResult({
@@ -1388,6 +1403,17 @@ export async function handleProcessPending(
       } catch (error) {
         const errorMsg = error instanceof Error ? error.message : String(error);
         console.error(`[ERROR] Document ${doc.id} failed: ${errorMsg}`);
+
+        // F-INTEG-1: Clean up partial derived data (orphaned chunks, embeddings, entities)
+        // before marking as failed, so a retry starts from a clean state.
+        try {
+          db.cleanDocumentDerivedData(doc.id);
+          console.error(`[INFO] Cleaned partial data for failed document ${doc.id}`);
+        } catch (cleanupError) {
+          const cleanupMsg = cleanupError instanceof Error ? cleanupError.message : String(cleanupError);
+          console.error(`[WARN] Cleanup of partial data failed for ${doc.id}: ${cleanupMsg}`);
+        }
+
         db.updateDocumentStatus(doc.id, 'failed', errorMsg);
         results.failed++;
         results.errors.push({ document_id: doc.id, error: errorMsg });
@@ -1468,6 +1494,31 @@ export async function handleProcessPending(
       }
     }
 
+    // Step 9b: Auto-embed entity nodes if enabled and KG was built
+    let entityEmbedResult: Record<string, unknown> | undefined;
+    if (input.auto_embed_entities && kgBuildResult) {
+      try {
+        console.error(`[INFO] Auto-pipeline: generating embeddings for KG entity nodes`);
+        const embedResponse = await handleKnowledgeGraphEmbedEntities({
+          document_filter: successfulDocIds.length > 0 ? successfulDocIds : undefined,
+          limit: 500,
+        });
+        const embedText = embedResponse.content?.[0]?.text;
+        if (embedText) {
+          const embedData = JSON.parse(embedText);
+          entityEmbedResult = {
+            embedded: embedData.data?.embedded ?? 0,
+            errors: embedData.data?.errors ?? 0,
+          };
+          console.error(`[INFO] Auto-pipeline: embedded ${entityEmbedResult.embedded} entity nodes`);
+        }
+      } catch (embedError) {
+        const embedMsg = embedError instanceof Error ? embedError.message : String(embedError);
+        console.error(`[WARN] Entity embedding failed: ${embedMsg}`);
+        entityEmbedResult = { error: `Entity embedding failed: ${embedMsg}` };
+      }
+    }
+
     // Get remaining count - CRITICAL: use 'status' not 'statusFilter'
     const remaining = db.listDocuments({ status: 'pending' }).length;
 
@@ -1530,6 +1581,10 @@ export async function handleProcessPending(
 
     if (contradictionScanResult) {
       response.contradiction_scan = contradictionScanResult;
+    }
+
+    if (entityEmbedResult) {
+      response.entity_embeddings = entityEmbedResult;
     }
 
     if (input.auto_coreference_resolve) {
@@ -2020,6 +2075,8 @@ export const ingestionTools: Record<string, ToolDefinition> = {
         .describe('Auto-scan for contradictions after knowledge graph build. Requires auto_build_kg=true.'),
       auto_reassign_clusters: z.boolean().default(false)
         .describe('After entity extraction + KG merge, reassign documents to clusters if clusters exist. Requires auto_extract_entities=true.'),
+      auto_embed_entities: z.boolean().default(false)
+        .describe('Auto-generate embeddings for KG entity nodes after knowledge graph build. Requires auto_build_kg=true.'),
       check_semantic_duplicates: z.boolean().default(false)
         .describe('After OCR completes, check for semantically similar documents by entity overlap (Jaccard > 0.85). Informational only.'),
     },

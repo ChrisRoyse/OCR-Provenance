@@ -506,7 +506,7 @@ describe('Migration v14 to v15 (Document Clustering)', () => {
     migrateToLatest(db);
 
     const version = (db.prepare('SELECT version FROM schema_version').get() as { version: number }).version;
-    expect(version).toBe(23);
+    expect(version).toBe(24);
   });
 
   it.skipIf(!sqliteVecAvailable)('all 6 clustering indexes exist', () => {
@@ -545,7 +545,7 @@ describe('Migration v14 to v15 (Document Clustering)', () => {
     expect(tables).toContain('documents');
 
     const version = (db.prepare('SELECT version FROM schema_version').get() as { version: number }).version;
-    expect(version).toBe(23);
+    expect(version).toBe(24);
 
     const indexes = getIndexNames(db);
     expect(indexes).toContain('idx_clusters_run_id');
@@ -644,7 +644,7 @@ describe('Migration v14 to v15 (Document Clustering)', () => {
     expect(() => migrateToLatest(db)).not.toThrow();
 
     const version = (db.prepare('SELECT version FROM schema_version').get() as { version: number }).version;
-    expect(version).toBe(23);
+    expect(version).toBe(24);
   });
 
   it.skipIf(!sqliteVecAvailable)('can insert and query cluster after migration', () => {

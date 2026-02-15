@@ -671,7 +671,7 @@ describe('Migration v17 to v18 (Medical Entity Types)', () => {
     migrateToLatest(db);
 
     const version = (db.prepare('SELECT version FROM schema_version').get() as { version: number }).version;
-    expect(version).toBe(23);
+    expect(version).toBe(24);
   });
 
   it.skipIf(!sqliteVecAvailable)('FK integrity clean after migration', () => {
@@ -743,6 +743,6 @@ describe('Migration v17 to v18 (Medical Entity Types)', () => {
     expect(() => migrateToLatest(db)).not.toThrow();
 
     const version = (db.prepare('SELECT version FROM schema_version').get() as { version: number }).version;
-    expect(version).toBe(23);
+    expect(version).toBe(24);
   });
 });

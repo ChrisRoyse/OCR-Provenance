@@ -186,6 +186,11 @@ async function autoMergeIntoKnowledgeGraph(
     };
   } catch (mergeError) {
     const msg = mergeError instanceof Error ? mergeError.message : String(mergeError);
+    // Re-throw critical database errors — don't mask corruption or constraint violations
+    if (msg.includes('FOREIGN KEY') || msg.includes('constraint') ||
+        msg.includes('database is locked') || msg.includes('database disk image')) {
+      throw mergeError;
+    }
     console.error(`[WARN] KG auto-merge skipped for document ${documentId}: ${msg}`);
     return { kg_auto_merged: false, kg_auto_merge_skipped_reason: msg };
   }

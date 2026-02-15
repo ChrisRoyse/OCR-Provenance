@@ -64,6 +64,7 @@ interface IncrementalBuildOptions {
   resolution_mode?: ResolutionMode;
   classify_relationships?: boolean;
   auto_temporal?: boolean;
+  force?: boolean;
 }
 
 interface IncrementalBuildResult {
@@ -103,6 +104,7 @@ export async function incrementalBuildGraph(
   const startTime = Date.now();
   const conn = db.getConnection();
   const resolutionMode = options.resolution_mode ?? 'fuzzy';
+  const forceRebuild = options.force ?? false;
   const documentIds = options.document_ids;
 
   if (documentIds.length === 0) {
@@ -128,9 +130,22 @@ export async function incrementalBuildGraph(
       )
       .get(docId) as { cnt: number };
 
-    if (existingLinks.cnt > 0) {
+    if (existingLinks.cnt > 0 && !forceRebuild) {
       alreadyLinkedDocIds.push(docId);
       continue;
+    }
+
+    // When force=true, remove existing links so entities can be re-resolved
+    if (existingLinks.cnt > 0 && forceRebuild) {
+      console.error(
+        `[IncrementalBuilder] force=true: removing ${existingLinks.cnt} existing links for document ${docId}`,
+      );
+      // Decrement document_count on linked nodes before removing links
+      conn.prepare(`
+        UPDATE knowledge_nodes SET document_count = MAX(0, document_count - 1)
+        WHERE id IN (SELECT DISTINCT node_id FROM node_entity_links WHERE document_id = ?)
+      `).run(docId);
+      conn.prepare('DELETE FROM node_entity_links WHERE document_id = ?').run(docId);
     }
 
     newEntities.push(...docEntities);
@@ -144,7 +159,7 @@ export async function incrementalBuildGraph(
 
   if (newEntities.length === 0) {
     throw new Error(
-      'All specified documents are already in the knowledge graph. Use rebuild: true on ocr_knowledge_graph_build to rebuild.',
+      'All specified documents are already in the knowledge graph. Use force: true to re-process, or rebuild: true on ocr_knowledge_graph_build to rebuild.',
     );
   }
 
@@ -226,119 +241,122 @@ export async function incrementalBuildGraph(
     existingNodesByType.get(node.entity_type)!.push(node);
   }
 
-  for (const [entityType, entities] of entitiesByType) {
-    const typeNodes = existingNodesByType.get(entityType) || [];
+  // Wrap entity-to-existing-node matching in a transaction for atomicity
+  conn.transaction(() => {
+    for (const [entityType, entities] of entitiesByType) {
+      const typeNodes = existingNodesByType.get(entityType) || [];
 
-    for (const entity of entities) {
-      let bestMatch: { node: KnowledgeNode; score: number } | null = null;
+      for (const entity of entities) {
+        let bestMatch: { node: KnowledgeNode; score: number } | null = null;
 
-      // Check exact match first (fast path)
-      for (const node of typeNodes) {
-        if (node.normalized_name === entity.normalized_text) {
-          bestMatch = { node, score: 1.0 };
-          break;
-        }
-      }
-
-      // Fuzzy match if no exact match and mode supports it
-      if (!bestMatch && resolutionMode !== 'exact') {
+        // Check exact match first (fast path)
         for (const node of typeNodes) {
-          // Create a proxy entity from the node for similarity comparison
-          const proxyEntity: Entity = {
-            id: node.id,
-            document_id: '',
-            entity_type: node.entity_type,
-            raw_text: node.canonical_name,
-            normalized_text: node.normalized_name,
-            confidence: node.avg_confidence,
-            metadata: null,
-            provenance_id: node.provenance_id,
-            created_at: node.created_at,
-          };
+          if (node.normalized_name === entity.normalized_text) {
+            bestMatch = { node, score: 1.0 };
+            break;
+          }
+        }
 
-          const score = computeTypeSimilarity(
-            entity,
-            proxyEntity,
-            clusterContext,
-          );
-          if (score >= getFuzzyThreshold(entity.entity_type)) {
-            if (!bestMatch || score > bestMatch.score) {
-              bestMatch = { node, score };
+        // Fuzzy match if no exact match and mode supports it
+        if (!bestMatch && resolutionMode !== 'exact') {
+          for (const node of typeNodes) {
+            // Create a proxy entity from the node for similarity comparison
+            const proxyEntity: Entity = {
+              id: node.id,
+              document_id: '',
+              entity_type: node.entity_type,
+              raw_text: node.canonical_name,
+              normalized_text: node.normalized_name,
+              confidence: node.avg_confidence,
+              metadata: null,
+              provenance_id: node.provenance_id,
+              created_at: node.created_at,
+            };
+
+            const score = computeTypeSimilarity(
+              entity,
+              proxyEntity,
+              clusterContext,
+            );
+            if (score >= getFuzzyThreshold(entity.entity_type)) {
+              if (!bestMatch || score > bestMatch.score) {
+                bestMatch = { node, score };
+              }
             }
           }
         }
-      }
 
-      if (bestMatch) {
-        // Match found: link entity to existing node
-        const now = new Date().toISOString();
-        const link: NodeEntityLink = {
-          id: uuidv4(),
-          node_id: bestMatch.node.id,
-          entity_id: entity.id,
-          document_id: entity.document_id,
-          similarity_score: bestMatch.score,
-          resolution_method:
-            bestMatch.score === 1.0 ? 'exact_incremental' : 'fuzzy_incremental',
-          created_at: now,
-        };
-        insertNodeEntityLink(conn, link);
+        if (bestMatch) {
+          // Match found: link entity to existing node
+          const now = new Date().toISOString();
+          const link: NodeEntityLink = {
+            id: uuidv4(),
+            node_id: bestMatch.node.id,
+            entity_id: entity.id,
+            document_id: entity.document_id,
+            similarity_score: bestMatch.score,
+            resolution_method:
+              bestMatch.score === 1.0 ? 'exact_incremental' : 'fuzzy_incremental',
+            created_at: now,
+          };
+          insertNodeEntityLink(conn, link);
 
-        // Update node counts
-        const currentLinks = getLinksForNode(conn, bestMatch.node.id);
-        const uniqueDocIds = new Set(currentLinks.map((l) => l.document_id));
-        const newMentionCount = currentLinks.length;
-        const newDocCount = uniqueDocIds.size;
+          // Update node counts
+          const currentLinks = getLinksForNode(conn, bestMatch.node.id);
+          const uniqueDocIds = new Set(currentLinks.map((l) => l.document_id));
+          const newMentionCount = currentLinks.length;
+          const newDocCount = uniqueDocIds.size;
 
-        // Recalculate avg_confidence from all linked entities
-        let totalConfidence = 0;
-        let linkCount = 0;
-        for (const l of currentLinks) {
-          const linkedEntity = conn
-            .prepare('SELECT confidence FROM entities WHERE id = ?')
-            .get(l.entity_id) as { confidence: number } | undefined;
-          if (linkedEntity) {
-            totalConfidence += linkedEntity.confidence;
-            linkCount++;
+          // Recalculate avg_confidence from all linked entities
+          let totalConfidence = 0;
+          let linkCount = 0;
+          for (const l of currentLinks) {
+            const linkedEntity = conn
+              .prepare('SELECT confidence FROM entities WHERE id = ?')
+              .get(l.entity_id) as { confidence: number } | undefined;
+            if (linkedEntity) {
+              totalConfidence += linkedEntity.confidence;
+              linkCount++;
+            }
           }
-        }
-        const newAvgConfidence =
-          linkCount > 0
-            ? Math.round((totalConfidence / linkCount) * 10000) / 10000
-            : bestMatch.node.avg_confidence;
+          const newAvgConfidence =
+            linkCount > 0
+              ? Math.round((totalConfidence / linkCount) * 10000) / 10000
+              : bestMatch.node.avg_confidence;
 
-        // Merge aliases
-        const existingAliases: string[] = bestMatch.node.aliases
-          ? JSON.parse(bestMatch.node.aliases)
-          : [];
-        if (
-          entity.raw_text !== bestMatch.node.canonical_name &&
-          !existingAliases.includes(entity.raw_text)
-        ) {
-          existingAliases.push(entity.raw_text);
-        }
+          // Merge aliases
+          const existingAliases: string[] = bestMatch.node.aliases
+            ? JSON.parse(bestMatch.node.aliases)
+            : [];
+          if (
+            entity.raw_text !== bestMatch.node.canonical_name &&
+            !existingAliases.includes(entity.raw_text)
+          ) {
+            existingAliases.push(entity.raw_text);
+          }
 
-        updateKnowledgeNode(conn, bestMatch.node.id, {
-          document_count: newDocCount,
-          mention_count: newMentionCount,
-          avg_confidence: newAvgConfidence,
-          aliases:
-            existingAliases.length > 0
-              ? JSON.stringify(existingAliases)
-              : null,
-          updated_at: now,
-        });
+          updateKnowledgeNode(conn, bestMatch.node.id, {
+            document_count: newDocCount,
+            mention_count: newMentionCount,
+            avg_confidence: newAvgConfidence,
+            aliases:
+              existingAliases.length > 0
+                ? JSON.stringify(existingAliases)
+                : null,
+            updated_at: now,
+          });
 
-        if (!touchedNodeIds.has(bestMatch.node.id)) {
-          touchedNodeIds.add(bestMatch.node.id);
-          existingNodesUpdated++;
+          if (!touchedNodeIds.has(bestMatch.node.id)) {
+            touchedNodeIds.add(bestMatch.node.id);
+            existingNodesUpdated++;
+          }
+          entitiesMatchedToExisting++;
+        } else {
+          unmatchedEntities.push(entity);
         }
-        entitiesMatchedToExisting++;
-      } else {
-        unmatchedEntities.push(entity);
       }
     }
-  }
+  })();
 
   // Step 6: Resolve unmatched entities among themselves to create new nodes
   let newNodesCreated = 0;
@@ -353,52 +371,55 @@ export async function incrementalBuildGraph(
       clusterContext,
     );
 
-    for (const node of resolutionResult.nodes) {
-      insertKnowledgeNode(conn, node);
-      newNodesCreated++;
-      newNodeIds.push(node.id);
-      touchedNodeIds.add(node.id);
+    // Wrap new node/link DB writes in a transaction for atomicity
+    conn.transaction(() => {
+      for (const node of resolutionResult.nodes) {
+        insertKnowledgeNode(conn, node);
+        newNodesCreated++;
+        newNodeIds.push(node.id);
+        touchedNodeIds.add(node.id);
 
-      // Per-node provenance
-      const nodeLinks = resolutionResult.links.filter(
-        (l) => l.node_id === node.id,
-      );
-      const resolutionAlgorithm =
-        nodeLinks.length > 0 && nodeLinks[0].resolution_method
-          ? nodeLinks[0].resolution_method
-          : 'exact';
+        // Per-node provenance
+        const nodeLinks = resolutionResult.links.filter(
+          (l) => l.node_id === node.id,
+        );
+        const resolutionAlgorithm =
+          nodeLinks.length > 0 && nodeLinks[0].resolution_method
+            ? nodeLinks[0].resolution_method
+            : 'exact';
 
-      conn.prepare('UPDATE knowledge_nodes SET resolution_type = ? WHERE id = ?')
-        .run(resolutionAlgorithm, node.id);
+        conn.prepare('UPDATE knowledge_nodes SET resolution_type = ? WHERE id = ?')
+          .run(resolutionAlgorithm, node.id);
 
-      tracker.createProvenance({
-        type: ProvenanceType.KNOWLEDGE_GRAPH,
-        source_type: 'KNOWLEDGE_GRAPH',
-        source_id: provenanceId,
-        root_document_id: firstDoc?.provenance_id ?? documentIds[0],
-        content_hash: computeHash(
-          JSON.stringify({
+        tracker.createProvenance({
+          type: ProvenanceType.KNOWLEDGE_GRAPH,
+          source_type: 'KNOWLEDGE_GRAPH',
+          source_id: provenanceId,
+          root_document_id: firstDoc?.provenance_id ?? documentIds[0],
+          content_hash: computeHash(
+            JSON.stringify({
+              node_id: node.id,
+              canonical_name: node.canonical_name,
+            }),
+          ),
+          input_hash: computeHash(
+            JSON.stringify({ entity_count: nodeLinks.length }),
+          ),
+          processor: 'entity-resolution-incremental',
+          processor_version: '1.0.0',
+          processing_params: {
+            resolution_mode: resolutionMode,
+            matched_by: resolutionAlgorithm,
             node_id: node.id,
-            canonical_name: node.canonical_name,
-          }),
-        ),
-        input_hash: computeHash(
-          JSON.stringify({ entity_count: nodeLinks.length }),
-        ),
-        processor: 'entity-resolution-incremental',
-        processor_version: '1.0.0',
-        processing_params: {
-          resolution_mode: resolutionMode,
-          matched_by: resolutionAlgorithm,
-          node_id: node.id,
-          incremental: true,
-        },
-      });
-    }
+            incremental: true,
+          },
+        });
+      }
 
-    for (const link of resolutionResult.links) {
-      insertNodeEntityLink(conn, link);
-    }
+      for (const link of resolutionResult.links) {
+        insertNodeEntityLink(conn, link);
+      }
+    })();
   }
 
   // Step 7: Build co-occurrence edges for touched nodes
@@ -545,188 +566,191 @@ function buildIncrementalEdges(
 
   const processedPairs = new Set<string>();
 
-  for (const touchedId of cappedTouched) {
-    const docsA = nodeDocMap.get(touchedId);
-    const chunksA = nodeChunkMap.get(touchedId);
-    if (!docsA || docsA.size === 0) continue;
+  // Wrap all edge creation/update DB writes in a transaction for atomicity
+  conn.transaction(() => {
+    for (const touchedId of cappedTouched) {
+      const docsA = nodeDocMap.get(touchedId);
+      const chunksA = nodeChunkMap.get(touchedId);
+      if (!docsA || docsA.size === 0) continue;
 
-    for (const otherId of allArr) {
-      if (touchedId === otherId) continue;
+      for (const otherId of allArr) {
+        if (touchedId === otherId) continue;
 
-      // Avoid processing same pair twice
-      const pairKey =
-        touchedId < otherId
-          ? `${touchedId}:${otherId}`
-          : `${otherId}:${touchedId}`;
-      if (processedPairs.has(pairKey)) continue;
-      processedPairs.add(pairKey);
+        // Avoid processing same pair twice
+        const pairKey =
+          touchedId < otherId
+            ? `${touchedId}:${otherId}`
+            : `${otherId}:${touchedId}`;
+        if (processedPairs.has(pairKey)) continue;
+        processedPairs.add(pairKey);
 
-      const docsB = nodeDocMap.get(otherId);
-      if (!docsB || docsB.size === 0) continue;
+        const docsB = nodeDocMap.get(otherId);
+        if (!docsB || docsB.size === 0) continue;
 
-      // Find shared documents
-      const sharedDocs: string[] = [];
-      for (const docId of docsA) {
-        if (docsB.has(docId)) {
-          sharedDocs.push(docId);
-        }
-      }
-
-      if (sharedDocs.length === 0) continue;
-
-      // Direction convention: sort node IDs alphabetically
-      const [sourceId, targetId] =
-        touchedId < otherId
-          ? [touchedId, otherId]
-          : [otherId, touchedId];
-
-      // co_mentioned edge — skip for single-document graphs (useless clique)
-      const maxDocCount = Math.max(docsA.size, docsB.size);
-
-      if (!isSingleDocumentGraph) {
-        const coMentionedWeight =
-          maxDocCount > 0
-            ? Math.round((sharedDocs.length / maxDocCount) * 10000) / 10000
-            : 0;
-
-        const existingCoMentioned = findEdge(
-          conn,
-          sourceId,
-          targetId,
-          'co_mentioned',
-        );
-        if (existingCoMentioned) {
-          // Update existing edge with new evidence
-          const existingDocIds: string[] = JSON.parse(
-            existingCoMentioned.document_ids || '[]',
-          );
-          const mergedDocIds = [
-            ...new Set([...existingDocIds, ...sharedDocs]),
-          ];
-          updateKnowledgeEdge(conn, existingCoMentioned.id, {
-            weight: coMentionedWeight,
-            evidence_count: mergedDocIds.length,
-            document_ids: JSON.stringify(mergedDocIds),
-          });
-          updatedEdges++;
-        } else {
-          const edge: KnowledgeEdge = {
-            id: uuidv4(),
-            source_node_id: sourceId,
-            target_node_id: targetId,
-            relationship_type: 'co_mentioned',
-            weight: coMentionedWeight,
-            evidence_count: sharedDocs.length,
-            document_ids: JSON.stringify(sharedDocs),
-            metadata: null,
-            provenance_id: provenanceId,
-            created_at: now,
-          };
-          insertKnowledgeEdge(conn, edge);
-          newEdges++;
-        }
-      }
-
-      // co_located edge (shared chunks)
-      const chunksB = nodeChunkMap.get(otherId);
-      if (chunksA && chunksB) {
-        const sharedChunks: string[] = [];
-        for (const chunkId of chunksA) {
-          if (chunksB.has(chunkId)) {
-            sharedChunks.push(chunkId);
+        // Find shared documents
+        const sharedDocs: string[] = [];
+        for (const docId of docsA) {
+          if (docsB.has(docId)) {
+            sharedDocs.push(docId);
           }
         }
 
-        if (sharedChunks.length > 0) {
-          const baseWeight =
-            maxDocCount > 0 ? sharedDocs.length / maxDocCount : 0;
-          const coLocatedWeight =
-            Math.round(Math.min(baseWeight * 1.5, 1.0) * 10000) / 10000;
+        if (sharedDocs.length === 0) continue;
 
-          const existingCoLocated = findEdge(
+        // Direction convention: sort node IDs alphabetically
+        const [sourceId, targetId] =
+          touchedId < otherId
+            ? [touchedId, otherId]
+            : [otherId, touchedId];
+
+        // co_mentioned edge — skip for single-document graphs (useless clique)
+        const maxDocCount = Math.max(docsA.size, docsB.size);
+
+        if (!isSingleDocumentGraph) {
+          const coMentionedWeight =
+            maxDocCount > 0
+              ? Math.round((sharedDocs.length / maxDocCount) * 10000) / 10000
+              : 0;
+
+          const existingCoMentioned = findEdge(
             conn,
             sourceId,
             targetId,
-            'co_located',
+            'co_mentioned',
           );
-          if (existingCoLocated) {
-            const existingMeta = existingCoLocated.metadata
-              ? JSON.parse(existingCoLocated.metadata)
-              : {};
-            const existingChunks: string[] =
-              existingMeta.shared_chunk_ids || [];
-            const mergedChunks = [
-              ...new Set([...existingChunks, ...sharedChunks]),
-            ];
-
+          if (existingCoMentioned) {
+            // Update existing edge with new evidence
             const existingDocIds: string[] = JSON.parse(
-              existingCoLocated.document_ids || '[]',
+              existingCoMentioned.document_ids || '[]',
             );
             const mergedDocIds = [
               ...new Set([...existingDocIds, ...sharedDocs]),
             ];
-
-            updateKnowledgeEdge(conn, existingCoLocated.id, {
-              weight: coLocatedWeight,
-              evidence_count: mergedChunks.length,
+            updateKnowledgeEdge(conn, existingCoMentioned.id, {
+              weight: coMentionedWeight,
+              evidence_count: mergedDocIds.length,
               document_ids: JSON.stringify(mergedDocIds),
-              metadata: JSON.stringify({
-                ...existingMeta,
-                shared_chunk_ids: mergedChunks,
-              }),
             });
             updatedEdges++;
-
-            // Auto-temporal: update existing edge if new temporal data is more specific
-            if (autoTemporal
-              && nodeTypeMap.get(sourceId) !== 'date'
-              && nodeTypeMap.get(targetId) !== 'date') {
-              try {
-                const temporal = mergeTemporalFromChunksIncremental(sharedChunks, chunkTemporalMap);
-                if (temporal) {
-                  const existing = conn.prepare(
-                    'SELECT valid_from, valid_until FROM knowledge_edges WHERE id = ?',
-                  ).get(existingCoLocated.id) as { valid_from: string | null; valid_until: string | null } | undefined;
-                  if (existing && isMoreSpecificTemporal(existing, temporal)) {
-                    conn.prepare(
-                      'UPDATE knowledge_edges SET valid_from = COALESCE(?, valid_from), valid_until = COALESCE(?, valid_until) WHERE id = ?',
-                    ).run(temporal.valid_from ?? null, temporal.valid_until ?? null, existingCoLocated.id);
-                    temporalEdgesSet++;
-                  }
-                }
-              } catch (e) {
-                console.error('[incremental-builder] temporal update failed for existing edge:', e instanceof Error ? e.message : String(e));
-              }
-            }
           } else {
             const edge: KnowledgeEdge = {
               id: uuidv4(),
               source_node_id: sourceId,
               target_node_id: targetId,
-              relationship_type: 'co_located',
-              weight: coLocatedWeight,
-              evidence_count: sharedChunks.length,
+              relationship_type: 'co_mentioned',
+              weight: coMentionedWeight,
+              evidence_count: sharedDocs.length,
               document_ids: JSON.stringify(sharedDocs),
-              metadata: JSON.stringify({ shared_chunk_ids: sharedChunks }),
+              metadata: null,
               provenance_id: provenanceId,
               created_at: now,
             };
             insertKnowledgeEdge(conn, edge);
             newEdges++;
+          }
+        }
 
-            // Auto-temporal: set temporal bounds on newly created edge
-            if (autoTemporal
-              && nodeTypeMap.get(sourceId) !== 'date'
-              && nodeTypeMap.get(targetId) !== 'date') {
-              const temporal = mergeTemporalFromChunksIncremental(sharedChunks, chunkTemporalMap);
-              if (temporal) {
+        // co_located edge (shared chunks)
+        const chunksB = nodeChunkMap.get(otherId);
+        if (chunksA && chunksB) {
+          const sharedChunks: string[] = [];
+          for (const chunkId of chunksA) {
+            if (chunksB.has(chunkId)) {
+              sharedChunks.push(chunkId);
+            }
+          }
+
+          if (sharedChunks.length > 0) {
+            const baseWeight =
+              maxDocCount > 0 ? sharedDocs.length / maxDocCount : 0;
+            const coLocatedWeight =
+              Math.round(Math.min(baseWeight * 1.5, 1.0) * 10000) / 10000;
+
+            const existingCoLocated = findEdge(
+              conn,
+              sourceId,
+              targetId,
+              'co_located',
+            );
+            if (existingCoLocated) {
+              const existingMeta = existingCoLocated.metadata
+                ? JSON.parse(existingCoLocated.metadata)
+                : {};
+              const existingChunks: string[] =
+                existingMeta.shared_chunk_ids || [];
+              const mergedChunks = [
+                ...new Set([...existingChunks, ...sharedChunks]),
+              ];
+
+              const existingDocIds: string[] = JSON.parse(
+                existingCoLocated.document_ids || '[]',
+              );
+              const mergedDocIds = [
+                ...new Set([...existingDocIds, ...sharedDocs]),
+              ];
+
+              updateKnowledgeEdge(conn, existingCoLocated.id, {
+                weight: coLocatedWeight,
+                evidence_count: mergedChunks.length,
+                document_ids: JSON.stringify(mergedDocIds),
+                metadata: JSON.stringify({
+                  ...existingMeta,
+                  shared_chunk_ids: mergedChunks,
+                }),
+              });
+              updatedEdges++;
+
+              // Auto-temporal: update existing edge if new temporal data is more specific
+              if (autoTemporal
+                && nodeTypeMap.get(sourceId) !== 'date'
+                && nodeTypeMap.get(targetId) !== 'date') {
                 try {
-                  conn.prepare(
-                    'UPDATE knowledge_edges SET valid_from = ?, valid_until = ? WHERE id = ?',
-                  ).run(temporal.valid_from ?? null, temporal.valid_until ?? null, edge.id);
-                  temporalEdgesSet++;
+                  const temporal = mergeTemporalFromChunksIncremental(sharedChunks, chunkTemporalMap);
+                  if (temporal) {
+                    const existing = conn.prepare(
+                      'SELECT valid_from, valid_until FROM knowledge_edges WHERE id = ?',
+                    ).get(existingCoLocated.id) as { valid_from: string | null; valid_until: string | null } | undefined;
+                    if (existing && isMoreSpecificTemporal(existing, temporal)) {
+                      conn.prepare(
+                        'UPDATE knowledge_edges SET valid_from = COALESCE(?, valid_from), valid_until = COALESCE(?, valid_until) WHERE id = ?',
+                      ).run(temporal.valid_from ?? null, temporal.valid_until ?? null, existingCoLocated.id);
+                      temporalEdgesSet++;
+                    }
+                  }
                 } catch (e) {
-                  console.error('[incremental-builder] temporal update failed for new edge:', e instanceof Error ? e.message : String(e));
+                  console.error('[incremental-builder] temporal update failed for existing edge:', e instanceof Error ? e.message : String(e));
+                }
+              }
+            } else {
+              const edge: KnowledgeEdge = {
+                id: uuidv4(),
+                source_node_id: sourceId,
+                target_node_id: targetId,
+                relationship_type: 'co_located',
+                weight: coLocatedWeight,
+                evidence_count: sharedChunks.length,
+                document_ids: JSON.stringify(sharedDocs),
+                metadata: JSON.stringify({ shared_chunk_ids: sharedChunks }),
+                provenance_id: provenanceId,
+                created_at: now,
+              };
+              insertKnowledgeEdge(conn, edge);
+              newEdges++;
+
+              // Auto-temporal: set temporal bounds on newly created edge
+              if (autoTemporal
+                && nodeTypeMap.get(sourceId) !== 'date'
+                && nodeTypeMap.get(targetId) !== 'date') {
+                const temporal = mergeTemporalFromChunksIncremental(sharedChunks, chunkTemporalMap);
+                if (temporal) {
+                  try {
+                    conn.prepare(
+                      'UPDATE knowledge_edges SET valid_from = ?, valid_until = ? WHERE id = ?',
+                    ).run(temporal.valid_from ?? null, temporal.valid_until ?? null, edge.id);
+                    temporalEdgesSet++;
+                  } catch (e) {
+                    console.error('[incremental-builder] temporal update failed for new edge:', e instanceof Error ? e.message : String(e));
+                  }
                 }
               }
             }
@@ -734,20 +758,20 @@ function buildIncrementalEdges(
         }
       }
     }
-  }
+
+    // Update edge_count on all touched nodes
+    for (const nodeId of touchedNodeIds) {
+      const nodeEdges = getEdgesForNode(conn, nodeId);
+      conn
+        .prepare('UPDATE knowledge_nodes SET edge_count = ? WHERE id = ?')
+        .run(nodeEdges.length, nodeId);
+    }
+  })();
 
   if (autoTemporal && temporalEdgesSet > 0) {
     console.error(
       `[KnowledgeGraph] Auto-temporal (incremental): set temporal bounds on ${temporalEdgesSet} co_located edges`,
     );
-  }
-
-  // Update edge_count on all touched nodes
-  for (const nodeId of touchedNodeIds) {
-    const nodeEdges = getEdgesForNode(conn, nodeId);
-    conn
-      .prepare('UPDATE knowledge_nodes SET edge_count = ? WHERE id = ?')
-      .run(nodeEdges.length, nodeId);
   }
 
   return { newEdges, updatedEdges };

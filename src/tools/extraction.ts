@@ -17,7 +17,7 @@ import { requireDatabase, state } from '../server/state.js';
 import { successResult } from '../server/types.js';
 import { MCPError } from '../server/errors.js';
 import { formatResponse, handleError, type ToolResponse, type ToolDefinition } from './shared.js';
-import { validateInput } from '../utils/validation.js';
+import { validateInput, sanitizePath } from '../utils/validation.js';
 import { ImageExtractor } from '../services/images/extractor.js';
 import { insertImageBatch, getImagesByDocument, updateImageProvenance } from '../services/storage/database/image-operations.js';
 import { handleVLMProcessDocument } from './vlm.js';
@@ -71,7 +71,7 @@ export async function handleExtractImages(
     const documentId = input.document_id;
     const minSize = input.min_size ?? 100;
     const maxImages = input.max_images ?? 500;
-    const outputDir = input.output_dir;
+    const outputDir = input.output_dir ? sanitizePath(input.output_dir) : undefined;
 
     const { db } = requireDatabase();
 

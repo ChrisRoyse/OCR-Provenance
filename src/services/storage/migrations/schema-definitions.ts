@@ -8,7 +8,7 @@
  */
 
 /** Current schema version */
-export const SCHEMA_VERSION = 23;
+export const SCHEMA_VERSION = 24;
 
 /**
  * Database configuration pragmas for optimal performance and safety
@@ -20,7 +20,7 @@ export const DATABASE_PRAGMAS = [
   'PRAGMA cache_size = -64000',
   'PRAGMA wal_autocheckpoint = 1000',
   'PRAGMA mmap_size = 268435456',
-  'PRAGMA busy_timeout = 5000',
+  'PRAGMA busy_timeout = 30000',
 ] as const;
 
 /**
