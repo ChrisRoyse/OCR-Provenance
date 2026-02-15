@@ -5,13 +5,15 @@ Creates document entries for the 4 resized screenshots.
 """
 
 import hashlib
+import os
 import sqlite3
 import uuid
 from datetime import datetime
 from pathlib import Path
 
-DB_PATH = Path.home() / ".ocr-provenance" / "databases" / "default.db"
-RESIZED_DIR = Path(__file__).resolve().parent.parent / "project" / "images" / "resized"
+DB_NAME = os.environ.get("OCR_DATABASE", "default")
+DB_PATH = Path.home() / ".ocr-provenance" / "databases" / f"{DB_NAME}.db"
+RESIZED_DIR = Path(os.environ.get("RESIZED_DIR", str(Path(__file__).resolve().parent.parent / "images" / "resized")))
 
 def compute_hash(file_path: Path) -> str:
     """Compute SHA-256 hash of file."""

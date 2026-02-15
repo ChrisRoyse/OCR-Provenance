@@ -5,6 +5,7 @@ Processes in batches of 500 to prevent CUDA OOM.
 """
 
 import json
+import os
 import sqlite3
 import subprocess
 import hashlib
@@ -13,7 +14,8 @@ import struct
 from datetime import datetime
 from pathlib import Path
 
-DB_PATH = Path.home() / ".ocr-provenance" / "databases" / "default.db"
+DB_NAME = os.environ.get("OCR_DATABASE", "default")
+DB_PATH = Path.home() / ".ocr-provenance" / "databases" / f"{DB_NAME}.db"
 EMBEDDING_WORKER = Path(__file__).parent.parent / "python" / "embedding_worker.py"
 VEC_EXTENSION = Path(__file__).parent.parent / "node_modules" / "sqlite-vec-linux-x64" / "vec0.so"
 BATCH_SIZE = 500

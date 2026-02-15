@@ -6,8 +6,8 @@
  * Skips logos, icons, and decorative elements to save API tokens.
  *
  * Usage:
- *   npx tsx scripts/vlm-process-pending.ts --db project --limit 100
- *   npx tsx scripts/vlm-process-pending.ts --db project --dry-run
+ *   npx tsx scripts/vlm-process-pending.ts --db mydb --limit 100
+ *   npx tsx scripts/vlm-process-pending.ts --db mydb --dry-run
  */
 
 import dotenv from 'dotenv';
@@ -20,7 +20,7 @@ import { getPendingImages } from '../src/services/storage/database/image-operati
 
 // Parse CLI args
 const args = process.argv.slice(2);
-const dbName = args.find((_, i) => args[i - 1] === '--db') || 'project';
+const dbName = args.find((_, i) => args[i - 1] === '--db') || process.env.OCR_DATABASE || 'default';
 const limit = parseInt(args.find((_, i) => args[i - 1] === '--limit') || '50', 10);
 const dryRun = args.includes('--dry-run');
 const batchSize = parseInt(args.find((_, i) => args[i - 1] === '--batch') || '10', 10);

@@ -23,7 +23,7 @@ import { existsSync } from 'fs';
 import type { Document, OCRResult } from '../src/models/document.js';
 import type { Chunk, ChunkResult } from '../src/models/chunk.js';
 
-const DATABASE_NAME = 'project';
+const DATABASE_NAME = process.env.OCR_DATABASE || 'default';
 const MAX_CONCURRENT = 1; // Process one at a time for stability
 const SKIP_VLM = true; // Skip VLM to avoid timeout issues
 
