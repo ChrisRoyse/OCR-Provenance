@@ -21,6 +21,9 @@ import { computeHash } from '../utils/hash.js';
 import {
   listKnowledgeNodes,
 } from '../services/storage/database/knowledge-graph-operations.js';
+import { insertEntity, insertEntityMention } from '../services/storage/database/entity-operations.js';
+import { createEntityExtractionProvenance } from './entity-analysis.js';
+import type { EntityType } from '../models/entity.js';
 
 /**
  * Safely parse JSON from stored form fill data. Returns fallback on corrupt data
@@ -45,6 +48,8 @@ const FormFillInput = z.object({
   confidence_threshold: z.number().min(0).max(1).default(0.5).describe('Confidence threshold (0-1)'),
   page_range: z.string().optional().describe('Page range, 0-indexed'),
   output_path: z.string().optional().describe('Path to save filled form PDF'),
+  document_id: z.string().optional().describe('If provided, validate field values against entities from this document and extract new entities from filled values'),
+  validate_against_kg: z.boolean().default(false).describe('If true and document_id provided, validate filled values against knowledge graph nodes and relationships'),
 });
 
 const FormFillStatusInput = z.object({
@@ -55,12 +60,221 @@ const FormFillStatusInput = z.object({
   offset: z.number().int().min(0).default(0).describe('Offset for pagination'),
 });
 
+/**
+ * Validate field values against document entities (pre-fill validation).
+ * For each field, infers the expected entity type and checks if the provided
+ * value matches any known entity of that type.
+ */
+function validateFieldsAgainstEntities(
+  conn: import('better-sqlite3').Database,
+  documentId: string,
+  fieldData: Record<string, { value: string; description?: string }>,
+): Array<{ field: string; value: string; inferred_type: string | null; matched_entity: string | null; confidence: number | null }> {
+  const entities = conn.prepare(`
+    SELECT e.id, e.raw_text, e.entity_type, e.confidence, e.normalized_text
+    FROM entities e WHERE e.document_id = ?
+  `).all(documentId) as Array<{
+    id: string; raw_text: string; entity_type: string;
+    confidence: number; normalized_text: string;
+  }>;
+
+  const validations: Array<{
+    field: string; value: string; inferred_type: string | null;
+    matched_entity: string | null; confidence: number | null;
+  }> = [];
+
+  for (const [fieldName, fieldInfo] of Object.entries(fieldData)) {
+    const inferredType = inferEntityTypeFromFieldName(fieldName);
+    const normalizedValue = fieldInfo.value.toLowerCase().trim();
+
+    let matchedEntity: string | null = null;
+    let matchConfidence: number | null = null;
+
+    for (const entity of entities) {
+      if (inferredType && entity.entity_type !== inferredType) continue;
+      if (entity.normalized_text === normalizedValue || entity.raw_text.toLowerCase().trim() === normalizedValue) {
+        matchedEntity = entity.raw_text;
+        matchConfidence = entity.confidence;
+        break;
+      }
+    }
+
+    validations.push({
+      field: fieldName,
+      value: fieldInfo.value,
+      inferred_type: inferredType,
+      matched_entity: matchedEntity,
+      confidence: matchConfidence,
+    });
+  }
+
+  return validations;
+}
+
+/**
+ * Validate field values against KG nodes and relationships.
+ * For each field, checks if the value matches a KG node and verifies
+ * relationship fields (e.g., employer -> organization) exist in KG.
+ */
+function validateFieldsAgainstKG(
+  conn: import('better-sqlite3').Database,
+  documentId: string,
+  fieldData: Record<string, { value: string; description?: string }>,
+): Array<{ field: string; value: string; kg_node_match: string | null; kg_node_type: string | null; relationship_verified: boolean | null }> {
+  const kgNodes = conn.prepare(`
+    SELECT DISTINCT kn.id, kn.canonical_name, kn.entity_type
+    FROM entities e
+    JOIN node_entity_links nel ON nel.entity_id = e.id
+    JOIN knowledge_nodes kn ON nel.node_id = kn.id
+    WHERE e.document_id = ?
+  `).all(documentId) as Array<{ id: string; canonical_name: string; entity_type: string }>;
+
+  const kgEdges = conn.prepare(`
+    SELECT ke.source_node_id, ke.target_node_id, ke.relationship_type
+    FROM knowledge_edges ke
+    WHERE ke.source_node_id IN (SELECT DISTINCT kn.id FROM entities e
+      JOIN node_entity_links nel ON nel.entity_id = e.id
+      JOIN knowledge_nodes kn ON nel.node_id = kn.id
+      WHERE e.document_id = ?)
+    OR ke.target_node_id IN (SELECT DISTINCT kn.id FROM entities e
+      JOIN node_entity_links nel ON nel.entity_id = e.id
+      JOIN knowledge_nodes kn ON nel.node_id = kn.id
+      WHERE e.document_id = ?)
+  `).all(documentId, documentId) as Array<{ source_node_id: string; target_node_id: string; relationship_type: string }>;
+
+  const validations: Array<{
+    field: string; value: string; kg_node_match: string | null;
+    kg_node_type: string | null; relationship_verified: boolean | null;
+  }> = [];
+
+  for (const [fieldName, fieldInfo] of Object.entries(fieldData)) {
+    const normalizedValue = fieldInfo.value.toLowerCase().trim();
+    const inferredType = inferEntityTypeFromFieldName(fieldName);
+
+    let matchedNode: { id: string; canonical_name: string; entity_type: string } | null = null;
+    for (const node of kgNodes) {
+      if (node.canonical_name.toLowerCase().trim() === normalizedValue) {
+        matchedNode = node;
+        break;
+      }
+    }
+
+    // For relationship fields (e.g., employer->organization), verify the relationship exists
+    let relationshipVerified: boolean | null = null;
+    if (matchedNode && inferredType) {
+      const isRelationshipField = /employer|employee|doctor|patient|attorney|client/.test(fieldName.toLowerCase());
+      if (isRelationshipField) {
+        relationshipVerified = kgEdges.some(
+          e => e.source_node_id === matchedNode!.id || e.target_node_id === matchedNode!.id,
+        );
+      }
+    }
+
+    validations.push({
+      field: fieldName,
+      value: fieldInfo.value,
+      kg_node_match: matchedNode?.canonical_name ?? null,
+      kg_node_type: matchedNode?.entity_type ?? null,
+      relationship_verified: relationshipVerified,
+    });
+  }
+
+  return validations;
+}
+
+/**
+ * Extract entities from filled field values and store as entity records.
+ * Only creates entities for values not already in the entity table for this document.
+ */
+function extractEntitiesFromFilledFields(
+  conn: import('better-sqlite3').Database,
+  documentId: string,
+  fieldData: Record<string, { value: string; description?: string }>,
+  provenanceId: string,
+): { entities_created: number; entity_ids: string[] } {
+  const now = new Date().toISOString();
+
+  // Get existing entities to deduplicate
+  const existingEntities = conn.prepare(
+    'SELECT normalized_text, entity_type FROM entities WHERE document_id = ?'
+  ).all(documentId) as Array<{ normalized_text: string; entity_type: string }>;
+  const existingSet = new Set(existingEntities.map(e => `${e.entity_type}::${e.normalized_text}`));
+
+  const entityIds: string[] = [];
+
+  for (const [fieldName, fieldInfo] of Object.entries(fieldData)) {
+    const inferredType = inferEntityTypeFromFieldName(fieldName);
+    if (!inferredType) continue;
+
+    const normalizedValue = fieldInfo.value.toLowerCase().trim();
+    if (!normalizedValue) continue;
+
+    const dedupeKey = `${inferredType}::${normalizedValue}`;
+    if (existingSet.has(dedupeKey)) continue;
+
+    const entityId = uuidv4();
+    insertEntity(conn, {
+      id: entityId,
+      document_id: documentId,
+      entity_type: inferredType as EntityType,
+      raw_text: fieldInfo.value,
+      normalized_text: normalizedValue,
+      confidence: 0.85,
+      metadata: JSON.stringify({ source: 'form_fill', field_name: fieldName }),
+      provenance_id: provenanceId,
+      created_at: now,
+    });
+
+    insertEntityMention(conn, {
+      id: uuidv4(),
+      entity_id: entityId,
+      document_id: documentId,
+      chunk_id: null,
+      page_number: null,
+      character_start: null,
+      character_end: null,
+      context_text: `Form field "${fieldName}": ${fieldInfo.value}`,
+      created_at: now,
+    });
+
+    existingSet.add(dedupeKey);
+    entityIds.push(entityId);
+  }
+
+  return { entities_created: entityIds.length, entity_ids: entityIds };
+}
+
 async function handleFormFill(params: Record<string, unknown>) {
   try {
     const input = validateInput(FormFillInput, params);
     const { db } = requireDatabase();
+    const conn = db.getConnection();
 
     const client = new FormFillClient();
+
+    // Pre-fill entity validation (if document_id provided)
+    let fieldValidations: Array<{ field: string; value: string; inferred_type: string | null; matched_entity: string | null; confidence: number | null }> | undefined;
+    let kgValidations: Array<{ field: string; value: string; kg_node_match: string | null; kg_node_type: string | null; relationship_verified: boolean | null }> | undefined;
+
+    if (input.document_id) {
+      // Verify document exists
+      const doc = conn.prepare('SELECT id FROM provenance WHERE id = ? AND type = ?').get(
+        input.document_id, ProvenanceType.DOCUMENT,
+      ) as { id: string } | undefined;
+      if (!doc) {
+        return formatResponse({ error: `Document not found: ${input.document_id}` });
+      }
+
+      fieldValidations = validateFieldsAgainstEntities(conn, input.document_id, input.field_data);
+
+      if (input.validate_against_kg) {
+        try {
+          kgValidations = validateFieldsAgainstKG(conn, input.document_id, input.field_data);
+        } catch (e) {
+          console.error(`[WARN] KG validation failed: ${e instanceof Error ? e.message : String(e)}`);
+        }
+      }
+    }
 
     const result = await client.fillForm(input.file_path, {
       fieldData: input.field_data,
@@ -108,6 +322,8 @@ async function handleFormFill(params: Record<string, unknown>) {
         field_count: Object.keys(input.field_data).length,
         confidence_threshold: input.confidence_threshold,
         has_context: !!input.context,
+        document_id: input.document_id ?? null,
+        validate_against_kg: input.validate_against_kg,
       },
       processing_duration_ms: result.processingDurationMs,
       processing_quality_score: null,
@@ -137,7 +353,43 @@ async function handleFormFill(params: Record<string, unknown>) {
       created_at: now,
     });
 
-    return formatResponse({
+    // Post-fill entity extraction (if document_id provided)
+    let entityExtraction: { entities_created: number; entity_ids: string[]; entity_provenance_id: string } | undefined;
+    if (input.document_id) {
+      try {
+        // Look up document details for provenance chain
+        const docProv = conn.prepare(
+          'SELECT id, source_path, file_hash FROM provenance WHERE id = ? AND type = ?'
+        ).get(input.document_id, ProvenanceType.DOCUMENT) as {
+          id: string; source_path: string; file_hash: string;
+        } | undefined;
+
+        if (docProv) {
+          const entityProvId = createEntityExtractionProvenance(db, {
+            id: docProv.id,
+            file_path: docProv.source_path ?? input.file_path,
+            provenance_id: docProv.id,
+            file_hash: docProv.file_hash ?? result.sourceFileHash,
+          }, 'form-fill-entity-extractor', 'form_fill');
+
+          const extracted = extractEntitiesFromFilledFields(
+            conn, input.document_id, input.field_data, entityProvId,
+          );
+
+          if (extracted.entities_created > 0) {
+            entityExtraction = {
+              entities_created: extracted.entities_created,
+              entity_ids: extracted.entity_ids,
+              entity_provenance_id: entityProvId,
+            };
+          }
+        }
+      } catch (e) {
+        console.error(`[WARN] Post-fill entity extraction failed: ${e instanceof Error ? e.message : String(e)}`);
+      }
+    }
+
+    const response: Record<string, unknown> = {
       id: result.id,
       status: result.status,
       fields_filled: result.fieldsFilled,
@@ -147,7 +399,19 @@ async function handleFormFill(params: Record<string, unknown>) {
       output_saved: !!input.output_path,
       provenance_id: provId,
       processing_duration_ms: result.processingDurationMs,
-    });
+    };
+
+    if (fieldValidations) {
+      response.field_validations = fieldValidations;
+    }
+    if (kgValidations) {
+      response.kg_validations = kgValidations;
+    }
+    if (entityExtraction) {
+      response.entity_extraction = entityExtraction;
+    }
+
+    return formatResponse(response);
   } catch (error) {
     return handleError(error);
   }
@@ -342,7 +606,7 @@ async function handleFormFillSuggestFields(params: Record<string, unknown>) {
 
 export const formFillTools: Record<string, ToolDefinition> = {
   'ocr_form_fill': {
-    description: 'Fill a PDF or image form using Datalab API. Provide field names and values, optionally save filled form to disk.',
+    description: 'Fill a PDF or image form using Datalab API. Provide field names and values, optionally save filled form to disk. When document_id is provided, validates field values against extracted entities and creates entity records for new values. Set validate_against_kg=true for KG node/relationship validation.',
     inputSchema: FormFillInput.shape,
     handler: handleFormFill,
   },

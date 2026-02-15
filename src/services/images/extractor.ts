@@ -137,8 +137,8 @@ export class ImageExtractor {
     }
 
     if (result.warnings && result.warnings.length > 0) {
-      console.warn(
-        `[ImageExtractor] Warnings during extraction: ${result.warnings.join('; ')}`
+      console.error(
+        `[WARN] [ImageExtractor] Warnings during extraction: ${result.warnings.join('; ')}`
       );
     }
 
@@ -183,8 +183,8 @@ export class ImageExtractor {
     }
 
     if (result.warnings && result.warnings.length > 0) {
-      console.warn(
-        `[ImageExtractor] DOCX extraction warnings: ${result.warnings.join('; ')}`
+      console.error(
+        `[WARN] [ImageExtractor] DOCX extraction warnings: ${result.warnings.join('; ')}`
       );
     }
 
@@ -286,7 +286,7 @@ export class ImageExtractor {
         stdoutChunks.push(data);
       });
 
-      // H-9: Cap stderr accumulation to prevent unbounded memory growth
+      // Cap stderr accumulation to prevent unbounded memory growth
       proc.stderr.on('data', (data) => {
         if (stderr.length < MAX_STDERR_LENGTH) {
           stderr += data.toString();
@@ -306,7 +306,7 @@ export class ImageExtractor {
         settled = true;
 
         if (stderr) {
-          console.warn(`[ImageExtractor] stderr: ${stderr.substring(0, 2000)}`);
+          console.error(`[WARN] [ImageExtractor] stderr: ${stderr.substring(0, 2000)}`);
         }
 
         if (signal === 'SIGTERM' || signal === 'SIGKILL') {
@@ -316,7 +316,6 @@ export class ImageExtractor {
           return;
         }
 
-        // P2-4/P2-5: Single allocation from buffer chunks instead of O(n^2) string concat
         const stdout = Buffer.concat(stdoutChunks).toString('utf-8');
         try {
           // Python may output debug/warning lines before the JSON. Find the last
@@ -339,7 +338,6 @@ export class ImageExtractor {
           resolve(parsed);
         } catch (parseError) {
           if (code !== 0) {
-            // M-14: Truncate stderr/stdout in error messages to prevent holding megabytes
             reject(
               new Error(
                 `Python script exited with code ${code}: ${(stderr || stdout).substring(0, 2000)}`
@@ -353,8 +351,7 @@ export class ImageExtractor {
         }
       });
 
-      // H-4: SIGKILL escalation - if Node.js timeout sends SIGTERM and process
-      // doesn't exit within 5s, escalate to SIGKILL (matches optimizer.ts pattern)
+      // SIGKILL escalation if SIGTERM doesn't exit within 5s
       if (timeout > 0) {
         sigkillTimer = setTimeout(() => {
           if (!settled && !proc.killed) {

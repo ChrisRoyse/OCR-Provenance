@@ -75,7 +75,6 @@ export class DatabaseService {
   }
 
   close(): void {
-    // P2-6: Run ANALYZE on tables needing updated statistics before close
     try { this.db.pragma('optimize'); } catch { /* best-effort */ }
     this.db.close();
   }

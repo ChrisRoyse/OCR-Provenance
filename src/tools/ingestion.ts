@@ -153,9 +153,7 @@ function storeChunks(
       ocr_quality_score: ocrResult.parse_quality_score ?? null,
     });
 
-    // L-4 fix: Build Chunk object directly from insert data instead of
-    // re-fetching from DB. insertChunk uses 'pending' status, null embedded_at,
-    // and a generated created_at -- we mirror those defaults here.
+    // Build Chunk object directly from insert data (avoids re-fetching from DB)
     chunks.push({
       id: chunkId,
       document_id: doc.id,
@@ -379,17 +377,12 @@ function saveAndStoreImages(
   const pageImageCounts = new Map<number, number>();
 
   for (const filename of Object.keys(images)) {
-    // Decode base64 to buffer
     const buffer = Buffer.from(images[filename], 'base64');
-
-    // H-1 fix: Release base64 string from dict immediately after decoding.
-    // The OCR worker returns ALL images as {filename: base64_data} via stdout JSON.
-    // Without this delete, the entire dict stays alive throughout processing.
+    // Release base64 string immediately to reduce peak memory
     delete images[filename];
 
     const filePath = resolve(outputDir, filename);
 
-    // Save to disk - FAIL FAST if write fails
     writeFileSync(filePath, buffer);
 
     // Parse page number from filename (e.g., "page_1_image_0.png" or "p001_i000.png")
@@ -398,12 +391,11 @@ function saveAndStoreImages(
       ? parseInt(pageMatch[1] || pageMatch[2], 10) + 1
       : 1;
 
-    // Per-page image index (L-2: use per-page counter, not global)
+    // Per-page image index
     const currentPageCount = pageImageCounts.get(pageNumber) ?? 0;
     pageImageCounts.set(pageNumber, currentPageCount + 1);
     const imageIndex = currentPageCount;
 
-    // Compute content hash for deduplication
     const contentHash = computeHash(buffer);
 
     // Parse block type from Datalab filename
@@ -1009,7 +1001,6 @@ export async function handleProcessPending(
     const extractionEntityResults: Array<{ document_id: string; entities_created: number; extractions_processed: number }> = [];
     const successfulDocIds: string[] = [];
 
-    // F-12: Batch-level tracking for provenance traceability
     const batchId = uuidv4();
     const batchStartTime = Date.now();
     console.error(`[INFO] Batch ${batchId}: processing ${pendingDocs.length} documents`);
@@ -1066,8 +1057,6 @@ export async function handleProcessPending(
               : new Map<number, PageImageClassification>();
 
             const imageRefs: CreateImageReference[] = extractedImages.map((img) => {
-              // M-5 fix: Use streaming 64KB-chunked hash instead of readFileSync.
-              // readFileSync loads the entire image into memory just to hash it.
               const contentHash = computeFileHashSync(img.path);
 
               const pageInfo = pageClassification.get(img.page);
@@ -1150,7 +1139,6 @@ export async function handleProcessPending(
         const pageOffsets = processResult.pageOffsets;
         let chunkResults: ChunkResult[];
         if (input.chunking_strategy === 'page_aware' && pageOffsets && pageOffsets.length > 0) {
-          // SE-3: Page-boundary-aware chunking -- no chunks span page boundaries
           chunkResults = chunkTextPageAware(ocrResult.extracted_text, pageOffsets, chunkConfig);
         } else if (pageOffsets && pageOffsets.length > 0) {
           chunkResults = chunkWithPageTracking(ocrResult.extracted_text, pageOffsets, chunkConfig);
@@ -1373,7 +1361,7 @@ export async function handleProcessPending(
           }
         }
 
-        // Step 7c: Auto-resolve coreferences if enabled (F-4)
+        // Step 7c: Auto-resolve coreferences if enabled
         if (input.auto_coreference_resolve && input.auto_extract_entities) {
           try {
             console.error(`[INFO] Auto-pipeline: resolving coreferences for document ${doc.id}`);
@@ -1398,7 +1386,6 @@ export async function handleProcessPending(
         results.errors.push({ document_id: doc.id, error: errorMsg });
       }
 
-      // Hint GC to reclaim document-scoped memory between documents
       if (typeof global.gc === 'function') {
         global.gc();
       }
@@ -1447,7 +1434,7 @@ export async function handleProcessPending(
       }
     }
 
-    // Step 9: Auto-scan contradictions after KG build (F-11)
+    // Step 9: Auto-scan contradictions after KG build
     let contradictionScanResult: Record<string, unknown> | undefined;
     if (input.auto_scan_contradictions && kgBuildResult) {
       try {
@@ -1653,8 +1640,6 @@ export async function handleChunkComplete(
 
     for (const doc of completeDocs) {
       try {
-        // M-9 fix: Use existence check instead of loading all chunk rows.
-        // getChunksByDocumentId loads every chunk object into memory just to check .length.
         if (db.hasChunksByDocumentId(doc.id)) {
           results.skipped++;
           continue;

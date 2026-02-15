@@ -225,7 +225,6 @@ export class GeminiClient {
           config: requestConfig,
         });
 
-        // New SDK: response.text is a getter property, not a method
         const text = response.text ?? '';
         const usageMetadata = response.usageMetadata;
 
@@ -353,9 +352,8 @@ export class GeminiClient {
       );
     }
 
-    // C-2 fix: Use block scope so buffer is eligible for GC before return.
-    // Without this, buffer (raw bytes) and data (base64, 33% larger) coexist
-    // in the same scope, causing ~2.33x file size peak memory per call.
+    // Block scope lets buffer be GC'd before the base64 string is returned,
+    // avoiding ~2.33x file-size peak memory per call.
     let sizeBytes: number;
     let data: string;
     {
@@ -365,7 +363,6 @@ export class GeminiClient {
       }
       sizeBytes = buffer.length;
       data = buffer.toString('base64');
-      // buffer goes out of scope here, eligible for GC
     }
 
     return { mimeType, data, sizeBytes };
@@ -383,8 +380,6 @@ export class GeminiClient {
       throw new Error(`File too large: ${buffer.length} bytes. Max: ${MAX_FILE_SIZE} (20MB)`);
     }
 
-    // C-2 fix: Capture sizeBytes before base64 conversion so callers who
-    // release their buffer reference after this call benefit from earlier GC.
     const sizeBytes = buffer.length;
     const data = buffer.toString('base64');
 

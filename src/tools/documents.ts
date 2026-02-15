@@ -17,6 +17,7 @@ import { requireDatabase, getDefaultStoragePath } from '../server/state.js';
 import { successResult } from '../server/types.js';
 import {
   validateInput,
+  escapeLikePattern,
   DocumentListInput,
   DocumentGetInput,
   DocumentDeleteInput,
@@ -86,8 +87,58 @@ export async function handleDocumentList(
       }
     }
 
+    // GAP-C3: Apply entity-based filters if any are provided
+    let filteredDocuments = documents;
+    const hasEntityFilters = input.entity_type_filter || input.min_entity_count || input.entity_name_filter;
+    if (hasEntityFilters) {
+      const conn = db.getConnection();
+      const docIds = documents.map(d => d.id);
+      if (docIds.length > 0) {
+        let allowedDocIds: Set<string> | null = null;
+        const placeholders = docIds.map(() => '?').join(',');
+
+        try {
+          // Filter by entity type
+          if (input.entity_type_filter && input.entity_type_filter.length > 0) {
+            const typePlaceholders = input.entity_type_filter.map(() => '?').join(',');
+            const rows = conn.prepare(
+              `SELECT DISTINCT document_id FROM entities WHERE entity_type IN (${typePlaceholders}) AND document_id IN (${placeholders})`
+            ).all(...input.entity_type_filter, ...docIds) as Array<{ document_id: string }>;
+            const typeSet = new Set(rows.map(r => r.document_id));
+            allowedDocIds = allowedDocIds ? new Set([...allowedDocIds].filter(id => typeSet.has(id))) : typeSet;
+          }
+
+          // Filter by minimum entity count
+          if (input.min_entity_count) {
+            const rows = conn.prepare(
+              `SELECT document_id, COUNT(*) as cnt FROM entities WHERE document_id IN (${placeholders}) GROUP BY document_id HAVING cnt >= ?`
+            ).all(...docIds, input.min_entity_count) as Array<{ document_id: string; cnt: number }>;
+            const countSet = new Set(rows.map(r => r.document_id));
+            allowedDocIds = allowedDocIds ? new Set([...allowedDocIds].filter(id => countSet.has(id))) : countSet;
+          }
+
+          // Filter by entity name substring match
+          if (input.entity_name_filter) {
+            const likePattern = `%${escapeLikePattern(input.entity_name_filter.toLowerCase())}%`;
+            const rows = conn.prepare(
+              `SELECT DISTINCT document_id FROM entities WHERE LOWER(normalized_text) LIKE ? ESCAPE '\\' AND document_id IN (${placeholders})`
+            ).all(likePattern, ...docIds) as Array<{ document_id: string }>;
+            const nameSet = new Set(rows.map(r => r.document_id));
+            allowedDocIds = allowedDocIds ? new Set([...allowedDocIds].filter(id => nameSet.has(id))) : nameSet;
+          }
+        } catch {
+          // Entity tables may not exist yet — skip filtering silently
+          allowedDocIds = null;
+        }
+
+        if (allowedDocIds !== null) {
+          filteredDocuments = documents.filter(d => allowedDocIds!.has(d.id));
+        }
+      }
+    }
+
     return formatResponse(successResult({
-      documents: documents.map(d => {
+      documents: filteredDocuments.map(d => {
         const doc: Record<string, unknown> = {
           id: d.id,
           file_name: d.file_name,
@@ -107,7 +158,7 @@ export async function handleDocumentList(
         }
         return doc;
       }),
-      total,
+      total: hasEntityFilters ? filteredDocuments.length : total,
       limit: input.limit,
       offset: input.offset,
     }));
@@ -231,6 +282,58 @@ export async function handleDocumentGet(
       };
     }
 
+    // GAP-C4: Entity summary when requested
+    if (input.include_entity_summary) {
+      const conn = db.getConnection();
+      try {
+        // Per-type entity counts with average confidence
+        const typeCounts = conn.prepare(
+          `SELECT entity_type, COUNT(*) as count, AVG(confidence) as avg_confidence
+           FROM entities WHERE document_id = ? GROUP BY entity_type`
+        ).all(doc.id) as Array<{ entity_type: string; count: number; avg_confidence: number }>;
+
+        // Top 10 entities by mention count
+        const topEntities = conn.prepare(
+          `SELECT e.raw_text, e.entity_type, e.confidence, COUNT(em.id) as mention_count
+           FROM entities e LEFT JOIN entity_mentions em ON em.entity_id = e.id
+           WHERE e.document_id = ? GROUP BY e.id ORDER BY mention_count DESC LIMIT 10`
+        ).all(doc.id) as Array<{ raw_text: string; entity_type: string; confidence: number; mention_count: number }>;
+
+        // Extraction coverage from segments
+        let extractionCoverage: { total_segments: number; segments_with_entities: number } | null = null;
+        try {
+          const coverage = conn.prepare(
+            `SELECT COUNT(*) as total_segments, SUM(CASE WHEN entity_count > 0 THEN 1 ELSE 0 END) as segments_with_entities
+             FROM entity_extraction_segments WHERE document_id = ?`
+          ).get(doc.id) as { total_segments: number; segments_with_entities: number } | undefined;
+          if (coverage && coverage.total_segments > 0) {
+            extractionCoverage = coverage;
+          }
+        } catch {
+          // entity_extraction_segments table may not exist
+        }
+
+        result.entity_summary = {
+          total_entities: typeCounts.reduce((sum, t) => sum + t.count, 0),
+          by_type: typeCounts.map(t => ({
+            entity_type: t.entity_type,
+            count: t.count,
+            avg_confidence: Math.round(t.avg_confidence * 1000) / 1000,
+          })),
+          top_entities: topEntities.map(e => ({
+            raw_text: e.raw_text,
+            entity_type: e.entity_type,
+            confidence: e.confidence,
+            mention_count: e.mention_count,
+          })),
+          extraction_coverage: extractionCoverage,
+        };
+      } catch {
+        // Entity tables may not exist yet
+        result.entity_summary = null;
+      }
+    }
+
     return formatResponse(successResult(result));
   } catch (error) {
     return handleError(error);
@@ -299,23 +402,31 @@ export async function handleDocumentDelete(
  */
 export const documentTools: Record<string, ToolDefinition> = {
   'ocr_document_list': {
-    description: 'List documents in the current database. Set include_entity_counts=true to see entity and KG node counts per document.',
+    description: 'List documents in the current database. Supports entity-based filtering: entity_type_filter, min_entity_count, entity_name_filter. Set include_entity_counts=true to see entity and KG node counts per document.',
     inputSchema: {
       status_filter: z.enum(['pending', 'processing', 'complete', 'failed']).optional().describe('Filter by status'),
       limit: z.number().int().min(1).max(1000).default(50).describe('Maximum results'),
       offset: z.number().int().min(0).default(0).describe('Offset for pagination'),
       include_entity_counts: z.boolean().default(false).describe('Include entity_mention_count and kg_node_count per document'),
+      entity_type_filter: z.array(z.enum([
+        'person', 'organization', 'date', 'amount', 'case_number',
+        'location', 'statute', 'exhibit', 'medication', 'diagnosis',
+        'medical_device', 'other',
+      ])).optional().describe('Only show documents containing entities of these types'),
+      min_entity_count: z.number().int().min(1).optional().describe('Only show documents with at least this many entities'),
+      entity_name_filter: z.string().optional().describe('Only show documents mentioning entities matching this text (substring match)'),
     },
     handler: handleDocumentList,
   },
   'ocr_document_get': {
-    description: 'Get detailed information about a specific document',
+    description: 'Get detailed information about a specific document. Set include_entity_summary=true for per-type entity counts, top entities, and extraction coverage.',
     inputSchema: {
       document_id: z.string().min(1).describe('Document ID'),
       include_text: z.boolean().default(false).describe('Include OCR extracted text'),
       include_chunks: z.boolean().default(false).describe('Include chunk information'),
       include_blocks: z.boolean().default(false).describe('Include JSON blocks and extras metadata'),
       include_full_provenance: z.boolean().default(false).describe('Include full provenance chain'),
+      include_entity_summary: z.boolean().default(false).describe('Include per-type entity counts, top entities by mention count, and extraction coverage'),
     },
     handler: handleDocumentGet,
   },
