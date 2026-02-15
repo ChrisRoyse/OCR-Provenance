@@ -1,29 +1,21 @@
 /**
  * Tests for QW-1 (thinkingConfig in analyzeImage), QW-7 (mediaResolution in buildGenerationConfig)
  *
- * Uses real GeminiClient class but mocks GoogleGenerativeAI to capture
+ * Uses real GeminiClient class but mocks @google/genai to capture
  * the generation config passed to generateContent().
- *
- * TS-09 NOTE: SDK Drift Risk
- * This test mocks @google/generative-ai at the module level. If the Gemini SDK
- * changes its API (e.g., different method signatures on getGenerativeModel or
- * generateContent, renamed properties in usageMetadata, or new required fields),
- * these tests will continue to pass against the mock while the real integration
- * silently breaks. When upgrading @google/generative-ai, manually verify that
- * the mock structure still matches the real SDK interface.
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-// Mock @google/generative-ai BEFORE importing GeminiClient
+// Mock @google/genai BEFORE importing GeminiClient
 const mockGenerateContent = vi.fn();
 
-vi.mock('@google/generative-ai', () => {
+vi.mock('@google/genai', () => {
   return {
-    GoogleGenerativeAI: vi.fn().mockImplementation(() => ({
-      getGenerativeModel: vi.fn().mockReturnValue({
+    GoogleGenAI: vi.fn().mockImplementation(() => ({
+      models: {
         generateContent: mockGenerateContent,
-      }),
+      },
     })),
   };
 });
@@ -38,16 +30,14 @@ describe('GeminiClient analyzeImage options', () => {
     vi.clearAllMocks();
     client = new GeminiClient({ apiKey: 'test-key-for-mock' });
 
-    // Default mock response
+    // Default mock response - new SDK: text is a property, not a method
     mockGenerateContent.mockResolvedValue({
-      response: {
-        text: () => '{"imageType":"test","primarySubject":"test"}',
-        usageMetadata: {
-          promptTokenCount: 100,
-          candidatesTokenCount: 50,
-          cachedContentTokenCount: 0,
-          totalTokenCount: 150,
-        },
+      text: '{"imageType":"test","primarySubject":"test"}',
+      usageMetadata: {
+        promptTokenCount: 100,
+        candidatesTokenCount: 50,
+        cachedContentTokenCount: 0,
+        totalTokenCount: 150,
       },
     });
   });
@@ -65,7 +55,7 @@ describe('GeminiClient analyzeImage options', () => {
 
       expect(mockGenerateContent).toHaveBeenCalledTimes(1);
       const callArgs = mockGenerateContent.mock.calls[0][0];
-      const generationConfig = callArgs.generationConfig;
+      const generationConfig = callArgs.config;
 
       // thinkingConfig must be present
       expect(generationConfig.thinkingConfig).toEqual({ thinkingLevel: 'HIGH' });
@@ -97,7 +87,7 @@ describe('GeminiClient analyzeImage options', () => {
 
       expect(mockGenerateContent).toHaveBeenCalledTimes(1);
       const callArgs = mockGenerateContent.mock.calls[0][0];
-      const generationConfig = callArgs.generationConfig;
+      const generationConfig = callArgs.config;
 
       // Should use multimodal preset with JSON output
       expect(generationConfig.responseMimeType).toBe('application/json');
@@ -121,7 +111,7 @@ describe('GeminiClient analyzeImage options', () => {
       });
 
       const callArgs = mockGenerateContent.mock.calls[0][0];
-      const generationConfig = callArgs.generationConfig;
+      const generationConfig = callArgs.config;
 
       expect(generationConfig.thinkingConfig).toEqual({ thinkingLevel: 'MINIMAL' });
       expect(generationConfig.responseMimeType).toBeUndefined();
@@ -139,7 +129,7 @@ describe('GeminiClient analyzeImage options', () => {
       });
 
       const callArgs = mockGenerateContent.mock.calls[0][0];
-      const generationConfig = callArgs.generationConfig;
+      const generationConfig = callArgs.config;
 
       expect(generationConfig.thinkingConfig).toEqual({ thinkingLevel: 'HIGH' });
       expect(generationConfig.mediaResolution).toBe('MEDIA_RESOLUTION_HIGH');
@@ -159,7 +149,7 @@ describe('GeminiClient analyzeImage options', () => {
 
       expect(mockGenerateContent).toHaveBeenCalledTimes(1);
       const callArgs = mockGenerateContent.mock.calls[0][0];
-      const generationConfig = callArgs.generationConfig;
+      const generationConfig = callArgs.config;
 
       expect(generationConfig.mediaResolution).toBe('MEDIA_RESOLUTION_HIGH');
     });
@@ -175,7 +165,7 @@ describe('GeminiClient analyzeImage options', () => {
       });
 
       const callArgs = mockGenerateContent.mock.calls[0][0];
-      const generationConfig = callArgs.generationConfig;
+      const generationConfig = callArgs.config;
 
       expect(generationConfig.mediaResolution).toBe('MEDIA_RESOLUTION_LOW');
     });
@@ -190,7 +180,7 @@ describe('GeminiClient analyzeImage options', () => {
       await client.analyzeImage('test prompt', fileRef, {});
 
       const callArgs = mockGenerateContent.mock.calls[0][0];
-      const generationConfig = callArgs.generationConfig;
+      const generationConfig = callArgs.config;
 
       // Default config mediaResolution is MEDIA_RESOLUTION_HIGH
       expect(generationConfig.mediaResolution).toBe('MEDIA_RESOLUTION_HIGH');
@@ -201,7 +191,7 @@ describe('GeminiClient analyzeImage options', () => {
       await client.fast('test prompt');
 
       const callArgs = mockGenerateContent.mock.calls[0][0];
-      const generationConfig = callArgs.generationConfig;
+      const generationConfig = callArgs.config;
 
       expect(generationConfig.mediaResolution).toBeUndefined();
     });

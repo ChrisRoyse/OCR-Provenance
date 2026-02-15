@@ -8,7 +8,7 @@
  * - multimodal(): 5-15s target, image/PDF analysis
  */
 
-import { GoogleGenerativeAI, type GenerativeModel, type Part } from '@google/generative-ai';
+import { GoogleGenAI, type Part, type GenerateContentResponse } from '@google/genai';
 import * as fs from 'fs';
 import * as path from 'path';
 
@@ -62,8 +62,7 @@ export interface FileRef {
  * Gemini Client with rate limiting and circuit breaker
  */
 export class GeminiClient {
-  private readonly client: GoogleGenerativeAI;
-  private readonly model: GenerativeModel;
+  private readonly client: GoogleGenAI;
   private readonly config: GeminiConfig;
   private readonly rateLimiter: GeminiRateLimiter;
   private readonly circuitBreaker: CircuitBreaker;
@@ -76,8 +75,10 @@ export class GeminiClient {
       throw new Error('GEMINI_API_KEY is required. Set it in .env file.');
     }
 
-    this.client = new GoogleGenerativeAI(this.config.apiKey);
-    this.model = this.client.getGenerativeModel({ model: this.config.model });
+    this.client = new GoogleGenAI({
+      apiKey: this.config.apiKey,
+      httpOptions: { timeout: 120_000 },
+    });
 
     this.rateLimiter = new GeminiRateLimiter(this.config.tier);
     this.circuitBreaker = new CircuitBreaker({
@@ -208,32 +209,31 @@ export class GeminiClient {
     for (let attempt = 0; attempt < maxAttempts; attempt++) {
       try {
         // Estimate input size for logging
-        const inputChars = parts.reduce((sum, p) => sum + ('text' in p ? (p.text?.length ?? 0) : 0), 0);
+        const inputChars = parts.reduce((sum, p) => sum + (p.text?.length ?? 0), 0);
         console.error(`[GeminiClient] Attempt ${attempt + 1}/${maxAttempts}: ${inputChars} input chars, maxOutputTokens=${options.maxOutputTokens ?? 'default'}`);
 
-        const timeoutMs = options.requestTimeout ?? 120_000;
-        const result = await this.model.generateContent(
-          {
-            contents: [{ role: 'user', parts }],
-            generationConfig: this.buildGenerationConfig(options),
-          },
-          { timeout: timeoutMs },
-        );
+        const requestConfig = this.buildGenerationConfig(options);
 
-        const text = result.response.text();
-        const usageMetadata = result.response.usageMetadata;
+        // Per-request timeout override via httpOptions
+        if (options.requestTimeout) {
+          requestConfig.httpOptions = { timeout: options.requestTimeout };
+        }
 
-        // Extract thinking tokens if available (Gemini 3 feature)
-        const usageAny = usageMetadata as Record<string, unknown> | undefined;
-        const thinkingTokens = typeof usageAny?.thoughtsTokenCount === 'number'
-          ? usageAny.thoughtsTokenCount
-          : 0;
+        const response: GenerateContentResponse = await this.client.models.generateContent({
+          model: this.config.model,
+          contents: [{ role: 'user', parts }],
+          config: requestConfig,
+        });
+
+        // New SDK: response.text is a getter property, not a method
+        const text = response.text ?? '';
+        const usageMetadata = response.usageMetadata;
 
         const usage: TokenUsage = {
           inputTokens: usageMetadata?.promptTokenCount ?? 0,
           outputTokens: usageMetadata?.candidatesTokenCount ?? 0,
           cachedTokens: usageMetadata?.cachedContentTokenCount ?? 0,
-          thinkingTokens,
+          thinkingTokens: usageMetadata?.thoughtsTokenCount ?? 0,
           totalTokens: usageMetadata?.totalTokenCount ?? 0,
         };
 
@@ -318,9 +318,9 @@ export class GeminiClient {
     let imageCount = 0;
 
     for (const part of parts) {
-      if ('text' in part && part.text) {
+      if (part.text) {
         textLength += part.text.length;
-      } else if ('inlineData' in part) {
+      } else if (part.inlineData) {
         imageCount++;
       }
     }

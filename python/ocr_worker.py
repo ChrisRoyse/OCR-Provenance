@@ -270,7 +270,7 @@ def process_document(
     file_path: str,
     document_id: str,
     provenance_id: str,
-    mode: Literal["fast", "balanced", "accurate"] = "accurate",
+    mode: Literal["fast", "balanced", "accurate"] = "balanced",
     timeout: int = 300,
     # New Datalab API parameters
     max_pages: int | None = None,
@@ -562,8 +562,8 @@ Examples:
     parser.add_argument(
         "--mode", "-m",
         choices=["fast", "balanced", "accurate"],
-        default="accurate",
-        help="OCR mode (default: accurate)"
+        default="balanced",
+        help="OCR mode (default: balanced)"
     )
     parser.add_argument("--doc-id", type=str, help="Document ID (UUID) - auto-generated if not provided")
     parser.add_argument("--prov-id", type=str, help="Provenance ID (UUID) - auto-generated if not provided")

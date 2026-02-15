@@ -34,8 +34,12 @@ export const MAX_CHARS_PER_CALL = 50_000;
  * 16K is generous; 65K caused API throttling (reserved capacity). */
 export const ENTITY_EXTRACTION_MAX_OUTPUT_TOKENS = 16_384;
 
-/** Overlap characters between segments (10% of MAX_CHARS_PER_CALL) */
-export const SEGMENT_OVERLAP_CHARS = 5_000;
+/** Overlap characters between segments (5% of MAX_CHARS_PER_CALL) */
+export const SEGMENT_OVERLAP_CHARS = 2_500;
+
+/** Maximum parallel Gemini API calls for segment processing.
+ * Default 3 balances throughput vs API rate limits. Set to 1 for free tier. */
+const MAX_PARALLEL_SEGMENTS = parseInt(process.env.GEMINI_PARALLEL_SEGMENTS ?? '3', 10);
 
 /** Request timeout for entity extraction per segment.
  * 50K segments complete in ~18s; 60s allows for API latency spikes. */
@@ -358,7 +362,7 @@ export function buildKGEntityHints(conn: Database.Database): string | undefined 
  * Make a single Gemini API call to extract entities from text.
  *
  * Uses fast() with ENTITY_EXTRACTION_SCHEMA for guaranteed clean JSON output.
- * If the primary model fails after all retries, falls back to gemini-2.0-flash.
+ * If the primary model fails after all retries, the error is propagated.
  */
 export async function callGeminiForEntities(
   client: GeminiClient,
@@ -868,9 +872,6 @@ export interface SegmentExtractionResult {
   apiCalls: number;
 }
 
-/** Cooldown between Gemini API calls to avoid throttling (ms) */
-const SEGMENT_COOLDOWN_MS = 3000;
-
 /**
  * Run the full segment-based entity extraction pipeline:
  * create segments, call Gemini per segment, filter noise, extract regex dates,
@@ -899,30 +900,42 @@ export async function processSegmentsAndStoreEntities(
   // Build grouped KG entity hints with aliases for better extraction recall
   const entityHints = buildKGEntityHints(conn);
 
-  // Process segments sequentially with cooldown to avoid API throttling.
-  // Gemini aborts requests after ~4 rapid calls; 3s delay prevents this.
+  // Process segments in parallel batches. Rate limiting handled by GeminiRateLimiter.
+  // GEMINI_PARALLEL_SEGMENTS env var controls concurrency (default: 3, free tier: 1).
   const allRawEntities: Array<{ type: string; raw_text: string; confidence: number }> = [];
   let segmentsComplete = 0;
   let segmentsFailed = 0;
 
-  for (let i = 0; i < segments.length; i++) {
-    const segment = segments[i];
-    updateSegmentStatus(conn, segment.id, 'processing');
+  for (let i = 0; i < segments.length; i += MAX_PARALLEL_SEGMENTS) {
+    const batch = segments.slice(i, i + MAX_PARALLEL_SEGMENTS);
 
-    if (i > 0) {
-      await new Promise(resolve => setTimeout(resolve, SEGMENT_COOLDOWN_MS));
+    // Mark batch as processing
+    for (const seg of batch) {
+      updateSegmentStatus(conn, seg.id, 'processing');
     }
 
-    try {
-      const entities = await callGeminiForEntities(client, segment.text, typeFilter, entityHints);
-      allRawEntities.push(...entities);
-      updateSegmentStatus(conn, segment.id, 'complete', entities.length);
-      segmentsComplete++;
-    } catch (segError) {
-      const segMsg = segError instanceof Error ? segError.message : String(segError);
-      console.error(`[WARN] Segment ${segment.segment_index} failed for ${documentId}: ${segMsg}`);
-      updateSegmentStatus(conn, segment.id, 'failed', 0, segMsg);
-      segmentsFailed++;
+    const results = await Promise.allSettled(
+      batch.map(async (segment) => {
+        const entities = await callGeminiForEntities(client, segment.text, typeFilter, entityHints);
+        return { segment, entities };
+      })
+    );
+
+    for (const result of results) {
+      if (result.status === 'fulfilled') {
+        const { segment, entities } = result.value;
+        allRawEntities.push(...entities);
+        updateSegmentStatus(conn, segment.id, 'complete', entities.length);
+        segmentsComplete++;
+      } else {
+        // Find which segment failed by index in batch
+        const failedIndex = results.indexOf(result);
+        const failedSegment = batch[failedIndex];
+        const segMsg = result.reason instanceof Error ? result.reason.message : String(result.reason);
+        console.error(`[WARN] Segment ${failedSegment.segment_index} failed for ${documentId}: ${segMsg}`);
+        updateSegmentStatus(conn, failedSegment.id, 'failed', 0, segMsg);
+        segmentsFailed++;
+      }
     }
   }
 

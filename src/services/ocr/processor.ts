@@ -7,7 +7,7 @@
 
 import { v4 as uuidv4 } from 'uuid';
 import { DatalabClient, type DatalabClientConfig } from './datalab.js';
-import { OCRError } from './errors.js';
+import { OCRError, OCRRateLimitError } from './errors.js';
 import { DatabaseService } from '../storage/database/index.js';
 import type { Document, OCRResult, PageOffset } from '../../models/document.js';
 import { ProvenanceType, type ProvenanceRecord } from '../../models/provenance.js';
@@ -67,8 +67,8 @@ export class OCRProcessor {
   constructor(db: DatabaseService, config: ProcessorConfig = {}) {
     this.db = db;
     this.client = new DatalabClient(config);
-    this.maxConcurrent = config.maxConcurrent ?? 3;
-    this.defaultMode = config.defaultMode ?? 'accurate';
+    this.maxConcurrent = config.maxConcurrent ?? parseInt(process.env.DATALAB_MAX_CONCURRENT ?? '5', 10);
+    this.defaultMode = config.defaultMode ?? 'balanced';
   }
 
   /**
@@ -144,6 +144,12 @@ export class OCRProcessor {
         } catch (error) {
           if (attempt === 1 && error instanceof OCRError && error.category === 'OCR_TIMEOUT') {
             console.error(`[WARN] OCR timeout on attempt 1 for ${documentId}, retrying...`);
+            continue;
+          }
+          if (attempt === 1 && error instanceof OCRError && error.category === 'OCR_RATE_LIMIT') {
+            const retryAfter = (error as OCRRateLimitError).retryAfter ?? 5;
+            console.error(`[WARN] OCR rate limited on attempt 1 for ${documentId}, waiting ${retryAfter}s...`);
+            await new Promise(resolve => setTimeout(resolve, retryAfter * 1000));
             continue;
           }
           throw error;

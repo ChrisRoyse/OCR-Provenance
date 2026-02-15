@@ -874,7 +874,7 @@ async function autoExtractEntitiesForDocument(
     console.error(`[INFO] Auto-pipeline: deleted ${existingCount} existing entities for document ${docId}`);
   }
 
-  const client = new GeminiClient({ model: 'gemini-2.0-flash', retry: { maxAttempts: 2, baseDelayMs: 500, maxDelayMs: 5000 } });
+  const client = new GeminiClient({ retry: { maxAttempts: 2, baseDelayMs: 500, maxDelayMs: 5000 } });
   const startTime = Date.now();
   const text = ocrResult.extracted_text;
   const now = new Date().toISOString();
@@ -1396,6 +1396,11 @@ export async function handleProcessPending(
         db.updateDocumentStatus(doc.id, 'failed', errorMsg);
         results.failed++;
         results.errors.push({ document_id: doc.id, error: errorMsg });
+      }
+
+      // Hint GC to reclaim document-scoped memory between documents
+      if (typeof global.gc === 'function') {
+        global.gc();
       }
     }
 

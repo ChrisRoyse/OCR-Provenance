@@ -5,10 +5,11 @@
 
 import { z } from 'zod';
 
-// Model IDs from the guide
+// Model IDs - Gemini 3 Flash is the primary model
+// FLASH_2 is deprecated (EOL March 31, 2026) - do not use for new code
 export const GEMINI_MODELS = {
-  FLASH_2: 'gemini-2.0-flash',
-  FLASH_3: 'gemini-3-flash-preview',
+  FLASH_2: 'gemini-2.0-flash',         // DEPRECATED - EOL March 31, 2026
+  FLASH_3: 'gemini-3-flash-preview',   // Primary model: 1M input, 65K output
   PRO: 'gemini-2.5-pro',
 } as const;
 
@@ -17,9 +18,9 @@ export type GeminiModelId = (typeof GEMINI_MODELS)[keyof typeof GEMINI_MODELS];
 // Subscription tiers with rate limits (December 2025 - Official)
 export const RATE_LIMITS = {
   free: {
-    flashRPM: 15,
+    flashRPM: 5,
     flashTPM: 1_000_000,
-    flashRPD: 1_500,
+    flashRPD: 500,
     proRPM: 5,
     proRPD: 100,
   },
@@ -41,8 +42,8 @@ export const RATE_LIMITS = {
 
 export type SubscriptionTier = keyof typeof RATE_LIMITS;
 
-// Thinking levels for Gemini 3
-export type ThinkingLevel = 'HIGH' | 'MINIMAL';
+// Thinking levels for Gemini 3 (4 levels: minimal, low, medium, high)
+export type ThinkingLevel = 'HIGH' | 'MEDIUM' | 'LOW' | 'MINIMAL';
 
 // Generation modes from the guide
 export type GeminiMode = 'fast' | 'thinking' | 'multimodal';

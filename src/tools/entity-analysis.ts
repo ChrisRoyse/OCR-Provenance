@@ -279,8 +279,8 @@ async function handleEntityExtract(params: Record<string, unknown>) {
       console.error(`[INFO] Deleted ${existingCount} existing entities for document ${doc.id} before re-extraction`);
     }
 
-    // Use stable gemini-2.0-flash for entity extraction (preview models throttle after ~4 calls)
-    const client = new GeminiClient({ model: 'gemini-2.0-flash', retry: { maxAttempts: 2, baseDelayMs: 500, maxDelayMs: 5000 } });
+    // Use default Gemini model (gemini-3-flash-preview) for entity extraction
+    const client = new GeminiClient({ retry: { maxAttempts: 2, baseDelayMs: 500, maxDelayMs: 5000 } });
     const startTime = Date.now();
     const textLength = ocrResult.extracted_text.length;
     const ocrText = ocrResult.extracted_text;

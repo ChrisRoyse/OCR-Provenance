@@ -167,6 +167,8 @@ export function listDatabases(storagePath?: string): DatabaseInfo[] {
           });
         }
       } finally {
+        // P2-6: Run ANALYZE on tables needing updated statistics before close
+        try { db.pragma('optimize'); } catch { /* best-effort */ }
         db.close();
       }
     } catch {

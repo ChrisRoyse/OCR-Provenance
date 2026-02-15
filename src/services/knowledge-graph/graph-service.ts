@@ -988,7 +988,7 @@ Respond with ONLY the relationship type, nothing else.`;
                 original_type: 'co_located',
                 classified_type: classifiedType,
                 classified_by: 'gemini',
-                model: 'gemini-2.5-flash',
+                model: 'gemini-3-flash-preview',
                 classified_at: new Date().toISOString(),
               },
             ],

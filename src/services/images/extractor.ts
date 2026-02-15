@@ -270,7 +270,7 @@ export class ImageExtractor {
         timeout,
       });
 
-      let stdout = '';
+      const stdoutChunks: Buffer[] = [];
       let stderr = '';
       let settled = false;
       let sigkillTimer: ReturnType<typeof setTimeout> | null = null;
@@ -282,8 +282,8 @@ export class ImageExtractor {
         }
       };
 
-      proc.stdout.on('data', (data) => {
-        stdout += data.toString();
+      proc.stdout.on('data', (data: Buffer) => {
+        stdoutChunks.push(data);
       });
 
       // H-9: Cap stderr accumulation to prevent unbounded memory growth
@@ -316,6 +316,8 @@ export class ImageExtractor {
           return;
         }
 
+        // P2-4/P2-5: Single allocation from buffer chunks instead of O(n^2) string concat
+        const stdout = Buffer.concat(stdoutChunks).toString('utf-8');
         try {
           // Python may output debug/warning lines before the JSON. Find the last
           // valid JSON line (starts with '{' or '[') to handle multi-line output.
