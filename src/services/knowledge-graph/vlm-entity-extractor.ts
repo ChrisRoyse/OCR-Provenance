@@ -4,7 +4,7 @@
  * VLM descriptions contain rich text about image content including
  * names, dates, amounts, and organizations. This module runs entity
  * extraction on those descriptions using the shared extraction pipeline
- * (same schema, noise filtering, and date regex as OCR text extraction).
+ * (same schema and noise filtering as OCR text extraction).
  *
  * CRITICAL: NEVER use console.log() - stdout is JSON-RPC protocol.
  * Use console.error() for all logging.
@@ -24,7 +24,6 @@ import {
 import {
   callGeminiForEntities,
   filterNoiseEntities,
-  extractDatesWithRegex,
   normalizeEntity,
 } from '../../utils/entity-extraction-helpers.js';
 
@@ -41,7 +40,7 @@ interface VLMDescription {
  * VLM descriptions are stored as embeddings where image_id IS NOT NULL.
  * This function extracts named entities from those descriptions using
  * the shared Gemini extraction pipeline (schema-constrained JSON, noise
- * filtering, regex date extraction) and stores them in entities/entity_mentions.
+ * filtering) and stores them in entities/entity_mentions.
  *
  * @param db - Database connection
  * @param documentId - Document to extract from
@@ -87,9 +86,7 @@ export async function extractEntitiesFromVLM(
     // Apply shared noise filtering
     const filteredEntities = filterNoiseEntities(rawEntities);
 
-    // Add regex-extracted dates from VLM description
-    const regexDates = extractDatesWithRegex(desc.original_text);
-    const allEntities = [...filteredEntities, ...regexDates];
+    const allEntities = filteredEntities;
 
     // Cap VLM confidence at 0.85 (VLM descriptions are secondary sources)
     for (const entity of allEntities) {
