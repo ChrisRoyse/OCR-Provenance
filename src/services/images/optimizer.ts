@@ -16,6 +16,9 @@ import { spawn } from 'child_process';
 import * as path from 'path';
 import * as fs from 'fs';
 import * as os from 'os';
+import { fileURLToPath } from 'url';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 /**
  * Image category classification
@@ -117,7 +120,7 @@ export class ImageOptimizer {
 
   constructor(config: Partial<ImageOptimizerConfig> = {}) {
     this.config = { ...DEFAULT_CONFIG, ...config };
-    this.scriptPath = path.join(process.cwd(), 'python', 'image_optimizer.py');
+    this.scriptPath = path.resolve(__dirname, '../../../python/image_optimizer.py');
   }
 
   /**

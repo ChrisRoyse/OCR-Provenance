@@ -13,6 +13,7 @@
 import { z } from 'zod';
 import { v4 as uuidv4 } from 'uuid';
 import { formatResponse, handleError, type ToolDefinition } from './shared.js';
+import { successResult } from '../server/types.js';
 import { validateInput, escapeLikePattern } from '../utils/validation.js';
 import { requireDatabase } from '../server/state.js';
 import { GeminiClient } from '../services/gemini/client.js';
@@ -249,17 +250,15 @@ async function handleEntityExtract(params: Record<string, unknown>) {
     // Verify document exists and has OCR text
     const doc = db.getDocument(input.document_id);
     if (!doc) {
-      return formatResponse({ error: `Document not found: ${input.document_id}` });
+      throw new Error(`Document not found: ${input.document_id}`);
     }
     if (doc.status !== 'complete') {
-      return formatResponse({
-        error: `Document not OCR processed yet (status: ${doc.status}). Run ocr_process_pending first.`,
-      });
+      throw new Error(`Document not OCR processed yet (status: ${doc.status}). Run ocr_process_pending first.`);
     }
 
     const ocrResult = db.getOCRResultByDocumentId(doc.id);
     if (!ocrResult) {
-      return formatResponse({ error: `No OCR result found for document ${doc.id}` });
+      throw new Error(`No OCR result found for document ${doc.id}`);
     }
 
     // Incremental mode: capture existing state before deletion for diff and KG link restoration
@@ -476,7 +475,7 @@ async function handleEntityExtract(params: Record<string, unknown>) {
       console.error(`[entity-analysis] extraction quality computation failed: ${err instanceof Error ? err.message : String(err)}`);
     }
 
-    return formatResponse({
+    return formatResponse(successResult({
       document_id: doc.id,
       total_entities: result.totalEntities,
       total_mentions: result.totalMentions,
@@ -502,7 +501,7 @@ async function handleEntityExtract(params: Record<string, unknown>) {
       ...(clusterReassignment ? { cluster_reassignment: clusterReassignment } : {}),
       ...(relatedDocuments ? { related_documents: relatedDocuments } : {}),
       ...(extractionQuality ? { extraction_quality: extractionQuality } : {}),
-    });
+    }));
   } catch (error) {
     return handleError(error);
   }
@@ -617,12 +616,12 @@ async function handleEntitySearch(params: Record<string, unknown>) {
       return result;
     });
 
-    return formatResponse({
+    return formatResponse(successResult({
       query: input.query,
       entity_type_filter: input.entity_type ?? null,
       total_results: results.length,
       results,
-    });
+    }));
   } catch (error) {
     return handleError(error);
   }
@@ -660,7 +659,7 @@ async function handleTimelineBuild(params: Record<string, unknown>) {
       });
 
       if (pathResult.total_paths === 0) {
-        return formatResponse({
+        return formatResponse(successResult({
           total_entries: 0,
           date_format: input.date_format,
           document_filter: input.document_filter ?? null,
@@ -674,7 +673,7 @@ async function handleTimelineBuild(params: Record<string, unknown>) {
             message: 'No path found between entities; no timeline events to show',
           },
           timeline: [],
-        });
+        }));
       }
 
       // Collect all node IDs along all paths
@@ -719,7 +718,7 @@ async function handleTimelineBuild(params: Record<string, unknown>) {
       }
       // If intersection is empty, no results possible
       if (effectiveDocFilter.length === 0) {
-        return formatResponse({
+        return formatResponse(successResult({
           total_entries: 0,
           date_format: input.date_format,
           document_filter: input.document_filter ?? null,
@@ -728,7 +727,7 @@ async function handleTimelineBuild(params: Record<string, unknown>) {
           entity_path_target: input.entity_path_target ?? null,
           path_info: pathInfo,
           timeline: [],
-        });
+        }));
       }
     }
 
@@ -936,7 +935,7 @@ async function handleTimelineBuild(params: Record<string, unknown>) {
     // Sort chronologically
     timelineEntries.sort((a, b) => a.date_iso.localeCompare(b.date_iso));
 
-    return formatResponse({
+    return formatResponse(successResult({
       total_entries: timelineEntries.length,
       date_format: input.date_format,
       document_filter: input.document_filter ?? null,
@@ -945,7 +944,7 @@ async function handleTimelineBuild(params: Record<string, unknown>) {
       entity_path_target: input.entity_path_target ?? null,
       ...(pathInfo ? { path_info: pathInfo } : {}),
       timeline: timelineEntries,
-    });
+    }));
   } catch (error) {
     return handleError(error);
   }
@@ -966,17 +965,15 @@ async function handleWitnessAnalysis(params: Record<string, unknown>) {
     for (const docId of input.document_ids) {
       const doc = db.getDocument(docId);
       if (!doc) {
-        return formatResponse({ error: `Document not found: ${docId}` });
+        throw new Error(`Document not found: ${docId}`);
       }
       if (doc.status !== 'complete') {
-        return formatResponse({
-          error: `Document "${doc.file_name}" not OCR processed (status: ${doc.status}).`,
-        });
+        throw new Error(`Document "${doc.file_name}" not OCR processed (status: ${doc.status}).`);
       }
 
       const ocrResult = db.getOCRResultByDocumentId(docId);
       if (!ocrResult) {
-        return formatResponse({ error: `No OCR result for document ${docId}` });
+        throw new Error(`No OCR result for document ${docId}`);
       }
 
       docTexts.push({
@@ -1083,7 +1080,7 @@ async function handleWitnessAnalysis(params: Record<string, unknown>) {
     const response = await client.thinking(prompt, 'HIGH');
     const processingDurationMs = Date.now() - startTime;
 
-    return formatResponse({
+    return formatResponse(successResult({
       document_ids: input.document_ids,
       document_count: docTexts.length,
       focus_area: input.focus_area ?? null,
@@ -1099,7 +1096,7 @@ async function handleWitnessAnalysis(params: Record<string, unknown>) {
       },
       processing_duration_ms: processingDurationMs,
       model: response.model,
-    });
+    }));
   } catch (error) {
     return handleError(error);
   }
@@ -1117,7 +1114,7 @@ async function handleEntityExtractFromVLM(params: Record<string, unknown>) {
     // Verify document exists
     const doc = db.getDocument(input.document_id);
     if (!doc) {
-      return formatResponse({ error: `Document not found: ${input.document_id}` });
+      throw new Error(`Document not found: ${input.document_id}`);
     }
 
     const entityProvId = createEntityExtractionProvenance(db, doc, 'vlm-entity-extraction', 'vlm');
@@ -1129,7 +1126,7 @@ async function handleEntityExtractFromVLM(params: Record<string, unknown>) {
     // Auto-merge into knowledge graph if one exists
     const kgMergeResult = await autoMergeIntoKnowledgeGraph(db, input.document_id);
 
-    return formatResponse({
+    return formatResponse(successResult({
       document_id: input.document_id,
       entities_created: result.entities_created,
       descriptions_processed: result.descriptions_processed,
@@ -1137,7 +1134,7 @@ async function handleEntityExtractFromVLM(params: Record<string, unknown>) {
       provenance_id: entityProvId,
       processing_duration_ms: processingDurationMs,
       ...kgMergeResult,
-    });
+    }));
   } catch (error) {
     return handleError(error);
   }
@@ -1155,7 +1152,7 @@ async function handleEntityExtractFromExtractions(params: Record<string, unknown
     // Verify document exists
     const doc = db.getDocument(input.document_id);
     if (!doc) {
-      return formatResponse({ error: `Document not found: ${input.document_id}` });
+      throw new Error(`Document not found: ${input.document_id}`);
     }
 
     const entityProvId = createEntityExtractionProvenance(db, doc, 'extraction-entity-mapper', 'extraction');
@@ -1167,7 +1164,7 @@ async function handleEntityExtractFromExtractions(params: Record<string, unknown
     // Auto-merge into knowledge graph if one exists
     const kgMergeResult = await autoMergeIntoKnowledgeGraph(db, input.document_id);
 
-    return formatResponse({
+    return formatResponse(successResult({
       document_id: input.document_id,
       entities_created: result.entities_created,
       extractions_processed: result.extractions_processed,
@@ -1175,7 +1172,7 @@ async function handleEntityExtractFromExtractions(params: Record<string, unknown
       provenance_id: entityProvId,
       processing_duration_ms: processingDurationMs,
       ...kgMergeResult,
-    });
+    }));
   } catch (error) {
     return handleError(error);
   }
@@ -1375,7 +1372,7 @@ async function handleEntityExtractionStats(params: Record<string, unknown>) {
       }
     }
 
-    return formatResponse({
+    return formatResponse(successResult({
       total_entities: entityCount,
       total_mentions: mentionCount,
       mentions_per_entity: entityCount > 0
@@ -1396,7 +1393,7 @@ async function handleEntityExtractionStats(params: Record<string, unknown>) {
       cross_segment_agreement: agreementStats,
       ...(crossDocConsistency ? { cross_document_consistency: crossDocConsistency } : {}),
       document_filter: input.document_filter || null,
-    });
+    }));
   } catch (error) {
     return handleError(error);
   }
@@ -1413,7 +1410,7 @@ export async function handleCoreferenceResolve(params: Record<string, unknown>) 
 
     const doc = db.getDocument(input.document_id);
     if (!doc) {
-      return formatResponse({ error: `Document not found: ${input.document_id}` });
+      throw new Error(`Document not found: ${input.document_id}`);
     }
 
     // Get entities for this document
@@ -1426,11 +1423,11 @@ export async function handleCoreferenceResolve(params: Record<string, unknown>) 
     }>;
 
     if (entities.length === 0) {
-      return formatResponse({
+      return formatResponse(successResult({
         document_id: input.document_id,
         message: 'No entities found. Run ocr_entity_extract first.',
         resolutions: [],
-      });
+      }));
     }
 
     // Get chunks
@@ -1444,11 +1441,11 @@ export async function handleCoreferenceResolve(params: Record<string, unknown>) 
     }>;
 
     if (chunks.length === 0) {
-      return formatResponse({
+      return formatResponse(successResult({
         document_id: input.document_id,
         message: 'No chunks found.',
         resolutions: [],
-      });
+      }));
     }
 
     // Build entity list for Gemini prompt (top 50 by confidence)
@@ -1591,16 +1588,19 @@ Return ONLY the JSON array, no other text.`;
     let kgMergeResult: { mentions_created: number } | undefined;
     if (input.merge_into_kg && resolutions.length > 0) {
       let mentionsCreated = 0;
+      const chunkPageStmt = conn.prepare(`SELECT page_number FROM chunks WHERE id = ?`);
       for (const res of resolutions) {
         // Find the entity this resolves to
         const entity = entities.find(e => e.normalized_text === res.resolved_to || e.raw_text === res.resolved_to);
         if (entity) {
           try {
             const mentionId = uuidv4();
+            const chunkRow = chunkPageStmt.get(res.chunk_id) as { page_number: number | null } | undefined;
+            const pageNumber = chunkRow?.page_number ?? null;
             conn.prepare(`
-              INSERT INTO entity_mentions (id, entity_id, document_id, chunk_id, character_start, character_end, context_text)
-              VALUES (?, ?, ?, ?, NULL, NULL, ?)
-            `).run(mentionId, entity.id, input.document_id, res.chunk_id, `[coref: "${res.pronoun_or_description}" -> "${res.resolved_to}"]`);
+              INSERT INTO entity_mentions (id, entity_id, document_id, chunk_id, page_number, character_start, character_end, context_text)
+              VALUES (?, ?, ?, ?, ?, NULL, NULL, ?)
+            `).run(mentionId, entity.id, input.document_id, res.chunk_id, pageNumber, `[coref: "${res.pronoun_or_description}" -> "${res.resolved_to}"]`);
             mentionsCreated++;
           } catch (e: unknown) {
             const msg = e instanceof Error ? e.message : String(e);
@@ -1611,7 +1611,7 @@ Return ONLY the JSON array, no other text.`;
       kgMergeResult = { mentions_created: mentionsCreated };
     }
 
-    return formatResponse({
+    return formatResponse(successResult({
       document_id: input.document_id,
       resolution_scope: input.resolution_scope,
       chunks_analyzed: chunks.length,
@@ -1620,7 +1620,7 @@ Return ONLY the JSON array, no other text.`;
       resolutions,
       kg_merge: kgMergeResult ?? null,
       processing_duration_ms: Date.now() - startTime,
-    });
+    }));
   } catch (error) {
     return handleError(error);
   }
@@ -1657,7 +1657,7 @@ async function handleEntityDossier(params: Record<string, unknown>) {
         FROM knowledge_nodes WHERE id = ?
       `).get(nodeId) as KGNodeRow | undefined ?? null;
       if (!nodeRow) {
-        return formatResponse({ error: `KG node not found: ${nodeId}` });
+        throw new Error(`KG node not found: ${nodeId}`);
       }
     } else {
       // Search by entity_name: case-insensitive canonical_name first
@@ -1722,9 +1722,7 @@ async function handleEntityDossier(params: Record<string, unknown>) {
       ) as typeof fallbackEntities;
 
       if (fallbackEntities.length === 0) {
-        return formatResponse({
-          error: `Entity not found: "${input.entity_name}". No matching KG node or entity record found.`,
-        });
+        throw new Error(`Entity not found: "${input.entity_name}". No matching KG node or entity record found.`);
       }
     }
 
@@ -2082,7 +2080,7 @@ async function handleEntityDossier(params: Record<string, unknown>) {
 
     dossier.entity_fallback = entityFallback;
 
-    return formatResponse(dossier);
+    return formatResponse(successResult(dossier));
   } catch (error) {
     return handleError(error);
   }
@@ -2120,10 +2118,10 @@ async function handleEntityUpdateConfidence(params: Record<string, unknown>) {
     }>;
 
     if (entityRows.length === 0) {
-      return formatResponse({
+      return formatResponse(successResult({
         message: 'No entities found in scope.',
         entities_updated: 0,
-      });
+      }));
     }
 
     // Pre-compute mention counts per entity
@@ -2326,7 +2324,7 @@ async function handleEntityUpdateConfidence(params: Record<string, unknown>) {
     const avgOld = entityRows.length > 0 ? totalOldConfidence / entityRows.length : 0;
     const avgNew = entityRows.length > 0 ? totalNewConfidence / entityRows.length : 0;
 
-    return formatResponse({
+    return formatResponse(successResult({
       document_id: input.document_id ?? null,
       dry_run: input.dry_run,
       entities_in_scope: entityRows.length,
@@ -2340,7 +2338,7 @@ async function handleEntityUpdateConfidence(params: Record<string, unknown>) {
         after: afterBuckets,
       },
       sample_updates: updates.slice(0, 20),
-    });
+    }));
   } catch (error) {
     return handleError(error);
   }

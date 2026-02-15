@@ -8,7 +8,10 @@
 import { spawn } from 'child_process';
 import * as path from 'path';
 import * as fs from 'fs';
+import { fileURLToPath } from 'url';
 import { ExtractedImage, ImageExtractionOptions } from '../../models/image.js';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 /**
  * Result from image extraction
@@ -56,9 +59,9 @@ export class ImageExtractor {
     this.config = { ...DEFAULT_CONFIG, ...config };
     this.pdfScriptPath =
       this.config.scriptPath ||
-      path.join(process.cwd(), 'python', 'image_extractor.py');
+      path.resolve(__dirname, '../../../python/image_extractor.py');
     this.docxScriptPath =
-      path.join(process.cwd(), 'python', 'docx_image_extractor.py');
+      path.resolve(__dirname, '../../../python/docx_image_extractor.py');
   }
 
   /**

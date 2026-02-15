@@ -155,8 +155,8 @@ export function expandQueryWithCoMentioned(query: string, db: Database.Database,
       for (const edge of edges) {
         coMentioned.add(edge.canonical_name.toLowerCase());
       }
-    } catch {
-      // knowledge_edges table may not exist - skip gracefully
+    } catch (e) {
+      console.error('[query-expander] expandQueryWithCoMentioned edge query failed for node', nodeId, ':', e instanceof Error ? e.message : String(e));
     }
   }
 
@@ -203,13 +203,13 @@ export function expandQueryTextForSemantic(query: string, db: Database.Database)
             for (const alias of aliases.slice(0, 3)) {
               entityTerms.add(alias);
             }
-          } catch {
-            // Malformed aliases JSON - skip
+          } catch (e) {
+            console.error('[query-expander] expandQueryTextForSemantic aliases parse failed for node', nodeId, ':', e instanceof Error ? e.message : String(e));
           }
         }
       }
-    } catch {
-      // Node lookup failed - skip
+    } catch (e) {
+      console.error('[query-expander] expandQueryTextForSemantic node lookup failed for node', nodeId, ':', e instanceof Error ? e.message : String(e));
     }
   }
 
@@ -276,8 +276,8 @@ export function findMatchingNodeIds(query: string, db: Database.Database): strin
         for (const row of rows) nodeIds.add(row.id);
       }
     }
-  } catch {
-    // FTS5 table may not exist - return empty
+  } catch (e) {
+    console.error('[query-expander] findMatchingNodeIds FTS5 query failed:', e instanceof Error ? e.message : String(e));
   }
 
   return [...nodeIds];
@@ -344,8 +344,8 @@ export function findQuerySuggestions(
           seen.add(nameLower);
         }
       }
-    } catch {
-      // FTS5 not available - skip
+    } catch (e) {
+      console.error('[query-expander] findQuerySuggestions FTS5 prefix search failed for word', word, ':', e instanceof Error ? e.message : String(e));
     }
   }
 
@@ -393,12 +393,12 @@ function collectKGAliases(db: Database.Database, ftsQuery: string, collected: Se
           for (const alias of aliases.slice(0, 5)) {
             collected.add(alias);
           }
-        } catch {
-          // Malformed aliases JSON - skip
+        } catch (e) {
+          console.error('[query-expander] collectKGAliases aliases parse failed:', e instanceof Error ? e.message : String(e));
         }
       }
     }
-  } catch {
-    // FTS5 query error (malformed query, table not exists) - skip gracefully
+  } catch (e) {
+    console.error('[query-expander] collectKGAliases FTS5 query failed:', e instanceof Error ? e.message : String(e));
   }
 }

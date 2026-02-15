@@ -13,6 +13,7 @@ import path from 'path';
 import { z } from 'zod';
 import { v4 as uuidv4 } from 'uuid';
 import { formatResponse, handleError, buildClusterReassignmentHint, type ToolDefinition } from './shared.js';
+import { successResult } from '../server/types.js';
 import { validateInput } from '../utils/validation.js';
 import { requireDatabase } from '../server/state.js';
 import { DatalabClient } from '../services/ocr/datalab.js';
@@ -44,16 +45,16 @@ async function handleExtractStructured(params: Record<string, unknown>) {
     // Get document - must exist and be OCR processed
     const doc = db.getDocument(input.document_id);
     if (!doc) {
-      return formatResponse({ error: `Document not found: ${input.document_id}` });
+      throw new Error(`Document not found: ${input.document_id}`);
     }
     if (doc.status !== 'complete') {
-      return formatResponse({ error: `Document not OCR processed yet (status: ${doc.status}). Run ocr_process_pending first.` });
+      throw new Error(`Document not OCR processed yet (status: ${doc.status}). Run ocr_process_pending first.`);
     }
 
     // Get the OCR result for provenance chaining
     const ocrResult = db.getOCRResultByDocumentId(doc.id);
     if (!ocrResult) {
-      return formatResponse({ error: `No OCR result found for document ${doc.id}` });
+      throw new Error(`No OCR result found for document ${doc.id}`);
     }
 
     // Call Datalab with page_schema to get structured extraction
@@ -69,10 +70,7 @@ async function handleExtractStructured(params: Record<string, unknown>) {
     );
 
     if (!response.extractionJson) {
-      return formatResponse({
-        error: 'No extraction data returned. Verify page_schema is valid JSON schema.',
-        document_id: doc.id,
-      });
+      throw new Error('No extraction data returned. Verify page_schema is valid JSON schema.');
     }
 
     // Store extraction with provenance
@@ -233,7 +231,7 @@ async function handleExtractStructured(params: Record<string, unknown>) {
       ? buildClusterReassignmentHint(db.getConnection(), doc.id, 'extraction-structured')
       : undefined;
 
-    return formatResponse({
+    return formatResponse(successResult({
       extraction_id: extractionId,
       document_id: doc.id,
       schema_json: parsedSchema,
@@ -249,7 +247,7 @@ async function handleExtractStructured(params: Record<string, unknown>) {
         entity_provenance_id: entityResult.entity_provenance_id,
       } : {}),
       ...(clusterHint ?? {}),
-    });
+    }));
   } catch (error) {
     return handleError(error);
   }
@@ -262,7 +260,7 @@ async function handleExtractionList(params: Record<string, unknown>) {
 
     const extractions = db.getExtractionsByDocument(input.document_id);
 
-    return formatResponse({
+    return formatResponse(successResult({
       document_id: input.document_id,
       total: extractions.length,
       extractions: extractions.map(ext => ({
@@ -273,7 +271,7 @@ async function handleExtractionList(params: Record<string, unknown>) {
         provenance_id: ext.provenance_id,
         created_at: ext.created_at,
       })),
-    });
+    }));
   } catch (error) {
     return handleError(error);
   }

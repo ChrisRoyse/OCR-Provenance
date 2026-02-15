@@ -9,7 +9,10 @@
 
 import { PythonShell, Options as PythonShellOptions } from 'python-shell';
 import path from 'path';
+import { fileURLToPath } from 'url';
 import { state } from '../../server/state.js';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 type EmbeddingErrorCode =
   | 'GPU_NOT_AVAILABLE'
@@ -67,7 +70,7 @@ export class NomicEmbeddingClient {
   constructor(options?: { workerPath?: string; pythonPath?: string }) {
     this.workerPath =
       options?.workerPath ??
-      path.join(process.cwd(), 'python', 'embedding_worker.py');
+      path.resolve(__dirname, '../../../python/embedding_worker.py');
     this.pythonPath = options?.pythonPath;
   }
 

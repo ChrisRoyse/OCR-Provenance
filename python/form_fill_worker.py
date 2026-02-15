@@ -20,7 +20,8 @@ from pathlib import Path
 # Configure logging FIRST
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    stream=sys.stderr,
 )
 logger = logging.getLogger(__name__)
 

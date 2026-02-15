@@ -270,8 +270,8 @@ export async function buildKnowledgeGraph(
     for (const row of clusterRows) {
       clusterContext.clusterMap.set(row.document_id, row.cluster_id);
     }
-  } catch {
-    // Cluster tables may not exist in older schemas - skip
+  } catch (e) {
+    console.error('[graph-service] buildKnowledgeGraph cluster context query failed:', e instanceof Error ? e.message : String(e));
   }
 
   // Step 5: Resolve entities into nodes
@@ -292,6 +292,9 @@ export async function buildKnowledgeGraph(
     const resolutionAlgorithm = nodeLinks.length > 0 && nodeLinks[0].resolution_method
       ? nodeLinks[0].resolution_method
       : 'exact';
+
+    conn.prepare('UPDATE knowledge_nodes SET resolution_type = ? WHERE id = ?')
+      .run(resolutionAlgorithm, node.id);
 
     tracker.createProvenance({
       type: ProvenanceType.KNOWLEDGE_GRAPH,
@@ -346,8 +349,8 @@ export async function buildKnowledgeGraph(
         for (const row of clusterRows) {
           clusterTagMap.set(row.document_id, row.classification_tag);
         }
-      } catch {
-        // Cluster tables may not exist in older schemas
+      } catch (e) {
+        console.error('[graph-service] buildKnowledgeGraph cluster tag query failed:', e instanceof Error ? e.message : String(e));
       }
 
       const unclassifiedEdges: KnowledgeEdge[] = [];
@@ -586,8 +589,8 @@ function batchInferTemporalBounds(
         });
       }
     }
-  } catch {
-    // Gracefully handle query errors
+  } catch (e) {
+    console.error('[batchInferTemporalBounds] Failed to query date entities for temporal inference:', e instanceof Error ? e.message : String(e));
   }
 
   return result;
@@ -834,8 +837,8 @@ function buildCoOccurrenceEdges(
                   'UPDATE knowledge_edges SET valid_from = ?, valid_until = ? WHERE id = ?',
                 ).run(temporal.valid_from ?? null, temporal.valid_until ?? null, edge.id);
                 temporalEdgesSet++;
-              } catch {
-                // valid_from/valid_until columns may not exist in older schemas
+              } catch (e) {
+                console.error('[graph-service] buildCoOccurrenceEdges temporal update failed for edge:', e instanceof Error ? e.message : String(e));
               }
             }
           }
@@ -946,8 +949,8 @@ async function classifyRelationshipsWithGemini(
               chunkContext = chunkRow.text.slice(0, 2000);
             }
           }
-        } catch {
-          // Ignore metadata parse errors
+        } catch (e) {
+          console.error('[graph-service] classifyRelationshipsWithGemini metadata parse failed for edge', edge.id, ':', e instanceof Error ? e.message : String(e));
         }
       }
 
@@ -1003,7 +1006,7 @@ Respond with ONLY the relationship type, nothing else.`;
       // On failure, keep the edge as co_located and store error info
       let existingMeta: Record<string, unknown> = {};
       if (edge.metadata) {
-        try { existingMeta = JSON.parse(edge.metadata); } catch { /* malformed metadata */ }
+        try { existingMeta = JSON.parse(edge.metadata); } catch (e) { console.error('[graph-service] classifyRelationshipsWithGemini failed to parse existing metadata for edge', edge.id, ':', e instanceof Error ? e.message : String(e)); }
       }
       updateKnowledgeEdge(conn, edge.id, {
         metadata: JSON.stringify({
@@ -1260,8 +1263,8 @@ export function getNodeDetails(
     try {
       const tracker = getProvenanceTracker(db);
       provenance = tracker.getProvenanceChain(node.provenance_id);
-    } catch {
-      // Ignore provenance errors, return without provenance
+    } catch (e) {
+      console.error('[graph-service] getNodeDetails provenance lookup failed for node', nodeId, ':', e instanceof Error ? e.message : String(e));
     }
   }
 
@@ -1441,7 +1444,8 @@ function parseJsonArray(json: string | null): string[] {
   try {
     const parsed = JSON.parse(json);
     return Array.isArray(parsed) ? parsed : [];
-  } catch {
+  } catch (e) {
+    console.error('[graph-service] parseJsonArray failed:', e instanceof Error ? e.message : String(e));
     return [];
   }
 }

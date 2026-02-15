@@ -958,12 +958,14 @@ describe.skipIf(!sqliteVecAvailable)('GAP-A1: Comparison contradictions -> KG ed
     const result = parseResponse(response);
 
     // Verify response fields
-    expect(result.comparison_id, 'should return a comparison_id').toBeDefined();
+    expect(result.success, 'should succeed').toBe(true);
+    const data = result.data as Record<string, unknown>;
+    expect(data.comparison_id, 'should return a comparison_id').toBeDefined();
 
     // Note: The KG contradiction detection may or may not find contradictions depending
     // on entity overlap. We verify the mechanism works by checking the database state.
     // If contradictions were detected with edge_ids, contradiction_count should be updated.
-    const kgEdgesUpdated = result.kg_edges_updated as number;
+    const kgEdgesUpdated = data.kg_edges_updated as number;
 
     if (kgEdgesUpdated > 0) {
       // DATABASE STATE VERIFICATION: Check that contradiction_count was actually incremented
@@ -996,8 +998,10 @@ describe.skipIf(!sqliteVecAvailable)('GAP-A1: Comparison contradictions -> KG ed
     });
     const result = parseResponse(response);
 
-    expect(result.comparison_id, 'should succeed without KG data').toBeDefined();
-    expect(result.kg_edges_updated, 'should report 0 when no edges found').toBe(0);
+    expect(result.success, 'should succeed').toBe(true);
+    const data = result.data as Record<string, unknown>;
+    expect(data.comparison_id, 'should succeed without KG data').toBeDefined();
+    expect(data.kg_edges_updated, 'should report 0 when no edges found').toBe(0);
   });
 });
 

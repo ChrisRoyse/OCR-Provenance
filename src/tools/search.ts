@@ -341,8 +341,8 @@ function resolveEntityFilter(
       if (semanticEntityDocIds.length > 0) {
         entityDocIds = semanticEntityDocIds;
       }
-    } catch {
-      // entity_embeddings tables may not exist yet
+    } catch (e) {
+      console.error('[resolveEntityFilter] Semantic entity embedding search failed:', e instanceof Error ? e.message : String(e));
     }
   }
 
@@ -377,8 +377,8 @@ function resolveEntityFilter(
           }
         }
       }
-    } catch {
-      // Temporal columns may not exist in older schema versions
+    } catch (e) {
+      console.error('[resolveEntityFilter] Temporal range filtering failed:', e instanceof Error ? e.message : String(e));
     }
   }
 

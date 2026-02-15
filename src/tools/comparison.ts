@@ -12,6 +12,7 @@
 import { z } from 'zod';
 import { v4 as uuidv4 } from 'uuid';
 import { formatResponse, handleError, queryEntitiesForDocuments, fetchProvenanceChain, type ToolDefinition, type ToolResponse } from './shared.js';
+import { successResult } from '../server/types.js';
 import { validateInput } from '../utils/validation.js';
 import { requireDatabase } from '../server/state.js';
 import { computeHash } from '../utils/hash.js';
@@ -342,7 +343,7 @@ async function handleDocumentCompare(params: Record<string, unknown>): Promise<T
       comparisonResponse.provenance_chain = fetchProvenanceChain(db, provId, 'comparison');
     }
 
-    return formatResponse(comparisonResponse);
+    return formatResponse(successResult(comparisonResponse));
   } catch (error) {
     return handleError(error);
   }
@@ -367,12 +368,12 @@ async function handleComparisonList(params: Record<string, unknown>): Promise<To
       processing_duration_ms: c.processing_duration_ms,
     }));
 
-    return formatResponse({
+    return formatResponse(successResult({
       comparisons: results,
       count: results.length,
       offset: input.offset,
       limit: input.limit,
-    });
+    }));
   } catch (error) {
     return handleError(error);
   }
@@ -390,12 +391,12 @@ async function handleComparisonGet(params: Record<string, unknown>): Promise<Too
     }
 
     // Parse stored JSON fields with error handling
-    return formatResponse({
+    return formatResponse(successResult({
       ...comparison,
       text_diff_json: parseStoredJSON(comparison.text_diff_json, 'text_diff_json', input.comparison_id),
       structural_diff_json: parseStoredJSON(comparison.structural_diff_json, 'structural_diff_json', input.comparison_id),
       entity_diff_json: parseStoredJSON(comparison.entity_diff_json, 'entity_diff_json', input.comparison_id),
-    });
+    }));
   } catch (error) {
     return handleError(error);
   }

@@ -15,7 +15,10 @@ type OCRErrorCategory =
   | 'FORM_FILL_API_ERROR'
   | 'FORM_FILL_SERVER_ERROR'
   | 'FORM_FILL_FILE_ERROR'
-  | 'FORM_FILL_TIMEOUT';
+  | 'FORM_FILL_TIMEOUT'
+  | 'FILE_MANAGER_API_ERROR'
+  | 'FILE_MANAGER_SERVER_ERROR'
+  | 'FILE_MANAGER_FILE_ERROR';
 
 export class OCRError extends Error {
   constructor(
@@ -82,22 +85,22 @@ export function mapPythonError(
   switch (category) {
     case 'OCR_API_ERROR':
     case 'OCR_SERVER_ERROR':
+    case 'FORM_FILL_API_ERROR':
+    case 'FORM_FILL_SERVER_ERROR':
+    case 'FILE_MANAGER_API_ERROR':
+    case 'FILE_MANAGER_SERVER_ERROR':
       return new OCRAPIError(message, (details.status_code as number) ?? 500, details.request_id as string);
     case 'OCR_RATE_LIMIT':
       return new OCRRateLimitError(message, (details.retry_after as number) ?? 60);
     case 'OCR_TIMEOUT':
+    case 'FORM_FILL_TIMEOUT':
       return new OCRTimeoutError(message, details.request_id as string);
     case 'OCR_FILE_ERROR':
+    case 'FORM_FILL_FILE_ERROR':
+    case 'FILE_MANAGER_FILE_ERROR':
       return new OCRFileError(message, (details.file_path as string) ?? 'unknown');
     case 'OCR_AUTHENTICATION_ERROR':
       return new OCRAuthenticationError(message, (details.status_code as number) ?? 401);
-    case 'FORM_FILL_API_ERROR':
-    case 'FORM_FILL_SERVER_ERROR':
-      return new OCRAPIError(message, (details.status_code as number) ?? 500, details.request_id as string);
-    case 'FORM_FILL_FILE_ERROR':
-      return new OCRFileError(message, (details.file_path as string) ?? 'unknown');
-    case 'FORM_FILL_TIMEOUT':
-      return new OCRTimeoutError(message, details.request_id as string);
     default:
       throw new OCRError(`Unknown error category: ${category}. Message: ${message}`, 'OCR_API_ERROR');
   }

@@ -251,7 +251,8 @@ export function getEntityTypeDistribution(
     return db.prepare(
       'SELECT entity_type, COUNT(*) as count FROM entities WHERE document_id = ? GROUP BY entity_type ORDER BY count DESC'
     ).all(documentId) as Array<{ entity_type: string; count: number }>;
-  } catch {
+  } catch (e) {
+    console.error(`[entity-operations] getEntityTypeDistribution failed for document ${documentId}:`, e instanceof Error ? e.message : String(e));
     return [];
   }
 }
@@ -268,7 +269,8 @@ export function getEntityCount(
     return (db.prepare(
       'SELECT COUNT(*) as cnt FROM entities WHERE document_id = ?'
     ).get(documentId) as { cnt: number }).cnt;
-  } catch {
+  } catch (e) {
+    console.error(`[entity-operations] getEntityCount failed for document ${documentId}:`, e instanceof Error ? e.message : String(e));
     return 0;
   }
 }
@@ -285,7 +287,8 @@ export function getPagesWithEntities(
     return (db.prepare(
       'SELECT COUNT(DISTINCT page_number) as cnt FROM entity_mentions WHERE document_id = ?'
     ).get(documentId) as { cnt: number }).cnt;
-  } catch {
+  } catch (e) {
+    console.error(`[entity-operations] getPagesWithEntities failed for document ${documentId}:`, e instanceof Error ? e.message : String(e));
     return 0;
   }
 }
@@ -315,7 +318,8 @@ export function getSegmentStats(
       };
     }
     return null;
-  } catch {
+  } catch (e) {
+    console.error(`[entity-operations] getSegmentStats failed for document ${documentId}:`, e instanceof Error ? e.message : String(e));
     return null;
   }
 }
@@ -332,7 +336,8 @@ export function getKGLinkedEntityCount(
     return (db.prepare(
       'SELECT COUNT(DISTINCT nel.entity_id) as cnt FROM node_entity_links nel JOIN entities e ON e.id = nel.entity_id WHERE e.document_id = ?'
     ).get(documentId) as { cnt: number }).cnt;
-  } catch {
+  } catch (e) {
+    console.error(`[entity-operations] getKGLinkedEntityCount failed for document ${documentId}:`, e instanceof Error ? e.message : String(e));
     return 0;
   }
 }

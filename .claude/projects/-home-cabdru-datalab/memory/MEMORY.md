@@ -26,6 +26,26 @@
 - File hashing now uses real SHA-256 via `hashFile()` instead of `sha256:pending-*` placeholders
 - New tools: `ocr_chunk_complete`, `ocr_retry_failed`
 
+## Forensic Audit Fixes (2026-02-15)
+- 21 findings fixed from `docs/FORENSIC_SYSTEM_AUDIT_2026-02-15.md`
+- **F1 (P0)**: cluster-operations.ts INSERT now includes all 8 NOT NULL columns
+- **F2 (P1)**: form-fill.ts validates document_id against `documents` table (was `provenance`)
+- **F3-F6 (P1)**: 4 silent catch blocks now have console.error() logging
+- **F7-F8 (P2)**: Migration FK + PRAGMA safety patterns
+- **F9 (P2)**: Coreference resolution includes page_number from chunks
+- **F10 (P2)**: 4 Python worker paths use __dirname (not process.cwd())
+- **F11 (P2)**: FILE_MANAGER error categories mapped in mapPythonError()
+- **F12-F13 (P2)**: ALL tools use formatResponse(successResult({...})) + throws for errors
+- **F14 (P2)**: 26 silent catch blocks in 5 service files now have console.error()
+- **F15 (P2)**: knowledge_nodes.resolution_type populated on KG build (exact/fuzzy/ai/singleton)
+- **F16 (P3)**: v22-v23 migration test (13 tests)
+- **F17 (P3)**: 3 dead functions removed
+- **F21 (P3)**: Python workers all have stream=sys.stderr in logging.basicConfig()
+- **Tests**: 2145 passed, 0 failed across 130 files (129 passed + 1 skipped)
+- **Verification**: 23 manual tests in `tests/manual/forensic-verification-2026-02-15.test.ts`
+- **Simplifier**: VE-FORENSIC-1 through VE-FORENSIC-3 (comments, imports, switch collapse)
+- Coordination: `memory/forensic-fix-coordination.md`
+
 ## GAP Integration (2026-02-11)
 - 9 GAPs implemented from `docs/ENTITY_KG_SEARCH_INTEGRATION_REPORT.md`
 - **New tools**: `ocr_related_documents`, `ocr_rag_context` (total MCP tools: 88)

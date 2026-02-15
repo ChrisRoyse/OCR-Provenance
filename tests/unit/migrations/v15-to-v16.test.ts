@@ -669,9 +669,8 @@ describe('Migration v15 to v16 (Knowledge Graph)', () => {
       `).run(now, now);
     }).not.toThrow();
 
-    // v18 migration recreates knowledge_nodes WITHOUT FK REFERENCES on provenance_id
-    // (knowledge_nodes provenance is intentionally detached), so invalid provenance_id
-    // no longer causes an FK violation.
+    // v18 migration recreates knowledge_nodes WITH FK REFERENCES on provenance_id
+    // (matching schema-definitions.ts), so invalid provenance_id causes an FK violation.
     db.pragma('foreign_keys = ON');
     expect(() => {
       db.prepare(`
@@ -679,7 +678,7 @@ describe('Migration v15 to v16 (Knowledge Graph)', () => {
           document_count, mention_count, avg_confidence, provenance_id, created_at, updated_at)
         VALUES ('kn-bad', 'person', 'Bad', 'bad', 1, 1, 0.9, 'nonexistent-prov', ?, ?)
       `).run(now, now);
-    }).not.toThrow();
+    }).toThrow();
   });
 
   it.skipIf(!sqliteVecAvailable)('FK relationships work for knowledge_edges', () => {

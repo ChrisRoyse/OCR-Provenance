@@ -604,12 +604,13 @@ describe('Migration v17 to v18 (Medical Entity Types)', () => {
     migrateToLatest(db);
 
     const now = new Date().toISOString();
+    insertTestProvenance(db, 'prov-kn-med', 'KNOWLEDGE_GRAPH', 'prov-kn-med');
 
     expect(() => {
       db.prepare(`
         INSERT INTO knowledge_nodes (id, entity_type, canonical_name, normalized_name,
           document_count, mention_count, avg_confidence, provenance_id, created_at, updated_at)
-        VALUES ('kn-med', 'medication', 'Aspirin', 'aspirin', 1, 1, 0.95, 'prov-placeholder', ?, ?)
+        VALUES ('kn-med', 'medication', 'Aspirin', 'aspirin', 1, 1, 0.95, 'prov-kn-med', ?, ?)
       `).run(now, now);
     }).not.toThrow();
 
@@ -622,12 +623,13 @@ describe('Migration v17 to v18 (Medical Entity Types)', () => {
     migrateToLatest(db);
 
     const now = new Date().toISOString();
+    insertTestProvenance(db, 'prov-kn-diag', 'KNOWLEDGE_GRAPH', 'prov-kn-diag');
 
     expect(() => {
       db.prepare(`
         INSERT INTO knowledge_nodes (id, entity_type, canonical_name, normalized_name,
           document_count, mention_count, avg_confidence, provenance_id, created_at, updated_at)
-        VALUES ('kn-diag', 'diagnosis', 'Type 2 Diabetes', 'type 2 diabetes', 1, 1, 0.90, 'prov-placeholder', ?, ?)
+        VALUES ('kn-diag', 'diagnosis', 'Type 2 Diabetes', 'type 2 diabetes', 1, 1, 0.90, 'prov-kn-diag', ?, ?)
       `).run(now, now);
     }).not.toThrow();
   });
@@ -708,10 +710,11 @@ describe('Migration v17 to v18 (Medical Entity Types)', () => {
     createV17Schema();
 
     const now = new Date().toISOString();
+    insertTestProvenance(db, 'prov-kn-surv', 'KNOWLEDGE_GRAPH', 'prov-kn-surv');
     db.prepare(`
       INSERT INTO knowledge_nodes (id, entity_type, canonical_name, normalized_name,
         document_count, mention_count, edge_count, avg_confidence, provenance_id, created_at, updated_at)
-      VALUES ('kn-surv', 'person', 'Jane Doe', 'jane doe', 2, 5, 3, 0.88, 'prov-placeholder', ?, ?)
+      VALUES ('kn-surv', 'person', 'Jane Doe', 'jane doe', 2, 5, 3, 0.88, 'prov-kn-surv', ?, ?)
     `).run(now, now);
 
     migrateToLatest(db);

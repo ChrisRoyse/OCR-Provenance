@@ -198,8 +198,8 @@ export async function incrementalBuildGraph(
     for (const row of clusterRows) {
       clusterContext.clusterMap.set(row.document_id, row.cluster_id);
     }
-  } catch {
-    // Cluster tables may not exist
+  } catch (e) {
+    console.error('[incremental-builder] cluster context query failed:', e instanceof Error ? e.message : String(e));
   }
 
   // Step 5: Match new entities against existing nodes
@@ -368,6 +368,9 @@ export async function incrementalBuildGraph(
           ? nodeLinks[0].resolution_method
           : 'exact';
 
+      conn.prepare('UPDATE knowledge_nodes SET resolution_type = ? WHERE id = ?')
+        .run(resolutionAlgorithm, node.id);
+
       tracker.createProvenance({
         type: ProvenanceType.KNOWLEDGE_GRAPH,
         source_type: 'KNOWLEDGE_GRAPH',
@@ -528,8 +531,8 @@ function buildIncrementalEdges(
         'SELECT entity_type FROM knowledge_nodes WHERE id = ?',
       ).get(nodeId) as { entity_type: string } | undefined;
       if (nodeRow) nodeTypeMap.set(nodeId, nodeRow.entity_type);
-    } catch {
-      // Ignore lookup errors
+    } catch (e) {
+      console.error('[incremental-builder] node type lookup failed for node', nodeId, ':', e instanceof Error ? e.message : String(e));
     }
   }
 
@@ -691,8 +694,8 @@ function buildIncrementalEdges(
                     temporalEdgesSet++;
                   }
                 }
-              } catch {
-                // valid_from/valid_until columns may not exist in older schemas
+              } catch (e) {
+                console.error('[incremental-builder] temporal update failed for existing edge:', e instanceof Error ? e.message : String(e));
               }
             }
           } else {
@@ -722,8 +725,8 @@ function buildIncrementalEdges(
                     'UPDATE knowledge_edges SET valid_from = ?, valid_until = ? WHERE id = ?',
                   ).run(temporal.valid_from ?? null, temporal.valid_until ?? null, edge.id);
                   temporalEdgesSet++;
-                } catch {
-                  // valid_from/valid_until columns may not exist in older schemas
+                } catch (e) {
+                  console.error('[incremental-builder] temporal update failed for new edge:', e instanceof Error ? e.message : String(e));
                 }
               }
             }
@@ -798,8 +801,8 @@ function batchInferTemporalBoundsIncremental(
         });
       }
     }
-  } catch {
-    // Gracefully handle query errors
+  } catch (e) {
+    console.error('[batchInferTemporalBoundsIncremental] Failed to query date entities for temporal inference:', e instanceof Error ? e.message : String(e));
   }
 
   return result;

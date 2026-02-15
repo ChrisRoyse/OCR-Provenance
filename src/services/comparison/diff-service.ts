@@ -207,8 +207,8 @@ function buildKGResolutionMap(
         result.set(row.entity_id, row.canonical_name);
       }
     }
-  } catch {
-    // KG tables may not exist (no graph built yet) - return empty map
+  } catch (e) {
+    console.error('[diff-service] buildKGResolutionMap KG table query failed:', e instanceof Error ? e.message : String(e));
   }
 
   return result;
@@ -353,8 +353,8 @@ export function detectKGContradictions(
         });
       }
     }
-  } catch {
-    // KG tables don't exist - return empty
+  } catch (e) {
+    console.error('[diff-service] detectKGContradictions KG table query failed:', e instanceof Error ? e.message : String(e));
     return emptyResult;
   }
 
@@ -425,7 +425,8 @@ export function detectKGContradictions(
       let edgeDocIds: string[] = [];
       try {
         edgeDocIds = JSON.parse(edge.document_ids);
-      } catch {
+      } catch (e) {
+        console.error('[diff-service] detectKGContradictions edge document_ids parse failed for edge', edge.id, ':', e instanceof Error ? e.message : String(e));
         edgeDocIds = [];
       }
 

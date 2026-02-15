@@ -261,11 +261,11 @@ async function handleFormFill(params: Record<string, unknown>) {
 
     if (input.document_id) {
       // Verify document exists
-      const doc = conn.prepare('SELECT id FROM provenance WHERE id = ? AND type = ?').get(
-        input.document_id, ProvenanceType.DOCUMENT,
+      const doc = conn.prepare('SELECT id FROM documents WHERE id = ?').get(
+        input.document_id,
       ) as { id: string } | undefined;
       if (!doc) {
-        return formatResponse({ error: `Document not found: ${input.document_id}` });
+        throw new Error(`Document not found: ${input.document_id}`);
       }
 
       fieldValidations = validateFieldsAgainstEntities(conn, input.document_id, input.field_data);
@@ -360,18 +360,24 @@ async function handleFormFill(params: Record<string, unknown>) {
     let entityExtraction: { entities_created: number; entity_ids: string[]; entity_provenance_id: string } | undefined;
     if (input.document_id) {
       try {
-        // Look up document details for provenance chain
-        const docProv = conn.prepare(
-          'SELECT id, source_path, file_hash FROM provenance WHERE id = ? AND type = ?'
-        ).get(input.document_id, ProvenanceType.DOCUMENT) as {
-          id: string; source_path: string; file_hash: string;
+        // Look up document details for provenance chain via documents table
+        const docRecord = conn.prepare(
+          'SELECT d.id, d.file_path, d.file_hash, d.provenance_id FROM documents d WHERE d.id = ?'
+        ).get(input.document_id) as {
+          id: string; file_path: string; file_hash: string; provenance_id: string;
         } | undefined;
+        const docProv = docRecord ? {
+          id: docRecord.id,
+          source_path: docRecord.file_path,
+          file_hash: docRecord.file_hash,
+          provenance_id: docRecord.provenance_id,
+        } : undefined;
 
         if (docProv) {
           const entityProvId = createEntityExtractionProvenance(db, {
             id: docProv.id,
             file_path: docProv.source_path ?? input.file_path,
-            provenance_id: docProv.id,
+            provenance_id: docProv.provenance_id,
             file_hash: docProv.file_hash ?? result.sourceFileHash,
           }, 'form-fill-entity-extractor', 'form_fill');
 
@@ -414,7 +420,7 @@ async function handleFormFill(params: Record<string, unknown>) {
       response.entity_extraction = entityExtraction;
     }
 
-    return formatResponse(response);
+    return formatResponse(successResult(response));
   } catch (error) {
     return handleError(error);
   }
@@ -428,7 +434,7 @@ async function handleFormFillStatus(params: Record<string, unknown>) {
     if (input.form_fill_id) {
       const formFill = db.getFormFill(input.form_fill_id);
       if (!formFill) {
-        return formatResponse({ error: `Form fill not found: ${input.form_fill_id}` });
+        throw new Error(`Form fill not found: ${input.form_fill_id}`);
       }
       const formFillResponse: Record<string, unknown> = {
         form_fill: {
@@ -446,13 +452,13 @@ async function handleFormFillStatus(params: Record<string, unknown>) {
         formFillResponse.provenance_chain = fetchProvenanceChain(db, formFill.provenance_id, 'form-fill');
       }
 
-      return formatResponse(formFillResponse);
+      return formatResponse(successResult(formFillResponse));
     }
 
     // If search_query is provided, use search instead of list
     if (input.search_query) {
       const searchResults = db.searchFormFills(input.search_query, { limit: input.limit, offset: input.offset });
-      return formatResponse({
+      return formatResponse(successResult({
         total: searchResults.length,
         search_query: input.search_query,
         form_fills: searchResults.map(ff => ({
@@ -465,13 +471,13 @@ async function handleFormFillStatus(params: Record<string, unknown>) {
           created_at: ff.created_at,
           error_message: ff.error_message,
         })),
-      });
+      }));
     }
 
     const statusFilter = input.status_filter === 'all' ? undefined : input.status_filter;
     const formFills = db.listFormFills({ status: statusFilter, limit: input.limit, offset: input.offset });
 
-    return formatResponse({
+    return formatResponse(successResult({
       total: formFills.length,
       form_fills: formFills.map(ff => ({
         id: ff.id,
@@ -483,7 +489,7 @@ async function handleFormFillStatus(params: Record<string, unknown>) {
         created_at: ff.created_at,
         error_message: ff.error_message,
       })),
-    });
+    }));
   } catch (error) {
     return handleError(error);
   }
