@@ -507,119 +507,6 @@ export function filterNoiseEntities(
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// REGEX DATE EXTRACTION
-// ═══════════════════════════════════════════════════════════════════════════════
-
-const MONTH_NAMES: Record<string, number> = {
-  january: 1, february: 2, march: 3, april: 4, may: 5, june: 6,
-  july: 7, august: 8, september: 9, october: 10, november: 11, december: 12,
-  jan: 1, feb: 2, mar: 3, apr: 4, jun: 6, jul: 7, aug: 8, sep: 9, oct: 10, nov: 11, dec: 12,
-};
-
-const MONTH_NAME_PATTERN = Object.keys(MONTH_NAMES).join('|');
-
-/**
- * Validate that month (1-12) and day (1-31) are in valid ranges.
- */
-function isValidMonthDay(month: number, day: number): boolean {
-  return month >= 1 && month <= 12 && day >= 1 && day <= 31;
-}
-
-/**
- * Extract dates from OCR text using regex patterns that Gemini often misses.
- *
- * Scans for common date formats: MM/DD/YYYY, MM/DD/YY, MM/DD, Month DD YYYY,
- * DD Month YYYY, and YYYY-MM-DD (ISO). Validates month/day ranges and
- * deduplicates by raw_text.
- *
- * @param ocrText - Full OCR extracted text
- * @returns Array of date entities with type, raw_text, and confidence
- */
-export function extractDatesWithRegex(
-  ocrText: string,
-): Array<{ type: 'date'; raw_text: string; confidence: number }> {
-  if (!ocrText) {
-    return [];
-  }
-
-  const seen = new Set<string>();
-  const results: Array<{ type: 'date'; raw_text: string; confidence: number }> = [];
-
-  function addDate(rawText: string, confidence: number): void {
-    const trimmed = rawText.trim();
-    if (!seen.has(trimmed)) {
-      seen.add(trimmed);
-      results.push({ type: 'date', raw_text: trimmed, confidence });
-    }
-  }
-
-  // Pattern 1: MM/DD/YYYY (e.g., "04/10/2024", "11/17/1952")
-  const mmddyyyy = /\b(?<month>\d{1,2})\/(?<day>\d{1,2})\/(?<year>\d{4})\b/g;
-  for (const match of ocrText.matchAll(mmddyyyy)) {
-    const m = parseInt(match.groups!.month, 10);
-    const d = parseInt(match.groups!.day, 10);
-    if (isValidMonthDay(m, d)) {
-      addDate(match[0], 0.85);
-    }
-  }
-
-  // Pattern 2: MM/DD/YY (e.g., "04/10/24")
-  const mmddyy = /\b(?<month>\d{1,2})\/(?<day>\d{1,2})\/(?<year>\d{2})\b/g;
-  for (const match of ocrText.matchAll(mmddyy)) {
-    const m = parseInt(match.groups!.month, 10);
-    const d = parseInt(match.groups!.day, 10);
-    if (isValidMonthDay(m, d)) {
-      addDate(match[0], 0.85);
-    }
-  }
-
-  // Pattern 3 (MM/DD without year) removed: too ambiguous without year context.
-  // Partial dates like "4/1", "4/18" normalize to wrong year and create KG noise.
-
-  // Pattern 4: Month DD, YYYY (e.g., "April 10, 2024")
-  const monthDDYYYY = new RegExp(
-    `\\b(?<monthName>${MONTH_NAME_PATTERN})\\s+(?<day>\\d{1,2}),?\\s+(?<year>\\d{4})\\b`,
-    'gi',
-  );
-  for (const match of ocrText.matchAll(monthDDYYYY)) {
-    const m = MONTH_NAMES[match.groups!.monthName.toLowerCase()];
-    const d = parseInt(match.groups!.day, 10);
-    if (m && isValidMonthDay(m, d)) {
-      addDate(match[0], 0.85);
-    }
-  }
-
-  // Pattern 5: DD Month YYYY (e.g., "10 April 2024")
-  const ddMonthYYYY = new RegExp(
-    `\\b(?<day>\\d{1,2})\\s+(?<monthName>${MONTH_NAME_PATTERN})\\s+(?<year>\\d{4})\\b`,
-    'gi',
-  );
-  for (const match of ocrText.matchAll(ddMonthYYYY)) {
-    const m = MONTH_NAMES[match.groups!.monthName.toLowerCase()];
-    const d = parseInt(match.groups!.day, 10);
-    if (m && isValidMonthDay(m, d)) {
-      addDate(match[0], 0.85);
-    }
-  }
-
-  // Pattern 6: YYYY-MM-DD (ISO format, e.g., "2024-04-10")
-  const isoDate = /\b(?<year>\d{4})-(?<month>\d{2})-(?<day>\d{2})\b/g;
-  for (const match of ocrText.matchAll(isoDate)) {
-    const m = parseInt(match.groups!.month, 10);
-    const d = parseInt(match.groups!.day, 10);
-    if (isValidMonthDay(m, d)) {
-      addDate(match[0], 0.85);
-    }
-  }
-
-  if (results.length > 0) {
-    console.error(`[INFO] extractDatesWithRegex: found ${results.length} dates via regex`);
-  }
-
-  return results;
-}
-
-// ═══════════════════════════════════════════════════════════════════════════════
 // SEGMENT-BASED EXTRACTION
 // ═══════════════════════════════════════════════════════════════════════════════
 
@@ -862,7 +749,6 @@ export interface SegmentExtractionResult {
   totalMentions: number;
   totalRawExtracted: number;
   noiseFiltered: number;
-  regexDatesAdded: number;
   deduplicated: number;
   entitiesByType: Record<string, number>;
   chunkMapped: number;
@@ -875,7 +761,7 @@ export interface SegmentExtractionResult {
 
 /**
  * Run the full segment-based entity extraction pipeline:
- * create segments, call Gemini per segment, filter noise, extract regex dates,
+ * create segments, call Gemini per segment, filter noise,
  * deduplicate, store entities + mentions in DB, and update provenance.
  *
  * Shared core used by both manual extraction (entity-analysis.ts)
@@ -946,9 +832,7 @@ export async function processSegmentsAndStoreEntities(
   const filteredEntities = filterNoiseEntities(allRawEntities);
   const noiseFilteredCount = allRawEntities.length - filteredEntities.length;
 
-  const regexDates = extractDatesWithRegex(ocrText);
-
-  const mergedEntities = [...filteredEntities, ...regexDates];
+  const mergedEntities = filteredEntities;
 
   // Deduplicate by type::normalized_text, keeping highest confidence per key
   // Also count segment occurrences for cross-segment agreement boosting
@@ -1080,7 +964,6 @@ export async function processSegmentsAndStoreEntities(
     totalMentions,
     totalRawExtracted: allRawEntities.length,
     noiseFiltered: noiseFilteredCount,
-    regexDatesAdded: regexDates.length,
     deduplicated: mergedEntities.length - totalInserted,
     entitiesByType: typeCounts,
     chunkMapped: chunkMappedCount,

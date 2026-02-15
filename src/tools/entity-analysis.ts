@@ -486,7 +486,6 @@ async function handleEntityExtract(params: Record<string, unknown>) {
       total_mentions: result.totalMentions,
       total_raw_extracted: result.totalRawExtracted,
       noise_filtered: result.noiseFiltered,
-      regex_dates_added: result.regexDatesAdded,
       deduplicated: result.deduplicated,
       entities_by_type: result.entitiesByType,
       chunk_mapped: result.chunkMapped,
