@@ -82,7 +82,8 @@ export async function handleDocumentList(
           ).all(...docIds) as Array<{ document_id: string; cnt: number }>;
           for (const r of kgRows) kgNodeCountMap.set(r.document_id, r.cnt);
         }
-      } catch {
+      } catch (err) {
+        console.error(`[documents] entity/KG count query failed: ${err instanceof Error ? err.message : String(err)}`);
         // Entity/KG tables may not exist
       }
     }
@@ -126,8 +127,9 @@ export async function handleDocumentList(
             const nameSet = new Set(rows.map(r => r.document_id));
             allowedDocIds = allowedDocIds ? new Set([...allowedDocIds].filter(id => nameSet.has(id))) : nameSet;
           }
-        } catch {
-          // Entity tables may not exist yet — skip filtering silently
+        } catch (err) {
+          console.error(`[documents] entity filter query failed: ${err instanceof Error ? err.message : String(err)}`);
+          // Entity tables may not exist yet — skip filtering
           allowedDocIds = null;
         }
 
@@ -309,7 +311,8 @@ export async function handleDocumentGet(
           if (coverage && coverage.total_segments > 0) {
             extractionCoverage = coverage;
           }
-        } catch {
+        } catch (err) {
+          console.error(`[documents] entity_extraction_segments query failed: ${err instanceof Error ? err.message : String(err)}`);
           // entity_extraction_segments table may not exist
         }
 
@@ -328,7 +331,8 @@ export async function handleDocumentGet(
           })),
           extraction_coverage: extractionCoverage,
         };
-      } catch {
+      } catch (err) {
+        console.error(`[documents] entity summary query failed: ${err instanceof Error ? err.message : String(err)}`);
         // Entity tables may not exist yet
         result.entity_summary = null;
       }

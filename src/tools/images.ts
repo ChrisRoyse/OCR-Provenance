@@ -253,7 +253,8 @@ export async function handleImageList(
         `).all(documentId, escapedPattern) as Array<{ page_number: number }>;
         const pageSet = new Set(matchingPages.map(r => r.page_number));
         images = images.filter(img => pageSet.has(img.page_number));
-      } catch {
+      } catch (err) {
+        console.error(`[images] entity_filter image list query failed: ${err instanceof Error ? err.message : String(err)}`);
         // Entity tables may not exist yet - skip filtering
       }
     }
@@ -343,7 +344,8 @@ export async function handleImageGet(
           LIMIT 20
         `).all(img.document_id, img.page_number) as Array<{ raw_text: string; entity_type: string; confidence: number }>;
         responseData.page_entities = pageEntities;
-      } catch {
+      } catch (err) {
+        console.error(`[images] page_entities image get query failed: ${err instanceof Error ? err.message : String(err)}`);
         // Entity tables may not exist yet
         responseData.page_entities = [];
       }
@@ -411,7 +413,8 @@ export async function handleImageStats(
           : '0%',
         avg_entities_per_image_page: Number(avgEntities.avg_count.toFixed(1)),
       };
-    } catch {
+    } catch (err) {
+      console.error(`[images] entity_coverage image stats query failed: ${err instanceof Error ? err.message : String(err)}`);
       // Entity tables may not exist yet
     }
 

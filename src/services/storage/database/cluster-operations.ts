@@ -5,6 +5,7 @@
  */
 
 import Database from 'better-sqlite3';
+import { v4 as uuidv4 } from 'uuid';
 import type { Cluster, DocumentCluster } from '../../../models/cluster.js';
 import { runWithForeignKeyCheck } from './helpers.js';
 
@@ -254,4 +255,132 @@ export function getDocumentEntityNodeIds(
     WHERE em.document_id = ?
   `).all(documentId) as Array<{ node_id: string }>;
   return new Set(rows.map(r => r.node_id));
+}
+
+// --- Cluster Reassignment ---
+
+/** Minimum Jaccard overlap required to reassign a document to a cluster */
+const REASSIGNMENT_JACCARD_THRESHOLD = 0.05;
+
+export interface ClusterReassignmentResult {
+  document_id: string;
+  reassigned: boolean;
+  cluster_id?: string;
+  overlap_score?: number;
+  previous_cluster_id?: string | null;
+  reason?: string;
+  best_overlap?: number;
+  error?: string;
+}
+
+/**
+ * Compute Jaccard similarity between two sets.
+ */
+function computeJaccard(a: Set<string>, b: Set<string>): number {
+  let intersectionSize = 0;
+  for (const item of a) {
+    if (b.has(item)) intersectionSize++;
+  }
+  const unionSize = a.size + b.size - intersectionSize;
+  return unionSize > 0 ? intersectionSize / unionSize : 0;
+}
+
+/**
+ * Get KG node IDs for all documents in a cluster (for a specific run).
+ */
+function getClusterNodeIds(
+  db: Database.Database,
+  clusterId: string,
+  runId: string,
+): Set<string> {
+  const rows = db.prepare(`
+    SELECT DISTINCT nel.node_id FROM node_entity_links nel
+    JOIN entities e ON nel.entity_id = e.id
+    JOIN document_clusters dc ON dc.document_id = e.document_id
+    WHERE dc.cluster_id = ? AND dc.run_id = ?
+  `).all(clusterId, runId) as Array<{ node_id: string }>;
+  return new Set(rows.map(r => r.node_id));
+}
+
+/**
+ * Reassign a single document to the best-matching cluster by Jaccard overlap
+ * on KG entity nodes. Returns the reassignment result.
+ *
+ * Shared by ingestion.ts (process_pending) and entity-analysis.ts (entity extraction).
+ */
+export function reassignDocumentToCluster(
+  db: Database.Database,
+  documentId: string,
+): ClusterReassignmentResult {
+  const clusterCount = (db.prepare('SELECT COUNT(*) as cnt FROM clusters').get() as { cnt: number }).cnt;
+  if (clusterCount === 0) {
+    return { document_id: documentId, reassigned: false, reason: 'no clusters exist' };
+  }
+
+  const runRow = db.prepare(
+    'SELECT DISTINCT run_id FROM document_clusters ORDER BY ROWID DESC LIMIT 1'
+  ).get() as { run_id: string } | undefined;
+
+  if (!runRow) {
+    return { document_id: documentId, reassigned: false, reason: 'no cluster runs found' };
+  }
+
+  const docNodeIds = db.prepare(`
+    SELECT DISTINCT nel.node_id FROM node_entity_links nel
+    JOIN entities e ON nel.entity_id = e.id
+    WHERE e.document_id = ?
+  `).all(documentId) as Array<{ node_id: string }>;
+
+  if (docNodeIds.length === 0) {
+    return { document_id: documentId, reassigned: false, reason: 'no KG nodes' };
+  }
+
+  const docNodeSet = new Set(docNodeIds.map(r => r.node_id));
+
+  const existing = db.prepare(
+    'SELECT cluster_id FROM document_clusters WHERE document_id = ? AND run_id = ?'
+  ).get(documentId, runRow.run_id) as { cluster_id: string } | undefined;
+
+  const clusterRows = db.prepare(`
+    SELECT DISTINCT dc.cluster_id FROM document_clusters dc
+    WHERE dc.run_id = ? AND dc.document_id != ?
+  `).all(runRow.run_id, documentId) as Array<{ cluster_id: string }>;
+
+  let bestClusterId: string | null = null;
+  let bestOverlap = 0;
+  for (const cr of clusterRows) {
+    const clusterNodeSet = getClusterNodeIds(db, cr.cluster_id, runRow.run_id);
+    const jaccard = computeJaccard(docNodeSet, clusterNodeSet);
+    if (jaccard > bestOverlap) {
+      bestOverlap = jaccard;
+      bestClusterId = cr.cluster_id;
+    }
+  }
+
+  const roundedOverlap = Math.round(bestOverlap * 1000) / 1000;
+
+  if (bestClusterId && bestOverlap > REASSIGNMENT_JACCARD_THRESHOLD) {
+    if (existing) {
+      db.prepare('DELETE FROM document_clusters WHERE document_id = ? AND run_id = ?')
+        .run(documentId, runRow.run_id);
+    }
+    db.prepare(
+      'INSERT INTO document_clusters (id, document_id, cluster_id, run_id) VALUES (?, ?, ?, ?)'
+    ).run(uuidv4(), documentId, bestClusterId, runRow.run_id);
+
+    return {
+      document_id: documentId,
+      reassigned: true,
+      cluster_id: bestClusterId,
+      overlap_score: roundedOverlap,
+      previous_cluster_id: existing?.cluster_id ?? null,
+    };
+  }
+
+  return {
+    document_id: documentId,
+    reassigned: false,
+    reason: bestClusterId ? 'overlap too low' : 'no clusters with entity overlap',
+    best_overlap: roundedOverlap,
+  };
 }

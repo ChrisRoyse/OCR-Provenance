@@ -369,7 +369,8 @@ export async function handleProvenanceVerify(
           }
         }
       }
-    } catch {
+    } catch (err) {
+      console.error(`[provenance] entity integrity check failed: ${err instanceof Error ? err.message : String(err)}`);
       // Graceful degradation if entity/KG tables don't exist
     }
 
@@ -565,7 +566,8 @@ export async function handleProvenanceExport(
           per_document: perDocMetrics,
         };
       }
-    } catch {
+    } catch (err) {
+      console.error(`[provenance] entity extraction summary failed: ${err instanceof Error ? err.message : String(err)}`);
       // Graceful degradation if entity tables don't exist
     }
 

@@ -26,7 +26,11 @@ import {
   getEntitiesByDocumentKeyed,
 } from '../services/storage/database/entity-operations.js';
 import { getChunksByDocumentId } from '../services/storage/database/chunk-operations.js';
-import { getClusterSummariesForDocument } from '../services/storage/database/cluster-operations.js';
+import {
+  getClusterSummariesForDocument,
+  reassignDocumentToCluster,
+  type ClusterReassignmentResult,
+} from '../services/storage/database/cluster-operations.js';
 import { getKnowledgeNodeSummariesByDocument } from '../services/storage/database/knowledge-graph-operations.js';
 import { extractEntitiesFromVLM } from '../services/knowledge-graph/vlm-entity-extractor.js';
 import { mapExtractionEntitiesToDB } from '../services/knowledge-graph/extraction-entity-mapper.js';
@@ -275,7 +279,7 @@ async function handleEntityExtract(params: Record<string, unknown>) {
           if (links.length > 0) {
             oldKGLinks.set(key, links);
           }
-        } catch { /* node_entity_links table may not exist */ }
+        } catch (err) { console.error(`[entity-analysis] node_entity_links query failed: ${err instanceof Error ? err.message : String(err)}`); }
       }
 
       console.error(`[INFO] Incremental mode: captured ${oldEntities.size} existing entities, ${oldKGLinks.size} with KG links`);
@@ -388,89 +392,14 @@ async function handleEntityExtract(params: Record<string, unknown>) {
     const kgMergeResult = await autoMergeIntoKnowledgeGraph(db, doc.id);
 
     // Optionally reassign clusters after entity extraction + KG merge
-    let clusterReassignment: Record<string, unknown> | undefined;
+    let clusterReassignment: ClusterReassignmentResult | undefined;
     if (input.auto_reassign_clusters) {
       try {
-        const clusterCount = (conn.prepare('SELECT COUNT(*) as cnt FROM clusters').get() as { cnt: number }).cnt;
-        if (clusterCount > 0) {
-          const runRow = conn.prepare(
-            'SELECT DISTINCT run_id FROM document_clusters ORDER BY ROWID DESC LIMIT 1'
-          ).get() as { run_id: string } | undefined;
-          if (runRow) {
-            // Check if document is already in this run
-            const existing = conn.prepare(
-              'SELECT cluster_id FROM document_clusters WHERE document_id = ? AND run_id = ?'
-            ).get(doc.id, runRow.run_id) as { cluster_id: string } | undefined;
-
-            // Find best matching cluster by entity overlap (Jaccard on KG nodes)
-            const docNodeIds = conn.prepare(`
-              SELECT DISTINCT nel.node_id FROM node_entity_links nel
-              JOIN entities e ON nel.entity_id = e.id
-              WHERE e.document_id = ?
-            `).all(doc.id) as Array<{ node_id: string }>;
-
-            if (docNodeIds.length > 0) {
-              const docNodeSet = new Set(docNodeIds.map(r => r.node_id));
-              // Get clusters from the most recent run and compute overlap
-              const clusterRows = conn.prepare(`
-                SELECT DISTINCT dc.cluster_id FROM document_clusters dc
-                WHERE dc.run_id = ? AND dc.document_id != ?
-              `).all(runRow.run_id, doc.id) as Array<{ cluster_id: string }>;
-
-              let bestClusterId: string | null = null;
-              let bestOverlap = 0;
-              for (const cr of clusterRows) {
-                const clusterNodeRows = conn.prepare(`
-                  SELECT DISTINCT nel.node_id FROM node_entity_links nel
-                  JOIN entities e ON nel.entity_id = e.id
-                  JOIN document_clusters dc ON dc.document_id = e.document_id
-                  WHERE dc.cluster_id = ? AND dc.run_id = ?
-                `).all(cr.cluster_id, runRow.run_id) as Array<{ node_id: string }>;
-                const clusterNodeSet = new Set(clusterNodeRows.map(r => r.node_id));
-                const intersection = [...docNodeSet].filter(n => clusterNodeSet.has(n)).length;
-                const union = new Set([...docNodeSet, ...clusterNodeSet]).size;
-                const jaccard = union > 0 ? intersection / union : 0;
-                if (jaccard > bestOverlap) {
-                  bestOverlap = jaccard;
-                  bestClusterId = cr.cluster_id;
-                }
-              }
-
-              if (bestClusterId && bestOverlap > 0.05) {
-                // Remove old assignment if any
-                if (existing) {
-                  conn.prepare('DELETE FROM document_clusters WHERE document_id = ? AND run_id = ?')
-                    .run(doc.id, runRow.run_id);
-                }
-                conn.prepare(
-                  'INSERT INTO document_clusters (id, document_id, cluster_id, run_id) VALUES (?, ?, ?, ?)'
-                ).run(uuidv4(), doc.id, bestClusterId, runRow.run_id);
-
-                clusterReassignment = {
-                  reassigned: true,
-                  cluster_id: bestClusterId,
-                  overlap_score: Math.round(bestOverlap * 1000) / 1000,
-                  previous_cluster_id: existing?.cluster_id ?? null,
-                };
-              } else {
-                clusterReassignment = {
-                  reassigned: false,
-                  reason: bestClusterId ? 'overlap too low' : 'no clusters with entity overlap found',
-                  best_overlap: Math.round(bestOverlap * 1000) / 1000,
-                };
-              }
-            } else {
-              clusterReassignment = { reassigned: false, reason: 'no KG nodes for document' };
-            }
-          } else {
-            clusterReassignment = { reassigned: false, reason: 'no cluster runs found' };
-          }
-        } else {
-          clusterReassignment = { reassigned: false, reason: 'no clusters exist' };
-        }
+        clusterReassignment = reassignDocumentToCluster(conn, doc.id);
       } catch (clusterErr) {
         const msg = clusterErr instanceof Error ? clusterErr.message : String(clusterErr);
-        clusterReassignment = { reassigned: false, error: msg };
+        console.error(`[entity-analysis] cluster reassignment failed for doc ${doc.id}: ${msg}`);
+        clusterReassignment = { document_id: doc.id, reassigned: false, error: msg };
       }
     }
 
@@ -494,8 +423,8 @@ async function handleEntityExtract(params: Record<string, unknown>) {
           shared_entities: r.shared_entities,
         }));
       }
-    } catch {
-      // Related documents query failed - skip
+    } catch (err) {
+      console.error(`[entity-analysis] related documents query failed: ${err instanceof Error ? err.message : String(err)}`);
     }
 
     // Compute extraction quality score
@@ -543,8 +472,8 @@ async function handleEntityExtract(params: Record<string, unknown>) {
           }
         }
       }
-    } catch {
-      // Quality computation failed - skip
+    } catch (err) {
+      console.error(`[entity-analysis] extraction quality computation failed: ${err instanceof Error ? err.message : String(err)}`);
     }
 
     return formatResponse({
@@ -614,7 +543,8 @@ async function handleEntitySearch(params: Record<string, unknown>) {
         ORDER BY ke.weight DESC
         LIMIT 5
       `);
-    } catch {
+    } catch (err) {
+      console.error(`[entity-analysis] KG statement preparation failed: ${err instanceof Error ? err.message : String(err)}`);
       // Pre-v16 schema without knowledge graph tables - skip KG enrichment
     }
 
@@ -674,13 +604,13 @@ async function handleEntitySearch(params: Record<string, unknown>) {
                     weight: r.weight,
                   }));
                 }
-              } catch {
-                // Edge query failed - skip connected entities
+              } catch (err) {
+                console.error(`[entity-analysis] KG edge query failed: ${err instanceof Error ? err.message : String(err)}`);
               }
             }
           }
-        } catch {
-          // KG lookup failed for this entity - skip enrichment
+        } catch (err) {
+          console.error(`[entity-analysis] KG lookup failed for entity: ${err instanceof Error ? err.message : String(err)}`);
         }
       }
 
@@ -842,7 +772,7 @@ async function handleTimelineBuild(params: Record<string, unknown>) {
         WHERE dc.document_id = ?
         LIMIT 1
       `);
-    } catch { /* cluster tables may not exist */ }
+    } catch (err) { console.error(`[entity-analysis] cluster lookup statement preparation failed: ${err instanceof Error ? err.message : String(err)}`); }
 
     const timelineEntries: Array<{
       date_iso: string;
@@ -937,8 +867,8 @@ async function handleTimelineBuild(params: Record<string, unknown>) {
               LIMIT 1
             `).get(entity.normalized_text) as { id: string } | undefined;
             dateNodeId = dateNodeRow?.id ?? null;
-          } catch {
-            // KG tables may not exist
+          } catch (err) {
+            console.error(`[entity-analysis] timeline date KG node lookup failed: ${err instanceof Error ? err.message : String(err)}`);
           }
 
           coLocatedWithRelationships = [];
@@ -965,8 +895,8 @@ async function handleTimelineBuild(params: Record<string, unknown>) {
                     entry.weight = edge.weight;
                   }
                 }
-              } catch {
-                // KG not available for this entity - just use name
+              } catch (err) {
+                console.error(`[entity-analysis] timeline KG edge lookup failed: ${err instanceof Error ? err.message : String(err)}`);
               }
             }
             coLocatedWithRelationships.push(entry);
@@ -987,7 +917,7 @@ async function handleTimelineBuild(params: Record<string, unknown>) {
               cluster_label: clusterRow.label ?? undefined,
             };
           }
-        } catch { /* cluster lookup failed */ }
+        } catch (err) { console.error(`[entity-analysis] timeline cluster lookup failed: ${err instanceof Error ? err.message : String(err)}`); }
       }
 
       timelineEntries.push({
@@ -1325,8 +1255,8 @@ async function handleEntityExtractionStats(params: Record<string, unknown>) {
           ? Math.round(segAvgEntities.avg_entities * 100) / 100
           : 0,
       };
-    } catch {
-      // entity_extraction_segments table may not exist in older databases
+    } catch (err) {
+      console.error(`[entity-analysis] segment stats query failed: ${err instanceof Error ? err.message : String(err)}`);
       segmentStats = { total_segments: 0, note: 'segments table not available' };
     }
 
@@ -1352,7 +1282,8 @@ async function handleEntityExtractionStats(params: Record<string, unknown>) {
           ? Math.round((docsWithEntities / filteredDocs) * 10000) / 100
           : 0,
       };
-    } catch {
+    } catch (err) {
+      console.error(`[entity-analysis] document coverage query failed: ${err instanceof Error ? err.message : String(err)}`);
       docCoverage = {};
     }
 
@@ -1369,7 +1300,8 @@ async function handleEntityExtractionStats(params: Record<string, unknown>) {
           ? Math.round((linkedEntities / entityCount) * 10000) / 100
           : 0,
       };
-    } catch {
+    } catch (err) {
+      console.error(`[entity-analysis] KG integration stats query failed: ${err instanceof Error ? err.message : String(err)}`);
       kgStats = { entities_linked_to_kg: 0, note: 'KG tables not available' };
     }
 
@@ -1386,7 +1318,8 @@ async function handleEntityExtractionStats(params: Record<string, unknown>) {
           ? Math.round((withAgreement / entityCount) * 10000) / 100
           : 0,
       };
-    } catch {
+    } catch (err) {
+      console.error(`[entity-analysis] agreement stats query failed: ${err instanceof Error ? err.message : String(err)}`);
       agreementStats = {};
     }
 
@@ -1436,7 +1369,8 @@ async function handleEntityExtractionStats(params: Record<string, unknown>) {
             ? Math.round(((totalMultiDocNodes - inconsistentNodes.length) / totalMultiDocNodes) * 10000) / 100
             : 100,
         };
-      } catch {
+      } catch (err) {
+        console.error(`[entity-analysis] cross-doc consistency query failed: ${err instanceof Error ? err.message : String(err)}`);
         crossDocConsistency = { note: 'KG tables not available for consistency check' };
       }
     }
@@ -1540,7 +1474,7 @@ export async function handleCoreferenceResolve(params: Record<string, unknown>) 
             LIMIT 1
           `).get(e.id) as { aliases: string | null } | undefined;
           aliases = parseAliases(aliasRow?.aliases);
-        } catch { /* KG tables may not exist */ }
+        } catch (err) { console.error(`[entity-analysis] coreference KG alias lookup failed: ${err instanceof Error ? err.message : String(err)}`); }
 
         const aliasStr = aliases.length > 0 ? ` [aliases: ${aliases.join(', ')}]` : '';
         entityEntries.push(`- "${e.raw_text}" (${e.entity_type}, confidence: ${e.confidence.toFixed(2)})${aliasStr}`);
@@ -1748,7 +1682,7 @@ async function handleEntityDossier(params: Record<string, unknown>) {
               LIMIT 1
             `).get(sanitized) as KGNodeRow | undefined ?? null;
           }
-        } catch { /* FTS5 may not exist */ }
+        } catch (err) { console.error(`[entity-analysis] dossier FTS5 lookup failed: ${err instanceof Error ? err.message : String(err)}`); }
       }
 
       // Alias LIKE fallback
@@ -2087,7 +2021,7 @@ async function handleEntityDossier(params: Record<string, unknown>) {
                 WHERE dc.cluster_id IN (${clusterPlaceholders}) AND e.id != ?
                 LIMIT 20
               `).all(...clusterIds, entityIdForExclusion) as Array<{ raw_text: string; entity_type: string }>;
-            } catch { /* entity_mentions join may fail */ }
+            } catch (err) { console.error(`[entity-analysis] dossier co-clustered entities query failed: ${err instanceof Error ? err.message : String(err)}`); }
 
             dossier.clusters = {
               cluster_memberships: clusterRows.map(r => ({
@@ -2104,7 +2038,8 @@ async function handleEntityDossier(params: Record<string, unknown>) {
         } else {
           dossier.clusters = { cluster_memberships: [], co_clustered_entities: [] };
         }
-      } catch {
+      } catch (err) {
+        console.error(`[entity-analysis] dossier cluster query failed: ${err instanceof Error ? err.message : String(err)}`);
         dossier.clusters = { cluster_memberships: [], co_clustered_entities: [], note: 'cluster tables not available' };
       }
     }
@@ -2214,7 +2149,7 @@ async function handleEntityUpdateConfidence(params: Record<string, unknown>) {
       for (const r of kgRows) {
         kgDocCountMap.set(r.entity_id, r.document_count);
       }
-    } catch { /* KG tables may not exist */ }
+    } catch (err) { console.error(`[entity-analysis] KG doc count query failed: ${err instanceof Error ? err.message : String(err)}`); }
 
     // Pre-compute extraction source counts per entity
     const multiSourceMap = new Map<string, number>();
@@ -2229,7 +2164,7 @@ async function handleEntityUpdateConfidence(params: Record<string, unknown>) {
       for (const r of sourceRows) {
         multiSourceMap.set(r.entity_id, r.source_count);
       }
-    } catch { /* provenance join may fail */ }
+    } catch (err) { console.error(`[entity-analysis] extraction source count query failed: ${err instanceof Error ? err.message : String(err)}`); }
 
     // Check for entities with same normalized_text + type from different provenance sources
     const crossSourceMap = new Map<string, number>();
@@ -2247,7 +2182,7 @@ async function handleEntityUpdateConfidence(params: Record<string, unknown>) {
       for (const r of crossRows) {
         crossSourceMap.set(r.entity_id, r.cross_source_count);
       }
-    } catch { /* may fail on schema without provenance processor field */ }
+    } catch (err) { console.error(`[entity-analysis] cross-source count query failed: ${err instanceof Error ? err.message : String(err)}`); }
 
     // Pre-compute KG importance scores per entity if requested
     const kgImportanceMap = new Map<string, number>();
@@ -2263,7 +2198,7 @@ async function handleEntityUpdateConfidence(params: Record<string, unknown>) {
         for (const r of importanceRows) {
           kgImportanceMap.set(r.entity_id, r.importance_score);
         }
-      } catch { /* KG tables may not exist */ }
+      } catch (err) { console.error(`[entity-analysis] KG importance score query failed: ${err instanceof Error ? err.message : String(err)}`); }
     }
 
     // Calculate new confidence for each entity
@@ -2364,8 +2299,8 @@ async function handleEntityUpdateConfidence(params: Record<string, unknown>) {
         }
 
         console.error(`[INFO] Updated avg_confidence on ${affectedNodeIds.size} KG nodes`);
-      } catch {
-        // KG tables may not exist
+      } catch (err) {
+        console.error(`[entity-analysis] KG avg_confidence update failed: ${err instanceof Error ? err.message : String(err)}`);
       }
     }
 
