@@ -12,7 +12,7 @@
 import path from 'path';
 import { z } from 'zod';
 import { v4 as uuidv4 } from 'uuid';
-import { formatResponse, handleError, type ToolDefinition } from './shared.js';
+import { formatResponse, handleError, buildClusterReassignmentHint, type ToolDefinition } from './shared.js';
 import { validateInput } from '../utils/validation.js';
 import { requireDatabase } from '../server/state.js';
 import { DatalabClient } from '../services/ocr/datalab.js';
@@ -28,6 +28,8 @@ const ExtractStructuredInput = z.object({
   auto_extract_entities: z.boolean().default(false).describe(
     'Automatically create entities from extracted fields (maps field names like vendor_name->organization, invoice_date->date, etc.)'
   ),
+  auto_reassign_clusters: z.boolean().default(false)
+    .describe('Hint that document clusters may need updating after structured extraction'),
 });
 
 const ExtractionListInput = z.object({
@@ -227,6 +229,10 @@ async function handleExtractStructured(params: Record<string, unknown>) {
     let parsedSchema: unknown = input.page_schema;
     try { parsedSchema = JSON.parse(input.page_schema); } catch { /* keep as string */ }
 
+    const clusterHint = input.auto_reassign_clusters
+      ? buildClusterReassignmentHint(db.getConnection(), doc.id, 'extraction-structured')
+      : undefined;
+
     return formatResponse({
       extraction_id: extractionId,
       document_id: doc.id,
@@ -242,6 +248,7 @@ async function handleExtractStructured(params: Record<string, unknown>) {
         extractions_processed: entityResult.extractions_processed,
         entity_provenance_id: entityResult.entity_provenance_id,
       } : {}),
+      ...(clusterHint ?? {}),
     });
   } catch (error) {
     return handleError(error);

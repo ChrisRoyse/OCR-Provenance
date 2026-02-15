@@ -38,6 +38,7 @@ import { expandQueryWithKG, expandQueryWithCoMentioned, expandQueryTextForSemant
 import { rerankResults, type EdgeInfo } from '../services/search/reranker.js';
 import { getEntitiesForChunks, getDocumentIdsForEntities, getEdgesForNode, getKnowledgeNode, getEntityMentionFrequencyByDocument, getRelatedDocumentsByEntityOverlap, resolveEntityNodeIdsFromKG, type ChunkEntityInfo } from '../services/storage/database/knowledge-graph-operations.js';
 import { findGraphPaths } from '../services/knowledge-graph/graph-service.js';
+import { getClusterSummariesForDocument } from '../services/storage/database/cluster-operations.js';
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // TYPE DEFINITIONS
@@ -122,6 +123,68 @@ function formatProvenanceChain(db: ReturnType<typeof requireDatabase>['db'], pro
     processor: p.processor,
     content_hash: p.content_hash,
   }));
+}
+
+/**
+ * Resolve cluster_id filter to document IDs.
+ * Queries document_clusters to find all documents in the specified cluster,
+ * then intersects with any existing document filter.
+ */
+function resolveClusterFilter(
+  conn: ReturnType<ReturnType<typeof requireDatabase>['db']['getConnection']>,
+  clusterId: string | undefined,
+  existingDocFilter: string[] | undefined,
+): string[] | undefined {
+  if (!clusterId) return existingDocFilter;
+
+  const rows = conn.prepare(
+    'SELECT document_id FROM document_clusters WHERE cluster_id = ?'
+  ).all(clusterId) as Array<{ document_id: string }>;
+
+  const clusterDocIds = rows.map(r => r.document_id);
+  if (clusterDocIds.length === 0) return ['__no_match__'];
+
+  if (existingDocFilter && existingDocFilter.length > 0) {
+    const clusterSet = new Set(clusterDocIds);
+    const intersected = existingDocFilter.filter(id => clusterSet.has(id));
+    return intersected.length === 0 ? ['__no_match__'] : intersected;
+  }
+
+  return clusterDocIds;
+}
+
+/**
+ * Attach cluster context to search results.
+ * For each unique document_id in results, queries cluster membership
+ * and attaches cluster_context array to each result.
+ */
+function attachClusterContext(
+  conn: ReturnType<ReturnType<typeof requireDatabase>['db']['getConnection']>,
+  results: Array<Record<string, unknown>>,
+): void {
+  const docIds = [...new Set(results.map(r => r.document_id as string).filter(Boolean))];
+  if (docIds.length === 0) return;
+
+  const clusterCache = new Map<string, Array<{ cluster_id: string; cluster_label: string | null; run_id: string }>>();
+  for (const docId of docIds) {
+    try {
+      const summaries = getClusterSummariesForDocument(conn, docId);
+      clusterCache.set(docId, summaries.map(s => ({
+        cluster_id: s.id,
+        cluster_label: s.label,
+        run_id: s.run_id,
+      })));
+    } catch {
+      clusterCache.set(docId, []);
+    }
+  }
+
+  for (const r of results) {
+    const docId = r.document_id as string;
+    if (docId) {
+      r.cluster_context = clusterCache.get(docId) ?? [];
+    }
+  }
 }
 
 /**
@@ -271,7 +334,7 @@ function resolveEntityFilter(
     entityFilter.include_related,
   );
 
-  // F-13: Semantic fallback via entity_embeddings when standard lookup returns empty
+  // Semantic fallback via entity_embeddings when standard lookup returns empty
   if (entityDocIds.length === 0 && entityFilter.entity_names && entityFilter.entity_names.length > 0) {
     try {
       const semanticEntityDocIds = searchEntityEmbeddingsForDocuments(conn, entityFilter.entity_names);
@@ -285,7 +348,7 @@ function resolveEntityFilter(
 
   if (entityDocIds.length === 0) return { documentFilter: undefined, empty: true };
 
-  // F-8: Temporal filtering - narrow related documents by temporally-valid edges
+  // Temporal filtering - narrow related documents by temporally-valid edges
   if (timeRange && (timeRange.from || timeRange.to) && entityFilter.include_related) {
     try {
       const fromDate = timeRange.from ?? '0000-01-01';
@@ -768,9 +831,10 @@ export async function handleSearchSemantic(
 
     const kgMetricsSemantic = createKGMetrics();
 
-    // Resolve metadata filter to document IDs, then chain through quality filter
-    let documentFilter = resolveQualityFilter(db, input.min_quality_score,
-      resolveMetadataFilter(db, input.metadata_filter, input.document_filter));
+    // Resolve metadata filter to document IDs, then chain through quality + cluster filters
+    let documentFilter = resolveClusterFilter(conn, input.cluster_id,
+      resolveQualityFilter(db, input.min_quality_score,
+        resolveMetadataFilter(db, input.metadata_filter, input.document_filter)));
 
     // Entity filter: resolve entity names/types to document IDs
     const entityFilterResult = resolveEntityFilter(conn, input.entity_filter, documentFilter, input.time_range);
@@ -912,7 +976,6 @@ export async function handleSearchSemantic(
           rerank_score: r.relevance_score,
           rerank_reasoning: r.reasoning,
         };
-        // OPT-5: Mark per-result entity_rescued flag for borderline results
         if (input.entity_rescue && original.similarity_score < threshold) {
           result.entity_rescued = true;
         }
@@ -943,7 +1006,6 @@ export async function handleSearchSemantic(
           content_hash: r.content_hash,
           provenance_id: r.provenance_id,
         };
-        // OPT-5: Mark per-result entity_rescued flag for borderline results
         if (input.entity_rescue && r.similarity_score < threshold) {
           result.entity_rescued = true;
         }
@@ -1012,6 +1074,10 @@ export async function handleSearchSemantic(
     }
     responseData.kg_integration_metrics = kgMetricsSemantic;
 
+    if (input.include_cluster_context && finalResults.length > 0) {
+      attachClusterContext(conn, finalResults);
+    }
+
     return formatResponse(successResult(responseData));
   } catch (error) {
     return handleError(error);
@@ -1032,9 +1098,10 @@ export async function handleSearch(
 
     const kgMetricsBm25 = createKGMetrics();
 
-    // Resolve metadata filter to document IDs, then chain through quality filter
-    let documentFilter = resolveQualityFilter(db, input.min_quality_score,
-      resolveMetadataFilter(db, input.metadata_filter, input.document_filter));
+    // Resolve metadata filter to document IDs, then chain through quality + cluster filters
+    let documentFilter = resolveClusterFilter(conn, input.cluster_id,
+      resolveQualityFilter(db, input.min_quality_score,
+        resolveMetadataFilter(db, input.metadata_filter, input.document_filter)));
 
     // Entity filter: resolve entity names/types to document IDs
     const bm25EntityFilterResult = resolveEntityFilter(conn, input.entity_filter, documentFilter, input.time_range);
@@ -1216,6 +1283,10 @@ export async function handleSearch(
     }
     responseData.kg_integration_metrics = kgMetricsBm25;
 
+    if (input.include_cluster_context && finalResults.length > 0) {
+      attachClusterContext(conn, finalResults);
+    }
+
     return formatResponse(successResult(responseData));
   } catch (error) {
     return handleError(error);
@@ -1238,9 +1309,10 @@ export async function handleSearchHybrid(
     const kgMetricsHybrid = createKGMetrics();
     const searchWarnings: string[] = [];
 
-    // Resolve metadata filter to document IDs, then chain through quality filter
-    let documentFilter = resolveQualityFilter(db, input.min_quality_score,
-      resolveMetadataFilter(db, input.metadata_filter, input.document_filter));
+    // Resolve metadata filter to document IDs, then chain through quality + cluster filters
+    let documentFilter = resolveClusterFilter(conn, input.cluster_id,
+      resolveQualityFilter(db, input.min_quality_score,
+        resolveMetadataFilter(db, input.metadata_filter, input.document_filter)));
 
     // Entity filter: resolve entity names/types to document IDs
     const hybridEntityFilterResult = resolveEntityFilter(conn, input.entity_filter, documentFilter, input.time_range);
@@ -1435,7 +1507,7 @@ export async function handleSearchHybrid(
       }
     }
 
-    // F-15: Chunk proximity boost - reward clusters of nearby relevant chunks
+    // Chunk proximity boost - reward clusters of nearby relevant chunks
     const chunkProximityInfo = finalResults.length > 0
       ? applyChunkProximityBoost(finalResults)
       : undefined;
@@ -1524,6 +1596,10 @@ export async function handleSearchHybrid(
     if (searchWarnings.length > 0) {
       responseData.warnings = searchWarnings;
       responseData._degraded = true;
+    }
+
+    if (input.include_cluster_context && finalResults.length > 0) {
+      attachClusterContext(conn, finalResults);
     }
 
     return formatResponse(successResult(responseData));
@@ -2262,6 +2338,10 @@ export const searchTools: Record<string, ToolDefinition> = {
         .describe('Deduplicate results by primary entity (max 2 results per entity)'),
       min_entity_confidence: z.number().min(0).max(1).optional()
         .describe('Minimum entity confidence score (0-1) for including entities in results'),
+      cluster_id: z.string().optional()
+        .describe('Filter results to documents in this cluster'),
+      include_cluster_context: z.boolean().default(false)
+        .describe('Include cluster membership info for each result'),
     },
     handler: handleSearch,
   },
@@ -2301,6 +2381,10 @@ export const searchTools: Record<string, ToolDefinition> = {
         .describe('Deduplicate results by primary entity (max 2 results per entity)'),
       min_entity_confidence: z.number().min(0).max(1).optional()
         .describe('Minimum entity confidence score (0-1) for including entities in results'),
+      cluster_id: z.string().optional()
+        .describe('Filter results to documents in this cluster'),
+      include_cluster_context: z.boolean().default(false)
+        .describe('Include cluster membership info for each result'),
     },
     handler: handleSearchSemantic,
   },
@@ -2342,6 +2426,10 @@ export const searchTools: Record<string, ToolDefinition> = {
         .describe('Deduplicate results by primary entity (max 2 results per entity)'),
       min_entity_confidence: z.number().min(0).max(1).optional()
         .describe('Minimum entity confidence score (0-1) for including entities in results'),
+      cluster_id: z.string().optional()
+        .describe('Filter results to documents in this cluster'),
+      include_cluster_context: z.boolean().default(false)
+        .describe('Include cluster membership info for each result'),
     },
     handler: handleSearchHybrid,
   },

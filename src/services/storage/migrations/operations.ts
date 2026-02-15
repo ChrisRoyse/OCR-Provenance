@@ -1071,6 +1071,11 @@ export function migrateToLatest(db: Database.Database): void {
     migrateV21ToV22(db);
     bumpVersion(22);
   }
+
+  if (currentVersion < 23) {
+    migrateV22ToV23(db);
+    bumpVersion(23);
+  }
 }
 
 /**
@@ -2251,6 +2256,95 @@ function migrateV21ToV22(db: Database.Database): void {
       `Failed to migrate from v21 to v22 (FTS tokenizer/trigger fix): ${cause}`,
       'migrate',
       'knowledge_nodes_fts',
+      error
+    );
+  }
+}
+
+/**
+ * Migrate from schema version 22 to version 23
+ *
+ * Changes in v23:
+ * - Add 4 medical relationship types to knowledge_edges CHECK constraint:
+ *   treated_with, administered_via, managed_by, interacts_with
+ *
+ * Strategy: Recreate knowledge_edges table with updated CHECK constraint,
+ * copy all existing data, swap tables.
+ *
+ * @throws MigrationError if migration fails
+ */
+function migrateV22ToV23(db: Database.Database): void {
+  try {
+    db.exec('BEGIN TRANSACTION');
+
+    // Check if knowledge_edges table exists (KG tables are only created in v15+)
+    const tableExists = db.prepare(
+      "SELECT COUNT(*) as cnt FROM sqlite_master WHERE type='table' AND name='knowledge_edges'"
+    ).get() as { cnt: number };
+
+    if (tableExists.cnt === 0) {
+      // No knowledge_edges table - nothing to migrate
+      db.exec('COMMIT');
+      return;
+    }
+
+    // Step 1: Create new table with expanded CHECK constraint
+    db.exec(`
+      CREATE TABLE knowledge_edges_new (
+        id TEXT PRIMARY KEY,
+        source_node_id TEXT NOT NULL,
+        target_node_id TEXT NOT NULL,
+        relationship_type TEXT NOT NULL CHECK (relationship_type IN (
+          'co_mentioned', 'co_located', 'works_at', 'represents',
+          'located_in', 'filed_in', 'cites', 'references',
+          'party_to', 'related_to', 'precedes', 'occurred_at',
+          'treated_with', 'administered_via', 'managed_by', 'interacts_with'
+        )),
+        weight REAL NOT NULL DEFAULT 1.0,
+        evidence_count INTEGER NOT NULL DEFAULT 1,
+        document_ids TEXT NOT NULL,
+        metadata TEXT,
+        provenance_id TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        valid_from TEXT,
+        valid_until TEXT,
+        normalized_weight REAL DEFAULT 0,
+        contradiction_count INTEGER DEFAULT 0,
+        FOREIGN KEY (source_node_id) REFERENCES knowledge_nodes(id),
+        FOREIGN KEY (target_node_id) REFERENCES knowledge_nodes(id),
+        FOREIGN KEY (provenance_id) REFERENCES provenance(id)
+      )
+    `);
+
+    // Step 2: Copy all existing data
+    db.exec(`
+      INSERT INTO knowledge_edges_new
+      SELECT id, source_node_id, target_node_id, relationship_type,
+             weight, evidence_count, document_ids, metadata,
+             provenance_id, created_at, valid_from, valid_until,
+             normalized_weight, contradiction_count
+      FROM knowledge_edges
+    `);
+
+    // Step 3: Drop old table and rename
+    db.exec('DROP TABLE knowledge_edges');
+    db.exec('ALTER TABLE knowledge_edges_new RENAME TO knowledge_edges');
+
+    // Step 4: Recreate indexes (matching schema-definitions.ts names)
+    db.exec('CREATE INDEX IF NOT EXISTS idx_ke_source_node ON knowledge_edges(source_node_id)');
+    db.exec('CREATE INDEX IF NOT EXISTS idx_ke_target_node ON knowledge_edges(target_node_id)');
+    db.exec('CREATE INDEX IF NOT EXISTS idx_ke_relationship_type ON knowledge_edges(relationship_type)');
+
+    db.exec('COMMIT');
+  } catch (error) {
+    try {
+      db.exec('ROLLBACK');
+    } catch { /* ignore rollback errors */ }
+    const cause = error instanceof Error ? error.message : String(error);
+    throw new MigrationError(
+      `Failed to migrate from v22 to v23 (medical relationship types): ${cause}`,
+      'migrate',
+      'knowledge_edges',
       error
     );
   }

@@ -119,7 +119,7 @@ describe('Migration v21 to v22 (FTS Tokenizer/Trigger Fix)', () => {
     migrateToLatest(db);
 
     const version = (db.prepare('SELECT version FROM schema_version').get() as { version: number }).version;
-    expect(version).toBe(22);
+    expect(version).toBe(23);
   });
 
   it.skipIf(!sqliteVecAvailable)('FTS table uses porter unicode61 tokenizer after migration', () => {
@@ -243,7 +243,7 @@ describe('Migration v21 to v22 (FTS Tokenizer/Trigger Fix)', () => {
     expect(() => migrateToLatest(db)).not.toThrow();
 
     const version = (db.prepare('SELECT version FROM schema_version').get() as { version: number }).version;
-    expect(version).toBe(22);
+    expect(version).toBe(23);
   });
 
   it.skipIf(!sqliteVecAvailable)('handles fresh DB with _ai/_ad/_au triggers', () => {
@@ -311,7 +311,7 @@ describe('Migration v21 to v22 (FTS Tokenizer/Trigger Fix)', () => {
     migrateToLatest(db);
 
     const version = (db.prepare('SELECT version FROM schema_version').get() as { version: number }).version;
-    expect(version).toBe(22);
+    expect(version).toBe(23);
 
     // Should still have correct triggers
     const triggers = getTriggerNames(db);

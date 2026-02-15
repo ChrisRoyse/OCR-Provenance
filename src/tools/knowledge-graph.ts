@@ -23,6 +23,7 @@ import { requireDatabase } from '../server/state.js';
 import { successResult } from '../server/types.js';
 import { v4 as uuidv4 } from 'uuid';
 import { ProvenanceType } from '../models/provenance.js';
+import type { ProvenanceRecord, SourceType } from '../models/provenance.js';
 import {
   buildKnowledgeGraph,
   queryGraph,
@@ -40,12 +41,15 @@ import {
   updateKnowledgeNode,
   updateKnowledgeEdge,
   deleteKnowledgeNode,
+  insertEntityEmbedding,
+  insertVecEntityEmbedding,
+  deleteEntityEmbeddingsByNodeId,
 } from '../services/storage/database/knowledge-graph-operations.js';
 import { exportGraphML, exportCSV, exportJSONLD } from '../services/knowledge-graph/export-service.js';
 import { incrementalBuildGraph } from '../services/knowledge-graph/incremental-builder.js';
 import { classifyEdgesWithGemini } from '../services/knowledge-graph/rule-classifier.js';
 import { getEmbeddingService } from '../services/embedding/embedder.js';
-import { getEmbeddingClient } from '../services/embedding/nomic.js';
+import { getEmbeddingClient, EMBEDDING_DIM, MODEL_NAME, MODEL_VERSION } from '../services/embedding/nomic.js';
 import { computeHash } from '../utils/hash.js';
 import { sorensenDice } from '../services/knowledge-graph/string-similarity.js';
 import { computeImportanceScore } from '../models/knowledge-graph.js';
@@ -1502,6 +1506,10 @@ async function handleKnowledgeGraphContradictions(
 
 /**
  * Handle ocr_knowledge_graph_embed_entities - Generate embeddings for KG nodes
+ *
+ * Creates EMBEDDING provenance records (CP-001) for every entity embedding.
+ * Uses local GPU only via nomic-embed-text-v1.5 (CP-004).
+ * When force=true, deletes existing embeddings for re-embedded nodes.
  */
 async function handleKnowledgeGraphEmbedEntities(
   params: Record<string, unknown>
@@ -1510,11 +1518,12 @@ async function handleKnowledgeGraphEmbedEntities(
     const input = validateInput(EntityEmbedInput, params);
     const { db } = requireDatabase();
     const conn = db.getConnection();
+    const startMs = Date.now();
 
-    // Get nodes to embed
+    // Get nodes to embed, including provenance_id for chain building
     let sql = `
       SELECT kn.id, kn.canonical_name, kn.entity_type, kn.aliases,
-             kn.document_count, kn.avg_confidence
+             kn.document_count, kn.avg_confidence, kn.provenance_id
       FROM knowledge_nodes kn
     `;
     const sqlParams: unknown[] = [];
@@ -1540,6 +1549,7 @@ async function handleKnowledgeGraphEmbedEntities(
     const nodes = conn.prepare(sql).all(...sqlParams) as Array<{
       id: string; canonical_name: string; entity_type: string;
       aliases: string | null; document_count: number; avg_confidence: number;
+      provenance_id: string;
     }>;
 
     if (nodes.length === 0) {
@@ -1549,7 +1559,7 @@ async function handleKnowledgeGraphEmbedEntities(
       }));
     }
 
-    // Build texts for embedding
+    // Build texts for embedding: canonical_name + type + aliases
     const texts: string[] = [];
     for (const node of nodes) {
       const aliases = parseAliases(node.aliases);
@@ -1557,39 +1567,104 @@ async function handleKnowledgeGraphEmbedEntities(
       texts.push(`${node.canonical_name} (${node.entity_type}).${aliasText}`);
     }
 
-    // Generate embeddings via nomic
+    // Generate embeddings via nomic local GPU (CP-004: no cloud fallback)
     const client = getEmbeddingClient();
     const embedResults = await client.embedChunks(texts);
+    const embeddingDurationMs = Date.now() - startMs;
 
-    // Store embeddings
+    if (embedResults.length !== nodes.length) {
+      throw new Error(
+        `Embedding count mismatch: got ${embedResults.length} vectors for ${nodes.length} nodes`,
+      );
+    }
+
+    // Store embeddings with provenance in a single transaction
     let embedded = 0;
     let errors = 0;
-
-    const insertEmb = conn.prepare(`
-      INSERT OR REPLACE INTO entity_embeddings (id, node_id, original_text, original_text_length,
-        entity_type, document_count, model_name, content_hash, created_at)
-      VALUES (?, ?, ?, ?, ?, ?, 'nomic-embed-text-v1.5', ?, datetime('now'))
-    `);
-    const insertVec = conn.prepare(`
-      INSERT OR REPLACE INTO vec_entity_embeddings (entity_embedding_id, vector)
-      VALUES (?, ?)
-    `);
+    const provenanceIds: string[] = [];
 
     const transaction = conn.transaction(() => {
       for (let i = 0; i < nodes.length; i++) {
-        try {
-          const vector = embedResults[i];
-          if (!vector || vector.length === 0) { errors++; continue; }
+        const node = nodes[i];
+        const vector = embedResults[i];
 
-          const embId = uuidv4();
-          const contentHash = computeHash(texts[i]);
-          insertEmb.run(embId, nodes[i].id, texts[i], texts[i].length,
-            nodes[i].entity_type, nodes[i].document_count, contentHash);
-          insertVec.run(embId, Buffer.from(vector.buffer));
-          embedded++;
-        } catch {
+        if (!vector || vector.length !== EMBEDDING_DIM) {
+          console.error(
+            `[ENTITY_EMBED] Skipping node ${node.id} (${node.canonical_name}): ` +
+            `invalid vector (length=${vector?.length ?? 0}, expected=${EMBEDDING_DIM})`,
+          );
           errors++;
+          continue;
         }
+
+        // If force mode, delete existing embedding for this node first
+        if (input.force) {
+          deleteEntityEmbeddingsByNodeId(conn, node.id);
+        }
+
+        const embId = uuidv4();
+        const now = new Date().toISOString();
+        const contentHash = computeHash(texts[i]);
+
+        // CP-001: Create EMBEDDING provenance record chained from the node's provenance
+        const provId = uuidv4();
+        const nodeProvRecord = db.getProvenance(node.provenance_id);
+        const parentIds = nodeProvRecord?.parent_ids
+          ? [...JSON.parse(nodeProvRecord.parent_ids) as string[], node.provenance_id]
+          : [node.provenance_id];
+
+        const provRecord: ProvenanceRecord = {
+          id: provId,
+          type: ProvenanceType.EMBEDDING,
+          created_at: now,
+          processed_at: now,
+          source_file_created_at: null,
+          source_file_modified_at: null,
+          source_type: 'EMBEDDING' as SourceType,
+          source_path: null,
+          source_id: node.provenance_id,
+          root_document_id: nodeProvRecord?.root_document_id ?? node.provenance_id,
+          location: null,
+          content_hash: contentHash,
+          input_hash: computeHash(node.canonical_name),
+          file_hash: null,
+          processor: MODEL_NAME,
+          processor_version: MODEL_VERSION,
+          processing_params: {
+            dimensions: EMBEDDING_DIM,
+            task_type: 'search_document',
+            inference_mode: 'local',
+            device: 'cuda:0',
+            entity_type: node.entity_type,
+            node_id: node.id,
+          },
+          processing_duration_ms: Math.round(embeddingDurationMs / nodes.length),
+          processing_quality_score: null,
+          parent_id: node.provenance_id,
+          parent_ids: JSON.stringify(parentIds),
+          chain_depth: (nodeProvRecord?.chain_depth ?? 2) + 1,
+          chain_path: JSON.stringify(['DOCUMENT', 'ENTITY_EXTRACTION', 'KNOWLEDGE_GRAPH', 'EMBEDDING']),
+        };
+        db.insertProvenance(provRecord);
+        provenanceIds.push(provId);
+
+        // Insert entity_embeddings record
+        insertEntityEmbedding(conn, {
+          id: embId,
+          node_id: node.id,
+          original_text: texts[i],
+          original_text_length: texts[i].length,
+          entity_type: node.entity_type,
+          document_count: node.document_count,
+          model_name: MODEL_NAME,
+          content_hash: contentHash,
+          created_at: now,
+          provenance_id: provId,
+        });
+
+        // Insert into vec_entity_embeddings virtual table
+        insertVecEntityEmbedding(conn, embId, Buffer.from(vector.buffer));
+        embedded++;
       }
     });
     transaction();
@@ -1599,6 +1674,10 @@ async function handleKnowledgeGraphEmbedEntities(
       skipped: nodes.length - embedded - errors,
       errors,
       total_nodes_processed: nodes.length,
+      embedding_duration_ms: embeddingDurationMs,
+      model: MODEL_NAME,
+      dimensions: EMBEDDING_DIM,
+      provenance_ids: provenanceIds,
     }));
   } catch (error) {
     return handleError(error);
@@ -1607,6 +1686,10 @@ async function handleKnowledgeGraphEmbedEntities(
 
 /**
  * Handle ocr_knowledge_graph_search_entities - Semantic entity search
+ *
+ * Embeds the query via nomic local GPU, then searches vec_entity_embeddings
+ * for nearest neighbors using cosine distance. Returns ranked results with
+ * similarity scores and optional document context.
  */
 async function handleKnowledgeGraphSearchEntities(
   params: Record<string, unknown>
@@ -1616,14 +1699,26 @@ async function handleKnowledgeGraphSearchEntities(
     const { db } = requireDatabase();
     const conn = db.getConnection();
 
-    // Embed the query
-    const embedService = getEmbeddingService();
-    const queryVector = await embedService.embedSearchQuery(input.query);
-    if (!queryVector) {
-      return formatResponse({ error: 'Failed to embed query' });
+    // Check if entity embeddings exist
+    const embCount = conn.prepare(
+      'SELECT COUNT(*) as cnt FROM entity_embeddings',
+    ).get() as { cnt: number };
+
+    if (embCount.cnt === 0) {
+      return formatResponse(successResult({
+        query: input.query,
+        total: 0,
+        results: [],
+        message: 'No entity embeddings found. Run ocr_knowledge_graph_embed_entities first.',
+      }));
     }
 
-    // Search vec_entity_embeddings
+    // Embed the query using local GPU (CP-004: no cloud fallback)
+    const embedService = getEmbeddingService();
+    const queryVector = await embedService.embedSearchQuery(input.query);
+
+    // Search vec_entity_embeddings using sqlite-vec KNN
+    const kValue = (input.limit ?? 20) * 2;
     let sql = `
       SELECT vee.distance,
              ee.id as embedding_id, ee.node_id, ee.original_text, ee.entity_type,
@@ -1635,7 +1730,7 @@ async function handleKnowledgeGraphSearchEntities(
       WHERE vee.vector MATCH ?
         AND vee.k = ?
     `;
-    const sqlParams: unknown[] = [Buffer.from(queryVector.buffer), (input.limit ?? 20) * 2];
+    const sqlParams: unknown[] = [Buffer.from(queryVector.buffer), kValue];
 
     if (input.entity_type) {
       sql += ` AND ee.entity_type = ?`;
@@ -1649,7 +1744,7 @@ async function handleKnowledgeGraphSearchEntities(
       avg_confidence: number; edge_count: number;
     }>;
 
-    // Filter by similarity threshold (distance is cosine distance, lower = more similar)
+    // Filter by similarity threshold (cosine distance: 0 = identical, 1 = orthogonal)
     const threshold = input.similarity_threshold ?? 0.7;
     const filtered = rows
       .filter(r => (1 - r.distance) >= threshold)
@@ -1685,6 +1780,8 @@ async function handleKnowledgeGraphSearchEntities(
     return formatResponse(successResult({
       query: input.query,
       total: results.length,
+      similarity_threshold: threshold,
+      model: MODEL_NAME,
       results,
     }));
   } catch (error) {

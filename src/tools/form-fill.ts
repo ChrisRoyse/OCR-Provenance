@@ -11,7 +11,7 @@
 
 import { z } from 'zod';
 import { v4 as uuidv4 } from 'uuid';
-import { formatResponse, handleError, type ToolDefinition } from './shared.js';
+import { formatResponse, handleError, fetchProvenanceChain, type ToolDefinition } from './shared.js';
 import { validateInput, sanitizePath } from '../utils/validation.js';
 import { requireDatabase } from '../server/state.js';
 import { successResult } from '../server/types.js';
@@ -33,7 +33,8 @@ function safeJsonParse<T>(json: string | null | undefined, fallback: T): T {
   if (!json) return fallback;
   try {
     return JSON.parse(json) as T;
-  } catch {
+  } catch (err) {
+    console.error(`[form-fill] Failed to parse stored JSON: ${err instanceof Error ? err.message : String(err)}`);
     return fallback;
   }
 }
@@ -58,6 +59,8 @@ const FormFillStatusInput = z.object({
   search_query: z.string().optional().describe('Search form fills by field values, file path (LIKE match)'),
   limit: z.number().int().min(1).max(100).default(50),
   offset: z.number().int().min(0).default(0).describe('Offset for pagination'),
+  include_provenance: z.boolean().default(false)
+    .describe('Include provenance chain when retrieving a specific form fill'),
 });
 
 /**
@@ -427,7 +430,7 @@ async function handleFormFillStatus(params: Record<string, unknown>) {
       if (!formFill) {
         return formatResponse({ error: `Form fill not found: ${input.form_fill_id}` });
       }
-      return formatResponse({
+      const formFillResponse: Record<string, unknown> = {
         form_fill: {
           ...formFill,
           // Parse JSON strings for display (safe parse handles corrupt stored data)
@@ -437,7 +440,13 @@ async function handleFormFillStatus(params: Record<string, unknown>) {
           // Don't include base64 in status response
           output_base64: formFill.output_base64 ? '[base64 data available]' : null,
         },
-      });
+      };
+
+      if (input.include_provenance) {
+        formFillResponse.provenance_chain = fetchProvenanceChain(db, formFill.provenance_id, 'form-fill');
+      }
+
+      return formatResponse(formFillResponse);
     }
 
     // If search_query is provided, use search instead of list

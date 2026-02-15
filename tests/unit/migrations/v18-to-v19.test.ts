@@ -536,7 +536,7 @@ describe('Migration v18 to v19 (Entity Extraction Segments)', () => {
     migrateToLatest(db);
 
     const version = (db.prepare('SELECT version FROM schema_version').get() as { version: number }).version;
-    expect(version).toBe(22);
+    expect(version).toBe(23);
   });
 
   it.skipIf(!sqliteVecAvailable)('can insert and query segments after migration', () => {
@@ -682,6 +682,6 @@ describe('Migration v18 to v19 (Entity Extraction Segments)', () => {
     expect(() => migrateToLatest(db)).not.toThrow();
 
     const version = (db.prepare('SELECT version FROM schema_version').get() as { version: number }).version;
-    expect(version).toBe(22);
+    expect(version).toBe(23);
   });
 });

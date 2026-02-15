@@ -16,7 +16,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { requireDatabase } from '../server/state.js';
 import { successResult } from '../server/types.js';
 import { MCPError } from '../server/errors.js';
-import { formatResponse, handleError, type ToolResponse, type ToolDefinition } from './shared.js';
+import { formatResponse, handleError, buildClusterReassignmentHint, type ToolResponse, type ToolDefinition } from './shared.js';
 import { validateInput } from '../utils/validation.js';
 import { getVLMService } from '../services/vlm/service.js';
 import { VLMPipeline } from '../services/vlm/pipeline.js';
@@ -90,11 +90,15 @@ const VLMProcessDocumentInput = z.object({
   document_id: z.string().min(1),
   batch_size: z.number().int().min(1).max(20).default(5),
   auto_extract_entities: z.boolean().default(false),
+  auto_reassign_clusters: z.boolean().default(false)
+    .describe('Hint that document clusters may need updating after VLM processing'),
 });
 
 const VLMProcessPendingInput = z.object({
   limit: z.number().int().min(1).max(500).default(50),
   auto_extract_entities: z.boolean().default(false),
+  auto_reassign_clusters: z.boolean().default(false)
+    .describe('Hint that document clusters may need updating after VLM processing'),
 });
 
 const VLMAnalyzePDFInput = z.object({
@@ -305,6 +309,14 @@ export async function handleVLMProcessDocument(
       };
     }
 
+    if (input.auto_reassign_clusters && result.successful > 0) {
+      const hint = buildClusterReassignmentHint(conn, documentId, 'vlm');
+      if (hint) {
+        responseData.cluster_reassignment_hint = hint.cluster_reassignment_hint;
+        responseData.current_clusters = hint.current_clusters;
+      }
+    }
+
     return formatResponse(successResult(responseData));
   } catch (error) {
     return handleError(error);
@@ -381,6 +393,10 @@ export async function handleVLMProcessPending(
 
     if (vlmEntityResults.length > 0) {
       responseData.vlm_entity_extraction = vlmEntityResults;
+    }
+
+    if (input.auto_reassign_clusters && result.successful > 0) {
+      responseData.cluster_reassignment_hint = 'Document content changed. Run ocr_cluster_documents to update cluster assignments.';
     }
 
     return formatResponse(successResult(responseData));
@@ -513,6 +529,7 @@ export const vlmTools: Record<string, ToolDefinition> = {
       document_id: z.string().min(1).describe('Document ID'),
       batch_size: z.number().int().min(1).max(20).default(5).describe('Images per batch'),
       auto_extract_entities: z.boolean().default(false).describe('Auto-extract entities from VLM descriptions after processing'),
+      auto_reassign_clusters: z.boolean().default(false).describe('Hint to reassign clusters after VLM content changes'),
     },
     handler: handleVLMProcessDocument,
   },
@@ -522,6 +539,7 @@ export const vlmTools: Record<string, ToolDefinition> = {
     inputSchema: {
       limit: z.number().int().min(1).max(500).default(50).describe('Maximum images to process'),
       auto_extract_entities: z.boolean().default(false).describe('Auto-extract entities from VLM descriptions after processing'),
+      auto_reassign_clusters: z.boolean().default(false).describe('Hint to reassign clusters after VLM content changes'),
     },
     handler: handleVLMProcessPending,
   },

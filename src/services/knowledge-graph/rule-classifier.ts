@@ -72,9 +72,12 @@ const RULE_MATRIX: Array<{
   { source_type: 'person', target_type: 'medication', result: 'references', confidence: 0.75 },
   { source_type: 'person', target_type: 'diagnosis', result: 'references', confidence: 0.75 },
   { source_type: 'person', target_type: 'medical_device', result: 'references', confidence: 0.75 },
-  { source_type: 'medication', target_type: 'diagnosis', result: 'related_to', confidence: 0.80 },
-  { source_type: 'medical_device', target_type: 'diagnosis', result: 'related_to', confidence: 0.80 },
-  { source_type: 'medication', target_type: 'medical_device', result: 'related_to', confidence: 0.75 },
+
+  // --- Medical: Treatment/Device/Diagnosis relationships (GAP-M8) ---
+  { source_type: 'diagnosis', target_type: 'medication', result: 'treated_with', confidence: 0.85 },
+  { source_type: 'medication', target_type: 'medical_device', result: 'administered_via', confidence: 0.80 },
+  { source_type: 'diagnosis', target_type: 'medical_device', result: 'managed_by', confidence: 0.80 },
+  { source_type: 'medication', target_type: 'medication', result: 'interacts_with', confidence: 0.75 },
 ];
 
 /**
