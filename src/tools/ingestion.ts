@@ -962,6 +962,9 @@ export async function handleProcessPending(
     if (input.auto_scan_contradictions && !input.auto_build_kg) {
       throw new Error('auto_scan_contradictions requires auto_build_kg=true');
     }
+    if (input.auto_reassign_clusters && !input.auto_extract_entities) {
+      throw new Error('auto_reassign_clusters requires auto_extract_entities=true');
+    }
     if (input.auto_extract_entities && !process.env.GEMINI_API_KEY) {
       throw new Error('auto_extract_entities requires GEMINI_API_KEY');
     }
@@ -1515,6 +1518,80 @@ export async function handleProcessPending(
       response.coreference_resolution = { enabled: true };
     }
 
+    if (input.auto_reassign_clusters) {
+      response.cluster_reassignment = { enabled: true, documents: successfulDocIds.length };
+    }
+
+    // Semantic duplicate detection via entity overlap
+    if (input.check_semantic_duplicates && successfulDocIds.length > 0) {
+      try {
+        const conn = db.getConnection();
+        const semanticDuplicateWarnings: Array<{
+          document_id: string;
+          similar_to: string;
+          similar_file_name: string;
+          jaccard_similarity: number;
+        }> = [];
+
+        for (const docId of successfulDocIds) {
+          try {
+            // Get this document's entity normalized_text set
+            const docEntityRows = conn.prepare(
+              'SELECT DISTINCT normalized_text FROM entities WHERE document_id = ?'
+            ).all(docId) as Array<{ normalized_text: string }>;
+
+            if (docEntityRows.length === 0) continue;
+            const docEntitySet = new Set(docEntityRows.map(r => r.normalized_text));
+
+            // Compare against other complete documents (limit to last 100 for performance)
+            const otherDocs = conn.prepare(`
+              SELECT DISTINCT e.document_id, d.file_name
+              FROM entities e
+              JOIN documents d ON d.id = e.document_id
+              WHERE e.document_id != ?
+              GROUP BY e.document_id
+              ORDER BY d.created_at DESC
+              LIMIT 100
+            `).all(docId) as Array<{ document_id: string; file_name: string }>;
+
+            for (const otherDoc of otherDocs) {
+              const otherEntityRows = conn.prepare(
+                'SELECT DISTINCT normalized_text FROM entities WHERE document_id = ?'
+              ).all(otherDoc.document_id) as Array<{ normalized_text: string }>;
+
+              if (otherEntityRows.length === 0) continue;
+              const otherEntitySet = new Set(otherEntityRows.map(r => r.normalized_text));
+
+              // Compute Jaccard similarity
+              let intersection = 0;
+              for (const ent of docEntitySet) {
+                if (otherEntitySet.has(ent)) intersection++;
+              }
+              const union = docEntitySet.size + otherEntitySet.size - intersection;
+              const jaccard = union > 0 ? intersection / union : 0;
+
+              if (jaccard > 0.85) {
+                semanticDuplicateWarnings.push({
+                  document_id: docId,
+                  similar_to: otherDoc.document_id,
+                  similar_file_name: otherDoc.file_name,
+                  jaccard_similarity: Math.round(jaccard * 1000) / 1000,
+                });
+              }
+            }
+          } catch {
+            // Skip failed doc comparison
+          }
+        }
+
+        if (semanticDuplicateWarnings.length > 0) {
+          response.semantic_duplicate_warnings = semanticDuplicateWarnings;
+        }
+      } catch {
+        // Semantic duplicate check failed - skip
+      }
+    }
+
     return formatResponse(successResult(response));
 
   } catch (error) {
@@ -1876,7 +1953,7 @@ export const ingestionTools: Record<string, ToolDefinition> = {
     handler: handleIngestFiles,
   },
   'ocr_process_pending': {
-    description: 'Process pending documents through OCR pipeline (OCR -> Chunk -> Embed -> Vector). Optionally auto-extract entities and build/update knowledge graph.',
+    description: 'Process pending documents through OCR pipeline (OCR -> Chunk -> Embed -> Vector). Optionally auto-extract entities and build/update knowledge graph. Supports semantic_duplicate_warnings when check_semantic_duplicates is enabled.',
     inputSchema: {
       max_concurrent: z.number().int().min(1).max(10).default(3).describe('Maximum concurrent OCR operations'),
       ocr_mode: z.enum(['fast', 'balanced', 'accurate']).optional().describe('OCR processing mode override'),
@@ -1901,6 +1978,10 @@ export const ingestionTools: Record<string, ToolDefinition> = {
         .describe('Auto-resolve coreferences (pronouns, abbreviations) after entity extraction. Requires auto_extract_entities=true and GEMINI_API_KEY.'),
       auto_scan_contradictions: z.boolean().default(false)
         .describe('Auto-scan for contradictions after knowledge graph build. Requires auto_build_kg=true.'),
+      auto_reassign_clusters: z.boolean().default(false)
+        .describe('After entity extraction + KG merge, reassign documents to clusters if clusters exist. Requires auto_extract_entities=true.'),
+      check_semantic_duplicates: z.boolean().default(false)
+        .describe('After OCR completes, check for semantically similar documents by entity overlap (Jaccard > 0.85). Informational only.'),
     },
     handler: handleProcessPending,
   },

@@ -42,6 +42,8 @@ const FileListInput = z.object({
   status_filter: z.enum(['pending', 'uploading', 'confirming', 'complete', 'failed', 'all']).default('all'),
   limit: z.number().int().min(1).max(100).default(50),
   offset: z.number().int().min(0).default(0),
+  include_duplicate_check: z.boolean().default(false)
+    .describe('When true, group files by similar sizes (within 10%) and flag groups with 3+ files as potential duplicates. Informational only.'),
 });
 
 const FileGetInput = z.object({
@@ -185,7 +187,7 @@ async function handleFileList(params: Record<string, unknown>) {
       offset: input.offset,
     });
 
-    return formatResponse({
+    const response: Record<string, unknown> = {
       total: files.length,
       uploaded_files: files.map(f => ({
         id: f.id,
@@ -199,7 +201,62 @@ async function handleFileList(params: Record<string, unknown>) {
         completed_at: f.completed_at,
         error_message: f.error_message,
       })),
-    });
+    };
+
+    // File size-based duplicate detection
+    if (input.include_duplicate_check && files.length >= 3) {
+      const sizeGroups = new Map<string, Array<{ id: string; file_name: string; file_size: number; file_hash: string }>>();
+
+      for (const f of files) {
+        if (!f.file_size || f.file_size === 0) continue;
+
+        // Round size to nearest 10% bucket for grouping
+        // Files within 10% of each other share the same bucket key
+        const bucketSize = Math.max(1, Math.round(f.file_size * 0.1));
+        const bucketKey = String(Math.round(f.file_size / bucketSize));
+
+        const group = sizeGroups.get(bucketKey);
+        const entry = { id: f.id, file_name: f.file_name, file_size: f.file_size, file_hash: f.file_hash };
+        if (group) {
+          group.push(entry);
+        } else {
+          sizeGroups.set(bucketKey, [entry]);
+        }
+      }
+
+      // Flag groups with 3+ files as potential duplicates
+      const potentialDuplicates: Array<{
+        group_size: number;
+        avg_file_size: number;
+        files: Array<{ id: string; file_name: string; file_size: number; file_hash: string }>;
+        has_hash_matches: boolean;
+      }> = [];
+
+      for (const [, group] of sizeGroups) {
+        if (group.length >= 3) {
+          const avgSize = Math.round(group.reduce((sum, f) => sum + f.file_size, 0) / group.length);
+          // Check if any files in group share the same hash (true duplicates)
+          const hashCounts = new Map<string, number>();
+          for (const f of group) {
+            hashCounts.set(f.file_hash, (hashCounts.get(f.file_hash) ?? 0) + 1);
+          }
+          const hasHashMatches = [...hashCounts.values()].some(c => c > 1);
+
+          potentialDuplicates.push({
+            group_size: group.length,
+            avg_file_size: avgSize,
+            files: group,
+            has_hash_matches: hasHashMatches,
+          });
+        }
+      }
+
+      if (potentialDuplicates.length > 0) {
+        response.potential_duplicates = potentialDuplicates;
+      }
+    }
+
+    return formatResponse(response);
   } catch (error) {
     return handleError(error);
   }
@@ -307,7 +364,7 @@ export const fileManagementTools: Record<string, ToolDefinition> = {
     handler: handleFileUpload,
   },
   'ocr_file_list': {
-    description: 'List uploaded files with optional status filter (pending, uploading, confirming, complete, failed)',
+    description: 'List uploaded files with optional status filter (pending, uploading, confirming, complete, failed). Set include_duplicate_check=true to flag potential duplicates by similar file sizes.',
     inputSchema: FileListInput.shape,
     handler: handleFileList,
   },
