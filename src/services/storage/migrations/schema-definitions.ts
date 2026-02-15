@@ -753,6 +753,7 @@ export const CREATE_INDEXES = [
   'CREATE INDEX IF NOT EXISTS idx_entities_entity_type ON entities(entity_type)',
   'CREATE INDEX IF NOT EXISTS idx_entities_normalized_text ON entities(normalized_text)',
   'CREATE INDEX IF NOT EXISTS idx_entity_mentions_entity_id ON entity_mentions(entity_id)',
+  'CREATE INDEX IF NOT EXISTS idx_entity_mentions_document_id ON entity_mentions(document_id)',
 
   // Comparison indexes
   'CREATE INDEX IF NOT EXISTS idx_comparisons_doc1 ON comparisons(document_id_1)',

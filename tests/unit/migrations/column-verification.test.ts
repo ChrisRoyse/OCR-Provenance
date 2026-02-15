@@ -4,7 +4,7 @@
  * Tests that all tables have the required columns with correct definitions.
  */
 
-import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import Database from 'better-sqlite3';
 import {
   sqliteVecAvailable,
@@ -26,21 +26,17 @@ describe('Column Verification', () => {
 
   beforeAll(() => {
     ctx.testDir = createTestDir('migrations-column-verification');
+    if (sqliteVecAvailable) {
+      const { db, dbPath } = createTestDb(ctx.testDir);
+      ctx.db = db;
+      ctx.dbPath = dbPath;
+      initializeDatabase(ctx.db);
+    }
   });
 
   afterAll(() => {
-    cleanupTestDir(ctx.testDir);
-  });
-
-  beforeEach(() => {
-    const { db, dbPath } = createTestDb(ctx.testDir);
-    ctx.db = db;
-    ctx.dbPath = dbPath;
-  });
-
-  afterEach(() => {
     closeDb(ctx.db);
-    ctx.db = undefined;
+    cleanupTestDir(ctx.testDir);
   });
 
   describe('documents table columns', () => {
@@ -65,7 +61,6 @@ describe('Column Verification', () => {
     ];
 
     it.skipIf(!sqliteVecAvailable)('should have all required columns', () => {
-      initializeDatabase(ctx.db);
       const columns = getTableColumns(ctx.db!, 'documents');
 
       for (const col of expectedColumns) {
@@ -105,7 +100,6 @@ describe('Column Verification', () => {
     ];
 
     it.skipIf(!sqliteVecAvailable)('should have all required columns', () => {
-      initializeDatabase(ctx.db);
       const columns = getTableColumns(ctx.db!, 'chunks');
 
       for (const col of expectedColumns) {
@@ -153,7 +147,6 @@ describe('Column Verification', () => {
     ];
 
     it.skipIf(!sqliteVecAvailable)('should have all required columns', () => {
-      initializeDatabase(ctx.db);
       const columns = getTableColumns(ctx.db!, 'embeddings');
 
       for (const col of expectedColumns) {
@@ -199,7 +192,6 @@ describe('Column Verification', () => {
     ];
 
     it.skipIf(!sqliteVecAvailable)('should have all required columns', () => {
-      initializeDatabase(ctx.db);
       const columns = getTableColumns(ctx.db!, 'provenance');
 
       for (const col of expectedColumns) {
@@ -236,7 +228,6 @@ describe('Column Verification', () => {
     ];
 
     it.skipIf(!sqliteVecAvailable)('should have all required columns', () => {
-      initializeDatabase(ctx.db);
       const columns = getTableColumns(ctx.db!, 'ocr_results');
 
       for (const col of expectedColumns) {
@@ -249,7 +240,6 @@ describe('Column Verification', () => {
     const expectedColumns = ['id', 'version', 'created_at', 'updated_at'];
 
     it.skipIf(!sqliteVecAvailable)('should have all required columns', () => {
-      initializeDatabase(ctx.db);
       const columns = getTableColumns(ctx.db!, 'schema_version');
 
       for (const col of expectedColumns) {
@@ -272,7 +262,6 @@ describe('Column Verification', () => {
     ];
 
     it.skipIf(!sqliteVecAvailable)('should have all required columns', () => {
-      initializeDatabase(ctx.db);
       const columns = getTableColumns(ctx.db!, 'database_metadata');
 
       for (const col of expectedColumns) {

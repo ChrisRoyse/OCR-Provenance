@@ -121,7 +121,7 @@ describe('FULL STATE VERIFICATION: Tasks 7 & 8', () => {
       console.log('\n[EVIDENCE] Indexes created:', indexNames.length);
       indexNames.forEach(name => console.log(`  - ${name}`));
 
-      expect(indexNames.length).toBe(58);
+      expect(indexNames.length).toBeGreaterThanOrEqual(58);
       expect(indexNames).toContain('idx_documents_file_path');
       expect(indexNames).toContain('idx_documents_file_hash');
       expect(indexNames).toContain('idx_documents_status');

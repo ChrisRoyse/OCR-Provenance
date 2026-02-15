@@ -4,7 +4,7 @@
  * Tests that all required indexes are created during database initialization.
  */
 
-import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import Database from 'better-sqlite3';
 import {
   sqliteVecAvailable,
@@ -26,21 +26,17 @@ describe('Index Verification', () => {
 
   beforeAll(() => {
     ctx.testDir = createTestDir('migrations-index-verification');
+    if (sqliteVecAvailable) {
+      const { db, dbPath } = createTestDb(ctx.testDir);
+      ctx.db = db;
+      ctx.dbPath = dbPath;
+      initializeDatabase(ctx.db);
+    }
   });
 
   afterAll(() => {
-    cleanupTestDir(ctx.testDir);
-  });
-
-  beforeEach(() => {
-    const { db, dbPath } = createTestDb(ctx.testDir);
-    ctx.db = db;
-    ctx.dbPath = dbPath;
-  });
-
-  afterEach(() => {
     closeDb(ctx.db);
-    ctx.db = undefined;
+    cleanupTestDir(ctx.testDir);
   });
 
   const expectedIndexes = [
@@ -70,7 +66,6 @@ describe('Index Verification', () => {
   ];
 
   it.skipIf(!sqliteVecAvailable)('should create all 23 required indexes', () => {
-    initializeDatabase(ctx.db);
     const indexes = getIndexNames(ctx.db!);
 
     for (const index of expectedIndexes) {
@@ -79,77 +74,62 @@ describe('Index Verification', () => {
   });
 
   it.skipIf(!sqliteVecAvailable)('should have idx_documents_file_path index', () => {
-    initializeDatabase(ctx.db);
     expect(getIndexNames(ctx.db!)).toContain('idx_documents_file_path');
   });
 
   it.skipIf(!sqliteVecAvailable)('should have idx_documents_file_hash index', () => {
-    initializeDatabase(ctx.db);
     expect(getIndexNames(ctx.db!)).toContain('idx_documents_file_hash');
   });
 
   it.skipIf(!sqliteVecAvailable)('should have idx_documents_status index', () => {
-    initializeDatabase(ctx.db);
     expect(getIndexNames(ctx.db!)).toContain('idx_documents_status');
   });
 
   it.skipIf(!sqliteVecAvailable)('should have idx_ocr_results_document_id index', () => {
-    initializeDatabase(ctx.db);
     expect(getIndexNames(ctx.db!)).toContain('idx_ocr_results_document_id');
   });
 
   it.skipIf(!sqliteVecAvailable)('should have idx_chunks_document_id index', () => {
-    initializeDatabase(ctx.db);
     expect(getIndexNames(ctx.db!)).toContain('idx_chunks_document_id');
   });
 
   it.skipIf(!sqliteVecAvailable)('should have idx_chunks_ocr_result_id index', () => {
-    initializeDatabase(ctx.db);
     expect(getIndexNames(ctx.db!)).toContain('idx_chunks_ocr_result_id');
   });
 
   it.skipIf(!sqliteVecAvailable)('should have idx_chunks_embedding_status index', () => {
-    initializeDatabase(ctx.db);
     expect(getIndexNames(ctx.db!)).toContain('idx_chunks_embedding_status');
   });
 
   it.skipIf(!sqliteVecAvailable)('should have idx_embeddings_chunk_id index', () => {
-    initializeDatabase(ctx.db);
     expect(getIndexNames(ctx.db!)).toContain('idx_embeddings_chunk_id');
   });
 
   it.skipIf(!sqliteVecAvailable)('should have idx_embeddings_document_id index', () => {
-    initializeDatabase(ctx.db);
     expect(getIndexNames(ctx.db!)).toContain('idx_embeddings_document_id');
   });
 
   it.skipIf(!sqliteVecAvailable)('should have idx_embeddings_source_file index', () => {
-    initializeDatabase(ctx.db);
     expect(getIndexNames(ctx.db!)).toContain('idx_embeddings_source_file');
   });
 
   it.skipIf(!sqliteVecAvailable)('should have idx_embeddings_page index', () => {
-    initializeDatabase(ctx.db);
     expect(getIndexNames(ctx.db!)).toContain('idx_embeddings_page');
   });
 
   it.skipIf(!sqliteVecAvailable)('should have idx_provenance_source_id index', () => {
-    initializeDatabase(ctx.db);
     expect(getIndexNames(ctx.db!)).toContain('idx_provenance_source_id');
   });
 
   it.skipIf(!sqliteVecAvailable)('should have idx_provenance_type index', () => {
-    initializeDatabase(ctx.db);
     expect(getIndexNames(ctx.db!)).toContain('idx_provenance_type');
   });
 
   it.skipIf(!sqliteVecAvailable)('should have idx_provenance_root_document_id index', () => {
-    initializeDatabase(ctx.db);
     expect(getIndexNames(ctx.db!)).toContain('idx_provenance_root_document_id');
   });
 
   it.skipIf(!sqliteVecAvailable)('should have idx_provenance_parent_id index', () => {
-    initializeDatabase(ctx.db);
     expect(getIndexNames(ctx.db!)).toContain('idx_provenance_parent_id');
   });
 });
