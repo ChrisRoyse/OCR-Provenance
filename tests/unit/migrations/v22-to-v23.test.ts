@@ -164,7 +164,7 @@ describe('Migration v22 to v23 (Medical Relationship Types)', () => {
     migrateToLatest(db);
 
     const version = (db.prepare('SELECT version FROM schema_version').get() as { version: number }).version;
-    expect(version).toBe(23);
+    expect(version).toBe(24);
   });
 
   it.skipIf(!sqliteVecAvailable)('CHECK constraint includes medical relationship types after migration', () => {
@@ -316,7 +316,7 @@ describe('Migration v22 to v23 (Medical Relationship Types)', () => {
     migrateToLatest(db);
 
     const version = (db.prepare('SELECT version FROM schema_version').get() as { version: number }).version;
-    expect(version).toBe(23);
+    expect(version).toBe(24);
 
     const sql = getEdgeCheckSQL();
     expect(sql).toContain('treated_with');
@@ -332,7 +332,7 @@ describe('Migration v22 to v23 (Medical Relationship Types)', () => {
     expect(() => migrateToLatest(db)).not.toThrow();
 
     const version = (db.prepare('SELECT version FROM schema_version').get() as { version: number }).version;
-    expect(version).toBe(23);
+    expect(version).toBe(24);
   });
 
   it.skipIf(!sqliteVecAvailable)('migration skips gracefully when knowledge_edges table does not exist', () => {
@@ -375,7 +375,7 @@ describe('Migration v22 to v23 (Medical Relationship Types)', () => {
     expect(() => migrateToLatest(db)).not.toThrow();
 
     const version = (db.prepare('SELECT version FROM schema_version').get() as { version: number }).version;
-    expect(version).toBe(23);
+    expect(version).toBe(24);
   });
 
   it.skipIf(!sqliteVecAvailable)('FKs enforced on new medical edges', () => {

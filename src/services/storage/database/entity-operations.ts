@@ -169,10 +169,61 @@ export function deleteEntitiesByDocument(db: Database.Database, documentId: stri
       )
     `).run(documentId);
 
-    // Step 1: Delete KG node-entity links for entities of this document
+    // Step 1: Collect affected KG node IDs before deleting links
+    const affectedNodeIds = db.prepare(
+      `SELECT DISTINCT nel.node_id FROM node_entity_links nel
+       JOIN entities e ON nel.entity_id = e.id
+       WHERE e.document_id = ?`
+    ).all(documentId) as Array<{ node_id: string }>;
+
+    // Step 1b: Delete KG node-entity links for entities of this document
     db.prepare(
       'DELETE FROM node_entity_links WHERE entity_id IN (SELECT id FROM entities WHERE document_id = ?)'
     ).run(documentId);
+
+    // Step 1c: Clean up orphan KG nodes (document_count <= 0 with no remaining entity links)
+    if (affectedNodeIds.length > 0) {
+      const nodeIds = affectedNodeIds.map(r => r.node_id);
+      const placeholders = nodeIds.map(() => '?').join(',');
+
+      // Find orphan nodes to delete
+      const orphanNodes = db.prepare(
+        `SELECT id FROM knowledge_nodes
+         WHERE id IN (${placeholders})
+           AND document_count <= 0
+           AND id NOT IN (SELECT DISTINCT node_id FROM node_entity_links)`
+      ).all(...nodeIds) as Array<{ id: string }>;
+
+      if (orphanNodes.length > 0) {
+        const orphanIds = orphanNodes.map(r => r.id);
+        const orphanPlaceholders = orphanIds.map(() => '?').join(',');
+
+        // Delete entity_embeddings for orphan nodes
+        try {
+          db.prepare(
+            `DELETE FROM vec_entity_embeddings WHERE entity_embedding_id IN (
+               SELECT id FROM entity_embeddings WHERE node_id IN (${orphanPlaceholders})
+             )`
+          ).run(...orphanIds);
+          db.prepare(
+            `DELETE FROM entity_embeddings WHERE node_id IN (${orphanPlaceholders})`
+          ).run(...orphanIds);
+        } catch (e: unknown) {
+          const msg = e instanceof Error ? e.message : String(e);
+          if (!msg.includes('no such table')) throw e;
+        }
+
+        // Delete edges pointing to/from orphan nodes
+        db.prepare(
+          `DELETE FROM knowledge_edges WHERE source_node_id IN (${orphanPlaceholders}) OR target_node_id IN (${orphanPlaceholders})`
+        ).run(...orphanIds, ...orphanIds);
+
+        // Delete the orphan nodes themselves
+        db.prepare(
+          `DELETE FROM knowledge_nodes WHERE id IN (${orphanPlaceholders})`
+        ).run(...orphanIds);
+      }
+    }
 
     // Step 2: Delete mentions for all entities of this document
     db.prepare(

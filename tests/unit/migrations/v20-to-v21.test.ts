@@ -656,7 +656,7 @@ describe('Migration v20 to v21 (Entity Embeddings Schema Fix)', () => {
     migrateToLatest(db);
 
     const version = (db.prepare('SELECT version FROM schema_version').get() as { version: number }).version;
-    expect(version).toBe(23);
+    expect(version).toBe(24);
   });
 
   it.skipIf(!sqliteVecAvailable)('FK integrity clean after migration', () => {
@@ -725,6 +725,6 @@ describe('Migration v20 to v21 (Entity Embeddings Schema Fix)', () => {
     expect(() => migrateToLatest(db)).not.toThrow();
 
     const version = (db.prepare('SELECT version FROM schema_version').get() as { version: number }).version;
-    expect(version).toBe(23);
+    expect(version).toBe(24);
   });
 });

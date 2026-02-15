@@ -17,7 +17,7 @@ import { requireDatabase } from '../server/state.js';
 import { successResult } from '../server/types.js';
 import { MCPError } from '../server/errors.js';
 import { formatResponse, handleError, buildClusterReassignmentHint, type ToolResponse, type ToolDefinition } from './shared.js';
-import { validateInput } from '../utils/validation.js';
+import { validateInput, sanitizePath } from '../utils/validation.js';
 import { getVLMService } from '../services/vlm/service.js';
 import { VLMPipeline } from '../services/vlm/pipeline.js';
 import { GeminiClient } from '../services/gemini/client.js';
@@ -120,7 +120,7 @@ export async function handleVLMDescribe(
 ): Promise<ToolResponse> {
   try {
     const input = validateInput(VLMDescribeInput, params);
-    const imagePath = input.image_path;
+    const imagePath = sanitizePath(input.image_path);
     let contextText = input.context_text;
     const useThinking = input.use_thinking ?? false;
     const enrichWithEntities = input.enrich_with_entities ?? false;
@@ -210,7 +210,7 @@ export async function handleVLMClassify(
 ): Promise<ToolResponse> {
   try {
     const input = validateInput(VLMClassifyInput, params);
-    const imagePath = input.image_path;
+    const imagePath = sanitizePath(input.image_path);
 
     // Validate image path exists
     if (!fs.existsSync(imagePath)) {
@@ -413,7 +413,7 @@ export async function handleVLMAnalyzePDF(
 ): Promise<ToolResponse> {
   try {
     const input = validateInput(VLMAnalyzePDFInput, params);
-    const pdfPath = input.pdf_path;
+    const pdfPath = sanitizePath(input.pdf_path);
     const prompt = input.prompt;
 
     // Validate PDF path exists
