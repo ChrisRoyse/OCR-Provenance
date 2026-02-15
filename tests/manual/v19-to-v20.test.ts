@@ -1,12 +1,17 @@
 /**
- * Migration v14 to v15 Tests
+ * Migration v19 to v20 Tests
  *
- * Tests the v14->v15 migration which adds:
- * - CLUSTERING to provenance type and source_type CHECK constraints
- * - clusters table for document clustering results
- * - document_clusters table for document-cluster assignments
- * - 6 new indexes: idx_clusters_run_id, idx_clusters_tag, idx_clusters_created,
- *   idx_doc_clusters_document, idx_doc_clusters_cluster, idx_doc_clusters_run
+ * Tests the v19->v20 migration which adds:
+ * - knowledge_edges: valid_from, valid_until (TEXT) for temporal bounds
+ * - knowledge_edges: normalized_weight (REAL DEFAULT 0) for weight normalization
+ * - knowledge_edges: contradiction_count (INTEGER DEFAULT 0) for contradiction tracking
+ * - knowledge_nodes: importance_score (REAL) for node ranking
+ * - knowledge_nodes: resolution_type (TEXT) for entity resolution tracking
+ * - chunks: ocr_quality_score (REAL)
+ * - entity_embeddings: New table (placeholder, corrected by v21)
+ * - vec_entity_embeddings: New sqlite-vec virtual table (placeholder, corrected by v21)
+ * - 3 new indexes: idx_entity_embeddings_entity_id, idx_entity_embeddings_node_id,
+ *   idx_entity_embeddings_content_hash
  *
  * Uses REAL databases (better-sqlite3 temp files), NO mocks.
  */
@@ -22,19 +27,20 @@ import {
   getIndexNames,
   getTableNames,
   getTableColumns,
+  virtualTableExists,
   insertTestProvenance,
   insertTestDocument,
-} from './helpers.js';
-import { migrateToLatest } from '../../../src/services/storage/migrations/operations.js';
+} from '../unit/migrations/helpers.js';
+import { migrateToLatest } from '../../src/services/storage/migrations/operations.js';
 
 const sqliteVecAvailable = isSqliteVecAvailable();
 
-describe('Migration v14 to v15 (Document Clustering)', () => {
+describe('Migration v19 to v20 (Entity Embeddings, Temporal Edges, Node Scoring)', () => {
   let tmpDir: string;
   let db: Database.Database;
 
   beforeEach(() => {
-    tmpDir = createTestDir('ocr-mig-v15');
+    tmpDir = createTestDir('ocr-mig-v20');
     const result = createTestDb(tmpDir);
     db = result.db;
   });
@@ -45,10 +51,22 @@ describe('Migration v14 to v15 (Document Clustering)', () => {
   });
 
   /**
-   * Create a minimal but valid v14 schema.
-   * v14 = v13 + comparisons + COMPARISON in provenance CHECK.
+   * Create a minimal but valid v19 schema.
+   * v19 = v18 + entity_extraction_segments table + 3 indexes.
+   * knowledge_nodes does NOT have importance_score or resolution_type at v19
+   * (those were added by v18 migration but only when starting from v17;
+   * a pure v19 from v18 would already have them from v18's table rebuild).
+   *
+   * For this test we simulate a v19 database where knowledge_edges does NOT yet
+   * have valid_from/valid_until/normalized_weight/contradiction_count columns
+   * (because v17 migration already included them in the table rebuild, but
+   * v20 migration uses ALTER TABLE ADD COLUMN which is idempotent via column check).
+   *
+   * We create a v19 where knowledge_nodes DOES have importance_score/resolution_type
+   * (from v18 rebuild) and knowledge_edges DOES have the v17 temporal columns
+   * (from v17 rebuild) -- this tests the idempotent column-check logic in v20.
    */
-  function createV14Schema(): void {
+  function createV19Schema(): void {
     // eslint-disable-next-line @typescript-eslint/no-require-imports
     const sqliteVec = require('sqlite-vec');
     sqliteVec.load(db);
@@ -64,19 +82,19 @@ describe('Migration v14 to v15 (Document Clustering)', () => {
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL
       );
-      INSERT INTO schema_version VALUES (1, 14, datetime('now'), datetime('now'));
+      INSERT INTO schema_version VALUES (1, 19, datetime('now'), datetime('now'));
     `);
 
-    // Provenance (v14 CHECK constraints: includes COMPARISON but NOT CLUSTERING)
+    // Provenance
     db.exec(`
       CREATE TABLE provenance (
         id TEXT PRIMARY KEY,
-        type TEXT NOT NULL CHECK (type IN ('DOCUMENT', 'OCR_RESULT', 'CHUNK', 'IMAGE', 'VLM_DESCRIPTION', 'EMBEDDING', 'EXTRACTION', 'FORM_FILL', 'ENTITY_EXTRACTION', 'COMPARISON')),
+        type TEXT NOT NULL CHECK (type IN ('DOCUMENT', 'OCR_RESULT', 'CHUNK', 'IMAGE', 'VLM_DESCRIPTION', 'EMBEDDING', 'EXTRACTION', 'FORM_FILL', 'ENTITY_EXTRACTION', 'COMPARISON', 'CLUSTERING', 'KNOWLEDGE_GRAPH')),
         created_at TEXT NOT NULL,
         processed_at TEXT NOT NULL,
         source_file_created_at TEXT,
         source_file_modified_at TEXT,
-        source_type TEXT NOT NULL CHECK (source_type IN ('FILE', 'OCR', 'CHUNKING', 'IMAGE_EXTRACTION', 'VLM', 'VLM_DEDUP', 'EMBEDDING', 'EXTRACTION', 'FORM_FILL', 'ENTITY_EXTRACTION', 'COMPARISON')),
+        source_type TEXT NOT NULL CHECK (source_type IN ('FILE', 'OCR', 'CHUNKING', 'IMAGE_EXTRACTION', 'VLM', 'VLM_DEDUP', 'EMBEDDING', 'EXTRACTION', 'FORM_FILL', 'ENTITY_EXTRACTION', 'COMPARISON', 'CLUSTERING', 'KNOWLEDGE_GRAPH')),
         source_path TEXT,
         source_id TEXT,
         root_document_id TEXT NOT NULL,
@@ -114,7 +132,7 @@ describe('Migration v14 to v15 (Document Clustering)', () => {
       INSERT INTO database_metadata VALUES (1, 'test', '1.0.0', datetime('now'), datetime('now'), 0, 0, 0, 0);
     `);
 
-    // Documents (v12+: includes datalab_file_id)
+    // Documents
     db.exec(`
       CREATE TABLE documents (
         id TEXT PRIMARY KEY,
@@ -162,7 +180,7 @@ describe('Migration v14 to v15 (Document Clustering)', () => {
       );
     `);
 
-    // Chunks
+    // Chunks (v19: does NOT have ocr_quality_score yet)
     db.exec(`
       CREATE TABLE chunks (
         id TEXT PRIMARY KEY,
@@ -266,7 +284,7 @@ describe('Migration v14 to v15 (Document Clustering)', () => {
       );
     `);
 
-    // Uploaded files (v12)
+    // Uploaded files
     db.exec(`
       CREATE TABLE uploaded_files (
         id TEXT PRIMARY KEY NOT NULL,
@@ -286,12 +304,12 @@ describe('Migration v14 to v15 (Document Clustering)', () => {
       );
     `);
 
-    // Entities (v13)
+    // Entities (v18+)
     db.exec(`
       CREATE TABLE entities (
         id TEXT PRIMARY KEY NOT NULL,
         document_id TEXT NOT NULL REFERENCES documents(id),
-        entity_type TEXT NOT NULL CHECK (entity_type IN ('person', 'organization', 'date', 'amount', 'case_number', 'location', 'statute', 'exhibit', 'other')),
+        entity_type TEXT NOT NULL CHECK (entity_type IN ('person', 'organization', 'date', 'amount', 'case_number', 'location', 'statute', 'exhibit', 'medication', 'diagnosis', 'medical_device', 'other')),
         raw_text TEXT NOT NULL,
         normalized_text TEXT NOT NULL,
         confidence REAL NOT NULL DEFAULT 0.0,
@@ -301,7 +319,7 @@ describe('Migration v14 to v15 (Document Clustering)', () => {
       );
     `);
 
-    // Entity mentions (v13)
+    // Entity mentions
     db.exec(`
       CREATE TABLE entity_mentions (
         id TEXT PRIMARY KEY NOT NULL,
@@ -316,7 +334,7 @@ describe('Migration v14 to v15 (Document Clustering)', () => {
       );
     `);
 
-    // Comparisons (v14)
+    // Comparisons
     db.exec(`
       CREATE TABLE comparisons (
         id TEXT PRIMARY KEY NOT NULL,
@@ -334,15 +352,142 @@ describe('Migration v14 to v15 (Document Clustering)', () => {
       );
     `);
 
+    // Clusters
+    db.exec(`
+      CREATE TABLE clusters (
+        id TEXT PRIMARY KEY NOT NULL,
+        run_id TEXT NOT NULL,
+        cluster_index INTEGER NOT NULL,
+        label TEXT,
+        description TEXT,
+        classification_tag TEXT,
+        document_count INTEGER NOT NULL DEFAULT 0,
+        centroid_json TEXT,
+        top_terms_json TEXT,
+        coherence_score REAL,
+        algorithm TEXT NOT NULL,
+        algorithm_params_json TEXT,
+        silhouette_score REAL,
+        content_hash TEXT NOT NULL,
+        provenance_id TEXT NOT NULL REFERENCES provenance(id),
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        processing_duration_ms INTEGER
+      );
+    `);
+
+    // Document clusters
+    db.exec(`
+      CREATE TABLE document_clusters (
+        id TEXT PRIMARY KEY NOT NULL,
+        document_id TEXT NOT NULL REFERENCES documents(id),
+        cluster_id TEXT NOT NULL REFERENCES clusters(id),
+        run_id TEXT NOT NULL,
+        similarity_to_centroid REAL,
+        membership_probability REAL,
+        is_noise INTEGER NOT NULL DEFAULT 0,
+        assigned_at TEXT NOT NULL DEFAULT (datetime('now')),
+        UNIQUE(document_id, run_id)
+      );
+    `);
+
+    // Knowledge nodes (v18: has importance_score, resolution_type)
+    db.exec(`
+      CREATE TABLE knowledge_nodes (
+        id TEXT PRIMARY KEY,
+        entity_type TEXT NOT NULL CHECK (entity_type IN ('person', 'organization', 'date', 'amount', 'case_number', 'location', 'statute', 'exhibit', 'medication', 'diagnosis', 'medical_device', 'other')),
+        canonical_name TEXT NOT NULL,
+        normalized_name TEXT NOT NULL,
+        aliases TEXT,
+        document_count INTEGER NOT NULL DEFAULT 1,
+        mention_count INTEGER NOT NULL DEFAULT 0,
+        edge_count INTEGER NOT NULL DEFAULT 0,
+        avg_confidence REAL NOT NULL DEFAULT 0.0,
+        metadata TEXT,
+        provenance_id TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        importance_score REAL,
+        resolution_type TEXT
+      );
+    `);
+
+    // Knowledge edges (v17: already has valid_from/valid_until/normalized_weight/contradiction_count)
+    db.exec(`
+      CREATE TABLE knowledge_edges (
+        id TEXT PRIMARY KEY,
+        source_node_id TEXT NOT NULL,
+        target_node_id TEXT NOT NULL,
+        relationship_type TEXT NOT NULL CHECK (relationship_type IN (
+          'co_mentioned', 'co_located', 'works_at', 'represents',
+          'located_in', 'filed_in', 'cites', 'references',
+          'party_to', 'related_to', 'precedes', 'occurred_at'
+        )),
+        weight REAL NOT NULL DEFAULT 1.0,
+        evidence_count INTEGER NOT NULL DEFAULT 1,
+        document_ids TEXT NOT NULL,
+        metadata TEXT,
+        provenance_id TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        valid_from TEXT,
+        valid_until TEXT,
+        normalized_weight REAL DEFAULT 0,
+        contradiction_count INTEGER DEFAULT 0,
+        FOREIGN KEY (source_node_id) REFERENCES knowledge_nodes(id),
+        FOREIGN KEY (target_node_id) REFERENCES knowledge_nodes(id),
+        FOREIGN KEY (provenance_id) REFERENCES provenance(id)
+      );
+    `);
+
+    // Node entity links
+    db.exec(`
+      CREATE TABLE node_entity_links (
+        id TEXT PRIMARY KEY,
+        node_id TEXT NOT NULL,
+        entity_id TEXT NOT NULL UNIQUE,
+        document_id TEXT NOT NULL,
+        similarity_score REAL NOT NULL DEFAULT 1.0,
+        resolution_method TEXT,
+        created_at TEXT NOT NULL,
+        FOREIGN KEY (node_id) REFERENCES knowledge_nodes(id),
+        FOREIGN KEY (entity_id) REFERENCES entities(id),
+        FOREIGN KEY (document_id) REFERENCES documents(id)
+      );
+    `);
+
+    // Entity extraction segments (v19)
+    db.exec(`
+      CREATE TABLE entity_extraction_segments (
+        id TEXT PRIMARY KEY,
+        document_id TEXT NOT NULL REFERENCES documents(id),
+        ocr_result_id TEXT NOT NULL REFERENCES ocr_results(id),
+        segment_index INTEGER NOT NULL,
+        text TEXT NOT NULL,
+        character_start INTEGER NOT NULL,
+        character_end INTEGER NOT NULL,
+        text_length INTEGER NOT NULL,
+        overlap_previous INTEGER NOT NULL DEFAULT 0,
+        overlap_next INTEGER NOT NULL DEFAULT 0,
+        extraction_status TEXT NOT NULL DEFAULT 'pending'
+          CHECK (extraction_status IN ('pending', 'processing', 'complete', 'failed')),
+        entity_count INTEGER DEFAULT 0,
+        extracted_at TEXT,
+        error_message TEXT,
+        provenance_id TEXT REFERENCES provenance(id),
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        UNIQUE(document_id, segment_index)
+      );
+    `);
+
     // FTS tables
     db.exec(`CREATE VIRTUAL TABLE chunks_fts USING fts5(text, content='chunks', content_rowid='rowid', tokenize='porter unicode61');`);
-    db.exec(`CREATE TABLE fts_index_metadata (id INTEGER PRIMARY KEY, last_rebuild_at TEXT, chunks_indexed INTEGER NOT NULL DEFAULT 0, tokenizer TEXT NOT NULL DEFAULT 'porter unicode61', schema_version INTEGER NOT NULL DEFAULT 14, content_hash TEXT);`);
-    db.exec(`INSERT INTO fts_index_metadata VALUES (1, NULL, 0, 'porter unicode61', 14, NULL);`);
-    db.exec(`INSERT INTO fts_index_metadata VALUES (2, NULL, 0, 'porter unicode61', 14, NULL);`);
-    db.exec(`INSERT INTO fts_index_metadata VALUES (3, NULL, 0, 'porter unicode61', 14, NULL);`);
+    db.exec(`CREATE TABLE fts_index_metadata (id INTEGER PRIMARY KEY, last_rebuild_at TEXT, chunks_indexed INTEGER NOT NULL DEFAULT 0, tokenizer TEXT NOT NULL DEFAULT 'porter unicode61', schema_version INTEGER NOT NULL DEFAULT 19, content_hash TEXT);`);
+    db.exec(`INSERT INTO fts_index_metadata VALUES (1, NULL, 0, 'porter unicode61', 19, NULL);`);
+    db.exec(`INSERT INTO fts_index_metadata VALUES (2, NULL, 0, 'porter unicode61', 19, NULL);`);
+    db.exec(`INSERT INTO fts_index_metadata VALUES (3, NULL, 0, 'porter unicode61', 19, NULL);`);
     db.exec(`CREATE VIRTUAL TABLE vlm_fts USING fts5(original_text, content='embeddings', content_rowid='rowid', tokenize='porter unicode61');`);
     db.exec(`CREATE VIRTUAL TABLE extractions_fts USING fts5(extraction_json, content='extractions', content_rowid='rowid', tokenize='porter unicode61');`);
     db.exec(`CREATE VIRTUAL TABLE IF NOT EXISTS vec_embeddings USING vec0(embedding_id TEXT PRIMARY KEY, vector FLOAT[768]);`);
+    db.exec(`CREATE VIRTUAL TABLE knowledge_nodes_fts USING fts5(canonical_name, content='knowledge_nodes', content_rowid='rowid');`);
 
     // Triggers
     db.exec(`CREATE TRIGGER chunks_fts_ai AFTER INSERT ON chunks BEGIN INSERT INTO chunks_fts(rowid, text) VALUES (new.rowid, new.text); END;`);
@@ -354,8 +499,11 @@ describe('Migration v14 to v15 (Document Clustering)', () => {
     db.exec(`CREATE TRIGGER extractions_fts_ai AFTER INSERT ON extractions BEGIN INSERT INTO extractions_fts(rowid, extraction_json) VALUES (new.rowid, new.extraction_json); END;`);
     db.exec(`CREATE TRIGGER extractions_fts_ad AFTER DELETE ON extractions BEGIN INSERT INTO extractions_fts(extractions_fts, rowid, extraction_json) VALUES('delete', old.rowid, old.extraction_json); END;`);
     db.exec(`CREATE TRIGGER extractions_fts_au AFTER UPDATE OF extraction_json ON extractions BEGIN INSERT INTO extractions_fts(extractions_fts, rowid, extraction_json) VALUES('delete', old.rowid, old.extraction_json); INSERT INTO extractions_fts(rowid, extraction_json) VALUES (new.rowid, new.extraction_json); END;`);
+    db.exec(`CREATE TRIGGER knowledge_nodes_fts_insert AFTER INSERT ON knowledge_nodes BEGIN INSERT INTO knowledge_nodes_fts(rowid, canonical_name) VALUES (new.rowid, new.canonical_name); END;`);
+    db.exec(`CREATE TRIGGER knowledge_nodes_fts_delete AFTER DELETE ON knowledge_nodes BEGIN INSERT INTO knowledge_nodes_fts(knowledge_nodes_fts, rowid, canonical_name) VALUES ('delete', old.rowid, old.canonical_name); END;`);
+    db.exec(`CREATE TRIGGER knowledge_nodes_fts_update AFTER UPDATE ON knowledge_nodes BEGIN INSERT INTO knowledge_nodes_fts(knowledge_nodes_fts, rowid, canonical_name) VALUES ('delete', old.rowid, old.canonical_name); INSERT INTO knowledge_nodes_fts(rowid, canonical_name) VALUES (new.rowid, new.canonical_name); END;`);
 
-    // All 37 indexes from v14
+    // Indexes
     db.exec('CREATE INDEX idx_documents_file_path ON documents(file_path);');
     db.exec('CREATE INDEX idx_documents_file_hash ON documents(file_hash);');
     db.exec('CREATE INDEX idx_documents_status ON documents(status);');
@@ -393,364 +541,184 @@ describe('Migration v14 to v15 (Document Clustering)', () => {
     db.exec('CREATE INDEX idx_comparisons_doc1 ON comparisons(document_id_1);');
     db.exec('CREATE INDEX idx_comparisons_doc2 ON comparisons(document_id_2);');
     db.exec('CREATE INDEX idx_comparisons_created ON comparisons(created_at);');
+    db.exec('CREATE INDEX idx_clusters_run_id ON clusters(run_id);');
+    db.exec('CREATE INDEX idx_clusters_tag ON clusters(classification_tag);');
+    db.exec('CREATE INDEX idx_clusters_created ON clusters(created_at);');
+    db.exec('CREATE INDEX idx_doc_clusters_document ON document_clusters(document_id);');
+    db.exec('CREATE INDEX idx_doc_clusters_cluster ON document_clusters(cluster_id);');
+    db.exec('CREATE INDEX idx_doc_clusters_run ON document_clusters(run_id);');
+    db.exec('CREATE INDEX idx_kn_entity_type ON knowledge_nodes(entity_type);');
+    db.exec('CREATE INDEX idx_kn_normalized_name ON knowledge_nodes(normalized_name);');
+    db.exec('CREATE INDEX idx_kn_document_count ON knowledge_nodes(document_count);');
+    db.exec('CREATE INDEX idx_ke_source_node ON knowledge_edges(source_node_id);');
+    db.exec('CREATE INDEX idx_ke_target_node ON knowledge_edges(target_node_id);');
+    db.exec('CREATE INDEX idx_ke_relationship_type ON knowledge_edges(relationship_type);');
+    db.exec('CREATE INDEX idx_nel_node_id ON node_entity_links(node_id);');
+    db.exec('CREATE INDEX idx_nel_document_id ON node_entity_links(document_id);');
+    db.exec('CREATE INDEX idx_knowledge_nodes_canonical_lower ON knowledge_nodes(canonical_name COLLATE NOCASE);');
+    db.exec('CREATE INDEX idx_entity_mentions_chunk_id ON entity_mentions(chunk_id);');
+    // v19 segment indexes
+    db.exec('CREATE INDEX idx_segments_document ON entity_extraction_segments(document_id);');
+    db.exec('CREATE INDEX idx_segments_status ON entity_extraction_segments(extraction_status);');
+    db.exec('CREATE INDEX idx_segments_doc_status ON entity_extraction_segments(document_id, extraction_status);');
   }
 
-  it.skipIf(!sqliteVecAvailable)('creates clusters table from v14 schema', () => {
-    createV14Schema();
+  it.skipIf(!sqliteVecAvailable)('entity_embeddings table exists after migration', () => {
+    createV19Schema();
     migrateToLatest(db);
 
     const tables = getTableNames(db);
-    expect(tables).toContain('clusters');
+    expect(tables).toContain('entity_embeddings');
   });
 
-  it.skipIf(!sqliteVecAvailable)('creates document_clusters table from v14 schema', () => {
-    createV14Schema();
+  it.skipIf(!sqliteVecAvailable)('entity_embeddings has correct columns (v21 schema)', () => {
+    createV19Schema();
     migrateToLatest(db);
 
-    const tables = getTableNames(db);
-    expect(tables).toContain('document_clusters');
+    // After v21 migration, entity_embeddings is rebuilt with correct schema
+    const columns = getTableColumns(db, 'entity_embeddings');
+    expect(columns).toContain('id');
+    expect(columns).toContain('node_id');
+    expect(columns).toContain('original_text');
+    expect(columns).toContain('original_text_length');
+    expect(columns).toContain('entity_type');
+    expect(columns).toContain('document_count');
+    expect(columns).toContain('model_name');
+    expect(columns).toContain('content_hash');
+    expect(columns).toContain('created_at');
+    expect(columns).toContain('provenance_id');
   });
 
-  it.skipIf(!sqliteVecAvailable)('preserves existing provenance rows during migration', () => {
-    createV14Schema();
-
-    // Insert provenance records before migration
-    const now = new Date().toISOString();
-    db.prepare(`
-      INSERT INTO provenance (id, type, created_at, processed_at, source_type, root_document_id,
-        content_hash, processor, processor_version, processing_params, parent_ids, chain_depth)
-      VALUES ('prov-pre-1', 'DOCUMENT', ?, ?, 'FILE', 'prov-pre-1',
-        'sha256:existing1', 'test', '1.0', '{}', '[]', 0)
-    `).run(now, now);
-    db.prepare(`
-      INSERT INTO provenance (id, type, created_at, processed_at, source_type, root_document_id,
-        content_hash, processor, processor_version, processing_params, parent_ids, chain_depth)
-      VALUES ('prov-pre-2', 'OCR_RESULT', ?, ?, 'OCR', 'prov-pre-1',
-        'sha256:existing2', 'datalab', '1.0', '{}', '["prov-pre-1"]', 1)
-    `).run(now, now);
-
-    const countBefore = (db.prepare('SELECT COUNT(*) as cnt FROM provenance').get() as { cnt: number }).cnt;
-
+  it.skipIf(!sqliteVecAvailable)('vec_entity_embeddings virtual table exists after migration', () => {
+    createV19Schema();
     migrateToLatest(db);
 
-    const countAfter = (db.prepare('SELECT COUNT(*) as cnt FROM provenance').get() as { cnt: number }).cnt;
-    expect(countAfter).toBe(countBefore);
-
-    // Verify data integrity
-    const row1 = db.prepare('SELECT * FROM provenance WHERE id = ?').get('prov-pre-1') as { type: string; content_hash: string };
-    expect(row1).toBeDefined();
-    expect(row1.type).toBe('DOCUMENT');
-    expect(row1.content_hash).toBe('sha256:existing1');
-
-    const row2 = db.prepare('SELECT * FROM provenance WHERE id = ?').get('prov-pre-2') as { type: string; content_hash: string };
-    expect(row2).toBeDefined();
-    expect(row2.type).toBe('OCR_RESULT');
-    expect(row2.content_hash).toBe('sha256:existing2');
+    expect(virtualTableExists(db, 'vec_entity_embeddings')).toBe(true);
   });
 
-  it.skipIf(!sqliteVecAvailable)('CLUSTERING type accepted in provenance after migration', () => {
-    createV14Schema();
+  it.skipIf(!sqliteVecAvailable)('chunks has ocr_quality_score column after migration', () => {
+    createV19Schema();
     migrateToLatest(db);
 
-    const now = new Date().toISOString();
-
-    // Should succeed: insert CLUSTERING provenance
-    expect(() => {
-      db.prepare(`
-        INSERT INTO provenance (id, type, created_at, processed_at, source_type, root_document_id,
-          content_hash, processor, processor_version, processing_params, parent_ids, chain_depth)
-        VALUES ('prov-clust-1', 'CLUSTERING', ?, ?, 'CLUSTERING', 'prov-clust-1',
-          'sha256:clustering1', 'document-clustering', '1.0.0', '{}', '[]', 2)
-      `).run(now, now);
-    }).not.toThrow();
-
-    // Verify the record exists in DB
-    const row = db.prepare('SELECT type, source_type FROM provenance WHERE id = ?').get('prov-clust-1') as { type: string; source_type: string };
-    expect(row.type).toBe('CLUSTERING');
-    expect(row.source_type).toBe('CLUSTERING');
+    const columns = getTableColumns(db, 'chunks');
+    expect(columns).toContain('ocr_quality_score');
   });
 
-  it.skipIf(!sqliteVecAvailable)('CLUSTERING type NOT accepted before migration (v14 CHECK)', () => {
-    createV14Schema();
-
-    const now = new Date().toISOString();
-    // Should fail: v14 provenance CHECK does not include CLUSTERING
-    expect(() => {
-      db.prepare(`
-        INSERT INTO provenance (id, type, created_at, processed_at, source_type, root_document_id,
-          content_hash, processor, processor_version, processing_params, parent_ids, chain_depth)
-        VALUES ('prov-bad-1', 'CLUSTERING', ?, ?, 'CLUSTERING', 'prov-bad-1',
-          'sha256:badclust', 'test', '1.0', '{}', '[]', 2)
-      `).run(now, now);
-    }).toThrow();
-  });
-
-  it.skipIf(!sqliteVecAvailable)('invalid provenance type rejected after migration', () => {
-    createV14Schema();
+  it.skipIf(!sqliteVecAvailable)('knowledge_edges has temporal columns after migration', () => {
+    createV19Schema();
     migrateToLatest(db);
 
-    const now = new Date().toISOString();
-    // Should fail: INVALID_TYPE is not in the CHECK constraint
-    expect(() => {
-      db.prepare(`
-        INSERT INTO provenance (id, type, created_at, processed_at, source_type, root_document_id,
-          content_hash, processor, processor_version, processing_params, parent_ids, chain_depth)
-        VALUES ('prov-invalid', 'INVALID_TYPE', ?, ?, 'FILE', 'prov-invalid',
-          'sha256:invalid', 'test', '1.0', '{}', '[]', 0)
-      `).run(now, now);
-    }).toThrow();
+    const columns = getTableColumns(db, 'knowledge_edges');
+    expect(columns).toContain('valid_from');
+    expect(columns).toContain('valid_until');
+    expect(columns).toContain('normalized_weight');
+    expect(columns).toContain('contradiction_count');
   });
 
-  it.skipIf(!sqliteVecAvailable)('schema version is 15 after migration', () => {
-    createV14Schema();
+  it.skipIf(!sqliteVecAvailable)('knowledge_nodes has importance_score and resolution_type', () => {
+    createV19Schema();
+    migrateToLatest(db);
+
+    const columns = getTableColumns(db, 'knowledge_nodes');
+    expect(columns).toContain('importance_score');
+    expect(columns).toContain('resolution_type');
+  });
+
+  it.skipIf(!sqliteVecAvailable)('entity_embeddings indexes exist after migration', () => {
+    createV19Schema();
+    migrateToLatest(db);
+
+    const indexes = getIndexNames(db);
+    expect(indexes).toContain('idx_entity_embeddings_node_id');
+    expect(indexes).toContain('idx_entity_embeddings_content_hash');
+  });
+
+  it.skipIf(!sqliteVecAvailable)('schema version is latest after migration', () => {
+    createV19Schema();
     migrateToLatest(db);
 
     const version = (db.prepare('SELECT version FROM schema_version').get() as { version: number }).version;
     expect(version).toBe(24);
   });
 
-  it.skipIf(!sqliteVecAvailable)('all 6 clustering indexes exist', () => {
-    createV14Schema();
-    migrateToLatest(db);
-
-    const indexes = getIndexNames(db);
-    expect(indexes).toContain('idx_clusters_run_id');
-    expect(indexes).toContain('idx_clusters_tag');
-    expect(indexes).toContain('idx_clusters_created');
-    expect(indexes).toContain('idx_doc_clusters_document');
-    expect(indexes).toContain('idx_doc_clusters_cluster');
-    expect(indexes).toContain('idx_doc_clusters_run');
-  });
-
   it.skipIf(!sqliteVecAvailable)('FK integrity clean after migration', () => {
-    createV14Schema();
+    createV19Schema();
     migrateToLatest(db);
 
     const violations = db.pragma('foreign_key_check') as unknown[];
     expect(violations.length).toBe(0);
   });
 
-  it.skipIf(!sqliteVecAvailable)('fresh database init creates clusters and document_clusters tables', () => {
-    // Load sqlite-vec for fresh init
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const sqliteVec = require('sqlite-vec');
-    sqliteVec.load(db);
-
-    migrateToLatest(db);
-
-    const tables = getTableNames(db);
-    expect(tables).toContain('clusters');
-    expect(tables).toContain('document_clusters');
-    expect(tables).toContain('provenance');
-    expect(tables).toContain('documents');
-
-    const version = (db.prepare('SELECT version FROM schema_version').get() as { version: number }).version;
-    expect(version).toBe(24);
-
-    const indexes = getIndexNames(db);
-    expect(indexes).toContain('idx_clusters_run_id');
-    expect(indexes).toContain('idx_clusters_tag');
-    expect(indexes).toContain('idx_clusters_created');
-    expect(indexes).toContain('idx_doc_clusters_document');
-    expect(indexes).toContain('idx_doc_clusters_cluster');
-    expect(indexes).toContain('idx_doc_clusters_run');
-  });
-
-  it.skipIf(!sqliteVecAvailable)('clusters table has correct columns', () => {
-    createV14Schema();
-    migrateToLatest(db);
-
-    const columns = getTableColumns(db, 'clusters');
-    expect(columns).toContain('id');
-    expect(columns).toContain('run_id');
-    expect(columns).toContain('cluster_index');
-    expect(columns).toContain('label');
-    expect(columns).toContain('description');
-    expect(columns).toContain('classification_tag');
-    expect(columns).toContain('document_count');
-    expect(columns).toContain('centroid_json');
-    expect(columns).toContain('top_terms_json');
-    expect(columns).toContain('coherence_score');
-    expect(columns).toContain('algorithm');
-    expect(columns).toContain('algorithm_params_json');
-    expect(columns).toContain('silhouette_score');
-    expect(columns).toContain('content_hash');
-    expect(columns).toContain('provenance_id');
-    expect(columns).toContain('created_at');
-    expect(columns).toContain('processing_duration_ms');
-    expect(columns.length).toBe(17);
-  });
-
-  it.skipIf(!sqliteVecAvailable)('document_clusters table has correct columns', () => {
-    createV14Schema();
-    migrateToLatest(db);
-
-    const columns = getTableColumns(db, 'document_clusters');
-    expect(columns).toContain('id');
-    expect(columns).toContain('document_id');
-    expect(columns).toContain('cluster_id');
-    expect(columns).toContain('run_id');
-    expect(columns).toContain('similarity_to_centroid');
-    expect(columns).toContain('membership_probability');
-    expect(columns).toContain('is_noise');
-    expect(columns).toContain('assigned_at');
-    expect(columns.length).toBe(8);
-  });
-
-  it.skipIf(!sqliteVecAvailable)('UNIQUE constraint on document_clusters(document_id, run_id)', () => {
-    createV14Schema();
+  it.skipIf(!sqliteVecAvailable)('can insert temporal edge data after migration', () => {
+    createV19Schema();
     migrateToLatest(db);
 
     const now = new Date().toISOString();
 
-    // Create provenance + document + cluster for test
-    insertTestProvenance(db, 'prov-doc-u1', 'DOCUMENT', 'prov-doc-u1');
-    insertTestDocument(db, 'doc-u1', 'prov-doc-u1', 'complete');
-
+    // Create two knowledge nodes
     db.prepare(`
-      INSERT INTO provenance (id, type, created_at, processed_at, source_type, root_document_id,
-        content_hash, processor, processor_version, processing_params, parent_ids, chain_depth)
-      VALUES ('prov-clust-u1', 'CLUSTERING', ?, ?, 'CLUSTERING', 'prov-doc-u1',
-        'sha256:clustu1', 'document-clustering', '1.0.0', '{}', '["prov-doc-u1"]', 2)
+      INSERT INTO knowledge_nodes (id, entity_type, canonical_name, normalized_name,
+        document_count, mention_count, avg_confidence, provenance_id, created_at, updated_at)
+      VALUES ('kn-src-v20', 'person', 'Alice', 'alice', 1, 1, 0.9, 'prov-placeholder', ?, ?)
+    `).run(now, now);
+    db.prepare(`
+      INSERT INTO knowledge_nodes (id, entity_type, canonical_name, normalized_name,
+        document_count, mention_count, avg_confidence, provenance_id, created_at, updated_at)
+      VALUES ('kn-tgt-v20', 'organization', 'Acme Corp', 'acme corp', 1, 1, 0.85, 'prov-placeholder', ?, ?)
     `).run(now, now);
 
-    db.prepare(`
-      INSERT INTO clusters (id, run_id, cluster_index, algorithm, algorithm_params_json,
-        content_hash, provenance_id, created_at, document_count)
-      VALUES ('clust-u1', 'run-u1', 0, 'kmeans', '{"k":3}',
-        'sha256:clustcontentsha', 'prov-clust-u1', ?, 1)
-    `).run(now);
+    // Insert edge with temporal bounds
+    insertTestProvenance(db, 'prov-edge-v20', 'KNOWLEDGE_GRAPH', 'prov-edge-v20');
 
-    // First insert should succeed
-    db.prepare(`
-      INSERT INTO document_clusters (id, document_id, cluster_id, run_id,
-        similarity_to_centroid, membership_probability, is_noise, assigned_at)
-      VALUES ('dc-1', 'doc-u1', 'clust-u1', 'run-u1', 0.95, 1.0, 0, ?)
-    `).run(now);
-
-    // Second insert with same document_id + run_id should fail (UNIQUE constraint)
     expect(() => {
       db.prepare(`
-        INSERT INTO document_clusters (id, document_id, cluster_id, run_id,
-          similarity_to_centroid, membership_probability, is_noise, assigned_at)
-        VALUES ('dc-2', 'doc-u1', 'clust-u1', 'run-u1', 0.90, 1.0, 0, ?)
+        INSERT INTO knowledge_edges (id, source_node_id, target_node_id, relationship_type,
+          weight, evidence_count, document_ids, provenance_id, created_at,
+          valid_from, valid_until, normalized_weight, contradiction_count)
+        VALUES ('ke-v20', 'kn-src-v20', 'kn-tgt-v20', 'works_at', 1.5, 2, '["doc-1"]',
+          'prov-edge-v20', ?, '2024-01-01', '2024-12-31', 0.75, 0)
       `).run(now);
-    }).toThrow();
+    }).not.toThrow();
+
+    const edge = db.prepare('SELECT * FROM knowledge_edges WHERE id = ?').get('ke-v20') as Record<string, unknown>;
+    expect(edge.valid_from).toBe('2024-01-01');
+    expect(edge.valid_until).toBe('2024-12-31');
+    expect(edge.normalized_weight).toBe(0.75);
+    expect(edge.contradiction_count).toBe(0);
+  });
+
+  it.skipIf(!sqliteVecAvailable)('existing data survives migration', () => {
+    createV19Schema();
+
+    const now = new Date().toISOString();
+    insertTestProvenance(db, 'prov-surv20', 'DOCUMENT', 'prov-surv20');
+    insertTestDocument(db, 'doc-surv20', 'prov-surv20', 'complete');
+
+    // Insert a knowledge node before migration
+    db.prepare(`
+      INSERT INTO knowledge_nodes (id, entity_type, canonical_name, normalized_name,
+        document_count, mention_count, avg_confidence, provenance_id, created_at, updated_at)
+      VALUES ('kn-surv20', 'location', 'New York', 'new york', 3, 7, 0.92, 'prov-placeholder', ?, ?)
+    `).run(now, now);
+
+    migrateToLatest(db);
+
+    const doc = db.prepare('SELECT * FROM documents WHERE id = ?').get('doc-surv20') as Record<string, unknown>;
+    expect(doc).toBeDefined();
+    expect(doc.status).toBe('complete');
+
+    const node = db.prepare('SELECT * FROM knowledge_nodes WHERE id = ?').get('kn-surv20') as Record<string, unknown>;
+    expect(node).toBeDefined();
+    expect(node.canonical_name).toBe('New York');
+    expect(node.document_count).toBe(3);
   });
 
   it.skipIf(!sqliteVecAvailable)('idempotent - running migration twice does not error', () => {
-    createV14Schema();
+    createV19Schema();
     migrateToLatest(db);
     expect(() => migrateToLatest(db)).not.toThrow();
 
     const version = (db.prepare('SELECT version FROM schema_version').get() as { version: number }).version;
     expect(version).toBe(24);
-  });
-
-  it.skipIf(!sqliteVecAvailable)('can insert and query cluster after migration', () => {
-    createV14Schema();
-    migrateToLatest(db);
-
-    const now = new Date().toISOString();
-
-    // Create a document with provenance
-    insertTestProvenance(db, 'prov-doc-c1', 'DOCUMENT', 'prov-doc-c1');
-    insertTestDocument(db, 'doc-c1', 'prov-doc-c1', 'complete');
-
-    // Create clustering provenance
-    db.prepare(`
-      INSERT INTO provenance (id, type, created_at, processed_at, source_type, root_document_id,
-        content_hash, processor, processor_version, processing_params, parent_ids, chain_depth)
-      VALUES ('prov-clust-c1', 'CLUSTERING', ?, ?, 'CLUSTERING', 'prov-doc-c1',
-        'sha256:clustc1hash', 'document-clustering', '1.0.0', '{"algorithm":"kmeans","k":3}', '["prov-doc-c1"]', 2)
-    `).run(now, now);
-
-    // Insert cluster
-    const centroid = JSON.stringify([0.1, 0.2, 0.3]);
-    const topTerms = JSON.stringify(['contract', 'agreement', 'clause']);
-    const params = JSON.stringify({ algorithm: 'kmeans', k: 3 });
-
-    db.prepare(`
-      INSERT INTO clusters (id, run_id, cluster_index, label, description, classification_tag,
-        document_count, centroid_json, top_terms_json, coherence_score, algorithm,
-        algorithm_params_json, silhouette_score, content_hash, provenance_id, created_at,
-        processing_duration_ms)
-      VALUES ('clust-c1', 'run-c1', 0, 'Legal Contracts', 'Cluster of legal contract documents',
-        'legal-contracts', 5, ?, ?, 0.82, 'kmeans', ?, 0.75,
-        'sha256:clustcontentc1', 'prov-clust-c1', ?, 350)
-    `).run(centroid, topTerms, params, now);
-
-    // Insert document_clusters assignment
-    db.prepare(`
-      INSERT INTO document_clusters (id, document_id, cluster_id, run_id,
-        similarity_to_centroid, membership_probability, is_noise, assigned_at)
-      VALUES ('dc-c1', 'doc-c1', 'clust-c1', 'run-c1', 0.92, 1.0, 0, ?)
-    `).run(now);
-
-    // Query and verify cluster
-    const cluster = db.prepare('SELECT * FROM clusters WHERE id = ?').get('clust-c1') as Record<string, unknown>;
-    expect(cluster).toBeDefined();
-    expect(cluster.run_id).toBe('run-c1');
-    expect(cluster.cluster_index).toBe(0);
-    expect(cluster.label).toBe('Legal Contracts');
-    expect(cluster.classification_tag).toBe('legal-contracts');
-    expect(cluster.document_count).toBe(5);
-    expect(cluster.coherence_score).toBe(0.82);
-    expect(cluster.algorithm).toBe('kmeans');
-    expect(cluster.silhouette_score).toBe(0.75);
-    expect(cluster.processing_duration_ms).toBe(350);
-
-    // Verify JSON round-trip
-    const parsedCentroid = JSON.parse(cluster.centroid_json as string);
-    expect(parsedCentroid).toEqual([0.1, 0.2, 0.3]);
-    const parsedTerms = JSON.parse(cluster.top_terms_json as string);
-    expect(parsedTerms).toEqual(['contract', 'agreement', 'clause']);
-
-    // Query and verify document_clusters assignment
-    const assignment = db.prepare('SELECT * FROM document_clusters WHERE id = ?').get('dc-c1') as Record<string, unknown>;
-    expect(assignment).toBeDefined();
-    expect(assignment.document_id).toBe('doc-c1');
-    expect(assignment.cluster_id).toBe('clust-c1');
-    expect(assignment.run_id).toBe('run-c1');
-    expect(assignment.similarity_to_centroid).toBe(0.92);
-    expect(assignment.membership_probability).toBe(1.0);
-    expect(assignment.is_noise).toBe(0);
-  });
-
-  it.skipIf(!sqliteVecAvailable)('existing data survives migration', () => {
-    createV14Schema();
-
-    const now = new Date().toISOString();
-
-    // Insert test data before migration
-    db.prepare(`
-      INSERT INTO provenance (id, type, created_at, processed_at, source_type, root_document_id,
-        content_hash, processor, processor_version, processing_params, parent_ids, chain_depth)
-      VALUES ('prov-surv-1', 'DOCUMENT', ?, ?, 'FILE', 'prov-surv-1',
-        'sha256:survdoc', 'file-ingester', '1.0.0', '{}', '[]', 0)
-    `).run(now, now);
-
-    db.prepare(`
-      INSERT INTO documents (id, file_path, file_name, file_hash, file_size, file_type,
-        status, provenance_id, created_at)
-      VALUES ('doc-surv', '/test/survive.pdf', 'survive.pdf', 'sha256:survdocfile',
-        2048, 'pdf', 'complete', 'prov-surv-1', ?)
-    `).run(now);
-
-    // Run migration
-    migrateToLatest(db);
-
-    // Verify document survived
-    const doc = db.prepare('SELECT * FROM documents WHERE id = ?').get('doc-surv') as Record<string, unknown>;
-    expect(doc).toBeDefined();
-    expect(doc.file_name).toBe('survive.pdf');
-    expect(doc.file_hash).toBe('sha256:survdocfile');
-    expect(doc.status).toBe('complete');
-
-    // Verify provenance survived
-    const prov = db.prepare('SELECT * FROM provenance WHERE id = ?').get('prov-surv-1') as Record<string, unknown>;
-    expect(prov).toBeDefined();
-    expect(prov.type).toBe('DOCUMENT');
-    expect(prov.content_hash).toBe('sha256:survdoc');
   });
 });
