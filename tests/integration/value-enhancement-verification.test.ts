@@ -23,7 +23,7 @@ import { migrateToLatest } from '../../src/services/storage/migrations/operation
 import { REQUIRED_TABLES, REQUIRED_INDEXES, SCHEMA_VERSION } from '../../src/services/storage/migrations/schema-definitions.js';
 
 // Use a temporary database for testing
-const TEST_DB_PATH = path.join(process.cwd(), 'tests', '.tmp-ve-verification.db');
+const TEST_DB_PATH = path.join(fs.mkdtempSync(path.join(require('os').tmpdir(), 've-verification-')), 'test.db');
 
 let db: Database.Database;
 
