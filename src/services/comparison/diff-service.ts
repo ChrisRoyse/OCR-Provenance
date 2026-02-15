@@ -290,6 +290,8 @@ interface EntityRelationship {
   relatedEntityType: string;
   /** Which document IDs this edge was evidenced from */
   edgeDocumentIds: string[];
+  /** The KG edge ID (for updating contradiction_count) */
+  edgeId: string;
 }
 
 /**
@@ -436,6 +438,7 @@ export function detectKGContradictions(
         relatedCanonicalName: relatedName,
         relatedEntityType: relatedType,
         edgeDocumentIds: edgeDocIds,
+        edgeId: edge.id,
       });
     }
 
@@ -488,6 +491,7 @@ export function detectKGContradictions(
             doc2_related: d2Rel.relatedCanonicalName,
             kg_source: 'doc1',
             severity: 'high',
+            edge_ids: [d1Rel.edgeId, d2Rel.edgeId],
           });
         }
       }
@@ -517,6 +521,7 @@ export function detectKGContradictions(
           doc2_related: `[${otherRel.relationshipType}] ${otherRel.relatedCanonicalName}`,
           kg_source: 'doc1',
           severity: 'medium',
+          edge_ids: [rel.edgeId, otherRel.edgeId],
         });
       }
     }
@@ -535,6 +540,7 @@ export function detectKGContradictions(
           doc2_related: rel.relatedCanonicalName,
           kg_source: 'doc2',
           severity: 'medium',
+          edge_ids: [otherRel.edgeId, rel.edgeId],
         });
       }
     }
@@ -555,6 +561,7 @@ export function detectKGContradictions(
           doc2_related: source === 'doc2' ? rel.relatedCanonicalName : '(not present)',
           kg_source: source,
           severity: 'low',
+          edge_ids: [rel.edgeId],
         });
       }
     }
