@@ -1954,7 +1954,8 @@ function migrateV17ToV18(db: Database.Database): void {
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL,
         importance_score REAL,
-        resolution_type TEXT
+        resolution_type TEXT,
+        FOREIGN KEY (provenance_id) REFERENCES provenance(id)
       )
     `);
     if (hasV20NodeCols) {
@@ -2188,6 +2189,15 @@ function migrateV20ToV21(db: Database.Database): void {
     db.exec(CREATE_VEC_ENTITY_EMBEDDINGS_TABLE);
 
     db.exec('PRAGMA foreign_keys = ON');
+
+    // FK integrity check
+    const fkViolations = db.pragma('foreign_key_check') as unknown[];
+    if (fkViolations.length > 0) {
+      throw new Error(
+        `Foreign key integrity check failed after v20->v21 migration: ${fkViolations.length} violation(s). ` +
+        `First: ${JSON.stringify(fkViolations[0])}`
+      );
+    }
   } catch (error) {
     db.exec('PRAGMA foreign_keys = ON');
     const cause = error instanceof Error ? error.message : String(error);
@@ -2275,6 +2285,7 @@ function migrateV21ToV22(db: Database.Database): void {
  */
 function migrateV22ToV23(db: Database.Database): void {
   try {
+    db.exec('PRAGMA foreign_keys = OFF');
     db.exec('BEGIN TRANSACTION');
 
     // Check if knowledge_edges table exists (KG tables are only created in v15+)
@@ -2285,6 +2296,7 @@ function migrateV22ToV23(db: Database.Database): void {
     if (tableExists.cnt === 0) {
       // No knowledge_edges table - nothing to migrate
       db.exec('COMMIT');
+      db.exec('PRAGMA foreign_keys = ON');
       return;
     }
 
@@ -2336,9 +2348,20 @@ function migrateV22ToV23(db: Database.Database): void {
     db.exec('CREATE INDEX IF NOT EXISTS idx_ke_relationship_type ON knowledge_edges(relationship_type)');
 
     db.exec('COMMIT');
+    db.exec('PRAGMA foreign_keys = ON');
+
+    // FK integrity check
+    const fkViolations = db.pragma('foreign_key_check') as unknown[];
+    if (fkViolations.length > 0) {
+      throw new Error(
+        `Foreign key integrity check failed after v22->v23 migration: ${fkViolations.length} violation(s). ` +
+        `First: ${JSON.stringify(fkViolations[0])}`
+      );
+    }
   } catch (error) {
     try {
       db.exec('ROLLBACK');
+      db.exec('PRAGMA foreign_keys = ON');
     } catch { /* ignore rollback errors */ }
     const cause = error instanceof Error ? error.message : String(error);
     throw new MigrationError(

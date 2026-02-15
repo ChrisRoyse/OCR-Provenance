@@ -15,6 +15,7 @@ import { basename } from 'path';
 import { z } from 'zod';
 import { v4 as uuidv4 } from 'uuid';
 import { formatResponse, handleError, queryEntitiesForDocuments, fetchProvenanceChain, type ToolDefinition } from './shared.js';
+import { successResult } from '../server/types.js';
 import { validateInput, sanitizePath } from '../utils/validation.js';
 import { requireDatabase } from '../server/state.js';
 import { FileManagerClient } from '../services/ocr/file-manager.js';
@@ -81,7 +82,7 @@ async function handleFileUpload(params: Record<string, unknown>) {
     // Check for existing upload with same hash
     const existing = getUploadedFileByHash(conn, fileHash);
     if (existing) {
-      return formatResponse({
+      return formatResponse(successResult({
         deduplicated: true,
         existing_upload: {
           id: existing.id,
@@ -92,7 +93,7 @@ async function handleFileUpload(params: Record<string, unknown>) {
           created_at: existing.created_at,
         },
         message: 'File with identical hash already uploaded',
-      });
+      }));
     }
 
     // Create provenance record
@@ -163,7 +164,7 @@ async function handleFileUpload(params: Record<string, unknown>) {
         'Use ocr_kg_build to build knowledge graph from extracted entities',
       ];
 
-      return formatResponse({
+      return formatResponse(successResult({
         id: uploadId,
         datalab_file_id: result.fileId,
         datalab_reference: result.reference,
@@ -175,7 +176,7 @@ async function handleFileUpload(params: Record<string, unknown>) {
         provenance_id: provId,
         processing_duration_ms: result.processingDurationMs,
         next_steps: nextSteps,
-      });
+      }));
     } catch (uploadError) {
       const errorMsg = uploadError instanceof Error ? uploadError.message : String(uploadError);
       updateUploadedFileStatus(conn, uploadId, 'failed', errorMsg);
@@ -268,7 +269,7 @@ async function handleFileList(params: Record<string, unknown>) {
       }
     }
 
-    return formatResponse(response);
+    return formatResponse(successResult(response));
   } catch (error) {
     return handleError(error);
   }
@@ -282,7 +283,7 @@ async function handleFileGet(params: Record<string, unknown>) {
 
     const file = getUploadedFile(conn, input.file_id);
     if (!file) {
-      return formatResponse({ error: `Uploaded file not found: ${input.file_id}` });
+      throw new Error(`Uploaded file not found: ${input.file_id}`);
     }
 
     const response: Record<string, unknown> = { uploaded_file: file };
@@ -304,7 +305,7 @@ async function handleFileGet(params: Record<string, unknown>) {
       response.provenance_chain = fetchProvenanceChain(db, file.provenance_id, 'file-management');
     }
 
-    return formatResponse(response);
+    return formatResponse(successResult(response));
   } catch (error) {
     return handleError(error);
   }
@@ -318,22 +319,22 @@ async function handleFileDownload(params: Record<string, unknown>) {
 
     const file = getUploadedFile(conn, input.file_id);
     if (!file) {
-      return formatResponse({ error: `Uploaded file not found: ${input.file_id}` });
+      throw new Error(`Uploaded file not found: ${input.file_id}`);
     }
 
     if (!file.datalab_file_id) {
-      return formatResponse({ error: `File has no Datalab file ID (upload may not be complete)` });
+      throw new Error(`File has no Datalab file ID (upload may not be complete)`);
     }
 
     const client = new FileManagerClient();
     const downloadUrl = await client.getDownloadUrl(file.datalab_file_id);
 
-    return formatResponse({
+    return formatResponse(successResult({
       file_id: input.file_id,
       datalab_file_id: file.datalab_file_id,
       file_name: file.file_name,
       download_url: downloadUrl,
-    });
+    }));
   } catch (error) {
     return handleError(error);
   }
@@ -347,7 +348,7 @@ async function handleFileDelete(params: Record<string, unknown>) {
 
     const file = getUploadedFile(conn, input.file_id);
     if (!file) {
-      return formatResponse({ error: `Uploaded file not found: ${input.file_id}` });
+      throw new Error(`Uploaded file not found: ${input.file_id}`);
     }
 
     // Optionally delete from Datalab cloud
@@ -378,7 +379,7 @@ async function handleFileDelete(params: Record<string, unknown>) {
     if (datalabDeleteError) {
       response.datalab_delete_error = datalabDeleteError;
     }
-    return formatResponse(response);
+    return formatResponse(successResult(response));
   } catch (error) {
     return handleError(error);
   }

@@ -349,19 +349,21 @@ describe('handleDocumentCompare', () => {
     });
     const result = parseResponse(response);
 
-    expect(result.comparison_id).toBeDefined();
-    expect(typeof result.comparison_id).toBe('string');
-    expect(result.similarity_ratio).toBeDefined();
-    expect(typeof result.similarity_ratio).toBe('number');
-    expect((result.similarity_ratio as number)).toBeGreaterThan(0);
-    expect((result.similarity_ratio as number)).toBeLessThan(1);
-    expect(result.summary).toBeDefined();
-    expect(typeof result.summary).toBe('string');
-    expect(result.provenance_id).toBeDefined();
+    expect(result.success).toBe(true);
+    const data = result.data as Record<string, unknown>;
+    expect(data.comparison_id).toBeDefined();
+    expect(typeof data.comparison_id).toBe('string');
+    expect(data.similarity_ratio).toBeDefined();
+    expect(typeof data.similarity_ratio).toBe('number');
+    expect((data.similarity_ratio as number)).toBeGreaterThan(0);
+    expect((data.similarity_ratio as number)).toBeLessThan(1);
+    expect(data.summary).toBeDefined();
+    expect(typeof data.summary).toBe('string');
+    expect(data.provenance_id).toBeDefined();
 
     // Verify row exists in comparisons table
     const conn = dbService.getConnection();
-    const row = conn.prepare('SELECT * FROM comparisons WHERE id = ?').get(result.comparison_id as string) as Record<string, unknown>;
+    const row = conn.prepare('SELECT * FROM comparisons WHERE id = ?').get(data.comparison_id as string) as Record<string, unknown>;
     expect(row).toBeDefined();
     expect(row.document_id_1).toBe(doc1.docId);
     expect(row.document_id_2).toBe(doc2.docId);
@@ -454,9 +456,11 @@ describe('handleDocumentCompare', () => {
     });
     const result = parseResponse(response);
 
-    expect(result.text_diff).toBeNull();
+    expect(result.success).toBe(true);
+    const data = result.data as Record<string, unknown>;
+    expect(data.text_diff).toBeNull();
     // Structural diff should still be present
-    expect(result.structural_diff).toBeDefined();
+    expect(data.structural_diff).toBeDefined();
   });
 
   it.skipIf(!sqliteVecAvailable)('include_entity_diff=false -> entity_diff is null in response', async () => {
@@ -468,9 +472,11 @@ describe('handleDocumentCompare', () => {
     });
     const result = parseResponse(response);
 
-    expect(result.entity_diff).toBeNull();
+    expect(result.success).toBe(true);
+    const data = result.data as Record<string, unknown>;
+    expect(data.entity_diff).toBeNull();
     // Text diff should still be present
-    expect(result.text_diff).toBeDefined();
+    expect(data.text_diff).toBeDefined();
   });
 
   it.skipIf(!sqliteVecAvailable)('provenance created after compare -> COMPARISON provenance record exists', async () => {
@@ -481,7 +487,9 @@ describe('handleDocumentCompare', () => {
     });
     const result = parseResponse(response);
 
-    const provId = result.provenance_id as string;
+    expect(result.success).toBe(true);
+    const data = result.data as Record<string, unknown>;
+    const provId = data.provenance_id as string;
     expect(provId).toBeDefined();
 
     // Verify provenance record in DB
@@ -507,7 +515,9 @@ describe('handleDocumentCompare', () => {
     });
     const result = parseResponse(response);
 
-    const compId = result.comparison_id as string;
+    expect(result.success).toBe(true);
+    const data = result.data as Record<string, unknown>;
+    const compId = data.comparison_id as string;
     const conn = dbService.getConnection();
     const row = conn.prepare('SELECT content_hash, text_diff_json, structural_diff_json, entity_diff_json FROM comparisons WHERE id = ?')
       .get(compId) as Record<string, unknown>;
@@ -577,8 +587,10 @@ describe('handleComparisonList', () => {
     const response = await listHandler({});
     const result = parseResponse(response);
 
-    expect(result.comparisons).toBeDefined();
-    const comparisons = result.comparisons as Array<Record<string, unknown>>;
+    expect(result.success).toBe(true);
+    const data = result.data as Record<string, unknown>;
+    expect(data.comparisons).toBeDefined();
+    const comparisons = data.comparisons as Array<Record<string, unknown>>;
     expect(comparisons.length).toBe(2);
     // Each comparison should have summary fields but not large diff data
     for (const comp of comparisons) {
@@ -603,7 +615,9 @@ describe('handleComparisonList', () => {
     const response = await listHandler({ document_id: doc3.docId });
     const result = parseResponse(response);
 
-    const comparisons = result.comparisons as Array<Record<string, unknown>>;
+    expect(result.success).toBe(true);
+    const data = result.data as Record<string, unknown>;
+    const comparisons = data.comparisons as Array<Record<string, unknown>>;
     expect(comparisons.length).toBe(1);
     // Should involve doc3
     const comp = comparisons[0];
@@ -655,25 +669,29 @@ describe('handleComparisonGet', () => {
       document_id_2: doc2.docId,
     });
     const compareResult = parseResponse(compareResponse);
-    const comparisonId = compareResult.comparison_id as string;
+    expect(compareResult.success).toBe(true);
+    const compareData = compareResult.data as Record<string, unknown>;
+    const comparisonId = compareData.comparison_id as string;
 
     // Get the comparison
     const response = await getHandler({ comparison_id: comparisonId });
     const result = parseResponse(response);
 
-    expect(result.id).toBe(comparisonId);
-    expect(result.document_id_1).toBe(doc1.docId);
-    expect(result.document_id_2).toBe(doc2.docId);
-    expect(result.similarity_ratio).toBeDefined();
-    expect(result.summary).toBeDefined();
+    expect(result.success).toBe(true);
+    const data = result.data as Record<string, unknown>;
+    expect(data.id).toBe(comparisonId);
+    expect(data.document_id_1).toBe(doc1.docId);
+    expect(data.document_id_2).toBe(doc2.docId);
+    expect(data.similarity_ratio).toBeDefined();
+    expect(data.summary).toBeDefined();
 
     // JSON fields should be parsed objects, not strings
-    expect(result.text_diff_json).toBeDefined();
-    expect(typeof result.text_diff_json).toBe('object');
-    expect(result.structural_diff_json).toBeDefined();
-    expect(typeof result.structural_diff_json).toBe('object');
-    expect(result.entity_diff_json).toBeDefined();
-    expect(typeof result.entity_diff_json).toBe('object');
+    expect(data.text_diff_json).toBeDefined();
+    expect(typeof data.text_diff_json).toBe('object');
+    expect(data.structural_diff_json).toBeDefined();
+    expect(typeof data.structural_diff_json).toBe('object');
+    expect(data.entity_diff_json).toBeDefined();
+    expect(typeof data.entity_diff_json).toBe('object');
   });
 
   it.skipIf(!sqliteVecAvailable)('get non-existent -> error response', async () => {
@@ -727,11 +745,15 @@ describe('cascade delete', () => {
     // Create comparisons: doc1 vs doc2, doc2 vs doc3
     const resp1 = await compareHandler({ document_id_1: doc1.docId, document_id_2: doc2.docId });
     const comp1Result = parseResponse(resp1);
-    const comp1Id = comp1Result.comparison_id as string;
+    expect(comp1Result.success).toBe(true);
+    const comp1Data = comp1Result.data as Record<string, unknown>;
+    const comp1Id = comp1Data.comparison_id as string;
 
     const resp2 = await compareHandler({ document_id_1: doc2.docId, document_id_2: doc3.docId });
     const comp2Result = parseResponse(resp2);
-    const comp2Id = comp2Result.comparison_id as string;
+    expect(comp2Result.success).toBe(true);
+    const comp2Data = comp2Result.data as Record<string, unknown>;
+    const comp2Id = comp2Data.comparison_id as string;
 
     const conn = dbService.getConnection();
 

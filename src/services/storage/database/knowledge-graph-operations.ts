@@ -1790,24 +1790,6 @@ export function insertVecEntityEmbedding(
 }
 
 /**
- * Get entity embedding for a knowledge node.
- * Returns null if no embedding exists for the node.
- *
- * @param db - Database connection
- * @param nodeId - Knowledge node ID
- * @returns Entity embedding row or null
- */
-export function getEntityEmbeddingByNodeId(
-  db: Database.Database,
-  nodeId: string,
-): EntityEmbeddingRow | null {
-  const row = db.prepare(
-    'SELECT * FROM entity_embeddings WHERE node_id = ?',
-  ).get(nodeId) as EntityEmbeddingRow | undefined;
-  return row ?? null;
-}
-
-/**
  * Delete entity embeddings for a knowledge node (both entity_embeddings and vec_entity_embeddings).
  *
  * @param db - Database connection
@@ -1830,16 +1812,6 @@ export function deleteEntityEmbeddingsByNodeId(
   ).run(nodeId);
 
   return result.changes;
-}
-
-/**
- * Count total entity embeddings
- */
-export function countEntityEmbeddings(db: Database.Database): number {
-  const row = db.prepare(
-    'SELECT COUNT(*) as cnt FROM entity_embeddings',
-  ).get() as { cnt: number };
-  return row.cnt;
 }
 
 /**
