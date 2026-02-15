@@ -34,9 +34,12 @@ import { incrementalBuildGraph } from '../services/knowledge-graph/incremental-b
 import { findGraphPaths } from '../services/knowledge-graph/graph-service.js';
 import {
   processSegmentsAndStoreEntities,
+  computeExtractionQualityScore,
+  TOTAL_ENTITY_TYPES,
   MAX_CHARS_PER_CALL,
   SEGMENT_OVERLAP_CHARS,
 } from '../utils/entity-extraction-helpers.js';
+import { detectEntityBoundaryIssues } from '../services/chunking/chunker.js';
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // HELPERS
@@ -65,6 +68,8 @@ const EntityExtractInput = z.object({
   ])).optional().describe('Entity types to extract (default: all types)'),
   incremental: z.boolean().default(false)
     .describe('When true, diff new entities against existing instead of deleting all. Preserves KG node_entity_links for unchanged entities.'),
+  auto_reassign_clusters: z.boolean().default(false)
+    .describe('After extraction + KG merge, reassign document to clusters if clusters exist'),
 });
 
 const EntitySearchInput = z.object({
@@ -119,12 +124,15 @@ const EntityDossierInput = z.object({
   include_relationships: z.boolean().default(true).describe('Include KG relationships'),
   include_documents: z.boolean().default(true).describe('Include document list'),
   include_timeline: z.boolean().default(false).describe('Include timeline of date co-occurrences'),
+  include_clusters: z.boolean().default(false).describe('Include cluster memberships for entity documents and co-clustered entities'),
   max_mentions: z.number().min(1).max(500).default(50).describe('Max mentions to return'),
 });
 
 const EntityUpdateConfidenceInput = z.object({
   document_id: z.string().optional().describe('Update for specific document, or all if omitted'),
   dry_run: z.boolean().default(false).describe('Preview changes without applying'),
+  factor_kg_importance: z.boolean().default(false)
+    .describe('Factor KG node importance_score into confidence: adjusted = base * (1 + min(importance,10) * 0.02), capped at 1.0'),
 });
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -379,6 +387,166 @@ async function handleEntityExtract(params: Record<string, unknown>) {
     // Auto-merge into knowledge graph if one exists
     const kgMergeResult = await autoMergeIntoKnowledgeGraph(db, doc.id);
 
+    // Optionally reassign clusters after entity extraction + KG merge
+    let clusterReassignment: Record<string, unknown> | undefined;
+    if (input.auto_reassign_clusters) {
+      try {
+        const clusterCount = (conn.prepare('SELECT COUNT(*) as cnt FROM clusters').get() as { cnt: number }).cnt;
+        if (clusterCount > 0) {
+          const runRow = conn.prepare(
+            'SELECT DISTINCT run_id FROM document_clusters ORDER BY ROWID DESC LIMIT 1'
+          ).get() as { run_id: string } | undefined;
+          if (runRow) {
+            // Check if document is already in this run
+            const existing = conn.prepare(
+              'SELECT cluster_id FROM document_clusters WHERE document_id = ? AND run_id = ?'
+            ).get(doc.id, runRow.run_id) as { cluster_id: string } | undefined;
+
+            // Find best matching cluster by entity overlap (Jaccard on KG nodes)
+            const docNodeIds = conn.prepare(`
+              SELECT DISTINCT nel.node_id FROM node_entity_links nel
+              JOIN entities e ON nel.entity_id = e.id
+              WHERE e.document_id = ?
+            `).all(doc.id) as Array<{ node_id: string }>;
+
+            if (docNodeIds.length > 0) {
+              const docNodeSet = new Set(docNodeIds.map(r => r.node_id));
+              // Get clusters from the most recent run and compute overlap
+              const clusterRows = conn.prepare(`
+                SELECT DISTINCT dc.cluster_id FROM document_clusters dc
+                WHERE dc.run_id = ? AND dc.document_id != ?
+              `).all(runRow.run_id, doc.id) as Array<{ cluster_id: string }>;
+
+              let bestClusterId: string | null = null;
+              let bestOverlap = 0;
+              for (const cr of clusterRows) {
+                const clusterNodeRows = conn.prepare(`
+                  SELECT DISTINCT nel.node_id FROM node_entity_links nel
+                  JOIN entities e ON nel.entity_id = e.id
+                  JOIN document_clusters dc ON dc.document_id = e.document_id
+                  WHERE dc.cluster_id = ? AND dc.run_id = ?
+                `).all(cr.cluster_id, runRow.run_id) as Array<{ node_id: string }>;
+                const clusterNodeSet = new Set(clusterNodeRows.map(r => r.node_id));
+                const intersection = [...docNodeSet].filter(n => clusterNodeSet.has(n)).length;
+                const union = new Set([...docNodeSet, ...clusterNodeSet]).size;
+                const jaccard = union > 0 ? intersection / union : 0;
+                if (jaccard > bestOverlap) {
+                  bestOverlap = jaccard;
+                  bestClusterId = cr.cluster_id;
+                }
+              }
+
+              if (bestClusterId && bestOverlap > 0.05) {
+                // Remove old assignment if any
+                if (existing) {
+                  conn.prepare('DELETE FROM document_clusters WHERE document_id = ? AND run_id = ?')
+                    .run(doc.id, runRow.run_id);
+                }
+                conn.prepare(
+                  'INSERT INTO document_clusters (id, document_id, cluster_id, run_id) VALUES (?, ?, ?, ?)'
+                ).run(uuidv4(), doc.id, bestClusterId, runRow.run_id);
+
+                clusterReassignment = {
+                  reassigned: true,
+                  cluster_id: bestClusterId,
+                  overlap_score: Math.round(bestOverlap * 1000) / 1000,
+                  previous_cluster_id: existing?.cluster_id ?? null,
+                };
+              } else {
+                clusterReassignment = {
+                  reassigned: false,
+                  reason: bestClusterId ? 'overlap too low' : 'no clusters with entity overlap found',
+                  best_overlap: Math.round(bestOverlap * 1000) / 1000,
+                };
+              }
+            } else {
+              clusterReassignment = { reassigned: false, reason: 'no KG nodes for document' };
+            }
+          } else {
+            clusterReassignment = { reassigned: false, reason: 'no cluster runs found' };
+          }
+        } else {
+          clusterReassignment = { reassigned: false, reason: 'no clusters exist' };
+        }
+      } catch (clusterErr) {
+        const msg = clusterErr instanceof Error ? clusterErr.message : String(clusterErr);
+        clusterReassignment = { reassigned: false, error: msg };
+      }
+    }
+
+    // Compute related documents by shared entity overlap
+    let relatedDocuments: Array<Record<string, unknown>> | undefined;
+    try {
+      const relDocRows = conn.prepare(`
+        SELECT e2.document_id, d.file_name, COUNT(DISTINCT e2.normalized_text) as shared_entities
+        FROM entities e1
+        JOIN entities e2 ON e1.normalized_text = e2.normalized_text AND e1.entity_type = e2.entity_type
+        JOIN documents d ON d.id = e2.document_id
+        WHERE e1.document_id = ? AND e2.document_id != ?
+        GROUP BY e2.document_id
+        ORDER BY shared_entities DESC
+        LIMIT 5
+      `).all(doc.id, doc.id) as Array<{ document_id: string; file_name: string; shared_entities: number }>;
+      if (relDocRows.length > 0) {
+        relatedDocuments = relDocRows.map(r => ({
+          document_id: r.document_id,
+          file_name: r.file_name,
+          shared_entities: r.shared_entities,
+        }));
+      }
+    } catch {
+      // Related documents query failed - skip
+    }
+
+    // Compute extraction quality score
+    let extractionQuality: { score: number; metrics: Record<string, number>; recommendations: string[] } | undefined;
+    try {
+      // Count pages with entity mentions
+      const dbChunks = getChunksByDocumentId(conn, doc.id);
+      const pagesWithEntitiesRows = conn.prepare(`
+        SELECT COUNT(DISTINCT em.page_number) as cnt
+        FROM entity_mentions em
+        WHERE em.document_id = ? AND em.page_number IS NOT NULL
+      `).get(doc.id) as { cnt: number };
+      const pagesWithEntities = pagesWithEntitiesRows.cnt;
+      const totalPages = ocrResult.page_count ?? 0;
+
+      extractionQuality = computeExtractionQualityScore(
+        result.totalEntities,
+        textLength,
+        Object.keys(result.entitiesByType).length,
+        TOTAL_ENTITY_TYPES,
+        result.noiseFiltered,
+        result.totalRawExtracted,
+        pagesWithEntities,
+        totalPages,
+      );
+
+      // Detect entity boundary issues
+      if (dbChunks.length > 1) {
+        const mentionRows = conn.prepare(`
+          SELECT em.character_start as char_start, em.character_end as char_end, e.raw_text
+          FROM entity_mentions em
+          JOIN entities e ON em.entity_id = e.id
+          WHERE em.document_id = ? AND em.character_start IS NOT NULL AND em.character_end IS NOT NULL
+        `).all(doc.id) as Array<{ char_start: number; char_end: number; raw_text: string }>;
+
+        if (mentionRows.length > 0) {
+          const chunkData = dbChunks.map(c => ({
+            text: c.text,
+            character_start: c.character_start,
+            character_end: c.character_end,
+          }));
+          const boundaryIssues = detectEntityBoundaryIssues(chunkData, mentionRows);
+          if (boundaryIssues.split_entities > 0) {
+            (extractionQuality as Record<string, unknown>).entity_boundary_issues = boundaryIssues;
+          }
+        }
+      }
+    } catch {
+      // Quality computation failed - skip
+    }
+
     return formatResponse({
       document_id: doc.id,
       total_entities: result.totalEntities,
@@ -402,6 +570,9 @@ async function handleEntityExtract(params: Record<string, unknown>) {
       segment_overlap: SEGMENT_OVERLAP_CHARS,
       ...incrementalStats,
       ...kgMergeResult,
+      ...(clusterReassignment ? { cluster_reassignment: clusterReassignment } : {}),
+      ...(relatedDocuments ? { related_documents: relatedDocuments } : {}),
+      ...(extractionQuality ? { extraction_quality: extractionQuality } : {}),
     });
   } catch (error) {
     return handleError(error);
@@ -662,6 +833,17 @@ async function handleTimelineBuild(params: Record<string, unknown>) {
     }
 
     // Parse dates and build timeline entries
+    // Prepare cluster lookup statement for timeline entries
+    let clusterLookupStmt: ReturnType<typeof conn.prepare> | null = null;
+    try {
+      clusterLookupStmt = conn.prepare(`
+        SELECT dc.cluster_id, c.label FROM document_clusters dc
+        JOIN clusters c ON dc.cluster_id = c.id
+        WHERE dc.document_id = ?
+        LIMIT 1
+      `);
+    } catch { /* cluster tables may not exist */ }
+
     const timelineEntries: Array<{
       date_iso: string;
       date_display: string;
@@ -670,6 +852,8 @@ async function handleTimelineBuild(params: Record<string, unknown>) {
       document_id: string;
       document_name: string | null;
       context: string | null;
+      cluster_id?: string;
+      cluster_label?: string;
       co_located_entities?: Array<{ name: string; relationship_type?: string; weight?: number }>;
     }> = [];
 
@@ -790,6 +974,22 @@ async function handleTimelineBuild(params: Record<string, unknown>) {
         }
       }
 
+      // Look up cluster membership for the source document
+      let clusterInfo: { cluster_id?: string; cluster_label?: string } = {};
+      if (clusterLookupStmt) {
+        try {
+          const clusterRow = clusterLookupStmt.get(entity.document_id) as {
+            cluster_id: string; label: string | null;
+          } | undefined;
+          if (clusterRow) {
+            clusterInfo = {
+              cluster_id: clusterRow.cluster_id,
+              cluster_label: clusterRow.label ?? undefined,
+            };
+          }
+        } catch { /* cluster lookup failed */ }
+      }
+
       timelineEntries.push({
         date_iso: dateIso,
         date_display: dateDisplay,
@@ -798,6 +998,7 @@ async function handleTimelineBuild(params: Record<string, unknown>) {
         document_id: entity.document_id,
         document_name: document?.file_name ?? null,
         context: contextText,
+        ...clusterInfo,
         ...(coLocatedWithRelationships ? { co_located_entities: coLocatedWithRelationships } : {}),
       });
     }
@@ -1058,6 +1259,8 @@ async function handleEntityExtractionStats(params: Record<string, unknown>) {
     const input = validateInput(z.object({
       document_filter: z.array(z.string()).optional()
         .describe('Filter by document IDs'),
+      include_cross_doc_consistency: z.boolean().default(false)
+        .describe('Include cross-document entity consistency analysis: flag KG nodes with >2 raw text variants across documents'),
     }), params);
     const { db } = requireDatabase();
     const conn = db.getConnection();
@@ -1187,6 +1390,57 @@ async function handleEntityExtractionStats(params: Record<string, unknown>) {
       agreementStats = {};
     }
 
+    // Cross-document entity consistency validation
+    let crossDocConsistency: Record<string, unknown> | undefined;
+    if (input.include_cross_doc_consistency) {
+      try {
+        const consistencyRows = conn.prepare(`
+          SELECT kn.canonical_name, kn.entity_type,
+                 GROUP_CONCAT(DISTINCT e.raw_text) as raw_variants,
+                 COUNT(DISTINCT e.document_id) as doc_count
+          FROM knowledge_nodes kn
+          JOIN node_entity_links nel ON nel.node_id = kn.id
+          JOIN entities e ON nel.entity_id = e.id
+          GROUP BY kn.id
+          HAVING doc_count >= 2
+          ORDER BY doc_count DESC
+          LIMIT 50
+        `).all() as Array<{
+          canonical_name: string; entity_type: string;
+          raw_variants: string; doc_count: number;
+        }>;
+
+        const inconsistentNodes: Array<Record<string, unknown>> = [];
+        let totalMultiDocNodes = 0;
+
+        for (const row of consistencyRows) {
+          totalMultiDocNodes++;
+          const variants = row.raw_variants.split(',').map(v => v.trim());
+          const uniqueVariants = [...new Set(variants)];
+          if (uniqueVariants.length > 2) {
+            inconsistentNodes.push({
+              canonical_name: row.canonical_name,
+              entity_type: row.entity_type,
+              document_count: row.doc_count,
+              variant_count: uniqueVariants.length,
+              raw_variants: uniqueVariants.slice(0, 10), // Limit to 10 variants
+            });
+          }
+        }
+
+        crossDocConsistency = {
+          total_multi_doc_nodes: totalMultiDocNodes,
+          inconsistent_nodes: inconsistentNodes.length,
+          inconsistent_node_details: inconsistentNodes.slice(0, 20),
+          consistency_percent: totalMultiDocNodes > 0
+            ? Math.round(((totalMultiDocNodes - inconsistentNodes.length) / totalMultiDocNodes) * 10000) / 100
+            : 100,
+        };
+      } catch {
+        crossDocConsistency = { note: 'KG tables not available for consistency check' };
+      }
+    }
+
     return formatResponse({
       total_entities: entityCount,
       total_mentions: mentionCount,
@@ -1206,6 +1460,7 @@ async function handleEntityExtractionStats(params: Record<string, unknown>) {
       document_coverage: docCoverage,
       knowledge_graph: kgStats,
       cross_segment_agreement: agreementStats,
+      ...(crossDocConsistency ? { cross_document_consistency: crossDocConsistency } : {}),
       document_filter: input.document_filter || null,
     });
   } catch (error) {
@@ -1790,6 +2045,70 @@ async function handleEntityDossier(params: Record<string, unknown>) {
       dossier.timeline_count = timeline.length;
     }
 
+    // -- Clusters --
+    if (input.include_clusters) {
+      try {
+        // Get entity's document IDs
+        const entityDocIds: string[] = [];
+        if (nodeId) {
+          const docIdRows = conn.prepare(`
+            SELECT DISTINCT nel.document_id FROM node_entity_links nel WHERE nel.node_id = ?
+          `).all(nodeId) as Array<{ document_id: string }>;
+          for (const r of docIdRows) entityDocIds.push(r.document_id);
+        } else {
+          for (const e of fallbackEntities) {
+            if (!entityDocIds.includes(e.document_id)) entityDocIds.push(e.document_id);
+          }
+        }
+
+        if (entityDocIds.length > 0) {
+          const docPlaceholders = entityDocIds.map(() => '?').join(',');
+          const clusterRows = conn.prepare(`
+            SELECT DISTINCT dc.cluster_id, c.label, c.classification_tag, c.run_id
+            FROM document_clusters dc
+            JOIN clusters c ON dc.cluster_id = c.id
+            WHERE dc.document_id IN (${docPlaceholders})
+          `).all(...entityDocIds) as Array<{
+            cluster_id: string; label: string | null; classification_tag: string | null; run_id: string;
+          }>;
+
+          if (clusterRows.length > 0) {
+            const clusterIds = clusterRows.map(r => r.cluster_id);
+            const clusterPlaceholders = clusterIds.map(() => '?').join(',');
+            const entityIdForExclusion = nodeId ?? (fallbackEntities[0]?.id ?? '');
+
+            // Get co-clustered entities
+            let coClusteredEntities: Array<{ raw_text: string; entity_type: string }> = [];
+            try {
+              coClusteredEntities = conn.prepare(`
+                SELECT DISTINCT e.raw_text, e.entity_type FROM entities e
+                JOIN entity_mentions em ON em.entity_id = e.id
+                JOIN document_clusters dc ON dc.document_id = em.document_id
+                WHERE dc.cluster_id IN (${clusterPlaceholders}) AND e.id != ?
+                LIMIT 20
+              `).all(...clusterIds, entityIdForExclusion) as Array<{ raw_text: string; entity_type: string }>;
+            } catch { /* entity_mentions join may fail */ }
+
+            dossier.clusters = {
+              cluster_memberships: clusterRows.map(r => ({
+                cluster_id: r.cluster_id,
+                label: r.label,
+                classification_tag: r.classification_tag,
+                run_id: r.run_id,
+              })),
+              co_clustered_entities: coClusteredEntities,
+            };
+          } else {
+            dossier.clusters = { cluster_memberships: [], co_clustered_entities: [] };
+          }
+        } else {
+          dossier.clusters = { cluster_memberships: [], co_clustered_entities: [] };
+        }
+      } catch {
+        dossier.clusters = { cluster_memberships: [], co_clustered_entities: [], note: 'cluster tables not available' };
+      }
+    }
+
     // -- Related Entities (top 10 by edge weight) --
     if (nodeId) {
       const relatedRows = conn.prepare(`
@@ -1930,6 +2249,23 @@ async function handleEntityUpdateConfidence(params: Record<string, unknown>) {
       }
     } catch { /* may fail on schema without provenance processor field */ }
 
+    // Pre-compute KG importance scores per entity if requested
+    const kgImportanceMap = new Map<string, number>();
+    if (input.factor_kg_importance) {
+      try {
+        const importanceRows = conn.prepare(`
+          SELECT nel.entity_id, kn.importance_score
+          FROM node_entity_links nel
+          JOIN knowledge_nodes kn ON nel.node_id = kn.id
+          WHERE kn.importance_score IS NOT NULL
+          ${input.document_id ? 'AND nel.document_id = ?' : ''}
+        `).all(...filterParams) as Array<{ entity_id: string; importance_score: number }>;
+        for (const r of importanceRows) {
+          kgImportanceMap.set(r.entity_id, r.importance_score);
+        }
+      } catch { /* KG tables may not exist */ }
+    }
+
     // Calculate new confidence for each entity
     const updates: Array<{
       entity_id: string;
@@ -1938,6 +2274,7 @@ async function handleEntityUpdateConfidence(params: Record<string, unknown>) {
       cross_document_boost: number;
       mention_boost: number;
       multi_source_boost: number;
+      kg_importance_factor?: number;
     }> = [];
 
     let totalOldConfidence = 0;
@@ -1964,7 +2301,20 @@ async function handleEntityUpdateConfidence(params: Record<string, unknown>) {
       const totalSources = Math.max(directSourceCount, 1 + crossSourceCount);
       const multiSourceBoost = Math.min(0.15, Math.max(0, (totalSources - 1) * 0.05));
 
-      const newConfidence = Math.min(1.0, baseConfidence + crossDocBoost + mentionBoost + multiSourceBoost);
+      let intermediateConfidence = baseConfidence + crossDocBoost + mentionBoost + multiSourceBoost;
+
+      // KG importance factor
+      let kgImportanceFactor: number | undefined;
+      if (input.factor_kg_importance) {
+        const importance = kgImportanceMap.get(entity.id);
+        if (importance != null && importance > 0) {
+          const factor = 1 + Math.min(importance, 10) * 0.02;
+          kgImportanceFactor = Math.round(factor * 1000) / 1000;
+          intermediateConfidence = intermediateConfidence * factor;
+        }
+      }
+
+      const newConfidence = Math.min(1.0, intermediateConfidence);
       totalNewConfidence += newConfidence;
 
       if (Math.abs(newConfidence - baseConfidence) > 0.001) {
@@ -1975,6 +2325,7 @@ async function handleEntityUpdateConfidence(params: Record<string, unknown>) {
           cross_document_boost: Math.round(crossDocBoost * 1000) / 1000,
           mention_boost: Math.round(mentionBoost * 1000) / 1000,
           multi_source_boost: Math.round(multiSourceBoost * 1000) / 1000,
+          ...(kgImportanceFactor != null ? { kg_importance_factor: kgImportanceFactor } : {}),
         });
       }
     }
@@ -2066,7 +2417,7 @@ async function handleEntityUpdateConfidence(params: Record<string, unknown>) {
 
 export const entityAnalysisTools: Record<string, ToolDefinition> = {
   'ocr_entity_extract': {
-    description: 'Extract named entities (people, organizations, dates, amounts, case numbers, locations, statutes, exhibits) from an OCR-processed document using Gemini AI',
+    description: 'Extract named entities (people, organizations, dates, amounts, case numbers, locations, statutes, exhibits) from an OCR-processed document using Gemini AI. Returns extraction_quality score with metrics (density, diversity, noise_ratio, coverage) and recommendations. Reports entity_boundary_issues when entities span chunk boundaries. Returns related documents by shared entity overlap. Optionally reassigns document clusters after extraction.',
     inputSchema: EntityExtractInput.shape,
     handler: handleEntityExtract,
   },
@@ -2076,7 +2427,7 @@ export const entityAnalysisTools: Record<string, ToolDefinition> = {
     handler: handleEntitySearch,
   },
   'ocr_timeline_build': {
-    description: 'Build a chronological timeline from date entities extracted from documents. Optionally filter by entity_names (co-located entities) or entity_path_source/entity_path_target (KG relationship path filtering).',
+    description: 'Build a chronological timeline from date entities extracted from documents. Each entry includes cluster context (cluster_id, cluster_label) when clusters exist. Optionally filter by entity_names (co-located entities) or entity_path_source/entity_path_target (KG relationship path filtering).',
     inputSchema: TimelineBuildInput.shape,
     handler: handleTimelineBuild,
   },
@@ -2096,10 +2447,12 @@ export const entityAnalysisTools: Record<string, ToolDefinition> = {
     handler: handleEntityExtractFromExtractions,
   },
   'ocr_entity_extraction_stats': {
-    description: 'Get entity extraction quality analytics including type distribution, confidence stats, segment coverage, and KG integration metrics',
+    description: 'Get entity extraction quality analytics including type distribution, confidence stats, segment coverage, KG integration metrics, and optional cross-document entity consistency validation',
     inputSchema: {
       document_filter: z.array(z.string()).optional()
         .describe('Filter by document IDs'),
+      include_cross_doc_consistency: z.boolean().default(false)
+        .describe('Include cross-document entity consistency analysis: flag KG nodes with >2 raw text variants across documents'),
     },
     handler: handleEntityExtractionStats,
   },
@@ -2109,12 +2462,12 @@ export const entityAnalysisTools: Record<string, ToolDefinition> = {
     handler: handleCoreferenceResolve,
   },
   'ocr_entity_dossier': {
-    description: 'Get a comprehensive profile for a single entity or KG node, including mentions, relationships, documents, timeline, and related entities.',
+    description: 'Get a comprehensive profile for a single entity or KG node, including mentions, relationships, documents, timeline, cluster memberships, and related entities.',
     inputSchema: EntityDossierInput.shape,
     handler: handleEntityDossier,
   },
   'ocr_entity_update_confidence': {
-    description: 'Dynamically recalculate entity confidence scores based on accumulated evidence: cross-document presence, mention frequency, and multi-source extraction confirmation.',
+    description: 'Dynamically recalculate entity confidence scores based on accumulated evidence: cross-document presence, mention frequency, multi-source extraction confirmation, and optionally KG node importance.',
     inputSchema: EntityUpdateConfidenceInput.shape,
     handler: handleEntityUpdateConfidence,
   },

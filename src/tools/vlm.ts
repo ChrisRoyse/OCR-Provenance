@@ -25,6 +25,51 @@ import { ProvenanceType } from '../models/provenance.js';
 import { computeHash } from '../utils/hash.js';
 import { extractEntitiesFromVLM } from '../services/knowledge-graph/vlm-entity-extractor.js';
 
+/**
+ * Create entity extraction provenance for VLM auto-extraction and run extraction.
+ * Shared by handleVLMProcessDocument and handleVLMProcessPending.
+ */
+async function createVLMEntityProvAndExtract(
+  db: ReturnType<typeof requireDatabase>['db'],
+  conn: import('better-sqlite3').Database,
+  docId: string,
+  sourceLabel: string,
+): Promise<{ entities_created: number; descriptions_processed: number }> {
+  const doc = db.getDocument(docId);
+  if (!doc) throw new Error(`Document not found: ${docId}`);
+
+  const now = new Date().toISOString();
+  const entityProvId = uuidv4();
+  const entityHash = computeHash(JSON.stringify({ document_id: docId, source: sourceLabel }));
+
+  db.insertProvenance({
+    id: entityProvId,
+    type: ProvenanceType.ENTITY_EXTRACTION,
+    created_at: now,
+    processed_at: now,
+    source_file_created_at: null,
+    source_file_modified_at: null,
+    source_type: 'ENTITY_EXTRACTION',
+    source_path: doc.file_path,
+    source_id: doc.provenance_id,
+    root_document_id: doc.provenance_id,
+    location: null,
+    content_hash: entityHash,
+    input_hash: computeHash(docId),
+    file_hash: doc.file_hash,
+    processor: 'vlm-auto-entity-extraction',
+    processor_version: '1.0.0',
+    processing_params: { auto_extract: true, ...(sourceLabel !== 'vlm-auto' ? { source: sourceLabel } : {}) },
+    processing_duration_ms: null,
+    processing_quality_score: null,
+    parent_id: doc.provenance_id,
+    parent_ids: JSON.stringify([doc.provenance_id]),
+    chain_depth: 2,
+    chain_path: JSON.stringify(['DOCUMENT', 'VLM_DESC', 'ENTITY_EXTRACTION']),
+  });
+
+  return extractEntitiesFromVLM(conn, docId, entityProvId);
+}
 
 // ===============================================================================
 // VALIDATION SCHEMAS
@@ -98,18 +143,24 @@ export async function handleVLMDescribe(
         ).get(imagePath) as { document_id: string; page_number: number } | undefined;
 
         if (imageRecord) {
+          // Use KG canonical_name when available (authoritative after entity resolution)
           const pageEntities = conn.prepare(`
-            SELECT DISTINCT e.entity_type, e.normalized_text
+            SELECT DISTINCT
+              COALESCE(kn.entity_type, e.entity_type) as entity_type,
+              COALESCE(kn.canonical_name, e.normalized_text) as display_name,
+              kn.aliases
             FROM entities e
             JOIN entity_mentions em ON e.id = em.entity_id
+            LEFT JOIN node_entity_links nel ON nel.entity_id = e.id
+            LEFT JOIN knowledge_nodes kn ON nel.node_id = kn.id
             WHERE em.document_id = ? AND em.page_number = ?
             ORDER BY e.confidence DESC
             LIMIT 20
-          `).all(imageRecord.document_id, imageRecord.page_number) as Array<{ entity_type: string; normalized_text: string }>;
+          `).all(imageRecord.document_id, imageRecord.page_number) as Array<{ entity_type: string; display_name: string; aliases: string | null }>;
 
           if (pageEntities.length > 0) {
             const entitySummary = pageEntities
-              .map(e => `${e.entity_type}: ${e.normalized_text}`)
+              .map(e => `${e.entity_type}: ${e.display_name}`)
               .join(', ');
             contextText = (contextText ?? '') + `\nKnown entities on this page: ${entitySummary}`;
             entityContextProvided = true;
@@ -225,37 +276,7 @@ export async function handleVLMProcessDocument(
     let vlmEntityResult: { entities_created: number; descriptions_processed: number } | undefined;
     if (input.auto_extract_entities && result.successful > 0) {
       try {
-        const now = new Date().toISOString();
-        const entityProvId = uuidv4();
-        const entityHash = computeHash(JSON.stringify({ document_id: documentId, source: 'vlm-auto' }));
-
-        db.insertProvenance({
-          id: entityProvId,
-          type: ProvenanceType.ENTITY_EXTRACTION,
-          created_at: now,
-          processed_at: now,
-          source_file_created_at: null,
-          source_file_modified_at: null,
-          source_type: 'ENTITY_EXTRACTION',
-          source_path: doc.file_path,
-          source_id: doc.provenance_id,
-          root_document_id: doc.provenance_id,
-          location: null,
-          content_hash: entityHash,
-          input_hash: computeHash(documentId),
-          file_hash: doc.file_hash,
-          processor: 'vlm-auto-entity-extraction',
-          processor_version: '1.0.0',
-          processing_params: { auto_extract: true },
-          processing_duration_ms: null,
-          processing_quality_score: null,
-          parent_id: doc.provenance_id,
-          parent_ids: JSON.stringify([doc.provenance_id]),
-          chain_depth: 2,
-          chain_path: JSON.stringify(['DOCUMENT', 'VLM_DESC', 'ENTITY_EXTRACTION']),
-        });
-
-        vlmEntityResult = await extractEntitiesFromVLM(conn, documentId, entityProvId);
+        vlmEntityResult = await createVLMEntityProvAndExtract(db, conn, documentId, 'vlm-auto');
       } catch (err) {
         console.error(`[WARN] VLM entity extraction failed: ${(err as Error).message}`);
       }
@@ -334,40 +355,7 @@ export async function handleVLMProcessPending(
 
           for (const { document_id: docId } of documentIds) {
             try {
-              const doc = db.getDocument(docId);
-              if (!doc) continue;
-
-              const now = new Date().toISOString();
-              const entityProvId = uuidv4();
-              const entityHash = computeHash(JSON.stringify({ document_id: docId, source: 'vlm-auto-pending' }));
-
-              db.insertProvenance({
-                id: entityProvId,
-                type: ProvenanceType.ENTITY_EXTRACTION,
-                created_at: now,
-                processed_at: now,
-                source_file_created_at: null,
-                source_file_modified_at: null,
-                source_type: 'ENTITY_EXTRACTION',
-                source_path: doc.file_path,
-                source_id: doc.provenance_id,
-                root_document_id: doc.provenance_id,
-                location: null,
-                content_hash: entityHash,
-                input_hash: computeHash(docId),
-                file_hash: doc.file_hash,
-                processor: 'vlm-auto-entity-extraction',
-                processor_version: '1.0.0',
-                processing_params: { auto_extract: true, source: 'process_pending' },
-                processing_duration_ms: null,
-                processing_quality_score: null,
-                parent_id: doc.provenance_id,
-                parent_ids: JSON.stringify([doc.provenance_id]),
-                chain_depth: 2,
-                chain_path: JSON.stringify(['DOCUMENT', 'VLM_DESC', 'ENTITY_EXTRACTION']),
-              });
-
-              const vlmResult = await extractEntitiesFromVLM(conn, docId, entityProvId);
+              const vlmResult = await createVLMEntityProvAndExtract(db, conn, docId, 'vlm-auto-pending');
               vlmEntityResults.push({
                 document_id: docId,
                 entities_created: vlmResult.entities_created,

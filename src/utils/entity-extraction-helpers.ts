@@ -1090,3 +1090,110 @@ export async function processSegmentsAndStoreEntities(
     apiCalls,
   };
 }
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// EXTRACTION QUALITY FEEDBACK
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/** Total number of standard entity types supported by the extraction pipeline */
+export const TOTAL_ENTITY_TYPES = 11;
+
+/**
+ * Compute a quality score for entity extraction results with actionable recommendations.
+ *
+ * Evaluates extraction quality across four dimensions:
+ * - entity_density: entities per 1K chars (ideal range: 5-50)
+ * - type_diversity: fraction of entity types found (ideal: > 0.3)
+ * - noise_ratio: fraction of entities filtered as noise (ideal: < 0.3)
+ * - coverage: fraction of pages with at least one entity (ideal: > 0.5)
+ *
+ * Score = weighted average: density 30%, diversity 20%, noise_ratio 20% (inverted), coverage 30%
+ * Each dimension is normalized to 0-1 before weighting.
+ *
+ * @param totalEntities - Number of unique entities after deduplication
+ * @param textLength - Total character length of source text
+ * @param uniqueTypes - Number of distinct entity types found
+ * @param totalTypes - Total number of standard entity types (typically 11)
+ * @param noiseFiltered - Number of entities removed by noise filter
+ * @param totalExtracted - Total entities extracted before filtering
+ * @param pagesWithEntities - Number of pages that have at least one entity mention
+ * @param totalPages - Total number of pages in the document
+ * @returns Quality score (0-1), per-metric breakdown, and recommendations
+ */
+export function computeExtractionQualityScore(
+  totalEntities: number,
+  textLength: number,
+  uniqueTypes: number,
+  totalTypes: number,
+  noiseFiltered: number,
+  totalExtracted: number,
+  pagesWithEntities: number,
+  totalPages: number,
+): { score: number; metrics: Record<string, number>; recommendations: string[] } {
+  const recommendations: string[] = [];
+
+  // Entity density: entities per 1K chars, normalized to 0-1
+  // Ideal range 5-50 per 1K chars; clamp at edges
+  const rawDensity = textLength > 0 ? (totalEntities / textLength) * 1000 : 0;
+  let densityScore: number;
+  if (rawDensity < 1) {
+    densityScore = rawDensity / 5; // 0-0.2 for very sparse
+  } else if (rawDensity <= 5) {
+    densityScore = 0.2 + ((rawDensity - 1) / 4) * 0.4; // 0.2-0.6
+  } else if (rawDensity <= 50) {
+    densityScore = 0.6 + ((rawDensity - 5) / 45) * 0.4; // 0.6-1.0
+  } else {
+    densityScore = Math.max(0.5, 1.0 - (rawDensity - 50) / 100); // Penalize extreme density
+  }
+  densityScore = Math.min(1.0, Math.max(0, densityScore));
+
+  if (rawDensity < 2) {
+    recommendations.push('Low entity density detected. Consider documents with richer content.');
+  }
+
+  // Type diversity: uniqueTypes / totalTypes
+  const typeDiversity = totalTypes > 0 ? uniqueTypes / totalTypes : 0;
+  const diversityScore = Math.min(1.0, typeDiversity / 0.6); // 0.6+ diversity = full score
+  if (typeDiversity < 0.3) {
+    recommendations.push(`Limited entity type diversity. Only ${uniqueTypes} of ${totalTypes} types found.`);
+  }
+
+  // Noise ratio: inverted (lower noise = better)
+  const noiseRatio = totalExtracted > 0 ? noiseFiltered / totalExtracted : 0;
+  const noiseScore = Math.max(0, 1.0 - noiseRatio); // 0% noise = 1.0, 100% noise = 0.0
+  if (noiseRatio > 0.3) {
+    const pct = Math.round(noiseRatio * 100);
+    recommendations.push(`High noise ratio (${pct}%). Many extracted entities were filtered.`);
+  }
+
+  // Coverage: pagesWithEntities / totalPages
+  const coverageRatio = totalPages > 0 ? pagesWithEntities / totalPages : (totalEntities > 0 ? 1 : 0);
+  const coverageScore = Math.min(1.0, coverageRatio / 0.8); // 80%+ coverage = full score
+  if (totalPages > 0 && coverageRatio < 0.5) {
+    const pct = Math.round(coverageRatio * 100);
+    recommendations.push(`Low extraction coverage (${pct}%). Only ${pagesWithEntities}/${totalPages} pages have entities.`);
+  }
+
+  // Weighted average: density 30%, diversity 20%, noise 20%, coverage 30%
+  const score = Math.round((
+    densityScore * 0.3 +
+    diversityScore * 0.2 +
+    noiseScore * 0.2 +
+    coverageScore * 0.3
+  ) * 100) / 100;
+
+  return {
+    score,
+    metrics: {
+      entity_density: Math.round(rawDensity * 100) / 100,
+      type_diversity: Math.round(typeDiversity * 100) / 100,
+      noise_ratio: Math.round(noiseRatio * 100) / 100,
+      coverage: Math.round(coverageRatio * 100) / 100,
+      density_score: Math.round(densityScore * 100) / 100,
+      diversity_score: Math.round(diversityScore * 100) / 100,
+      noise_score: Math.round(noiseScore * 100) / 100,
+      coverage_score: Math.round(coverageScore * 100) / 100,
+    },
+    recommendations,
+  };
+}

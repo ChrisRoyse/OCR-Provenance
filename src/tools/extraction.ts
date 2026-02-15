@@ -383,6 +383,52 @@ export async function handleExtractImagesBatch(
     const skipped = results.filter(r => r.error?.includes('Already has')).length;
     const failed = results.filter(r => r.error && !r.error.includes('Already has')).length;
 
+    // Entity density context for extracted images
+    let entityContext: Record<string, unknown> | undefined;
+    try {
+      const dbConn = db.getConnection();
+      const docIdsWithImages = results
+        .filter(r => r.images_extracted > 0)
+        .map(r => r.document_id);
+
+      if (docIdsWithImages.length > 0) {
+        let pagesWithEntities = 0;
+        let totalEntityCount = 0;
+        let totalPages = 0;
+        let highDensityPages = 0;
+
+        for (const docId of docIdsWithImages) {
+          const pageEntityRows = dbConn.prepare(
+            `SELECT i.page_number, COUNT(DISTINCT em.entity_id) as entity_count
+             FROM images i
+             LEFT JOIN entity_mentions em ON em.document_id = i.document_id AND em.page_number = i.page_number
+             WHERE i.document_id = ?
+             GROUP BY i.page_number`
+          ).all(docId) as Array<{ page_number: number; entity_count: number }>;
+
+          for (const row of pageEntityRows) {
+            totalPages++;
+            if (row.entity_count > 0) {
+              pagesWithEntities++;
+              totalEntityCount += row.entity_count;
+            }
+            if (row.entity_count > 5) {
+              highDensityPages++;
+            }
+          }
+        }
+
+        entityContext = {
+          pages_with_entities: pagesWithEntities,
+          avg_entities_per_page: totalPages > 0 ? Math.round((totalEntityCount / totalPages) * 100) / 100 : 0,
+          high_density_pages: highDensityPages,
+          total_image_pages: totalPages,
+        };
+      }
+    } catch {
+      // Graceful degradation if entity tables don't exist
+    }
+
     return formatResponse(successResult({
       processed: documents.length,
       successful,
@@ -390,6 +436,7 @@ export async function handleExtractImagesBatch(
       failed,
       total_images: totalImages,
       results,
+      ...(entityContext ? { entity_context: entityContext } : {}),
     }));
   } catch (error) {
     return handleError(error);
@@ -441,7 +488,7 @@ export const extractionTools: Record<string, ToolDefinition> = {
   },
 
   'ocr_extract_images_batch': {
-    description: 'Extract images from all documents (PDF, DOCX) that have been OCR processed',
+    description: 'Extract images from all documents (PDF, DOCX) that have been OCR processed. Includes entity_context with per-page entity density metrics',
     inputSchema: {
       min_size: z.number().int().min(10).max(1000).default(100).describe('Minimum image dimension in pixels'),
       max_images_per_doc: z.number().int().min(1).max(1000).default(200).describe('Maximum images per document'),

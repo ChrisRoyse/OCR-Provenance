@@ -87,7 +87,7 @@ export async function handleDocumentList(
       }
     }
 
-    // GAP-C3: Apply entity-based filters if any are provided
+    // Apply entity-based filters if any are provided
     let filteredDocuments = documents;
     const hasEntityFilters = input.entity_type_filter || input.min_entity_count || input.entity_name_filter;
     if (hasEntityFilters) {
@@ -282,7 +282,7 @@ export async function handleDocumentGet(
       };
     }
 
-    // GAP-C4: Entity summary when requested
+    // Entity summary when requested
     if (input.include_entity_summary) {
       const conn = db.getConnection();
       try {
