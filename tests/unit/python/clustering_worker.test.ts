@@ -5,40 +5,31 @@
  * and verifies JSON output for HDBSCAN, Agglomerative, and KMeans.
  */
 
-import { describe, it, expect, beforeAll } from 'vitest';
-import { spawn } from 'child_process';
+import { describe, it, expect } from 'vitest';
+import { spawn, execSync } from 'child_process';
 import path from 'path';
 import { existsSync } from 'fs';
 
 // ---------------------------------------------------------------------------
-// Python availability check
+// Python availability check (synchronous — must resolve before test collection)
 // ---------------------------------------------------------------------------
-let pythonAvailable = false;
-let skipReason = '';
-
 const WORKER_PATH = path.join(process.cwd(), 'python', 'clustering_worker.py');
 
-beforeAll(async () => {
-  if (!existsSync(WORKER_PATH)) {
-    skipReason = `Worker not found at ${WORKER_PATH}`;
-    return;
-  }
-
-  // Check that python3 + sklearn are available
+function checkPythonAvailable(): boolean {
+  if (!existsSync(WORKER_PATH)) return false;
   try {
-    const result = await runCommand('python3', [
-      '-c',
-      'import sklearn, numpy; print("ok")',
-    ]);
-    if (result.stdout.trim() === 'ok') {
-      pythonAvailable = true;
-    } else {
-      skipReason = `Python check failed: ${result.stderr}`;
-    }
+    const result = execSync('python3 -c "import sklearn, numpy; print(\'ok\')"', {
+      timeout: 10000,
+      encoding: 'utf-8',
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+    return result.trim() === 'ok';
   } catch {
-    skipReason = 'python3 not available';
+    return false;
   }
-});
+}
+
+const pythonAvailable = checkPythonAvailable();
 
 // ---------------------------------------------------------------------------
 // Helpers
