@@ -21,6 +21,7 @@ dotenv.config({ path: path.resolve(__dirname, '..', '.env') });
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 
+import type { ToolDefinition } from './tools/shared.js';
 import { databaseTools } from './tools/database.js';
 import { ingestionTools } from './tools/ingestion.js';
 import { searchTools } from './tools/search.js';
@@ -51,181 +52,43 @@ const server = new McpServer({
 });
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// DATABASE TOOLS (5) - Extracted to src/tools/database.ts
+// TOOL REGISTRATION
 // ═══════════════════════════════════════════════════════════════════════════════
 
-// Register database tools from extracted module
-for (const [name, tool] of Object.entries(databaseTools)) {
-  server.tool(name, tool.description, tool.inputSchema as Record<string, unknown>, tool.handler);
-}
+// All tool modules in registration order
+const allToolModules: Record<string, ToolDefinition>[] = [
+  databaseTools,            // 5 tools
+  ingestionTools,           // 8 tools
+  searchTools,              // 8 tools
+  documentTools,            // 3 tools
+  provenanceTools,          // 3 tools
+  configTools,              // 2 tools
+  vlmTools,                 // 6 tools
+  imageTools,               // 8 tools
+  evaluationTools,          // 3 tools
+  extractionTools,          // 3 tools
+  reportTools,              // 4 tools
+  formFillTools,            // 3 tools
+  structuredExtractionTools, // 2 tools
+  fileManagementTools,      // 5 tools
+  entityAnalysisTools,      // 10 tools
+  comparisonTools,          // 3 tools
+  clusteringTools,          // 5 tools
+  knowledgeGraphTools,      // 22 tools
+  questionAnswerTools,      // 1 tool
+];
 
-// ═══════════════════════════════════════════════════════════════════════════════
-// INGESTION TOOLS (8) - Extracted to src/tools/ingestion.ts
-// ═══════════════════════════════════════════════════════════════════════════════
-
-// Register ingestion tools from extracted module
-for (const [name, tool] of Object.entries(ingestionTools)) {
-  server.tool(name, tool.description, tool.inputSchema as Record<string, unknown>, tool.handler);
-}
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// SEARCH TOOLS (8) - Extracted to src/tools/search.ts
-// ═══════════════════════════════════════════════════════════════════════════════
-
-// Register search tools from extracted module
-for (const [name, tool] of Object.entries(searchTools)) {
-  server.tool(name, tool.description, tool.inputSchema as Record<string, unknown>, tool.handler);
-}
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// DOCUMENT TOOLS (3) - Extracted to src/tools/documents.ts
-// ═══════════════════════════════════════════════════════════════════════════════
-
-// Register document tools from extracted module
-for (const [name, tool] of Object.entries(documentTools)) {
-  server.tool(name, tool.description, tool.inputSchema as Record<string, unknown>, tool.handler);
-}
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// PROVENANCE TOOLS (3) - Extracted to src/tools/provenance.ts
-// ═══════════════════════════════════════════════════════════════════════════════
-
-// Register provenance tools from extracted module
-for (const [name, tool] of Object.entries(provenanceTools)) {
-  server.tool(name, tool.description, tool.inputSchema as Record<string, unknown>, tool.handler);
-}
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// CONFIG TOOLS (2) - New in src/tools/config.ts
-// ═══════════════════════════════════════════════════════════════════════════════
-
-// Register config tools from new module
-for (const [name, tool] of Object.entries(configTools)) {
-  server.tool(name, tool.description, tool.inputSchema as Record<string, unknown>, tool.handler);
-}
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// VLM TOOLS (6) - Extracted to src/tools/vlm.ts
-// ═══════════════════════════════════════════════════════════════════════════════
-
-// Register VLM tools from extracted module
-for (const [name, tool] of Object.entries(vlmTools)) {
-  server.tool(name, tool.description, tool.inputSchema as Record<string, unknown>, tool.handler);
-}
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// IMAGE TOOLS (8) - src/tools/images.ts
-// ═══════════════════════════════════════════════════════════════════════════════
-
-// Register image tools from extracted module
-for (const [name, tool] of Object.entries(imageTools)) {
-  server.tool(name, tool.description, tool.inputSchema as Record<string, unknown>, tool.handler);
-}
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// EVALUATION TOOLS (3) - Extracted to src/tools/evaluation.ts
-// ═══════════════════════════════════════════════════════════════════════════════
-
-// Register evaluation tools from extracted module
-for (const [name, tool] of Object.entries(evaluationTools)) {
-  server.tool(name, tool.description, tool.inputSchema as Record<string, unknown>, tool.handler);
-}
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// EXTRACTION TOOLS (3) - Extracted to src/tools/extraction.ts
-// ═══════════════════════════════════════════════════════════════════════════════
-
-// Register extraction tools from extracted module
-for (const [name, tool] of Object.entries(extractionTools)) {
-  server.tool(name, tool.description, tool.inputSchema as Record<string, unknown>, tool.handler);
-}
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// REPORT TOOLS (4) - Extracted to src/tools/reports.ts
-// ═══════════════════════════════════════════════════════════════════════════════
-
-// Register report tools from extracted module
-for (const [name, tool] of Object.entries(reportTools)) {
-  server.tool(name, tool.description, tool.inputSchema as Record<string, unknown>, tool.handler);
-}
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// FORM FILL TOOLS (3) - Extracted to src/tools/form-fill.ts
-// ═══════════════════════════════════════════════════════════════════════════════
-
-// Register form fill tools from extracted module
-for (const [name, tool] of Object.entries(formFillTools)) {
-  server.tool(name, tool.description, tool.inputSchema as Record<string, unknown>, tool.handler);
-}
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// STRUCTURED EXTRACTION TOOLS (2) - Extracted to src/tools/extraction-structured.ts
-// ═══════════════════════════════════════════════════════════════════════════════
-
-// Register structured extraction tools from extracted module
-for (const [name, tool] of Object.entries(structuredExtractionTools)) {
-  server.tool(name, tool.description, tool.inputSchema as Record<string, unknown>, tool.handler);
-}
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// FILE MANAGEMENT TOOLS (5) - Extracted to src/tools/file-management.ts
-// ═══════════════════════════════════════════════════════════════════════════════
-
-// Register file management tools from extracted module
-for (const [name, tool] of Object.entries(fileManagementTools)) {
-  server.tool(name, tool.description, tool.inputSchema as Record<string, unknown>, tool.handler);
-}
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// ENTITY ANALYSIS TOOLS (10) - src/tools/entity-analysis.ts
-// ═══════════════════════════════════════════════════════════════════════════════
-
-// Register entity analysis tools from extracted module
-for (const [name, tool] of Object.entries(entityAnalysisTools)) {
-  server.tool(name, tool.description, tool.inputSchema as Record<string, unknown>, tool.handler);
-}
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// COMPARISON TOOLS (3) - Extracted to src/tools/comparison.ts
-// ═══════════════════════════════════════════════════════════════════════════════
-
-// Register comparison tools from extracted module
-for (const [name, tool] of Object.entries(comparisonTools)) {
-  server.tool(name, tool.description, tool.inputSchema as Record<string, unknown>, tool.handler);
-}
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// CLUSTERING TOOLS (5) - Extracted to src/tools/clustering.ts
-// ═══════════════════════════════════════════════════════════════════════════════
-
-// Register clustering tools from extracted module
-for (const [name, tool] of Object.entries(clusteringTools)) {
-  server.tool(name, tool.description, tool.inputSchema as Record<string, unknown>, tool.handler);
-}
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// KNOWLEDGE GRAPH TOOLS (22) - src/tools/knowledge-graph.ts
-// ═══════════════════════════════════════════════════════════════════════════════
-
-// Register knowledge graph tools from extracted module
-for (const [name, tool] of Object.entries(knowledgeGraphTools)) {
-  server.tool(name, tool.description, tool.inputSchema as Record<string, unknown>, tool.handler);
-}
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// QUESTION ANSWER TOOLS (1) - src/tools/question-answer.ts
-// ═══════════════════════════════════════════════════════════════════════════════
-
-// Register question answer tools from extracted module
-for (const [name, tool] of Object.entries(questionAnswerTools)) {
-  server.tool(name, tool.description, tool.inputSchema as Record<string, unknown>, tool.handler);
+for (const toolModule of allToolModules) {
+  for (const [name, tool] of Object.entries(toolModule)) {
+    server.tool(name, tool.description, tool.inputSchema as Record<string, unknown>, tool.handler);
+  }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // SERVER STARTUP
 // ═══════════════════════════════════════════════════════════════════════════════
 
-async function main() {
+async function main(): Promise<void> {
   const transport = new StdioServerTransport();
   await server.connect(transport);
   console.error('OCR Provenance MCP Server running on stdio');
@@ -240,7 +103,7 @@ setInterval(() => {
     `Heap=${(mem.heapUsed / 1024 / 1024).toFixed(1)}/${(mem.heapTotal / 1024 / 1024).toFixed(1)}MB ` +
     `External=${(mem.external / 1024 / 1024).toFixed(1)}MB`
   );
-}, 300_000).unref(); // .unref() so it doesn't prevent process exit
+}, 300_000).unref();
 
 main().catch((error) => {
   console.error('Fatal error starting MCP server:', error);

@@ -186,6 +186,39 @@ async function handleDocumentCompare(params: Record<string, unknown>): Promise<T
       String(doc2.file_name)
     );
 
+    // Persist HIGH-severity contradiction counts to knowledge_edges
+    let kgEdgesUpdated = 0;
+    if (contradictionResult && contradictionResult.contradictions.length > 0) {
+      const highContradictions = contradictionResult.contradictions.filter(c => c.severity === 'high');
+      if (highContradictions.length > 0) {
+        const uniqueEdgeIds = new Set<string>();
+        for (const c of highContradictions) {
+          if (c.edge_ids) {
+            for (const edgeId of c.edge_ids) {
+              uniqueEdgeIds.add(edgeId);
+            }
+          }
+        }
+
+        if (uniqueEdgeIds.size > 0) {
+          try {
+            const updateStmt = conn.prepare(
+              'UPDATE knowledge_edges SET contradiction_count = contradiction_count + 1 WHERE id = ?'
+            );
+            for (const edgeId of uniqueEdgeIds) {
+              updateStmt.run(edgeId);
+            }
+            kgEdgesUpdated = uniqueEdgeIds.size;
+            console.error(`[comparison] Updated contradiction_count on ${kgEdgesUpdated} KG edge(s)`);
+          } catch (e: unknown) {
+            // KG tables may not exist or edge may have been deleted - log but don't fail
+            const msg = e instanceof Error ? e.message : String(e);
+            console.error(`[comparison] Failed to update KG edge contradiction_count: ${msg}`);
+          }
+        }
+      }
+    }
+
     // Append contradiction summary if any found
     if (contradictionResult && contradictionResult.contradictions.length > 0) {
       const severityCounts: Record<string, number> = {};
@@ -268,6 +301,7 @@ async function handleDocumentCompare(params: Record<string, unknown>): Promise<T
       structural_diff: structuralDiff,
       entity_diff: entityDiff,
       contradictions: contradictionResult,
+      kg_edges_updated: kgEdgesUpdated,
       provenance_id: provId,
       processing_duration_ms: processingDurationMs,
     });

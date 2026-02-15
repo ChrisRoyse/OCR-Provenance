@@ -355,6 +355,16 @@ export const DocumentListInput = z.object({
   offset: z.number().int().min(0).default(0),
   include_entity_counts: z.boolean().default(false)
     .describe('Include entity_mention_count and kg_node_count per document'),
+  entity_type_filter: z.array(z.enum([
+    'person', 'organization', 'date', 'amount', 'case_number',
+    'location', 'statute', 'exhibit', 'medication', 'diagnosis',
+    'medical_device', 'other',
+  ])).optional()
+    .describe('Only show documents containing entities of these types'),
+  min_entity_count: z.number().int().min(1).optional()
+    .describe('Only show documents with at least this many entities'),
+  entity_name_filter: z.string().optional()
+    .describe('Only show documents mentioning entities matching this text (substring match)'),
 });
 
 /**
@@ -366,6 +376,8 @@ export const DocumentGetInput = z.object({
   include_chunks: z.boolean().default(false),
   include_blocks: z.boolean().default(false),
   include_full_provenance: z.boolean().default(false),
+  include_entity_summary: z.boolean().default(false)
+    .describe('Include per-type entity counts, top entities by mention count, and extraction coverage'),
 });
 
 /**
