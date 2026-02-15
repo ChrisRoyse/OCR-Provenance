@@ -6,7 +6,7 @@
   "scripts": {
     "build": "tsc",
     "build:fast": "tsc --noCheck",
-    "start": "node dist/index.js",
+    "start": "node --max-semi-space-size=64 dist/index.js",
     "test": "vitest",
     "test:unit": "vitest run --dir tests/unit",
     "test:integration": "vitest run --dir tests/integration",
@@ -23,12 +23,12 @@
     "check": "npm run typecheck && npm run lint:all && npm run test"
   },
   "dependencies": {
-    "@google/generative-ai": "^0.21.0",
+    "@google/genai": "^1.41.0",
     "@modelcontextprotocol/sdk": "^1.0.0",
     "better-sqlite3": "^11.0.0",
     "diff": "^8.0.3",
     "dotenv": "^17.2.3",
-"python-shell": "^5.0.0",
+    "python-shell": "^5.0.0",
     "sqlite-vec": ">=0.1.0",
     "sqlite-vec-linux-x64": "^0.1.7-alpha.2",
     "uuid": "^10.0.0",

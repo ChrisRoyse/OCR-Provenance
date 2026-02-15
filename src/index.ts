@@ -232,6 +232,16 @@ async function main() {
   console.error('Tools registered: 104');
 }
 
+// Log memory usage every 5 minutes for observability (stderr only - safe for MCP)
+setInterval(() => {
+  const mem = process.memoryUsage();
+  console.error(
+    `[Memory] RSS=${(mem.rss / 1024 / 1024).toFixed(1)}MB ` +
+    `Heap=${(mem.heapUsed / 1024 / 1024).toFixed(1)}/${(mem.heapTotal / 1024 / 1024).toFixed(1)}MB ` +
+    `External=${(mem.external / 1024 / 1024).toFixed(1)}MB`
+  );
+}, 300_000).unref(); // .unref() so it doesn't prevent process exit
+
 main().catch((error) => {
   console.error('Fatal error starting MCP server:', error);
   process.exit(1);

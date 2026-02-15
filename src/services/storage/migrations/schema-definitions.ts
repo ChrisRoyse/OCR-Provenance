@@ -19,6 +19,8 @@ export const DATABASE_PRAGMAS = [
   'PRAGMA synchronous = NORMAL',
   'PRAGMA cache_size = -64000',
   'PRAGMA wal_autocheckpoint = 1000',
+  'PRAGMA mmap_size = 268435456',
+  'PRAGMA busy_timeout = 5000',
 ] as const;
 
 /**
