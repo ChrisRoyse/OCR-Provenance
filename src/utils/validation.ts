@@ -213,6 +213,8 @@ export const ProcessPendingInput = z.object({
     .describe('Auto-scan for contradictions after knowledge graph build. Requires auto_build_kg=true.'),
   auto_reassign_clusters: z.boolean().default(false)
     .describe('After entity extraction + KG merge, reassign documents to clusters if clusters exist. Requires auto_extract_entities=true.'),
+  auto_embed_entities: z.boolean().default(false)
+    .describe('Auto-generate embeddings for KG entity nodes after knowledge graph build. Requires auto_build_kg=true.'),
   check_semantic_duplicates: z.boolean().default(false)
     .describe('After OCR completes, check for semantically similar documents by entity overlap (Jaccard > 0.85). Informational only.'),
 });

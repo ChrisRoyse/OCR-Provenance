@@ -1076,6 +1076,11 @@ export function migrateToLatest(db: Database.Database): void {
     migrateV22ToV23(db);
     bumpVersion(23);
   }
+
+  if (currentVersion < 24) {
+    migrateV23ToV24(db);
+    bumpVersion(24);
+  }
 }
 
 /**
@@ -2368,6 +2373,38 @@ function migrateV22ToV23(db: Database.Database): void {
       `Failed to migrate from v22 to v23 (medical relationship types): ${cause}`,
       'migrate',
       'knowledge_edges',
+      error
+    );
+  }
+}
+
+/**
+ * Migrate from schema version 23 to version 24
+ *
+ * Changes in v24:
+ * - Add index on entity_mentions(document_id) to eliminate full table scans
+ *   on queries that filter or join entity_mentions by document_id.
+ *
+ * @param db - Database instance from better-sqlite3
+ * @throws MigrationError if migration fails
+ */
+function migrateV23ToV24(db: Database.Database): void {
+  try {
+    // entity_mentions table was created in v14 — skip index creation if table doesn't exist
+    const tableExists = db.prepare(
+      "SELECT name FROM sqlite_master WHERE type='table' AND name='entity_mentions'"
+    ).get();
+    if (tableExists) {
+      db.exec(
+        'CREATE INDEX IF NOT EXISTS idx_entity_mentions_document_id ON entity_mentions(document_id)'
+      );
+    }
+  } catch (error) {
+    const cause = error instanceof Error ? error.message : String(error);
+    throw new MigrationError(
+      `Failed to migrate from v23 to v24 (entity_mentions document_id index): ${cause}`,
+      'migrate',
+      'entity_mentions',
       error
     );
   }

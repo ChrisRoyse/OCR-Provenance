@@ -206,11 +206,11 @@ describe('E2E-1: Schema v10 Physical Verification', () => {
     // WHAT: Verify schema version constant
     // INPUT: SCHEMA_VERSION export
     // EXPECTED: 12
-    expect(SCHEMA_VERSION).toBe(23);
+    expect(SCHEMA_VERSION).toBe(24);
 
     // SOURCE OF TRUTH: schema_version table
     const row = db.prepare('SELECT version FROM schema_version WHERE id = 1').get() as { version: number };
-    expect(row.version).toBe(23);
+    expect(row.version).toBe(24);
   });
 
   it('All 16 required tables exist (minus vec_embeddings without extension)', () => {
@@ -734,11 +734,9 @@ describe('E2E-5: CF-4 Form Fill CRUD + Provenance', () => {
     expect(prov.parent_ids).toBe('[]');
   });
 
-  it('ProvenanceType.FORM_FILL depth is 1', () => {
-    // Note: The constant says 1 because FORM_FILL is at the same level as OCR_RESULT.
-    // But the form-fill.ts tool creates it at depth 0 with self-root (standalone).
-    // The PROVENANCE_CHAIN_DEPTH is for classification; actual depth depends on context.
-    expect(PROVENANCE_CHAIN_DEPTH[ProvenanceType.FORM_FILL]).toBe(1);
+  it('ProvenanceType.FORM_FILL depth is 0', () => {
+    // FORM_FILL is depth 0 — it's a root-level operation per constitution
+    expect(PROVENANCE_CHAIN_DEPTH[ProvenanceType.FORM_FILL]).toBe(0);
   });
 
   it('form_fills status CHECK constraint works', () => {

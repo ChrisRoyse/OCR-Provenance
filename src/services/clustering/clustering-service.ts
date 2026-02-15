@@ -315,6 +315,7 @@ async function runClusteringWorker(
     let settled = false;
     const options: PythonShellOptions = {
       mode: 'text',
+      pythonPath: 'python3',
       pythonOptions: ['-u'],
       args: [],
     };

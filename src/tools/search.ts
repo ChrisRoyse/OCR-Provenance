@@ -1626,6 +1626,20 @@ export async function handleFTSManage(
     }
 
     const status = bm25.getStatus();
+
+    // F-INTEG-7: Detect chunks without embeddings (invisible to semantic search)
+    try {
+      const conn = db.getConnection();
+      const gapRow = conn.prepare(
+        `SELECT COUNT(*) as cnt FROM chunks c
+         LEFT JOIN embeddings e ON e.chunk_id = c.id
+         WHERE e.id IS NULL`
+      ).get() as { cnt: number };
+      (status as Record<string, unknown>).chunks_without_embeddings = gapRow.cnt;
+    } catch {
+      // embeddings or chunks table may not exist in minimal schemas
+    }
+
     return formatResponse(successResult(status));
   } catch (error) {
     return handleError(error);

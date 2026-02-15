@@ -638,7 +638,7 @@ describe('Migration v19 to v20 (Entity Embeddings, Temporal Edges, Node Scoring)
     migrateToLatest(db);
 
     const version = (db.prepare('SELECT version FROM schema_version').get() as { version: number }).version;
-    expect(version).toBe(23);
+    expect(version).toBe(24);
   });
 
   it.skipIf(!sqliteVecAvailable)('FK integrity clean after migration', () => {
@@ -719,6 +719,6 @@ describe('Migration v19 to v20 (Entity Embeddings, Temporal Edges, Node Scoring)
     expect(() => migrateToLatest(db)).not.toThrow();
 
     const version = (db.prepare('SELECT version FROM schema_version').get() as { version: number }).version;
-    expect(version).toBe(23);
+    expect(version).toBe(24);
   });
 });

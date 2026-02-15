@@ -243,7 +243,7 @@ export class ImageOptimizer {
         settled = true;
 
         if (stderr) {
-          console.warn(`[ImageOptimizer] stderr: ${stderr}`);
+          console.error(`[ImageOptimizer] stderr: ${stderr}`);
         }
 
         if (signal === 'SIGTERM' || signal === 'SIGKILL') {

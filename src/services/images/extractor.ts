@@ -354,16 +354,22 @@ export class ImageExtractor {
         }
       });
 
-      // SIGKILL escalation if SIGTERM doesn't exit within 5s
+      // F-INTEG-12: SIGKILL escalation if SIGTERM doesn't exit within 5s.
+      // Also settles the promise to prevent zombie hangs if close event never fires.
       if (timeout > 0) {
         sigkillTimer = setTimeout(() => {
-          if (!settled && !proc.killed) {
+          if (!proc.killed) {
             console.error(`[ImageExtractor] Process did not exit after SIGTERM, sending SIGKILL (pid: ${proc.pid})`);
             try {
               proc.kill('SIGKILL');
             } catch {
               // Process may already be gone
             }
+          }
+          // Settle the promise if close event hasn't fired yet (zombie prevention)
+          if (!settled) {
+            settled = true;
+            reject(new Error(`Python process killed by SIGKILL after timeout (${timeout}ms + 5s grace)`));
           }
         }, timeout + 5000);
       }

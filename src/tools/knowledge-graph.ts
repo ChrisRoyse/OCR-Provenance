@@ -169,6 +169,8 @@ const IncrementalBuildInput = z.object({
     .describe('Use Gemini AI for relationship type classification'),
   auto_temporal: z.boolean().default(true)
     .describe('Automatically infer temporal bounds on co_located edges from co-located date entities'),
+  force: z.boolean().default(false)
+    .describe('Force re-processing of documents already in the graph (removes existing links and re-resolves entities)'),
 });
 
 const ClassifyRelationshipsInput = z.object({
@@ -846,7 +848,10 @@ async function handleKnowledgeGraphSplit(
         source_id: node.provenance_id,
         root_document_id: node.provenance_id,
         location: null,
-        content_hash: '',
+        content_hash: computeHash(JSON.stringify({
+          original_node_id: node.id,
+          entity_ids_moved: splitLinks.map(l => l.entity_id),
+        })),
         input_hash: null,
         file_hash: null,
         processor: 'knowledge-graph-split',
@@ -1145,7 +1150,10 @@ async function handleKnowledgeGraphEnrich(
       source_id: node.provenance_id,
       root_document_id: node.provenance_id,
       location: null,
-      content_hash: '',
+      content_hash: computeHash(JSON.stringify({
+        node_id: node.id,
+        sources: input.sources,
+      })),
       input_hash: null,
       file_hash: null,
       processor: 'knowledge-graph-enrich',
@@ -1189,6 +1197,7 @@ async function handleKnowledgeGraphIncrementalBuild(
       resolution_mode: input.resolution_mode,
       classify_relationships: input.classify_relationships,
       auto_temporal: input.auto_temporal,
+      force: input.force,
     });
 
     return formatResponse(successResult(result));
@@ -1511,7 +1520,7 @@ async function handleKnowledgeGraphContradictions(
  * Uses local GPU only via nomic-embed-text-v1.5 (CP-004).
  * When force=true, deletes existing embeddings for re-embedded nodes.
  */
-async function handleKnowledgeGraphEmbedEntities(
+export async function handleKnowledgeGraphEmbedEntities(
   params: Record<string, unknown>
 ): Promise<ToolResponse> {
   try {

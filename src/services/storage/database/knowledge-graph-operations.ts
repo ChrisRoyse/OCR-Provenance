@@ -996,7 +996,7 @@ export function cleanupGraphForDocument(
   // Step 2: Decrement document_count on affected nodes
   for (const { node_id } of affectedNodeIds) {
     db.prepare(
-      'UPDATE knowledge_nodes SET document_count = document_count - 1 WHERE id = ?',
+      'UPDATE knowledge_nodes SET document_count = MAX(0, document_count - 1) WHERE id = ?',
     ).run(node_id);
   }
 
@@ -1067,6 +1067,41 @@ export function cleanupGraphForDocument(
        WHERE source_node_id IN (${delPlaceholders}) OR target_node_id IN (${delPlaceholders})`,
     ).run(...nodeIdsToDelete, ...nodeIdsToDelete);
     edgesDeleted = edgeResult.changes;
+  }
+
+  // Step 4b: Prune stale document_id from surviving edges' document_ids JSON
+  // and recalculate weight proportionally. Edges with empty document_ids are deleted.
+  const survivingEdges = db.prepare(
+    `SELECT id, document_ids, evidence_count, weight, source_node_id, target_node_id
+     FROM knowledge_edges
+     WHERE document_ids LIKE ?`,
+  ).all(`%${documentId}%`) as Array<{ id: string; document_ids: string; evidence_count: number; weight: number; source_node_id: string; target_node_id: string }>;
+
+  for (const edge of survivingEdges) {
+    try {
+      const docIds: string[] = JSON.parse(edge.document_ids);
+      const filtered = docIds.filter((d: string) => d !== documentId);
+      if (filtered.length === 0) {
+        // Decrement edge_count on both endpoint nodes before deleting the edge
+        db.prepare('UPDATE knowledge_nodes SET edge_count = MAX(0, edge_count - 1) WHERE id = ?').run(edge.source_node_id);
+        db.prepare('UPDATE knowledge_nodes SET edge_count = MAX(0, edge_count - 1) WHERE id = ?').run(edge.target_node_id);
+        // No documents reference this edge anymore -- delete it
+        db.prepare('DELETE FROM knowledge_edges WHERE id = ?').run(edge.id);
+        edgesDeleted++;
+      } else {
+        // Recalculate weight proportionally: scale by remaining/original doc count ratio
+        const originalCount = docIds.length;
+        const newWeight = originalCount > 0
+          ? (edge.weight * filtered.length) / originalCount
+          : edge.weight;
+        const newEvidenceCount = Math.max(0, edge.evidence_count - 1);
+        db.prepare(
+          'UPDATE knowledge_edges SET document_ids = ?, evidence_count = ?, weight = ? WHERE id = ?'
+        ).run(JSON.stringify(filtered), newEvidenceCount, newWeight, edge.id);
+      }
+    } catch {
+      // Malformed JSON in document_ids -- skip this edge
+    }
   }
 
   // Also delete edges where BOTH endpoints now have document_count <= 0
