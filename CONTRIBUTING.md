@@ -7,8 +7,8 @@ Thank you for your interest in contributing to OCR Provenance MCP Server.
 1. Fork the repository
 2. Clone your fork:
    ```bash
-   git clone https://github.com/YOUR_USERNAME/datalab.git
-   cd datalab
+   git clone https://github.com/YOUR_USERNAME/OCR-Provenance.git
+   cd OCR-Provenance
    ```
 3. Install dependencies:
    ```bash
@@ -113,7 +113,7 @@ scripts/                # Utility scripts
 
 ## Reporting Issues
 
-- Use [GitHub Issues](https://github.com/ChrisRoyse/datalab/issues)
+- Use [GitHub Issues](https://github.com/ChrisRoyse/OCR-Provenance/issues)
 - Include steps to reproduce, expected behavior, and actual behavior
 - Include your Node.js version and operating system
 

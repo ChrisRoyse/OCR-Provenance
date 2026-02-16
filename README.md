@@ -103,8 +103,8 @@ Every piece of data carries a SHA-256 provenance chain from source document thro
 ### 1. Clone and Install Dependencies
 
 ```bash
-git clone https://github.com/ChrisRoyse/datalab.git
-cd datalab
+git clone https://github.com/ChrisRoyse/OCR-Provenance.git
+cd OCR-Provenance
 npm install
 ```
 

@@ -16,13 +16,13 @@
   ],
   "license": "SEE LICENSE IN LICENSE",
   "author": "Chris Royse",
-  "homepage": "https://github.com/ChrisRoyse/datalab#readme",
+  "homepage": "https://github.com/ChrisRoyse/OCR-Provenance#readme",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/ChrisRoyse/datalab.git"
+    "url": "git+https://github.com/ChrisRoyse/OCR-Provenance.git"
   },
   "bugs": {
-    "url": "https://github.com/ChrisRoyse/datalab/issues"
+    "url": "https://github.com/ChrisRoyse/OCR-Provenance/issues"
   },
   "keywords": [
     "mcp",
