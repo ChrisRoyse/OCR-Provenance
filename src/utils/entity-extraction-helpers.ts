@@ -412,6 +412,15 @@ export async function callGeminiForEntities(
 // NOISE FILTERING
 // ═══════════════════════════════════════════════════════════════════════════════
 
+/** Allowlist of valid short entities (2 chars or less) that should NOT be filtered */
+const ALLOWED_SHORT_ENTITIES = new Set([
+  // Medical
+  'iv', 'ad', 'pt', 'or', 'bp', 'hr', 'rr', 'o2', 'gi', 'gu',
+  'ct', 'mr',
+  // Legal
+  'jd', 'pc', 'pa',
+]);
+
 /** Time pattern: HH:MM (24h or 12h) */
 const TIME_PATTERN = /^\d{1,2}:\d{2}$/;
 
@@ -451,11 +460,17 @@ export function filterNoiseEntities(
   for (const entity of entities) {
     const raw = entity.raw_text.trim();
 
-    // Reject very short entities (2 chars or less)
-    // 2-char abbreviations like "AD" (Advance Directive) create massive noise
+    // Type-aware short entity handling
+    // Medical/legal abbreviations like "IV", "AD", "PT", "OR" are valid
     if (raw.length <= 2) {
-      console.error(`[NOISE] Filtered "${raw}" (${entity.type}): too short (length ${raw.length})`);
-      continue;
+      const isAllowedShort = ALLOWED_SHORT_ENTITIES.has(raw.toLowerCase());
+      const isMedicalType = ['medication', 'medical_device', 'diagnosis'].includes(entity.type);
+
+      if (!isAllowedShort && !isMedicalType) {
+        console.error(`[NOISE] Filtered "${raw}" (${entity.type}): too short (length ${raw.length}), not in allowlist`);
+        continue;
+      }
+      console.error(`[KEEP] Short entity "${raw}" (${entity.type}): allowed by type-aware filter`);
     }
 
     // Reject time patterns (any type) - "14:00", "8:30", "19:00"

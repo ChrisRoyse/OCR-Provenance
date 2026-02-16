@@ -22,6 +22,7 @@ import {
   locationContains,
 } from './string-similarity.js';
 import { v4 as uuidv4 } from 'uuid';
+import { getSharedClient } from '../gemini/client.js';
 
 /** Maximum entities per type group for fuzzy comparison (fail fast) */
 const MAX_FUZZY_GROUP_SIZE = 5000;
@@ -29,19 +30,15 @@ const MAX_FUZZY_GROUP_SIZE = 5000;
 /** Default minimum similarity score for automatic fuzzy merge */
 const FUZZY_MERGE_THRESHOLD = 0.85;
 
-/** Lower fuzzy threshold for person names to catch OCR variants (e.g., Tynescia/Tyneisha/Tynisha) */
-const PERSON_FUZZY_MERGE_THRESHOLD = 0.75;
-
 /** Lower bound for AI disambiguation range */
-const AI_LOWER_THRESHOLD = 0.7;
+const AI_LOWER_THRESHOLD = 0.5;
 
 /**
  * Get the fuzzy merge threshold for a given entity type.
- * Person names use a lower threshold (0.75) to catch OCR name variants.
- * All other types use the default threshold (0.85).
+ * All types use 0.85. The AI tier handles OCR variants below this threshold.
  */
-export function getFuzzyThreshold(entityType: string): number {
-  return entityType === 'person' ? PERSON_FUZZY_MERGE_THRESHOLD : FUZZY_MERGE_THRESHOLD;
+export function getFuzzyThreshold(_entityType: string): number {
+  return FUZZY_MERGE_THRESHOLD;
 }
 
 export type ResolutionMode = 'exact' | 'fuzzy' | 'ai';
@@ -58,6 +55,85 @@ interface ResolutionResult {
     cross_document_nodes: number;
     single_document_nodes: number;
   };
+}
+
+/**
+ * JSON schema for Gemini AI entity resolution structured output.
+ * Each result indicates whether a pair of entities refers to the same real-world entity.
+ */
+const AI_RESOLUTION_SCHEMA = {
+  type: 'object' as const,
+  properties: {
+    results: {
+      type: 'array' as const,
+      items: {
+        type: 'object' as const,
+        properties: {
+          same_entity: { type: 'boolean' as const },
+          confidence: { type: 'number' as const },
+          reasoning: { type: 'string' as const },
+        },
+        required: ['same_entity', 'confidence', 'reasoning'],
+      },
+    },
+  },
+  required: ['results'],
+};
+
+/**
+ * Gemini-based entity classifier for Tier 3 AI disambiguation.
+ *
+ * Sends entity pairs to Gemini to determine if they refer to the same real-world entity.
+ * Handles OCR errors, abbreviations, different name forms, and medication safety rules.
+ *
+ * @param candidates - Array of entity pairs to classify
+ * @returns Array of classification results with same_entity boolean and confidence score
+ */
+export async function geminiEntityClassifier(
+  candidates: Array<{ entityA: Entity; entityB: Entity }>
+): Promise<Array<{ same_entity: boolean; confidence: number }>> {
+  if (candidates.length === 0) return [];
+
+  const client = getSharedClient();
+  const pairDescriptions = candidates.map((c, i) =>
+    `${i + 1}. "${c.entityA.raw_text}" (${c.entityA.entity_type}, doc: ${c.entityA.document_id}) vs "${c.entityB.raw_text}" (${c.entityB.entity_type}, doc: ${c.entityB.document_id})`
+  ).join('\n');
+
+  const prompt = `Determine if each pair of entities refers to the same real-world entity.
+
+Consider:
+- OCR errors and typos (e.g., "Tynescia" vs "Tynisha" could be same person)
+- Abbreviations (e.g., "IBM" vs "International Business Machines" = same)
+- Different forms of same name (e.g., "J. Smith" vs "John Smith" = same)
+- BUT: Similar names that are different entities (e.g., "Dr. Johnson" vs "Dr. Johnston" = different)
+- MEDICATION SAFETY: Different salt forms are DIFFERENT medications (e.g., "Metoprolol Tartrate" vs "Metoprolol Succinate" = DIFFERENT)
+- MEDICATION SAFETY: Different dosages of same drug are SAME entity (e.g., "Metoprolol 25mg" vs "Metoprolol 50mg" = SAME medication)
+
+Entity pairs:
+${pairDescriptions}
+
+For each pair, determine if they are the same entity.`;
+
+  const response = await client.fast(prompt, AI_RESOLUTION_SCHEMA);
+  const parsed = JSON.parse(response.text) as {
+    results: Array<{ same_entity: boolean; confidence: number; reasoning: string }>;
+  };
+
+  if (!parsed.results || !Array.isArray(parsed.results)) {
+    throw new Error(`Gemini AI resolution returned invalid response: missing results array`);
+  }
+
+  if (parsed.results.length !== candidates.length) {
+    console.error(
+      `[WARN] Gemini returned ${parsed.results.length} results for ${candidates.length} candidates. Padding with defaults.`
+    );
+  }
+
+  return candidates.map((_, i) => {
+    const result = parsed.results[i];
+    if (!result) return { same_entity: false, confidence: 0.5 };
+    return { same_entity: result.same_entity, confidence: result.confidence };
+  });
 }
 
 /**
@@ -220,15 +296,17 @@ export function computeTypeSimilarity(
     }
 
     case 'medication': {
-      // Medications: use token-sorted similarity to handle reordering
-      // (e.g., "metoprolol 25mg" vs "metoprolol tartrate 25 mg")
-      score = tokenSortedSimilarity(textA, textB);
+      // SAFETY: Different salt forms, formulations, or generic/brand names
+      // must NOT be merged by string similarity. Only exact normalized matches.
+      // AI tier handles semantic matching for the 0.50-0.85 range.
+      score = textA === textB ? 1.0 : 0.0;
       break;
     }
 
     case 'diagnosis': {
-      // Diagnoses: standard bigram similarity handles abbreviations and variants
-      score = sorensenDice(textA, textB);
+      // Different diagnoses can have very similar names (e.g., "Type 1 Diabetes" vs "Type 2 Diabetes").
+      // Only exact normalized matches. AI tier handles semantic matching.
+      score = textA === textB ? 1.0 : 0.0;
       break;
     }
 
@@ -541,25 +619,27 @@ export async function resolveEntities(
       }
     }
 
-    // -- Tier 3: AI disambiguation --
+    // -- Tier 3: AI disambiguation (batched) --
     if (mode === 'ai' && aiCandidates.length > 0 && geminiClassifier) {
-      const classifierInput = aiCandidates.map((c) => ({
-        entityA: c.entityA,
-        entityB: c.entityB,
-      }));
+      const AI_BATCH_SIZE = 20;
+      for (let batchStart = 0; batchStart < aiCandidates.length; batchStart += AI_BATCH_SIZE) {
+        const batch = aiCandidates.slice(batchStart, batchStart + AI_BATCH_SIZE);
+        const classifierInput = batch.map((c) => ({
+          entityA: c.entityA,
+          entityB: c.entityB,
+        }));
 
-      const aiResults = await geminiClassifier(classifierInput);
+        const aiResults = await geminiClassifier(classifierInput);
 
-      for (let k = 0; k < aiResults.length; k++) {
-        const result = aiResults[k];
-        const candidate = aiCandidates[k];
-
-        if (result.same_entity && result.confidence >= 0.7) {
-          // Only merge if not already in same group
-          if (uf.find(candidate.i) !== uf.find(candidate.j)) {
-            uf.union(candidate.i, candidate.j);
-            stats.ai_matches +=
-              exactGroupList[candidate.i].length + exactGroupList[candidate.j].length;
+        for (let k = 0; k < aiResults.length; k++) {
+          const result = aiResults[k];
+          const candidate = batch[k];
+          if (result.same_entity && result.confidence >= 0.7) {
+            if (uf.find(candidate.i) !== uf.find(candidate.j)) {
+              uf.union(candidate.i, candidate.j);
+              stats.ai_matches +=
+                exactGroupList[candidate.i].length + exactGroupList[candidate.j].length;
+            }
           }
         }
       }

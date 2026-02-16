@@ -424,7 +424,7 @@ describe('handleKnowledgeGraphBuild', () => {
     expect(data.entities_resolved).toBe(3);
     expect(data.provenance_id).toBeDefined();
     expect(data.processing_duration_ms).toBeDefined();
-    expect(data.resolution_mode).toBe('exact');
+    expect(data.resolution_mode).toBe(process.env.GEMINI_API_KEY ? 'ai' : 'exact');
   });
 
   it.skipIf(!sqliteVecAvailable)('errors when no entities exist', async () => {

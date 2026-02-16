@@ -28,6 +28,7 @@ import { ProvenanceType } from '../../models/provenance.js';
 import { getProvenanceTracker } from '../provenance/tracker.js';
 import {
   resolveEntities,
+  geminiEntityClassifier,
   computeTypeSimilarity,
   getFuzzyThreshold,
   type ResolutionMode,
@@ -358,11 +359,13 @@ export async function incrementalBuildGraph(
   const newNodeIds: string[] = [];
 
   if (unmatchedEntities.length > 0) {
+    const useAiClassifier = process.env.GEMINI_API_KEY ? geminiEntityClassifier : undefined;
+    const effectiveMode: ResolutionMode = useAiClassifier ? 'ai' : resolutionMode;
     const resolutionResult = await resolveEntities(
       unmatchedEntities,
-      resolutionMode,
+      effectiveMode,
       provenanceId,
-      undefined,
+      useAiClassifier,
       clusterContext
     );
 

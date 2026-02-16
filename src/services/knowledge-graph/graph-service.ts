@@ -20,12 +20,7 @@ import {
 } from '../../models/knowledge-graph.js';
 import { ProvenanceType } from '../../models/provenance.js';
 import { getProvenanceTracker } from '../provenance/tracker.js';
-import { resolveEntities, type ResolutionMode, type ClusterContext } from './resolution-service.js';
-import {
-  classifyByRules,
-  classifyByExtractionSchema,
-  classifyByClusterHint,
-} from './rule-classifier.js';
+import { resolveEntities, geminiEntityClassifier, type ResolutionMode, type ClusterContext } from './resolution-service.js';
 import { v4 as uuidv4 } from 'uuid';
 import { computeHash } from '../../utils/hash.js';
 import {
@@ -285,11 +280,13 @@ export async function buildKnowledgeGraph(
   }
 
   // Step 5: Resolve entities into nodes
+  const useAiClassifier = process.env.GEMINI_API_KEY ? geminiEntityClassifier : undefined;
+  const effectiveMode: ResolutionMode = useAiClassifier ? 'ai' : resolutionMode;
   const resolutionResult = await resolveEntities(
     allEntities,
-    resolutionMode,
+    effectiveMode,
     provenanceId,
-    undefined, // geminiClassifier
+    useAiClassifier,
     clusterContext
   );
 
@@ -316,8 +313,12 @@ export async function buildKnowledgeGraph(
   // Step 7: Build co-occurrence edges
   buildCoOccurrenceEdges(db, resolutionResult.nodes, provenanceId, autoTemporal);
 
-  // Step 8: Optionally classify relationships (rule-based first, then Gemini)
+  // Step 8: Classify relationships using Gemini AI
   if (classifyRelationships) {
+    if (!process.env.GEMINI_API_KEY) {
+      throw new Error('classify_relationships=true requires GEMINI_API_KEY to be set');
+    }
+
     // Collect co_located edges for classification
     const coLocatedEdges: KnowledgeEdge[] = [];
     for (const node of resolutionResult.nodes) {
@@ -331,121 +332,10 @@ export async function buildKnowledgeGraph(
     }
 
     if (coLocatedEdges.length > 0) {
-      // P4.1: Apply rule-based classification BEFORE Gemini
-      // Query cluster context for document-level hints
-      const clusterTagMap = new Map<string, string | null>();
-      try {
-        const placeholders = documentIds.map(() => '?').join(',');
-        const clusterRows = conn
-          .prepare(
-            `SELECT dc.document_id, c.classification_tag
-           FROM document_clusters dc
-           JOIN clusters c ON dc.cluster_id = c.id
-           WHERE dc.document_id IN (${placeholders})`
-          )
-          .all(...documentIds) as { document_id: string; classification_tag: string | null }[];
-        for (const row of clusterRows) {
-          clusterTagMap.set(row.document_id, row.classification_tag);
-        }
-      } catch (e) {
-        console.error(
-          '[graph-service] buildKnowledgeGraph cluster tag query failed:',
-          e instanceof Error ? e.message : String(e)
-        );
-      }
-
-      const unclassifiedEdges: KnowledgeEdge[] = [];
-
-      for (const edge of coLocatedEdges) {
-        const sourceNode = getKnowledgeNode(conn, edge.source_node_id);
-        const targetNode = getKnowledgeNode(conn, edge.target_node_id);
-        if (!sourceNode || !targetNode) {
-          unclassifiedEdges.push(edge);
-          continue;
-        }
-
-        const srcType = sourceNode.entity_type;
-        const tgtType = targetNode.entity_type;
-
-        // Try rule-based classification in priority order
-        // (a) Extraction schema context
-        let ruleResult = classifyByExtractionSchema(
-          sourceNode.metadata,
-          targetNode.metadata,
-          srcType,
-          tgtType
-        );
-        let ruleType = 'extraction_schema';
-
-        // (b) Cluster hint context
-        if (!ruleResult) {
-          // Find shared cluster tag between source and target documents
-          const srcLinks = getLinksForNode(conn, sourceNode.id);
-          const tgtLinks = getLinksForNode(conn, targetNode.id);
-          const srcDocIds = new Set(srcLinks.map((l) => l.document_id));
-          let sharedClusterTag: string | null = null;
-          for (const tgtLink of tgtLinks) {
-            if (srcDocIds.has(tgtLink.document_id)) {
-              const tag = clusterTagMap.get(tgtLink.document_id);
-              if (tag) {
-                sharedClusterTag = tag;
-                break;
-              }
-            }
-          }
-          ruleResult = classifyByClusterHint(sharedClusterTag, srcType, tgtType);
-          ruleType = 'cluster_hint';
-        }
-
-        // (c) Type-pair rule matrix
-        if (!ruleResult) {
-          ruleResult = classifyByRules(srcType, tgtType);
-          ruleType = 'type_rule';
-        }
-
-        if (ruleResult) {
-          // Apply rule-based classification
-          const existingMeta = edge.metadata ? JSON.parse(edge.metadata) : {};
-          updateKnowledgeEdge(conn, edge.id, {
-            metadata: JSON.stringify({
-              ...existingMeta,
-              classified_by: 'rule',
-              rule_type: ruleType,
-              confidence: ruleResult.confidence,
-              classification_history: [
-                {
-                  original_type: 'co_located',
-                  classified_type: ruleResult.type,
-                  classified_by: 'rule',
-                  rule_type: ruleType,
-                  confidence: ruleResult.confidence,
-                  classified_at: new Date().toISOString(),
-                },
-              ],
-            }),
-          });
-          conn
-            .prepare('UPDATE knowledge_edges SET relationship_type = ? WHERE id = ?')
-            .run(ruleResult.type, edge.id);
-        } else {
-          unclassifiedEdges.push(edge);
-        }
-      }
-
-      // P4.2: Only pass unclassified edges to Gemini
-      if (unclassifiedEdges.length > 0) {
-        if (process.env.GEMINI_API_KEY) {
-          await classifyRelationshipsWithGemini(db, unclassifiedEdges);
-        } else {
-          console.error(
-            '[KnowledgeGraph] classify_relationships=true but GEMINI_API_KEY not set, skipping AI classification'
-          );
-        }
-      }
-
       console.error(
-        `[KnowledgeGraph] Classification: ${coLocatedEdges.length - unclassifiedEdges.length} rule-based, ${unclassifiedEdges.length} sent to Gemini`
+        `[KnowledgeGraph] Sending ALL ${coLocatedEdges.length} co_located edges to Gemini for classification`
       );
+      await classifyRelationshipsWithGemini(db, coLocatedEdges);
     }
   }
 
@@ -461,7 +351,7 @@ export async function buildKnowledgeGraph(
     single_document_nodes: resolutionResult.stats.single_document_nodes,
     relationship_types: stats.edges_by_type,
     documents_covered: stats.documents_covered,
-    resolution_mode: resolutionMode,
+    resolution_mode: effectiveMode,
     provenance_id: provenanceId,
     processing_duration_ms: processingDurationMs,
   };
