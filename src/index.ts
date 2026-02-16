@@ -90,7 +90,7 @@ const allToolModules: Record<string, ToolDefinition>[] = [
   entityAnalysisTools, // 10 tools
   comparisonTools, // 3 tools
   clusteringTools, // 5 tools
-  knowledgeGraphTools, // 22 tools
+  knowledgeGraphTools, // 25 tools
   questionAnswerTools, // 1 tool
 ];
 

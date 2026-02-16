@@ -8,7 +8,7 @@
  */
 
 /** Current schema version */
-export const SCHEMA_VERSION = 24;
+export const SCHEMA_VERSION = 25;
 
 /**
  * Database configuration pragmas for optimal performance and safety
@@ -42,12 +42,12 @@ CREATE TABLE IF NOT EXISTS schema_version (
 export const CREATE_PROVENANCE_TABLE = `
 CREATE TABLE IF NOT EXISTS provenance (
   id TEXT PRIMARY KEY,
-  type TEXT NOT NULL CHECK (type IN ('DOCUMENT', 'OCR_RESULT', 'CHUNK', 'IMAGE', 'VLM_DESCRIPTION', 'EMBEDDING', 'EXTRACTION', 'FORM_FILL', 'ENTITY_EXTRACTION', 'COMPARISON', 'CLUSTERING', 'KNOWLEDGE_GRAPH')),
+  type TEXT NOT NULL CHECK (type IN ('DOCUMENT', 'OCR_RESULT', 'CHUNK', 'IMAGE', 'VLM_DESCRIPTION', 'EMBEDDING', 'EXTRACTION', 'FORM_FILL', 'ENTITY_EXTRACTION', 'COMPARISON', 'CLUSTERING', 'KNOWLEDGE_GRAPH', 'CORPUS_INTELLIGENCE')),
   created_at TEXT NOT NULL,
   processed_at TEXT NOT NULL,
   source_file_created_at TEXT,
   source_file_modified_at TEXT,
-  source_type TEXT NOT NULL CHECK (source_type IN ('FILE', 'OCR', 'CHUNKING', 'IMAGE_EXTRACTION', 'VLM', 'VLM_DEDUP', 'EMBEDDING', 'EXTRACTION', 'FORM_FILL', 'ENTITY_EXTRACTION', 'COMPARISON', 'CLUSTERING', 'KNOWLEDGE_GRAPH')),
+  source_type TEXT NOT NULL CHECK (source_type IN ('FILE', 'OCR', 'CHUNKING', 'IMAGE_EXTRACTION', 'VLM', 'VLM_DEDUP', 'EMBEDDING', 'EXTRACTION', 'FORM_FILL', 'ENTITY_EXTRACTION', 'COMPARISON', 'CLUSTERING', 'KNOWLEDGE_GRAPH', 'CORPUS_INTELLIGENCE')),
   source_path TEXT,
   source_id TEXT,
   root_document_id TEXT NOT NULL,
@@ -571,7 +571,7 @@ CREATE TABLE IF NOT EXISTS knowledge_edges (
   id TEXT PRIMARY KEY,
   source_node_id TEXT NOT NULL,
   target_node_id TEXT NOT NULL,
-  relationship_type TEXT NOT NULL CHECK (relationship_type IN ('co_mentioned', 'co_located', 'works_at', 'represents', 'located_in', 'filed_in', 'cites', 'references', 'party_to', 'related_to', 'precedes', 'occurred_at', 'treated_with', 'administered_via', 'managed_by', 'interacts_with')),
+  relationship_type TEXT NOT NULL CHECK (relationship_type IN ('co_mentioned', 'co_located', 'works_at', 'represents', 'located_in', 'filed_in', 'cites', 'references', 'party_to', 'related_to', 'precedes', 'occurred_at', 'treated_with', 'administered_via', 'managed_by', 'interacts_with', 'diagnosed_with', 'prescribed_by', 'admitted_to', 'supervised_by', 'filed_by', 'contraindicated_with')),
   weight REAL NOT NULL DEFAULT 1.0,
   evidence_count INTEGER NOT NULL DEFAULT 1,
   document_ids TEXT NOT NULL,
@@ -646,6 +646,66 @@ CREATE VIRTUAL TABLE IF NOT EXISTS vec_entity_embeddings USING vec0(
   vector FLOAT[768] distance_metric=cosine
 )
 `;
+
+/**
+ * Corpus-level intelligence - bird's eye view of the entire database
+ * Stores AI-generated summaries, key actors, themes, and narrative arcs
+ * Provenance depth: 2 (parallel to KNOWLEDGE_GRAPH)
+ */
+export const CREATE_CORPUS_INTELLIGENCE_TABLE = `
+CREATE TABLE IF NOT EXISTS corpus_intelligence (
+  id TEXT PRIMARY KEY,
+  database_name TEXT NOT NULL,
+  corpus_summary TEXT NOT NULL,
+  key_actors TEXT NOT NULL,
+  themes TEXT NOT NULL,
+  narrative_arcs TEXT,
+  entity_count INTEGER NOT NULL,
+  document_count INTEGER NOT NULL,
+  model TEXT NOT NULL,
+  provenance_id TEXT NOT NULL REFERENCES provenance(id),
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+)`;
+
+/**
+ * Document-level narratives - AI-generated summaries focused on entity interactions
+ * Each document gets one narrative, updated on re-synthesis
+ * Provenance depth: 2 (parallel to KNOWLEDGE_GRAPH)
+ */
+export const CREATE_DOCUMENT_NARRATIVES_TABLE = `
+CREATE TABLE IF NOT EXISTS document_narratives (
+  id TEXT PRIMARY KEY,
+  document_id TEXT NOT NULL UNIQUE REFERENCES documents(id),
+  narrative_text TEXT NOT NULL,
+  entity_roster TEXT NOT NULL,
+  corpus_context TEXT,
+  synthesis_count INTEGER DEFAULT 0,
+  model TEXT NOT NULL,
+  provenance_id TEXT NOT NULL REFERENCES provenance(id),
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+)`;
+
+/**
+ * Entity roles - AI-determined role and importance of entities
+ * Can be scoped to entire database or a specific document
+ * Provenance depth: 2 (parallel to KNOWLEDGE_GRAPH)
+ */
+export const CREATE_ENTITY_ROLES_TABLE = `
+CREATE TABLE IF NOT EXISTS entity_roles (
+  id TEXT PRIMARY KEY,
+  node_id TEXT NOT NULL REFERENCES knowledge_nodes(id),
+  role TEXT NOT NULL,
+  theme TEXT,
+  importance_rank INTEGER,
+  context_summary TEXT,
+  scope TEXT NOT NULL DEFAULT 'database',
+  scope_id TEXT,
+  model TEXT NOT NULL,
+  provenance_id TEXT NOT NULL REFERENCES provenance(id),
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+)`;
 
 /**
  * Node-entity links - maps knowledge nodes to source entity extractions
@@ -790,6 +850,14 @@ export const CREATE_INDEXES = [
   // Entity embeddings indexes (v21)
   'CREATE INDEX IF NOT EXISTS idx_entity_embeddings_node_id ON entity_embeddings(node_id)',
   'CREATE INDEX IF NOT EXISTS idx_entity_embeddings_content_hash ON entity_embeddings(content_hash)',
+
+  // AI Knowledge Synthesis indexes (v25)
+  'CREATE INDEX IF NOT EXISTS idx_corpus_intelligence_database ON corpus_intelligence(database_name)',
+  'CREATE INDEX IF NOT EXISTS idx_document_narratives_document ON document_narratives(document_id)',
+  'CREATE INDEX IF NOT EXISTS idx_entity_roles_node ON entity_roles(node_id)',
+  'CREATE INDEX IF NOT EXISTS idx_entity_roles_theme ON entity_roles(theme)',
+  'CREATE INDEX IF NOT EXISTS idx_entity_roles_role ON entity_roles(role)',
+  'CREATE INDEX IF NOT EXISTS idx_entity_roles_scope ON entity_roles(scope, scope_id)',
 ] as const;
 
 /**
@@ -816,6 +884,9 @@ export const TABLE_DEFINITIONS = [
   { name: 'node_entity_links', sql: CREATE_NODE_ENTITY_LINKS_TABLE },
   { name: 'entity_extraction_segments', sql: CREATE_ENTITY_EXTRACTION_SEGMENTS_TABLE },
   { name: 'entity_embeddings', sql: CREATE_ENTITY_EMBEDDINGS_TABLE },
+  { name: 'corpus_intelligence', sql: CREATE_CORPUS_INTELLIGENCE_TABLE },
+  { name: 'document_narratives', sql: CREATE_DOCUMENT_NARRATIVES_TABLE },
+  { name: 'entity_roles', sql: CREATE_ENTITY_ROLES_TABLE },
 ] as const;
 
 /**
@@ -850,6 +921,9 @@ export const REQUIRED_TABLES = [
   'entity_extraction_segments',
   'entity_embeddings',
   'vec_entity_embeddings',
+  'corpus_intelligence',
+  'document_narratives',
+  'entity_roles',
 ] as const;
 
 /**
@@ -915,4 +989,12 @@ export const REQUIRED_INDEXES = [
   'idx_segments_doc_status',
   'idx_entity_embeddings_node_id',
   'idx_entity_embeddings_content_hash',
+
+  // AI Knowledge Synthesis indexes (v25)
+  'idx_corpus_intelligence_database',
+  'idx_document_narratives_document',
+  'idx_entity_roles_node',
+  'idx_entity_roles_theme',
+  'idx_entity_roles_role',
+  'idx_entity_roles_scope',
 ] as const;

@@ -29,7 +29,7 @@ import type { ChunkingConfig } from '../models/chunk.js';
 import { EmbeddingService } from '../services/embedding/embedder.js';
 import { ProvenanceTracker } from '../services/provenance/tracker.js';
 import { computeHash, hashFile, computeFileHashSync } from '../utils/hash.js';
-import { state, requireDatabase, validateGeneration } from '../server/state.js';
+import { state, requireDatabase, validateGeneration, getCurrentDatabaseName } from '../server/state.js';
 import { successResult } from '../server/types.js';
 import {
   validateInput,
@@ -79,6 +79,7 @@ import {
   handleKnowledgeGraphScanContradictions,
   handleKnowledgeGraphEmbedEntities,
 } from './knowledge-graph.js';
+import { synthesizeDocument, generateCorpusMap } from '../services/knowledge-graph/synthesis-service.js';
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // TYPE DEFINITIONS
@@ -1008,6 +1009,12 @@ export async function handleProcessPending(
     if (input.auto_embed_entities && !input.auto_build_kg) {
       throw new Error('auto_embed_entities requires auto_build_kg=true');
     }
+    if (input.auto_synthesize_document && !input.auto_build_kg) {
+      throw new Error('auto_synthesize_document requires auto_build_kg=true');
+    }
+    if (input.auto_corpus_map && !input.auto_build_kg) {
+      throw new Error('auto_corpus_map requires auto_build_kg=true');
+    }
     if (input.auto_reassign_clusters && !input.auto_extract_entities) {
       throw new Error('auto_reassign_clusters requires auto_extract_entities=true');
     }
@@ -1742,6 +1749,75 @@ export async function handleProcessPending(
       response.coreference_resolution = { enabled: true };
     }
 
+    // Step 9c: Auto-synthesize documents if enabled and KG was built
+    const synthesisResults: Array<Record<string, unknown>> = [];
+    if (input.auto_synthesize_document && kgBuildResult && successfulDocIds.length > 0) {
+      const dbName = getCurrentDatabaseName() ?? 'default';
+      for (const docId of successfulDocIds) {
+        try {
+          console.error(`[INFO] Auto-pipeline: synthesizing document ${docId}`);
+          const conn = db.getConnection();
+          const result = await synthesizeDocument(conn, docId, { databaseName: dbName });
+          synthesisResults.push({
+            document_id: docId,
+            edges_created: result.edges_created,
+            evidence_grounded: result.evidence_grounded,
+            roles_assigned: result.roles_assigned,
+          });
+          console.error(
+            `[INFO] Auto-pipeline: synthesized ${docId}: ${result.edges_created} edges`
+          );
+        } catch (synthError) {
+          const synthMsg = synthError instanceof Error ? synthError.message : String(synthError);
+          console.error(`[WARN] Document synthesis failed for ${docId}: ${synthMsg}`);
+          synthesisResults.push({ document_id: docId, error: synthMsg });
+        }
+      }
+    }
+
+    // Step 9d: Auto-regenerate corpus map if enabled
+    let corpusMapResult: Record<string, unknown> | undefined;
+    if (input.auto_corpus_map && kgBuildResult) {
+      try {
+        const dbName = getCurrentDatabaseName() ?? 'default';
+        const conn = db.getConnection();
+        console.error(`[INFO] Auto-pipeline: generating corpus map`);
+        const corpus = await generateCorpusMap(conn, dbName, true);
+        let themesCount = 0;
+        try {
+          themesCount = (JSON.parse(corpus.themes) as unknown[]).length;
+        } catch {
+          /* themes not parseable */
+        }
+        corpusMapResult = {
+          corpus_summary: corpus.corpus_summary.slice(0, 200),
+          entity_count: corpus.entity_count,
+          document_count: corpus.document_count,
+          themes_count: themesCount,
+        };
+        console.error(`[INFO] Auto-pipeline: corpus map generated`);
+      } catch (mapError) {
+        const mapMsg = mapError instanceof Error ? mapError.message : String(mapError);
+        console.error(`[WARN] Corpus map generation failed: ${mapMsg}`);
+        corpusMapResult = { error: mapMsg };
+      }
+    }
+
+    if (synthesisResults.length > 0) {
+      response.document_synthesis = {
+        documents_synthesized: synthesisResults.filter((r) => !r.error).length,
+        total_edges_created: synthesisResults.reduce(
+          (sum, r) => sum + ((r.edges_created as number) ?? 0),
+          0
+        ),
+        per_document: synthesisResults,
+      };
+    }
+
+    if (corpusMapResult) {
+      response.corpus_map = corpusMapResult;
+    }
+
     if (input.auto_reassign_clusters && successfulDocIds.length > 0) {
       try {
         const conn = db.getConnection();
@@ -2364,6 +2440,18 @@ export const ingestionTools: Record<string, ToolDefinition> = {
         .default(false)
         .describe(
           'Auto-generate embeddings for KG entity nodes after knowledge graph build. Requires auto_build_kg=true.'
+        ),
+      auto_synthesize_document: z
+        .boolean()
+        .default(false)
+        .describe(
+          'Auto-run AI synthesis (narrative + relationship inference + evidence grounding) after entity extraction + KG build. Requires auto_build_kg=true and GEMINI_API_KEY.'
+        ),
+      auto_corpus_map: z
+        .boolean()
+        .default(false)
+        .describe(
+          'Auto-regenerate corpus-level intelligence map after processing all documents. Requires auto_build_kg=true and GEMINI_API_KEY.'
         ),
       check_semantic_duplicates: z
         .boolean()

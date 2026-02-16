@@ -352,6 +352,26 @@ function deleteDerivedRecords(db: Database.Database, documentId: string, caller:
     console.error('[document-operations] entity_embeddings table not found, skipping:', msg);
   }
 
+  // Delete document_narratives (document_narratives.document_id REFERENCES documents(id))
+  try {
+    db.prepare('DELETE FROM document_narratives WHERE document_id = ?').run(documentId);
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : String(e);
+    if (!msg.includes('no such table')) throw e;
+    console.error('[document-operations] document_narratives table not found, skipping:', msg);
+  }
+
+  // Delete document-scoped entity_roles (entity_roles.scope='document', scope_id=documentId)
+  try {
+    db.prepare("DELETE FROM entity_roles WHERE scope = 'document' AND scope_id = ?").run(
+      documentId
+    );
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : String(e);
+    if (!msg.includes('no such table')) throw e;
+    console.error('[document-operations] entity_roles table not found, skipping:', msg);
+  }
+
   // Clean up knowledge graph data (must come before entities deletion since links reference entities)
   cleanupGraphForDocument(db, documentId);
 

@@ -295,6 +295,18 @@ export const ProcessPendingInput = z.object({
     .describe(
       'Auto-generate embeddings for KG entity nodes after knowledge graph build. Requires auto_build_kg=true.'
     ),
+  auto_synthesize_document: z
+    .boolean()
+    .default(false)
+    .describe(
+      'Auto-run AI synthesis (narrative + relationship inference + evidence grounding) after entity extraction + KG build. Requires auto_build_kg=true and GEMINI_API_KEY.'
+    ),
+  auto_corpus_map: z
+    .boolean()
+    .default(false)
+    .describe(
+      'Auto-regenerate corpus-level intelligence map after processing all documents. Requires auto_build_kg=true and GEMINI_API_KEY.'
+    ),
   check_semantic_duplicates: z
     .boolean()
     .default(false)

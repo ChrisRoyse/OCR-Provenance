@@ -828,13 +828,16 @@ describe.skipIf(!sqliteVecAvailable)('handleKnowledgeGraphDelete', () => {
 // =============================================================================
 
 describe('new tool exports', () => {
-  it('exports all 22 knowledge graph tools including new ones', () => {
+  it('exports all 25 knowledge graph tools including new ones', () => {
     const toolKeys = Object.keys(knowledgeGraphTools);
-    expect(toolKeys.length).toBeGreaterThanOrEqual(22);
+    expect(toolKeys.length).toBeGreaterThanOrEqual(25);
     expect(knowledgeGraphTools).toHaveProperty('ocr_knowledge_graph_scan_contradictions');
     expect(knowledgeGraphTools).toHaveProperty('ocr_knowledge_graph_entity_export');
     expect(knowledgeGraphTools).toHaveProperty('ocr_knowledge_graph_entity_import');
     expect(knowledgeGraphTools).toHaveProperty('ocr_knowledge_graph_visualize');
+    expect(knowledgeGraphTools).toHaveProperty('ocr_knowledge_graph_synthesize');
+    expect(knowledgeGraphTools).toHaveProperty('ocr_knowledge_graph_corpus_map');
+    expect(knowledgeGraphTools).toHaveProperty('ocr_knowledge_graph_organize');
   });
 
   it('new tools each have description, inputSchema, and handler', () => {
@@ -843,6 +846,9 @@ describe('new tool exports', () => {
       'ocr_knowledge_graph_entity_export',
       'ocr_knowledge_graph_entity_import',
       'ocr_knowledge_graph_visualize',
+      'ocr_knowledge_graph_synthesize',
+      'ocr_knowledge_graph_corpus_map',
+      'ocr_knowledge_graph_organize',
     ];
     for (const name of newTools) {
       const tool = knowledgeGraphTools[name];

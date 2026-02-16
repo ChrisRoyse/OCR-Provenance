@@ -9,7 +9,9 @@
  *        ocr_knowledge_graph_incremental_build,
  *        ocr_knowledge_graph_normalize_weights, ocr_knowledge_graph_prune_edges,
  *        ocr_knowledge_graph_scan_contradictions, ocr_knowledge_graph_entity_export,
- *        ocr_knowledge_graph_entity_import, ocr_knowledge_graph_visualize
+ *        ocr_knowledge_graph_entity_import, ocr_knowledge_graph_visualize,
+ *        ocr_knowledge_graph_synthesize, ocr_knowledge_graph_corpus_map,
+ *        ocr_knowledge_graph_organize
  *
  * CRITICAL: NEVER use console.log() - stdout is reserved for JSON-RPC protocol.
  *
@@ -19,7 +21,7 @@
 import { z } from 'zod';
 import { formatResponse, handleError, type ToolDefinition, type ToolResponse } from './shared.js';
 import { validateInput, escapeLikePattern } from '../utils/validation.js';
-import { requireDatabase } from '../server/state.js';
+import { requireDatabase, getCurrentDatabaseName } from '../server/state.js';
 import { successResult } from '../server/types.js';
 import { v4 as uuidv4 } from 'uuid';
 import { ProvenanceType } from '../models/provenance.js';
@@ -62,6 +64,14 @@ import {
 import { computeHash } from '../utils/hash.js';
 import { sorensenDice } from '../services/knowledge-graph/string-similarity.js';
 import { computeImportanceScore } from '../models/knowledge-graph.js';
+import {
+  synthesizeDocument,
+  synthesizeCorpus,
+  generateCorpusMap,
+  classifyEntityRoles,
+  type SynthesizeDocumentResult,
+  type SynthesizeCorpusResult,
+} from '../services/knowledge-graph/synthesis-service.js';
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // INPUT SCHEMAS
@@ -436,6 +446,25 @@ const VisualizeInput = z.object({
   max_depth: z.number().min(1).max(3).default(2).describe('Max hops from center node'),
   include_edge_labels: z.boolean().default(true),
   layout: z.enum(['flowchart', 'graph']).default('graph'),
+});
+
+const SynthesizeInput = z.object({
+  scope: z.enum(['database', 'document']).describe('Synthesis scope'),
+  document_id: z.string().optional().describe('Document ID (required if scope=document)'),
+  force: z.boolean().default(false).describe('Re-synthesize even if already done'),
+  include_narrative: z.boolean().default(true).describe('Store document narrative summary'),
+});
+
+const CorpusMapInput = z.object({
+  force: z.boolean().default(false).describe('Regenerate even if exists'),
+});
+
+const OrganizeInput = z.object({
+  scope: z.enum(['database', 'document']).default('database').describe('Classification scope'),
+  document_id: z.string().optional().describe('Document ID (required if scope=document)'),
+  include_themes: z.boolean().default(true),
+  include_roles: z.boolean().default(true),
+  include_importance: z.boolean().default(true),
 });
 
 /**
@@ -3002,6 +3031,120 @@ async function handleKnowledgeGraphVisualize(
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
+// SYNTHESIS HANDLERS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/**
+ * Handle ocr_knowledge_graph_synthesize - Full AI synthesis pipeline
+ */
+async function handleKnowledgeGraphSynthesize(params: Record<string, unknown>): Promise<ToolResponse> {
+  try {
+    const input = validateInput(SynthesizeInput, params);
+    const { db } = requireDatabase();
+    const conn = db.getConnection();
+    const dbName = getCurrentDatabaseName() ?? 'default';
+
+    if (input.scope === 'document') {
+      if (!input.document_id) {
+        return handleError(new Error('document_id is required when scope=document'));
+      }
+      const result: SynthesizeDocumentResult = await synthesizeDocument(conn, input.document_id, {
+        databaseName: dbName,
+        force_narrative: input.force,
+      });
+      return formatResponse(successResult({
+        scope: 'document',
+        document_id: input.document_id,
+        narrative_length: result.narrative.narrative_text.length,
+        edges_created: result.edges_created,
+        evidence_grounded: result.evidence_grounded,
+        roles_assigned: result.roles_assigned,
+        message: `Synthesized document: ${result.edges_created} relationships inferred, ${result.roles_assigned} roles classified`,
+      }));
+    } else {
+      const result: SynthesizeCorpusResult = await synthesizeCorpus(conn, dbName, { force: input.force });
+      return formatResponse(successResult({
+        scope: 'database',
+        documents_synthesized: result.documents_synthesized,
+        total_edges_created: result.total_edges_created,
+        cross_document_edges: result.cross_document_edges,
+        total_evidence_grounded: result.total_evidence_grounded,
+        corpus_roles_assigned: result.corpus_roles_assigned,
+        corpus_summary: result.corpus_intelligence.corpus_summary,
+        message: `Corpus synthesis complete: ${result.documents_synthesized} documents, ${result.total_edges_created} relationships`,
+      }));
+    }
+  } catch (error) {
+    return handleError(error);
+  }
+}
+
+/**
+ * Handle ocr_knowledge_graph_corpus_map - Generate/retrieve corpus intelligence map
+ */
+async function handleKnowledgeGraphCorpusMap(params: Record<string, unknown>): Promise<ToolResponse> {
+  try {
+    const input = validateInput(CorpusMapInput, params);
+    const { db } = requireDatabase();
+    const conn = db.getConnection();
+    const dbName = getCurrentDatabaseName() ?? 'default';
+    const result = await generateCorpusMap(conn, dbName, input.force);
+    return formatResponse(successResult({
+      corpus_summary: result.corpus_summary,
+      key_actors: JSON.parse(result.key_actors),
+      themes: JSON.parse(result.themes),
+      narrative_arcs: result.narrative_arcs ? JSON.parse(result.narrative_arcs) : null,
+      entity_count: result.entity_count,
+      document_count: result.document_count,
+      model: result.model,
+      created_at: result.created_at,
+    }));
+  } catch (error) {
+    return handleError(error);
+  }
+}
+
+/**
+ * Handle ocr_knowledge_graph_organize - Classify entity roles and themes
+ */
+async function handleKnowledgeGraphOrganize(params: Record<string, unknown>): Promise<ToolResponse> {
+  try {
+    const input = validateInput(OrganizeInput, params);
+    const { db } = requireDatabase();
+    const conn = db.getConnection();
+    const dbName = getCurrentDatabaseName() ?? 'default';
+
+    const scope = input.scope ?? 'database';
+    if (scope === 'document' && !input.document_id) {
+      return handleError(new Error('document_id required when scope=document'));
+    }
+    const roles = await classifyEntityRoles(conn, dbName, scope, input.document_id);
+    const themes = new Set(roles.map(r => r.theme).filter(Boolean));
+    const roleTypes = new Set(roles.map(r => r.role));
+
+    return formatResponse(successResult({
+      scope,
+      document_id: input.document_id ?? null,
+      roles_classified: roles.length,
+      unique_themes: [...themes],
+      unique_roles: [...roleTypes],
+      roles: roles.map(r => {
+        const node = conn.prepare('SELECT canonical_name FROM knowledge_nodes WHERE id = ?').get(r.node_id) as { canonical_name: string } | undefined;
+        return {
+          entity_name: node?.canonical_name ?? r.node_id,
+          role: r.role,
+          theme: r.theme,
+          importance_rank: r.importance_rank,
+          context_summary: r.context_summary,
+        };
+      }),
+    }));
+  } catch (error) {
+    return handleError(error);
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
 // TOOL DEFINITIONS FOR MCP REGISTRATION
 // ═══════════════════════════════════════════════════════════════════════════════
 
@@ -3135,5 +3278,23 @@ export const knowledgeGraphTools: Record<string, ToolDefinition> = {
       'Generate a Mermaid-format graph visualization of the knowledge graph. Can center on an entity name, show specific nodes, or show the most connected nodes. Nodes are shaped by entity type (person=rounded, org=rectangle, date=circle, location=hexagon).',
     inputSchema: VisualizeInput.shape,
     handler: handleKnowledgeGraphVisualize,
+  },
+  ocr_knowledge_graph_synthesize: {
+    description:
+      'Run AI synthesis on a document or entire corpus. Uses Gemini to infer semantic relationships, generate narratives, classify entity roles, and ground evidence. Scope=document synthesizes one document; scope=database synthesizes all documents + cross-document relationships.',
+    inputSchema: SynthesizeInput.shape,
+    handler: handleKnowledgeGraphSynthesize,
+  },
+  ocr_knowledge_graph_corpus_map: {
+    description:
+      "Generate or retrieve the corpus-level intelligence map. Provides bird's-eye view: corpus summary, key actors, themes, narrative arcs.",
+    inputSchema: CorpusMapInput.shape,
+    handler: handleKnowledgeGraphCorpusMap,
+  },
+  ocr_knowledge_graph_organize: {
+    description:
+      'Classify entity roles and themes. Determines what role each entity plays (e.g., attending_physician, patient, primary_diagnosis) and organizes entities into themes.',
+    inputSchema: OrganizeInput.shape,
+    handler: handleKnowledgeGraphOrganize,
   },
 };

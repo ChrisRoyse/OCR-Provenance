@@ -34,6 +34,9 @@ import {
   CREATE_ENTITY_EXTRACTION_SEGMENTS_TABLE,
   CREATE_ENTITY_EMBEDDINGS_TABLE,
   CREATE_VEC_ENTITY_EMBEDDINGS_TABLE,
+  CREATE_CORPUS_INTELLIGENCE_TABLE,
+  CREATE_DOCUMENT_NARRATIVES_TABLE,
+  CREATE_ENTITY_ROLES_TABLE,
 } from './schema-definitions.js';
 import {
   configurePragmas,
@@ -1109,6 +1112,11 @@ export function migrateToLatest(db: Database.Database): void {
   if (currentVersion < 24) {
     migrateV23ToV24(db);
     bumpVersion(24);
+  }
+
+  if (currentVersion < 25) {
+    migrateV24ToV25(db);
+    bumpVersion(25);
   }
 }
 
@@ -2557,6 +2565,151 @@ function migrateV23ToV24(db: Database.Database): void {
       `Failed to migrate from v23 to v24 (entity_mentions document_id index): ${cause}`,
       'migrate',
       'entity_mentions',
+      error
+    );
+  }
+}
+
+/**
+ * Migrate from schema version 24 to version 25
+ *
+ * Changes in v25 (AI Knowledge Synthesis):
+ * - corpus_intelligence: New table for corpus-level AI summaries
+ * - document_narratives: New table for document-level AI narratives
+ * - entity_roles: New table for AI-determined entity roles
+ * - knowledge_edges: 6 new relationship types added to CHECK constraint
+ * - provenance: CORPUS_INTELLIGENCE added to type and source_type CHECK constraints
+ * - 5 new indexes for the new tables
+ *
+ * @param db - Database instance from better-sqlite3
+ * @throws MigrationError if migration fails
+ */
+function migrateV24ToV25(db: Database.Database): void {
+  try {
+    db.exec('PRAGMA foreign_keys = OFF');
+    db.exec('BEGIN TRANSACTION');
+
+    // Step 1: Create 3 new tables
+    db.exec(CREATE_CORPUS_INTELLIGENCE_TABLE);
+    db.exec(CREATE_DOCUMENT_NARRATIVES_TABLE);
+    db.exec(CREATE_ENTITY_ROLES_TABLE);
+
+    // Step 2: Create 6 new indexes
+    db.exec('CREATE INDEX IF NOT EXISTS idx_corpus_intelligence_database ON corpus_intelligence(database_name)');
+    db.exec('CREATE INDEX IF NOT EXISTS idx_document_narratives_document ON document_narratives(document_id)');
+    db.exec('CREATE INDEX IF NOT EXISTS idx_entity_roles_node ON entity_roles(node_id)');
+    db.exec('CREATE INDEX IF NOT EXISTS idx_entity_roles_theme ON entity_roles(theme)');
+    db.exec('CREATE INDEX IF NOT EXISTS idx_entity_roles_role ON entity_roles(role)');
+    db.exec('CREATE INDEX IF NOT EXISTS idx_entity_roles_scope ON entity_roles(scope, scope_id)');
+
+    // Step 3: Expand knowledge_edges CHECK constraint with 6 new relationship types
+    const edgesTableExists = db.prepare("SELECT COUNT(*) as cnt FROM sqlite_master WHERE type='table' AND name='knowledge_edges'").get() as { cnt: number };
+
+    if (edgesTableExists.cnt > 0) {
+      db.exec(`
+        CREATE TABLE knowledge_edges_new (
+          id TEXT PRIMARY KEY,
+          source_node_id TEXT NOT NULL,
+          target_node_id TEXT NOT NULL,
+          relationship_type TEXT NOT NULL CHECK (relationship_type IN (
+            'co_mentioned', 'co_located', 'works_at', 'represents',
+            'located_in', 'filed_in', 'cites', 'references',
+            'party_to', 'related_to', 'precedes', 'occurred_at',
+            'treated_with', 'administered_via', 'managed_by', 'interacts_with',
+            'diagnosed_with', 'prescribed_by', 'admitted_to', 'supervised_by', 'filed_by', 'contraindicated_with'
+          )),
+          weight REAL NOT NULL DEFAULT 1.0,
+          evidence_count INTEGER NOT NULL DEFAULT 1,
+          document_ids TEXT NOT NULL,
+          metadata TEXT,
+          provenance_id TEXT NOT NULL,
+          created_at TEXT NOT NULL,
+          valid_from TEXT,
+          valid_until TEXT,
+          normalized_weight REAL DEFAULT 0,
+          contradiction_count INTEGER DEFAULT 0,
+          FOREIGN KEY (source_node_id) REFERENCES knowledge_nodes(id),
+          FOREIGN KEY (target_node_id) REFERENCES knowledge_nodes(id),
+          FOREIGN KEY (provenance_id) REFERENCES provenance(id)
+        )
+      `);
+
+      db.exec(`
+        INSERT INTO knowledge_edges_new
+        SELECT id, source_node_id, target_node_id, relationship_type,
+               weight, evidence_count, document_ids, metadata,
+               provenance_id, created_at, valid_from, valid_until,
+               normalized_weight, contradiction_count
+        FROM knowledge_edges
+      `);
+
+      db.exec('DROP TABLE knowledge_edges');
+      db.exec('ALTER TABLE knowledge_edges_new RENAME TO knowledge_edges');
+
+      db.exec('CREATE INDEX IF NOT EXISTS idx_ke_source_node ON knowledge_edges(source_node_id)');
+      db.exec('CREATE INDEX IF NOT EXISTS idx_ke_target_node ON knowledge_edges(target_node_id)');
+      db.exec('CREATE INDEX IF NOT EXISTS idx_ke_relationship_type ON knowledge_edges(relationship_type)');
+    }
+
+    // Step 4: Add CORPUS_INTELLIGENCE to provenance type and source_type CHECK constraints
+    db.exec(`
+      CREATE TABLE provenance_new (
+        id TEXT PRIMARY KEY,
+        type TEXT NOT NULL CHECK (type IN ('DOCUMENT', 'OCR_RESULT', 'CHUNK', 'IMAGE', 'VLM_DESCRIPTION', 'EMBEDDING', 'EXTRACTION', 'FORM_FILL', 'ENTITY_EXTRACTION', 'COMPARISON', 'CLUSTERING', 'KNOWLEDGE_GRAPH', 'CORPUS_INTELLIGENCE')),
+        created_at TEXT NOT NULL,
+        processed_at TEXT NOT NULL,
+        source_file_created_at TEXT,
+        source_file_modified_at TEXT,
+        source_type TEXT NOT NULL CHECK (source_type IN ('FILE', 'OCR', 'CHUNKING', 'IMAGE_EXTRACTION', 'VLM', 'VLM_DEDUP', 'EMBEDDING', 'EXTRACTION', 'FORM_FILL', 'ENTITY_EXTRACTION', 'COMPARISON', 'CLUSTERING', 'KNOWLEDGE_GRAPH', 'CORPUS_INTELLIGENCE')),
+        source_path TEXT,
+        source_id TEXT,
+        root_document_id TEXT NOT NULL,
+        location TEXT,
+        content_hash TEXT NOT NULL,
+        input_hash TEXT,
+        file_hash TEXT,
+        processor TEXT NOT NULL,
+        processor_version TEXT NOT NULL,
+        processing_params TEXT NOT NULL,
+        processing_duration_ms INTEGER,
+        processing_quality_score REAL,
+        parent_id TEXT,
+        parent_ids TEXT NOT NULL,
+        chain_depth INTEGER NOT NULL,
+        chain_path TEXT,
+        FOREIGN KEY (source_id) REFERENCES provenance_new(id),
+        FOREIGN KEY (parent_id) REFERENCES provenance_new(id)
+      )
+    `);
+    db.exec('INSERT INTO provenance_new SELECT * FROM provenance');
+    db.exec('DROP TABLE provenance');
+    db.exec('ALTER TABLE provenance_new RENAME TO provenance');
+    db.exec('CREATE INDEX IF NOT EXISTS idx_provenance_source_id ON provenance(source_id)');
+    db.exec('CREATE INDEX IF NOT EXISTS idx_provenance_type ON provenance(type)');
+    db.exec('CREATE INDEX IF NOT EXISTS idx_provenance_root_document_id ON provenance(root_document_id)');
+    db.exec('CREATE INDEX IF NOT EXISTS idx_provenance_parent_id ON provenance(parent_id)');
+
+    db.exec('COMMIT');
+    db.exec('PRAGMA foreign_keys = ON');
+
+    const fkViolations = db.pragma('foreign_key_check') as unknown[];
+    if (fkViolations.length > 0) {
+      throw new Error(
+        `Foreign key integrity check failed after v24->v25 migration: ${fkViolations.length} violation(s). First: ${JSON.stringify(fkViolations[0])}`
+      );
+    }
+  } catch (error) {
+    try {
+      db.exec('ROLLBACK');
+      db.exec('PRAGMA foreign_keys = ON');
+    } catch (rollbackErr) {
+      console.error('[migrations] Rollback failed:', rollbackErr instanceof Error ? rollbackErr.message : String(rollbackErr));
+    }
+    const cause = error instanceof Error ? error.message : String(error);
+    throw new MigrationError(
+      `Failed to migrate from v24 to v25 (AI Knowledge Synthesis tables): ${cause}`,
+      'migrate',
+      'corpus_intelligence',
       error
     );
   }

@@ -32,7 +32,10 @@ import {
   reassignDocumentToCluster,
   type ClusterReassignmentResult,
 } from '../services/storage/database/cluster-operations.js';
-import { getKnowledgeNodeSummariesByDocument } from '../services/storage/database/knowledge-graph-operations.js';
+import {
+  getKnowledgeNodeSummariesByDocument,
+  getEntityRolesForNode,
+} from '../services/storage/database/knowledge-graph-operations.js';
 import { extractEntitiesFromVLM } from '../services/knowledge-graph/vlm-entity-extractor.js';
 import { mapExtractionEntitiesToDB } from '../services/knowledge-graph/extraction-entity-mapper.js';
 import { incrementalBuildGraph } from '../services/knowledge-graph/incremental-builder.js';
@@ -2561,6 +2564,27 @@ async function handleEntityDossier(params: Record<string, unknown>) {
       }
 
       dossier.related_entities = relatedEntities;
+    }
+
+    // -- Entity Roles (AI-Synthesized) --
+    if (nodeId) {
+      try {
+        const roles = getEntityRolesForNode(conn, nodeId);
+        if (roles.length > 0) {
+          dossier.entity_roles = roles.map((r) => ({
+            role: r.role,
+            theme: r.theme,
+            importance_rank: r.importance_rank,
+            context_summary: r.context_summary,
+            scope: r.scope,
+            scope_id: r.scope_id,
+          }));
+        }
+      } catch (roleErr) {
+        console.error(
+          `[entity-analysis] dossier entity roles query failed: ${roleErr instanceof Error ? roleErr.message : String(roleErr)}`
+        );
+      }
     }
 
     dossier.entity_fallback = entityFallback;

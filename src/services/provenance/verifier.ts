@@ -806,6 +806,43 @@ export class ProvenanceVerifier {
         return { content: kgContent, expectedHash: record.content_hash, isFile: false };
       }
 
+      case ProvenanceType.CORPUS_INTELLIGENCE: {
+        // Corpus intelligence provenance: the content_hash was computed over the synthesis output
+        // Re-derive by reading the corpus_intelligence or document_narratives or entity_roles row
+        const ciRow = this.rawDb
+          .prepare('SELECT corpus_summary, key_actors, themes FROM corpus_intelligence WHERE provenance_id = ?')
+          .get(record.id) as { corpus_summary: string; key_actors: string; themes: string } | undefined;
+
+        if (ciRow) {
+          const ciContent = JSON.stringify({ corpus_summary: ciRow.corpus_summary, key_actors: ciRow.key_actors, themes: ciRow.themes });
+          return { content: ciContent, expectedHash: record.content_hash, isFile: false };
+        }
+
+        const dnRow = this.rawDb
+          .prepare('SELECT narrative_text, entity_roster FROM document_narratives WHERE provenance_id = ?')
+          .get(record.id) as { narrative_text: string; entity_roster: string } | undefined;
+
+        if (dnRow) {
+          const dnContent = JSON.stringify({ narrative_text: dnRow.narrative_text, entity_roster: dnRow.entity_roster });
+          return { content: dnContent, expectedHash: record.content_hash, isFile: false };
+        }
+
+        const erRow = this.rawDb
+          .prepare('SELECT node_id, role, scope FROM entity_roles WHERE provenance_id = ?')
+          .get(record.id) as { node_id: string; role: string; scope: string } | undefined;
+
+        if (erRow) {
+          const erContent = JSON.stringify({ node_id: erRow.node_id, role: erRow.role, scope: erRow.scope });
+          return { content: erContent, expectedHash: record.content_hash, isFile: false };
+        }
+
+        throw new VerifierError(
+          `No corpus intelligence data found for provenance ${record.id}`,
+          VerifierErrorCode.CONTENT_NOT_FOUND,
+          { provenanceId: record.id, type: record.type }
+        );
+      }
+
       default: {
         const unknownType: never = record.type;
         throw new VerifierError(

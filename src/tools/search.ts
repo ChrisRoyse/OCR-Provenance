@@ -15,7 +15,7 @@ import { z } from 'zod';
 import { getEmbeddingService } from '../services/embedding/embedder.js';
 import { DatabaseService } from '../services/storage/database/index.js';
 import { VectorService } from '../services/storage/vector.js';
-import { requireDatabase, getDefaultStoragePath } from '../server/state.js';
+import { requireDatabase, getDefaultStoragePath, getCurrentDatabaseName } from '../server/state.js';
 import { successResult } from '../server/types.js';
 import {
   validateInput,
@@ -46,6 +46,8 @@ import {
   getEntityMentionFrequencyByDocument,
   getRelatedDocumentsByEntityOverlap,
   resolveEntityNodeIdsFromKG,
+  getCorpusIntelligence,
+  getDocumentNarrative,
   type ChunkEntityInfo,
 } from '../services/storage/database/knowledge-graph-operations.js';
 import { findGraphPaths } from '../services/knowledge-graph/graph-service.js';
@@ -2044,6 +2046,14 @@ const RagContextInput = z.object({
     .max(1)
     .optional()
     .describe('Minimum entity confidence for included entities'),
+  include_corpus_context: z
+    .boolean()
+    .default(false)
+    .describe('Include corpus-level AI intelligence summary in RAG context'),
+  include_narrative: z
+    .boolean()
+    .default(false)
+    .describe('Include AI-synthesized document narratives in RAG context'),
 });
 
 /**
@@ -2329,6 +2339,61 @@ async function handleRagContext(params: Record<string, unknown>): Promise<ToolRe
       }
     }
 
+    // ── Step 4b: Synthesis context (corpus intelligence + narratives) ────────
+    if (input.include_corpus_context || input.include_narrative) {
+      try {
+        const dbName = getCurrentDatabaseName() ?? 'default';
+
+        if (input.include_corpus_context) {
+          const corpus = getCorpusIntelligence(conn, dbName);
+          if (corpus) {
+            contextParts.push('## Corpus Intelligence\n');
+            contextParts.push(corpus.corpus_summary);
+            try {
+              const themes = JSON.parse(corpus.themes) as Array<{
+                name: string;
+                description: string;
+              }>;
+              if (themes.length > 0) {
+                contextParts.push('\n### Themes:');
+                for (const t of themes) {
+                  contextParts.push(`- **${t.name}**: ${t.description}`);
+                }
+              }
+            } catch {
+              /* themes not parseable */
+            }
+            contextParts.push('');
+          }
+        }
+
+        if (input.include_narrative) {
+          const docIds = [...new Set(fusedResults.map((r) => r.document_id))];
+          const narrativeParts: string[] = [];
+          for (const docId of docIds.slice(0, 3)) {
+            const narrative = getDocumentNarrative(conn, docId);
+            if (narrative) {
+              narrativeParts.push(
+                `**[${docId}]:** ${narrative.narrative_text.slice(0, 600)}`
+              );
+            }
+          }
+          if (narrativeParts.length > 0) {
+            contextParts.push('## AI-Synthesized Document Narratives\n');
+            contextParts.push(narrativeParts.join('\n\n'));
+            contextParts.push('');
+          }
+        }
+      } catch (synthErr) {
+        console.error(
+          `[RAG] Synthesis context failed: ${synthErr instanceof Error ? synthErr.message : String(synthErr)}`
+        );
+        ragWarnings.push(
+          `Synthesis context failed: ${synthErr instanceof Error ? synthErr.message : String(synthErr)}`
+        );
+      }
+    }
+
     // ── Step 5: Truncate to max_context_length ─────────────────────────────
     let assembledMarkdown = contextParts.join('\n');
     if (assembledMarkdown.length > maxContextLength) {
@@ -2344,6 +2409,8 @@ async function handleRagContext(params: Record<string, unknown>): Promise<ToolRe
       entities_found: uniqueEntities.size,
       kg_paths_found: kgPaths.length,
       relationship_summary_included: input.include_relationship_summary && kgPaths.length > 0,
+      corpus_context_included: input.include_corpus_context,
+      narrative_context_included: input.include_narrative,
       sources,
     };
     if (ragWarnings.length > 0) {
@@ -3114,6 +3181,14 @@ export const searchTools: Record<string, ToolDefinition> = {
         .max(1)
         .optional()
         .describe('Minimum entity confidence for included entities'),
+      include_corpus_context: z
+        .boolean()
+        .default(false)
+        .describe('Include corpus-level AI intelligence summary in RAG context'),
+      include_narrative: z
+        .boolean()
+        .default(false)
+        .describe('Include AI-synthesized document narratives in RAG context'),
     },
     handler: handleRagContext,
   },
