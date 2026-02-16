@@ -1,0 +1,147 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  # ===========================================================================
+  # Build + TS unit tests — multi-OS × multi-Node
+  # ===========================================================================
+  build-and-test:
+    runs-on: ${{ matrix.os }}
+
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        node-version: [20, 22]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Use Node.js ${{ matrix.node-version }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Audit production dependencies
+        run: npm audit --production --audit-level=high
+
+      - name: Build
+        run: npm run build
+
+      - name: Verify package contents
+        run: npm pack --dry-run
+
+      - name: Type check
+        run: npm run typecheck
+
+      # Lint/format only on Ubuntu to avoid redundant work
+      - name: Lint
+        if: matrix.os == 'ubuntu-latest'
+        run: npm run lint
+
+      - name: Format check
+        if: matrix.os == 'ubuntu-latest'
+        run: npm run format:check
+
+      - name: Run unit tests with coverage
+        run: npx vitest run tests/unit --coverage
+
+      - name: Upload coverage report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-${{ matrix.os }}-node${{ matrix.node-version }}
+          path: coverage/
+          retention-days: 14
+
+  # ===========================================================================
+  # Security scanning — secret and credential detection
+  # ===========================================================================
+  security:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Scan for leaked secrets
+        run: |
+          echo "Scanning git history for potential secrets..."
+          if git log --all -p | grep -iE 'AIzaSy[0-9A-Za-z_-]{33}|sk-[a-zA-Z0-9]{20,}|AKIA[0-9A-Z]{16}|ghp_[a-zA-Z0-9]{36}|gho_[a-zA-Z0-9]{36}|github_pat_[a-zA-Z0-9]{22}_[a-zA-Z0-9]{59}'; then
+            echo "::error::Potential secrets detected in git history!"
+            exit 1
+          fi
+          echo "No secrets detected."
+
+      - name: Check for sensitive files
+        run: |
+          echo "Checking for sensitive files in repository..."
+          SENSITIVE_FILES=$(find . -name '.env' -not -name '.env.example' -not -path './node_modules/*' -not -path './.git/*' -o -name 'credentials.json' -not -path './node_modules/*' -not -path './.git/*' -o -name '*.pem' -not -path './node_modules/*' -not -path './.git/*' | head -20)
+          if [ -n "$SENSITIVE_FILES" ]; then
+            echo "::error::Sensitive files found in repository:"
+            echo "$SENSITIVE_FILES"
+            exit 1
+          fi
+          echo "No sensitive files detected."
+
+  # ===========================================================================
+  # Python lint — single OS is sufficient
+  # ===========================================================================
+  python-lint:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install ruff
+        run: pip install ruff
+
+      - name: Lint Python
+        run: cd python && ruff check .
+
+      - name: Check Python formatting
+        run: cd python && ruff format --check .
+
+  # ===========================================================================
+  # Python cross-platform tests — multi-OS, no GPU required
+  # ===========================================================================
+  python-cross-platform:
+    runs-on: ${{ matrix.os }}
+
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        python-version: ['3.11', '3.12']
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install Python test dependencies
+        run: pip install pytest torch --index-url https://download.pytorch.org/whl/cpu
+
+      - name: Install sentence-transformers (for import tests)
+        run: pip install sentence-transformers
+
+      - name: Run cross-platform device tests
+        run: python -m pytest tests/unit/python/test_cross_platform.py -v
