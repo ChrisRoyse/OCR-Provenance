@@ -34,7 +34,9 @@ describe('Gemini Config', () => {
   it('should load config from environment', () => {
     // Mock env
     const originalEnv = process.env.GEMINI_API_KEY;
+    const originalModel = process.env.GEMINI_MODEL;
     process.env.GEMINI_API_KEY = 'test-key';
+    delete process.env.GEMINI_MODEL; // Ensure default model is used
 
     const config = loadGeminiConfig();
     expect(config.apiKey).toBe('test-key');
@@ -42,6 +44,9 @@ describe('Gemini Config', () => {
     // Restore
     if (originalEnv) {
       process.env.GEMINI_API_KEY = originalEnv;
+    }
+    if (originalModel) {
+      process.env.GEMINI_MODEL = originalModel;
     }
   });
 });
@@ -183,11 +188,14 @@ describe('GeminiClient', () => {
   });
 
   it('should create client with valid API key', () => {
+    const originalModel = process.env.GEMINI_MODEL;
+    delete process.env.GEMINI_MODEL; // Ensure default model
     const client = new GeminiClient({ apiKey: 'test-key' });
     expect(client).toBeDefined();
 
     const status = client.getStatus();
     expect(status.model).toBe(GEMINI_MODELS.FLASH_3);
+    if (originalModel) process.env.GEMINI_MODEL = originalModel;
   });
 
   it('should create FileRef from buffer', () => {

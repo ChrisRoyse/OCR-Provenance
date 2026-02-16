@@ -21,8 +21,11 @@ import { RRFFusion, type RankedResult } from '../services/search/fusion.js';
 import {
   getDocumentIdsForEntities,
   getEntitiesForChunks,
+  getCorpusIntelligence,
+  getDocumentNarrative,
 } from '../services/storage/database/knowledge-graph-operations.js';
 import { getClusterSummariesForDocument } from '../services/storage/database/cluster-operations.js';
+import { getCurrentDatabaseName } from '../server/state.js';
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // INPUT SCHEMA
@@ -81,6 +84,14 @@ const QuestionAnswerInput = z.object({
     .boolean()
     .default(false)
     .describe('Prefer more recent KG edges when building context (temporal weighting)'),
+  include_corpus_context: z
+    .boolean()
+    .default(false)
+    .describe('Include corpus-level intelligence summary in QA context'),
+  include_narrative: z
+    .boolean()
+    .default(false)
+    .describe('Include document narrative from AI synthesis in QA context'),
 });
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -900,8 +911,57 @@ async function handleQuestionAnswer(params: Record<string, unknown>): Promise<To
       }
     }
 
+    // Step 5b: Add synthesis context (corpus intelligence + document narratives)
+    let synthesisContext = '';
+    if (input.include_corpus_context || input.include_narrative) {
+      try {
+        const dbName = getCurrentDatabaseName() ?? 'default';
+
+        if (input.include_corpus_context) {
+          const corpus = getCorpusIntelligence(conn, dbName);
+          if (corpus) {
+            synthesisContext += '\n\n## Corpus Intelligence:\n';
+            synthesisContext += corpus.corpus_summary + '\n';
+            try {
+              const themes = JSON.parse(corpus.themes) as Array<{
+                name: string;
+                description: string;
+              }>;
+              if (themes.length > 0) {
+                synthesisContext += '\n### Themes:\n';
+                for (const t of themes) {
+                  synthesisContext += `- **${t.name}**: ${t.description}\n`;
+                }
+              }
+            } catch {
+              /* themes not parseable */
+            }
+          }
+        }
+
+        if (input.include_narrative) {
+          const docIds = [...new Set(topResults.map((r) => r.document_id))];
+          const narratives: string[] = [];
+          for (const docId of docIds.slice(0, 3)) {
+            const narrative = getDocumentNarrative(conn, docId);
+            if (narrative) {
+              narratives.push(`[${docId}]: ${narrative.narrative_text.slice(0, 500)}`);
+            }
+          }
+          if (narratives.length > 0) {
+            synthesisContext += '\n\n## Document Narratives (AI-Synthesized):\n';
+            synthesisContext += narratives.join('\n\n');
+          }
+        }
+      } catch (synthErr) {
+        console.error(
+          `[qa] Synthesis context failed: ${synthErr instanceof Error ? synthErr.message : String(synthErr)}`
+        );
+      }
+    }
+
     // Step 6: Generate answer using Gemini
-    const fullContext = context + entityContext + kgContext;
+    const fullContext = context + entityContext + kgContext + synthesisContext;
     const truncatedContext = fullContext.slice(0, maxContextLength);
 
     const gemini = new GeminiClient({ temperature: input.temperature });
@@ -918,6 +978,7 @@ ${input.question}
 - Cite specific details from the documents
 - If the answer is uncertain, indicate your confidence level
 - If entities and relationships are provided, use them to inform your answer
+- If corpus intelligence or document narratives are provided, use them for broader context
 - Be concise but thorough`;
 
     let answer = '';
@@ -1039,6 +1100,13 @@ ${input.question}
 
     if (input.prefer_recent) {
       responseData.temporal_preference = 'recent';
+    }
+
+    if (input.include_corpus_context) {
+      responseData.corpus_context_included = synthesisContext.length > 0;
+    }
+    if (input.include_narrative) {
+      responseData.narrative_context_included = synthesisContext.includes('Document Narratives');
     }
 
     if (entityFilterApplied) {

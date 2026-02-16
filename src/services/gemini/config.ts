@@ -44,7 +44,7 @@ export type MediaResolution = 'MEDIA_RESOLUTION_HIGH' | 'MEDIA_RESOLUTION_LOW';
 // Configuration schema
 export const GeminiConfigSchema = z.object({
   apiKey: z.string().min(1, 'GEMINI_API_KEY is required'),
-  model: z.literal(GEMINI_MODELS.FLASH_3).default(GEMINI_MODELS.FLASH_3),
+  model: z.string().default(GEMINI_MODELS.FLASH_3),
 
   // Generation defaults
   maxOutputTokens: z.number().default(8192),

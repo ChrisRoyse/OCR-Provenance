@@ -12,6 +12,9 @@ import type {
   KnowledgeEdge,
   NodeEntityLink,
   RelationshipType,
+  CorpusIntelligence,
+  DocumentNarrative,
+  EntityRole,
 } from '../../../models/knowledge-graph.js';
 import { runWithForeignKeyCheck, batchedQuery } from './helpers.js';
 import { escapeLikePattern } from '../../../utils/validation.js';
@@ -243,8 +246,9 @@ export function countKnowledgeNodes(db: Database.Database): number {
 export function insertKnowledgeEdge(db: Database.Database, edge: KnowledgeEdge): string {
   const stmt = db.prepare(`
     INSERT INTO knowledge_edges (id, source_node_id, target_node_id, relationship_type,
-      weight, evidence_count, document_ids, metadata, provenance_id, created_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      weight, evidence_count, document_ids, metadata, provenance_id, created_at,
+      valid_from, valid_until)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
 
   runWithForeignKeyCheck(
@@ -260,6 +264,8 @@ export function insertKnowledgeEdge(db: Database.Database, edge: KnowledgeEdge):
       edge.metadata,
       edge.provenance_id,
       edge.created_at,
+      edge.valid_from ?? null,
+      edge.valid_until ?? null,
     ],
     `inserting knowledge_edge: FK violation for source_node_id="${edge.source_node_id}" or target_node_id="${edge.target_node_id}"`
   );
@@ -1045,6 +1051,12 @@ export function cleanupGraphForDocument(
     }
   }
 
+  // Step 3b2: Clean up entity_roles for nodes being deleted
+  if (nodeIdsToDelete.length > 0) {
+    const rolePlaceholders = nodeIdsToDelete.map(() => '?').join(',');
+    db.prepare(`DELETE FROM entity_roles WHERE node_id IN (${rolePlaceholders})`).run(...nodeIdsToDelete);
+  }
+
   // Step 3c: Decrement edge_count on surviving nodes connected to deleted nodes
   if (nodeIdsToDelete.length > 0) {
     const delPlaceholders = nodeIdsToDelete.map(() => '?').join(',');
@@ -1189,6 +1201,28 @@ export function deleteAllGraphData(db: Database.Database): {
   try {
     db.prepare('DELETE FROM vec_entity_embeddings').run();
     db.prepare('DELETE FROM entity_embeddings').run();
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : String(e);
+    if (!msg.includes('no such table')) throw e;
+  }
+
+  // Clean up entity_roles before deleting nodes
+  try {
+    db.prepare('DELETE FROM entity_roles').run();
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : String(e);
+    if (!msg.includes('no such table')) throw e;
+  }
+
+  // Clean up document_narratives and corpus_intelligence
+  try {
+    db.prepare('DELETE FROM document_narratives').run();
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : String(e);
+    if (!msg.includes('no such table')) throw e;
+  }
+  try {
+    db.prepare('DELETE FROM corpus_intelligence').run();
   } catch (e: unknown) {
     const msg = e instanceof Error ? e.message : String(e);
     if (!msg.includes('no such table')) throw e;
@@ -1999,4 +2033,152 @@ export function deleteGraphDataForDocuments(
     edges_deleted: totalEdges,
     links_deleted: totalLinks,
   };
+}
+
+// ============================================================
+// Corpus Intelligence CRUD
+// ============================================================
+
+export function insertCorpusIntelligence(db: Database.Database, record: CorpusIntelligence): string {
+  const stmt = db.prepare(`
+    INSERT INTO corpus_intelligence (id, database_name, corpus_summary, key_actors, themes,
+      narrative_arcs, entity_count, document_count, model, provenance_id, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+  runWithForeignKeyCheck(stmt, [
+    record.id, record.database_name, record.corpus_summary, record.key_actors,
+    record.themes, record.narrative_arcs, record.entity_count, record.document_count,
+    record.model, record.provenance_id, record.created_at, record.updated_at
+  ], `inserting corpus_intelligence: FK violation for provenance_id="${record.provenance_id}"`);
+  return record.id;
+}
+
+export function getCorpusIntelligence(db: Database.Database, databaseName: string): CorpusIntelligence | null {
+  const row = db.prepare('SELECT * FROM corpus_intelligence WHERE database_name = ? ORDER BY created_at DESC LIMIT 1').get(databaseName) as CorpusIntelligence | undefined;
+  return row ?? null;
+}
+
+export function getCorpusIntelligenceById(db: Database.Database, id: string): CorpusIntelligence | null {
+  const row = db.prepare('SELECT * FROM corpus_intelligence WHERE id = ?').get(id) as CorpusIntelligence | undefined;
+  return row ?? null;
+}
+
+export function updateCorpusIntelligence(db: Database.Database, id: string, updates: Partial<Pick<CorpusIntelligence, 'corpus_summary' | 'key_actors' | 'themes' | 'narrative_arcs' | 'entity_count' | 'document_count' | 'updated_at'>>): void {
+  const setClauses: string[] = [];
+  const params: unknown[] = [];
+  if (updates.corpus_summary !== undefined) { setClauses.push('corpus_summary = ?'); params.push(updates.corpus_summary); }
+  if (updates.key_actors !== undefined) { setClauses.push('key_actors = ?'); params.push(updates.key_actors); }
+  if (updates.themes !== undefined) { setClauses.push('themes = ?'); params.push(updates.themes); }
+  if (updates.narrative_arcs !== undefined) { setClauses.push('narrative_arcs = ?'); params.push(updates.narrative_arcs); }
+  if (updates.entity_count !== undefined) { setClauses.push('entity_count = ?'); params.push(updates.entity_count); }
+  if (updates.document_count !== undefined) { setClauses.push('document_count = ?'); params.push(updates.document_count); }
+  if (updates.updated_at !== undefined) { setClauses.push('updated_at = ?'); params.push(updates.updated_at); }
+  if (setClauses.length === 0) return;
+  params.push(id);
+  db.prepare(`UPDATE corpus_intelligence SET ${setClauses.join(', ')} WHERE id = ?`).run(...params);
+}
+
+export function deleteCorpusIntelligence(db: Database.Database, databaseName: string): number {
+  const result = db.prepare('DELETE FROM corpus_intelligence WHERE database_name = ?').run(databaseName);
+  return result.changes;
+}
+
+// ============================================================
+// Document Narratives CRUD
+// ============================================================
+
+export function insertDocumentNarrative(db: Database.Database, record: DocumentNarrative): string {
+  const stmt = db.prepare(`
+    INSERT INTO document_narratives (id, document_id, narrative_text, entity_roster,
+      corpus_context, synthesis_count, model, provenance_id, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+  runWithForeignKeyCheck(stmt, [
+    record.id, record.document_id, record.narrative_text, record.entity_roster,
+    record.corpus_context, record.synthesis_count, record.model, record.provenance_id,
+    record.created_at, record.updated_at
+  ], `inserting document_narrative: FK violation for document_id="${record.document_id}" or provenance_id="${record.provenance_id}"`);
+  return record.id;
+}
+
+export function getDocumentNarrative(db: Database.Database, documentId: string): DocumentNarrative | null {
+  const row = db.prepare('SELECT * FROM document_narratives WHERE document_id = ?').get(documentId) as DocumentNarrative | undefined;
+  return row ?? null;
+}
+
+export function getDocumentNarrativeById(db: Database.Database, id: string): DocumentNarrative | null {
+  const row = db.prepare('SELECT * FROM document_narratives WHERE id = ?').get(id) as DocumentNarrative | undefined;
+  return row ?? null;
+}
+
+export function updateDocumentNarrative(db: Database.Database, id: string, updates: Partial<Pick<DocumentNarrative, 'narrative_text' | 'entity_roster' | 'corpus_context' | 'synthesis_count' | 'updated_at'>>): void {
+  const setClauses: string[] = [];
+  const params: unknown[] = [];
+  if (updates.narrative_text !== undefined) { setClauses.push('narrative_text = ?'); params.push(updates.narrative_text); }
+  if (updates.entity_roster !== undefined) { setClauses.push('entity_roster = ?'); params.push(updates.entity_roster); }
+  if (updates.corpus_context !== undefined) { setClauses.push('corpus_context = ?'); params.push(updates.corpus_context); }
+  if (updates.synthesis_count !== undefined) { setClauses.push('synthesis_count = ?'); params.push(updates.synthesis_count); }
+  if (updates.updated_at !== undefined) { setClauses.push('updated_at = ?'); params.push(updates.updated_at); }
+  if (setClauses.length === 0) return;
+  params.push(id);
+  db.prepare(`UPDATE document_narratives SET ${setClauses.join(', ')} WHERE id = ?`).run(...params);
+}
+
+export function deleteDocumentNarrative(db: Database.Database, documentId: string): number {
+  const result = db.prepare('DELETE FROM document_narratives WHERE document_id = ?').run(documentId);
+  return result.changes;
+}
+
+export function listDocumentNarratives(db: Database.Database, limit?: number): DocumentNarrative[] {
+  return db.prepare('SELECT * FROM document_narratives ORDER BY created_at DESC LIMIT ?').all(limit ?? 50) as DocumentNarrative[];
+}
+
+// ============================================================
+// Entity Roles CRUD
+// ============================================================
+
+export function insertEntityRole(db: Database.Database, role: EntityRole): string {
+  const stmt = db.prepare(`
+    INSERT INTO entity_roles (id, node_id, role, theme, importance_rank, context_summary,
+      scope, scope_id, model, provenance_id, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+  runWithForeignKeyCheck(stmt, [
+    role.id, role.node_id, role.role, role.theme, role.importance_rank, role.context_summary,
+    role.scope, role.scope_id, role.model, role.provenance_id, role.created_at
+  ], `inserting entity_role: FK violation for node_id="${role.node_id}" or provenance_id="${role.provenance_id}"`);
+  return role.id;
+}
+
+export function getEntityRolesForNode(db: Database.Database, nodeId: string): EntityRole[] {
+  return db.prepare('SELECT * FROM entity_roles WHERE node_id = ? ORDER BY importance_rank ASC NULLS LAST').all(nodeId) as EntityRole[];
+}
+
+export function getEntityRolesByScope(db: Database.Database, scope: string, scopeId?: string): EntityRole[] {
+  if (scopeId) {
+    return db.prepare('SELECT * FROM entity_roles WHERE scope = ? AND scope_id = ? ORDER BY importance_rank ASC NULLS LAST').all(scope, scopeId) as EntityRole[];
+  }
+  return db.prepare('SELECT * FROM entity_roles WHERE scope = ? ORDER BY importance_rank ASC NULLS LAST').all(scope) as EntityRole[];
+}
+
+export function getEntityRolesByTheme(db: Database.Database, theme: string): EntityRole[] {
+  return db.prepare('SELECT * FROM entity_roles WHERE theme = ? ORDER BY importance_rank ASC NULLS LAST').all(theme) as EntityRole[];
+}
+
+export function getEntityRolesByRole(db: Database.Database, role: string): EntityRole[] {
+  return db.prepare('SELECT * FROM entity_roles WHERE role = ? ORDER BY importance_rank ASC NULLS LAST').all(role) as EntityRole[];
+}
+
+export function deleteEntityRolesForNode(db: Database.Database, nodeId: string): number {
+  const result = db.prepare('DELETE FROM entity_roles WHERE node_id = ?').run(nodeId);
+  return result.changes;
+}
+
+export function deleteEntityRolesByScope(db: Database.Database, scope: string, scopeId?: string): number {
+  if (scopeId) {
+    const result = db.prepare('DELETE FROM entity_roles WHERE scope = ? AND scope_id = ?').run(scope, scopeId);
+    return result.changes;
+  }
+  const result = db.prepare('DELETE FROM entity_roles WHERE scope = ?').run(scope);
+  return result.changes;
 }
