@@ -1,0 +1,31 @@
+/**
+ * Storage Service Module
+ *
+ * Provides database initialization, migrations, and storage operations
+ * for the OCR Provenance MCP System.
+ */
+
+export {
+  initializeDatabase,
+  checkSchemaVersion,
+  migrateToLatest,
+  getCurrentSchemaVersion,
+  verifySchema,
+  MigrationError,
+} from './migrations.js';
+
+export {
+  DatabaseService,
+  DatabaseError,
+  DatabaseErrorCode,
+  type DatabaseInfo,
+  type DatabaseStats,
+  type ListDocumentsOptions,
+} from './database.js';
+
+export {
+  VectorService,
+  VectorError,
+  type VectorSearchResult,
+  type VectorSearchOptions,
+} from './vector.js';

@@ -1,0 +1,78 @@
+OCR Provenance MCP Server - Dual License
+
+Copyright (c) 2026 Chris Royse. All rights reserved.
+
+This software is licensed under a dual-license model. You must choose one of
+the following licenses based on your use case:
+
+================================================================================
+1. NON-COMMERCIAL LICENSE (Free)
+================================================================================
+
+Permission is hereby granted, free of charge, to any person obtaining a copy of
+this software and associated documentation files (the "Software"), to use, copy,
+modify, merge, and distribute the Software for Non-Commercial Purposes, subject
+to the following conditions:
+
+  a) The above copyright notice and this license notice shall be included in all
+     copies or substantial portions of the Software.
+
+  b) "Non-Commercial Purposes" means personal use, academic research,
+     educational use, non-profit organizational use, evaluation, testing, and
+     any other use that does not directly or indirectly generate revenue,
+     commercial advantage, or monetary compensation.
+
+  c) Contributing to this project (e.g., submitting pull requests, reporting
+     bugs, improving documentation) is permitted and encouraged under this
+     license regardless of the contributor's commercial status.
+
+  d) You may not use the Software, in whole or in part, to provide a commercial
+     product or service, to generate revenue, or as part of any system that
+     is sold, licensed, or offered for a fee without obtaining a Commercial
+     License (see below).
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS
+FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR
+COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER
+IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
+CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+================================================================================
+2. COMMERCIAL LICENSE (Required for Revenue-Generating Use)
+================================================================================
+
+If you use this Software for any Commercial Purpose -- meaning any use that
+directly or indirectly generates revenue, commercial advantage, or monetary
+compensation -- you must obtain a Commercial License from the copyright holder.
+
+"Commercial Purpose" includes, but is not limited to:
+
+  - Using the Software to provide paid services to clients or customers
+  - Incorporating the Software into a product or service that is sold or
+    offered for a fee
+  - Using the Software internally at a for-profit organization to support
+    revenue-generating operations
+  - Offering the Software as part of a SaaS, PaaS, or hosted service
+  - Using the Software to process documents for commercial gain
+
+Commercial License terms, including revenue-sharing arrangements and flat-rate
+options, are negotiated on a case-by-case basis. For inquiries, contact:
+
+  Chris Royse
+  Email: chrisroyseai@gmail.com
+  GitHub: https://github.com/ChrisRoyse
+  Repository: https://github.com/ChrisRoyse/OCR-Provenance
+
+================================================================================
+GENERAL TERMS
+================================================================================
+
+  - This license does not grant any rights to use the name, logo, or
+    trademarks of the copyright holder.
+  - If you are unsure whether your use qualifies as Non-Commercial, contact
+    the copyright holder for clarification before proceeding.
+  - Violation of this license by using the Software for Commercial Purposes
+    without a Commercial License entitles the copyright holder to reasonable
+    compensation, including but not limited to a share of revenue generated
+    through such use.
