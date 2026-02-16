@@ -133,22 +133,8 @@ data/
 # -----------------------------------------------------------------------------
 # Claude Flow Runtime (session state)
 # -----------------------------------------------------------------------------
-.claude-flow/daemon-state.json
-.claude-flow/daemon.pid
-.claude-flow/daemon.log
-.claude-flow/logs/
-.claude-flow/metrics/
-.claude-flow/sessions/
-.claude-flow/data/*.db
-.claude-flow/learning/*.json
-.claude-flow/security/
-
-# -----------------------------------------------------------------------------
-# Claude Settings (user-specific, never commit)
-# -----------------------------------------------------------------------------
-.claude/settings.json
-.claude/projects/
-.claude/memory.db
+.claude-flow/
+.claude/
 
 # -----------------------------------------------------------------------------
 # Swarm State
