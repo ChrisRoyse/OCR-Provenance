@@ -26,6 +26,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import os
 import sys
 import time
 from dataclasses import asdict, dataclass
@@ -55,7 +56,19 @@ logger = logging.getLogger(__name__)
 # Constants - DO NOT CHANGE
 # =============================================================================
 
-MODEL_PATH = Path(__file__).resolve().parent.parent / "models" / "nomic-embed-text-v1.5"
+def _resolve_model_path() -> Path:
+    """Resolve embedding model path from env var or default locations."""
+    env_path = os.environ.get("EMBEDDING_MODEL_PATH")
+    if env_path:
+        return Path(env_path)
+    # Default: package-relative (works for dev and global npm install)
+    pkg_path = Path(__file__).resolve().parent.parent / "models" / "nomic-embed-text-v1.5"
+    if pkg_path.exists():
+        return pkg_path
+    # Fallback: user home directory
+    return Path.home() / ".ocr-provenance" / "models" / "nomic-embed-text-v1.5"
+
+MODEL_PATH = _resolve_model_path()
 EMBEDDING_DIM = 768
 MODEL_NAME = "nomic-embed-text-v1.5"
 MODEL_VERSION = "1.5.0"
@@ -474,9 +487,15 @@ Examples:
         "--batch-size", type=int, default=DEFAULT_BATCH_SIZE, help="Batch size for GPU"
     )
     parser.add_argument("--device", default=DEFAULT_DEVICE, help="CUDA device")
+    parser.add_argument("--model-path", help="Path to embedding model directory")
     parser.add_argument("--json", action="store_true", help="JSON output for TypeScript bridge")
 
     args = parser.parse_args()
+
+    # Override model path if specified via CLI
+    if args.model_path:
+        global MODEL_PATH
+        MODEL_PATH = Path(args.model_path)
 
     try:
         if args.query:

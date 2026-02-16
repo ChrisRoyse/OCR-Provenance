@@ -12,11 +12,26 @@
 
 import dotenv from 'dotenv';
 import path from 'path';
+import fs from 'fs';
 import { fileURLToPath } from 'url';
 
-// Load .env from project root before anything else reads process.env
+// Load .env from multiple candidate locations (first found wins):
+// 1. OCR_PROVENANCE_ENV_FILE env var (explicit override)
+// 2. CWD/.env (project-local)
+// 3. Package root/.env (development)
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-dotenv.config({ path: path.resolve(__dirname, '..', '.env') });
+const envCandidates = [
+  process.env.OCR_PROVENANCE_ENV_FILE,
+  path.resolve(process.cwd(), '.env'),
+  path.resolve(__dirname, '..', '.env'),
+].filter((p): p is string => typeof p === 'string');
+
+for (const envPath of envCandidates) {
+  if (fs.existsSync(envPath)) {
+    dotenv.config({ path: envPath });
+    break;
+  }
+}
 
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';

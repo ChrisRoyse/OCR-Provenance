@@ -212,6 +212,10 @@ const ExportInput = z.object({
         'related_to',
         'precedes',
         'occurred_at',
+        'treated_with',
+        'administered_via',
+        'managed_by',
+        'interacts_with',
       ])
     )
     .optional()

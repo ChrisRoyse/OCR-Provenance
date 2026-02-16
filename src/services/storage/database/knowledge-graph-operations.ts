@@ -600,6 +600,9 @@ export function findPaths(
   const maxHops = Math.min(options?.max_hops ?? 3, 6);
   const maxPaths = 100;
   const MAX_VISITED_NODES = 1000;
+  // Cap partial paths per node to prevent OOM on dense co_located graphs
+  // where many nodes share edges (e.g., 142-edge "Pain" node at depth 2)
+  const MAX_PATHS_PER_NODE = 10;
 
   // Same node: no meaningful path
   if (sourceNodeId === targetNodeId) {
@@ -744,17 +747,20 @@ export function findPaths(
               if (results.length >= maxPaths) break;
             }
 
-            // Store this partial path for future expansion
+            // Store this partial path for future expansion (capped to prevent OOM)
             if (!forwardVisited.has(neighbor)) {
               forwardVisited.set(neighbor, []);
               nextFrontier.add(neighbor);
               allVisitedNodes.add(neighbor);
             }
             if (forwardDepth + backwardDepth <= maxHops) {
-              forwardVisited.get(neighbor)!.push({
-                nodePath: newNodePath,
-                edgePath: newEdgePath,
-              });
+              const existingPaths = forwardVisited.get(neighbor)!;
+              if (existingPaths.length < MAX_PATHS_PER_NODE) {
+                existingPaths.push({
+                  nodePath: newNodePath,
+                  edgePath: newEdgePath,
+                });
+              }
               nextFrontier.add(neighbor);
             }
           }
@@ -816,10 +822,13 @@ export function findPaths(
               allVisitedNodes.add(neighbor);
             }
             if (forwardDepth + backwardDepth <= maxHops) {
-              backwardVisited.get(neighbor)!.push({
-                nodePath: newNodePath,
-                edgePath: newEdgePath,
-              });
+              const existingPaths = backwardVisited.get(neighbor)!;
+              if (existingPaths.length < MAX_PATHS_PER_NODE) {
+                existingPaths.push({
+                  nodePath: newNodePath,
+                  edgePath: newEdgePath,
+                });
+              }
               nextFrontier.add(neighbor);
             }
           }
@@ -1224,9 +1233,9 @@ export function getEntitiesForChunks(
   if (chunkIds.length === 0) return new Map();
 
   const placeholders = chunkIds.map(() => '?').join(',');
-  const confidenceClause = minConfidence !== null ? `AND kn.avg_confidence >= ?` : '';
+  const confidenceClause = minConfidence != null ? `AND kn.avg_confidence >= ?` : '';
   const params: unknown[] = [...chunkIds];
-  if (minConfidence !== null) params.push(minConfidence);
+  if (minConfidence != null) params.push(minConfidence);
   const rows = db
     .prepare(
       `
@@ -1836,19 +1845,22 @@ export function getEvidenceChunksForEdge(
   source_file: string;
 }> {
   try {
+    // Use INTERSECT to find shared chunks efficiently, avoiding Cartesian product
+    // when high-frequency entities (e.g., "pain", "morphine") co-occur many times
     const rows = conn
       .prepare(
         `
-      SELECT DISTINCT c.id as chunk_id, c.document_id, SUBSTR(c.text, 1, 500) as text_excerpt,
+      SELECT c.id as chunk_id, c.document_id, SUBSTR(c.text, 1, 500) as text_excerpt,
              c.page_number, d.file_name as source_file
-      FROM entity_mentions em1
-      JOIN entities e1 ON em1.entity_id = e1.id
-      JOIN node_entity_links nel1 ON nel1.entity_id = e1.id AND nel1.node_id = ?
-      JOIN entity_mentions em2 ON em2.chunk_id = em1.chunk_id
-      JOIN entities e2 ON em2.entity_id = e2.id
-      JOIN node_entity_links nel2 ON nel2.entity_id = e2.id AND nel2.node_id = ?
-      JOIN chunks c ON c.id = em1.chunk_id
+      FROM chunks c
       JOIN documents d ON d.id = c.document_id
+      WHERE c.id IN (
+        SELECT em1.chunk_id FROM entity_mentions em1
+        JOIN node_entity_links nel1 ON nel1.entity_id = em1.entity_id AND nel1.node_id = ?
+        INTERSECT
+        SELECT em2.chunk_id FROM entity_mentions em2
+        JOIN node_entity_links nel2 ON nel2.entity_id = em2.entity_id AND nel2.node_id = ?
+      )
       LIMIT ?
     `
       )

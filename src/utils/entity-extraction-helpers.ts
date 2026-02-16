@@ -679,6 +679,12 @@ export function updateSegmentStatus(
  * Find which DB chunk contains a given character position in the OCR text.
  * Chunks have character_start (inclusive) and character_end (exclusive).
  */
+/**
+ * Find the chunk that contains the given start position.
+ * Entity mentions are assigned to the chunk where they START — if the mention
+ * extends a few characters past the chunk boundary, that's expected behavior
+ * at chunk edges and the verifier accounts for it.
+ */
 function findChunkForPosition(dbChunks: Chunk[], position: number): Chunk | null {
   for (const chunk of dbChunks) {
     if (position >= chunk.character_start && position < chunk.character_end) {
@@ -725,8 +731,8 @@ export function findAllEntityOccurrences(
     const charStart = pos;
     const charEnd = pos + entityLen;
 
-    // Find containing chunk
-    const chunk = dbChunks.length > 0 ? findChunkForPosition(dbChunks, pos) : null;
+    // Find containing chunk (assigned by start position)
+    const chunk = dbChunks.length > 0 ? findChunkForPosition(dbChunks, charStart) : null;
 
     // Extract context: ~100 chars before and after the occurrence
     const ctxStart = Math.max(0, pos - contextRadius);

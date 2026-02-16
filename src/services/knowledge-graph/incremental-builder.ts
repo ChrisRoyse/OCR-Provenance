@@ -161,9 +161,12 @@ export async function incrementalBuildGraph(
   }
 
   // Step 2: Create provenance record
+  // Chain through OCR_RESULT provenance (depth 1) for complete chain:
+  // KNOWLEDGE_GRAPH(2) → OCR_RESULT(1) → DOCUMENT(0)
   const tracker = getProvenanceTracker(db);
   const firstDoc = db.getDocument(documentIds[0]);
-  const sourceProvId = firstDoc?.provenance_id ?? null;
+  const ocrResult = db.getOCRResultByDocumentId(documentIds[0]);
+  const ocrProvId = ocrResult?.provenance_id ?? null;
 
   const sortedEntityIds = newEntities.map((e) => e.id).sort();
   const contentHash = computeHash(JSON.stringify(sortedEntityIds));
@@ -171,7 +174,7 @@ export async function incrementalBuildGraph(
   const provenanceId = tracker.createProvenance({
     type: ProvenanceType.KNOWLEDGE_GRAPH,
     source_type: 'KNOWLEDGE_GRAPH',
-    source_id: sourceProvId,
+    source_id: ocrProvId,
     root_document_id: firstDoc?.provenance_id ?? documentIds[0],
     content_hash: contentHash,
     input_hash: computeHash(
@@ -371,7 +374,7 @@ export async function incrementalBuildGraph(
         newNodeIds.push(node.id);
         touchedNodeIds.add(node.id);
 
-        // Per-node provenance
+        // Set resolution_type from entity links
         const nodeLinks = resolutionResult.links.filter((l) => l.node_id === node.id);
         const resolutionAlgorithm =
           nodeLinks.length > 0 && nodeLinks[0].resolution_method
@@ -381,28 +384,6 @@ export async function incrementalBuildGraph(
         conn
           .prepare('UPDATE knowledge_nodes SET resolution_type = ? WHERE id = ?')
           .run(resolutionAlgorithm, node.id);
-
-        tracker.createProvenance({
-          type: ProvenanceType.KNOWLEDGE_GRAPH,
-          source_type: 'KNOWLEDGE_GRAPH',
-          source_id: provenanceId,
-          root_document_id: firstDoc?.provenance_id ?? documentIds[0],
-          content_hash: computeHash(
-            JSON.stringify({
-              node_id: node.id,
-              canonical_name: node.canonical_name,
-            })
-          ),
-          input_hash: computeHash(JSON.stringify({ entity_count: nodeLinks.length })),
-          processor: 'entity-resolution-incremental',
-          processor_version: '1.0.0',
-          processing_params: {
-            resolution_mode: resolutionMode,
-            matched_by: resolutionAlgorithm,
-            node_id: node.id,
-            incremental: true,
-          },
-        });
       }
 
       for (const link of resolutionResult.links) {

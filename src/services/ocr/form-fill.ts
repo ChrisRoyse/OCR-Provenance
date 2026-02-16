@@ -224,11 +224,10 @@ export class FormFillClient {
 
   private isErrorResponse(response: unknown): response is PythonErrorResponse {
     if (typeof response !== 'object' || response === null) return false;
-    // Standard error response with error + category
+    // Standard error response with error + category (from Python worker error paths)
     if ('error' in response && 'category' in response) return true;
-    // Failed status response from Python FormFillResult (has error but no category)
-    if ('status' in response && (response as Record<string, unknown>).status === 'failed')
-      return true;
+    // NOTE: Do NOT treat status='failed' FormFillResult as an error — it is a valid
+    // partial-failure response containing fields_filled/fields_not_found data.
     return false;
   }
 

@@ -429,7 +429,7 @@ def main():
             if analysis.skip_reason:
                 result["skip_reason"] = analysis.skip_reason
 
-        print(json.dumps(result, indent=2))
+        print(json.dumps(result))
         sys.exit(0)
 
     except FileNotFoundError as e:

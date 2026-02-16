@@ -100,7 +100,40 @@ Every piece of data carries a SHA-256 provenance chain from source document thro
 
 ## Installation
 
-### 1. Clone and Install Dependencies
+### Quick Install (Global MCP Server)
+
+Install once and use from any project, targeting any directory on your system:
+
+```bash
+# 1. Clone, install, and build
+git clone https://github.com/ChrisRoyse/OCR-Provenance.git
+cd OCR-Provenance
+npm install
+npm run build
+
+# 2. Install globally
+npm link
+
+# 3. Install Python dependencies
+pip install torch transformers sentence-transformers numpy scikit-learn hdbscan pymupdf pillow python-docx requests
+
+# 4. Download the embedding model (~270MB, one-time)
+pip install huggingface_hub
+huggingface-cli download nomic-ai/nomic-embed-text-v1.5 --local-dir models/nomic-embed-text-v1.5
+
+# 5. Configure API keys
+cp .env.example .env
+# Edit .env with your DATALAB_API_KEY and GEMINI_API_KEY
+
+# 6. Verify it works
+ocr-provenance-mcp  # Should print "Tools registered: 104" on stderr
+```
+
+After install, the `ocr-provenance-mcp` command is available system-wide. You can point it at **any directory or file** on your machine for OCR processing.
+
+### Step-by-Step Install
+
+#### 1. Clone and Install Dependencies
 
 ```bash
 git clone https://github.com/ChrisRoyse/OCR-Provenance.git
@@ -108,7 +141,7 @@ cd OCR-Provenance
 npm install
 ```
 
-### 2. Install Python Dependencies
+#### 2. Install Python Dependencies
 
 ```bash
 pip install torch transformers sentence-transformers numpy scikit-learn hdbscan pymupdf pillow python-docx requests
@@ -119,9 +152,9 @@ pip install torch transformers sentence-transformers numpy scikit-learn hdbscan 
 > pip install torch --index-url https://download.pytorch.org/whl/cu124
 > ```
 
-### 3. Download the Embedding Model
+#### 3. Download the Embedding Model
 
-The system uses [nomic-embed-text-v1.5](https://huggingface.co/nomic-ai/nomic-embed-text-v1.5) (768-dim, ~270MB) for local GPU vector embeddings. You need to download it once:
+The system uses [nomic-embed-text-v1.5](https://huggingface.co/nomic-ai/nomic-embed-text-v1.5) (768-dim, ~270MB) for local GPU vector embeddings. Download it once:
 
 ```bash
 # Option A: Using huggingface-cli (recommended)
@@ -146,17 +179,27 @@ print(f'Model loaded. Embedding dim: {len(result[0])}')  # Should print 768
 "
 ```
 
-### 4. Configure Environment
+> **Custom model location:** If you install globally and want the model elsewhere, set `EMBEDDING_MODEL_PATH` in your `.env`:
+> ```bash
+> EMBEDDING_MODEL_PATH=/path/to/nomic-embed-text-v1.5
+> ```
+> The server checks: `EMBEDDING_MODEL_PATH` env var -> `models/` in the package directory -> `~/.ocr-provenance/models/`
+
+#### 4. Configure Environment
 
 ```bash
 cp .env.example .env
 # Edit .env with your API keys (see Configuration below)
 ```
 
-### 5. Build
+#### 5. Build and Install
 
 ```bash
+# Build TypeScript
 npm run build
+
+# Install globally (makes `ocr-provenance-mcp` command available everywhere)
+npm link
 ```
 
 ### Platform-Specific Notes
@@ -258,6 +301,31 @@ PROVENANCE_HASH_ALGORITHM=sha256
 
 ## Connecting to an MCP Client
 
+### Claude Code (Recommended)
+
+After [global install](#quick-install-global-mcp-server), register as a **user-level** MCP server so it's available in every project:
+
+```bash
+# Register globally (available in all projects)
+claude mcp add ocr-provenance -s user \
+  -e OCR_PROVENANCE_ENV_FILE=/path/to/OCR-Provenance/.env \
+  -e NODE_OPTIONS=--max-semi-space-size=64 \
+  -- ocr-provenance-mcp
+```
+
+Replace `/path/to/OCR-Provenance/.env` with the absolute path to your `.env` file.
+
+Or register for a single project only:
+
+```bash
+# Project-level only
+claude mcp add ocr-provenance \
+  -e OCR_PROVENANCE_ENV_FILE=/path/to/OCR-Provenance/.env \
+  -- ocr-provenance-mcp
+```
+
+Restart your Claude Code session. All 104 tools will be available immediately.
+
 ### Claude Desktop
 
 Add to your Claude Desktop config file:
@@ -268,12 +336,28 @@ Add to your Claude Desktop config file:
 | Windows | `%APPDATA%\Claude\claude_desktop_config.json` |
 | Linux | `~/.config/Claude/claude_desktop_config.json` |
 
+**Option A: Global command** (after `npm link`):
+```json
+{
+  "mcpServers": {
+    "ocr-provenance": {
+      "command": "ocr-provenance-mcp",
+      "env": {
+        "OCR_PROVENANCE_ENV_FILE": "/absolute/path/to/OCR-Provenance/.env",
+        "NODE_OPTIONS": "--max-semi-space-size=64"
+      }
+    }
+  }
+}
+```
+
+**Option B: Direct node invocation** (no global install needed):
 ```json
 {
   "mcpServers": {
     "ocr-provenance": {
       "command": "node",
-      "args": ["--max-semi-space-size=64", "/absolute/path/to/datalab/dist/index.js"],
+      "args": ["--max-semi-space-size=64", "/absolute/path/to/OCR-Provenance/dist/index.js"],
       "env": {
         "DATALAB_API_KEY": "your_key",
         "GEMINI_API_KEY": "your_key"
@@ -283,17 +367,25 @@ Add to your Claude Desktop config file:
 }
 ```
 
-Replace `/absolute/path/to/datalab` with the full path to your cloned repo. On Windows, use forward slashes (e.g., `C:/Users/you/datalab/dist/index.js`).
+Replace `/absolute/path/to/OCR-Provenance` with the full path to your cloned repo. On Windows, use forward slashes (e.g., `C:/Users/you/OCR-Provenance/dist/index.js`).
 
 Restart Claude Desktop after saving.
 
-### Claude Code CLI
+### Any MCP-Compatible Client
+
+The server uses stdio transport (JSON-RPC over stdin/stdout). Launch with:
 
 ```bash
-claude mcp add ocr-provenance -- node --max-semi-space-size=64 /path/to/datalab/dist/index.js
+ocr-provenance-mcp                    # Global command (after npm link)
+node /path/to/dist/index.js           # Direct invocation
+npx ocr-provenance-mcp                # Via npx (after npm publish)
 ```
 
-Then restart your Claude Code session. All 104 tools will be available immediately.
+**Environment variables** can be provided via:
+1. `OCR_PROVENANCE_ENV_FILE` pointing to a `.env` file (recommended for global install)
+2. Direct env vars (`DATALAB_API_KEY`, `GEMINI_API_KEY`, etc.)
+3. A `.env` file in the current working directory
+4. A `.env` file in the package root (development)
 
 ---
 

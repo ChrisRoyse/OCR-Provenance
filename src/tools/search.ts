@@ -2576,7 +2576,7 @@ async function handleSearchExport(params: Record<string, unknown>): Promise<Tool
       parsedResponse = JSON.parse(responseContent.text) as Record<string, unknown>;
     } catch (error) {
       console.error(
-        '[search] handleRagContext failed to parse search response as JSON:',
+        '[search] handleSearchExport failed to parse search response as JSON:',
         error instanceof Error ? error.message : String(error)
       );
       throw new Error('Failed to parse search response as JSON');

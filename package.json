@@ -7,6 +7,9 @@
   "exports": {
     ".": "./dist/index.js"
   },
+  "bin": {
+    "ocr-provenance-mcp": "dist/bin.js"
+  },
   "files": [
     "dist",
     "python",

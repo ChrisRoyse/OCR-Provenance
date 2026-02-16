@@ -355,14 +355,16 @@ export async function handleProvenanceVerify(
         if (docRow) {
           const documentId = docRow.id;
 
-          // Check entity mentions out of chunk boundaries
+          // Check entity mentions whose START position is outside their chunk boundaries.
+          // Mentions are assigned by start position, so character_end may extend slightly
+          // past chunk.character_end at chunk boundaries — that's expected and valid.
           const outOfBoundsMentions = dbConn
             .prepare(
               `SELECT COUNT(*) as count
              FROM entity_mentions em
              JOIN chunks c ON em.chunk_id = c.id
              WHERE em.document_id = ?
-             AND (em.character_start < c.character_start OR em.character_end > c.character_end)`
+             AND (em.character_start < c.character_start OR em.character_start >= c.character_end)`
             )
             .get(documentId) as { count: number } | undefined;
 

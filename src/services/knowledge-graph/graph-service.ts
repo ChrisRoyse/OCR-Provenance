@@ -230,9 +230,11 @@ export async function buildKnowledgeGraph(
   // Step 3: Create provenance record
   const tracker = getProvenanceTracker(db);
 
-  // Find the first document's OCR_RESULT provenance to use as parent
+  // Chain through OCR_RESULT provenance (depth 1) so the chain is:
+  // KNOWLEDGE_GRAPH(2) → OCR_RESULT(1) → DOCUMENT(0) = 3 records = depth+1
   const firstDoc = db.getDocument(documentIds[0]);
-  const sourceProvId = firstDoc?.provenance_id ?? null;
+  const ocrResult = db.getOCRResultByDocumentId(documentIds[0]);
+  const ocrProvId = ocrResult?.provenance_id ?? null;
 
   // Content hash = sha256 of sorted entity IDs
   const sortedEntityIds = allEntities.map((e) => e.id).sort();
@@ -241,7 +243,7 @@ export async function buildKnowledgeGraph(
   const provenanceId = tracker.createProvenance({
     type: ProvenanceType.KNOWLEDGE_GRAPH,
     source_type: 'KNOWLEDGE_GRAPH',
-    source_id: sourceProvId,
+    source_id: ocrProvId,
     root_document_id: firstDoc?.provenance_id ?? documentIds[0],
     content_hash: contentHash,
     input_hash: computeHash(
@@ -291,11 +293,11 @@ export async function buildKnowledgeGraph(
     clusterContext
   );
 
-  // Step 6: Store nodes and links with per-node provenance (P1.1)
+  // Step 6: Store nodes and links (nodes use the build-level provenance_id)
   for (const node of resolutionResult.nodes) {
     insertKnowledgeNode(conn, node);
 
-    // Count entity links for this node
+    // Set resolution_type from entity links
     const nodeLinks = resolutionResult.links.filter((l) => l.node_id === node.id);
     const resolutionAlgorithm =
       nodeLinks.length > 0 && nodeLinks[0].resolution_method
@@ -305,24 +307,6 @@ export async function buildKnowledgeGraph(
     conn
       .prepare('UPDATE knowledge_nodes SET resolution_type = ? WHERE id = ?')
       .run(resolutionAlgorithm, node.id);
-
-    tracker.createProvenance({
-      type: ProvenanceType.KNOWLEDGE_GRAPH,
-      source_type: 'KNOWLEDGE_GRAPH',
-      source_id: provenanceId,
-      root_document_id: firstDoc?.provenance_id ?? documentIds[0],
-      content_hash: computeHash(
-        JSON.stringify({ node_id: node.id, canonical_name: node.canonical_name })
-      ),
-      input_hash: computeHash(JSON.stringify({ entity_count: nodeLinks.length })),
-      processor: 'entity-resolution',
-      processor_version: '1.0.0',
-      processing_params: {
-        resolution_mode: resolutionMode,
-        matched_by: resolutionAlgorithm,
-        node_id: node.id,
-      },
-    });
   }
 
   for (const link of resolutionResult.links) {
