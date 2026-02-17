@@ -123,7 +123,7 @@ export class GeminiClient {
 
     this.client = new GoogleGenAI({
       apiKey: this.config.apiKey,
-      httpOptions: { timeout: 120_000 },
+      httpOptions: { timeout: 600_000 },
     });
 
     // Use shared singletons so rate limits and circuit breaker state
@@ -584,6 +584,6 @@ interface GenerationOptions {
   responseSchema?: object;
   thinkingConfig?: { thinkingLevel: ThinkingLevel };
   mediaResolution?: MediaResolution;
-  /** Per-request timeout in ms. Default: 120_000 (2 min). Entity extraction uses 300_000 (5 min). */
+  /** Per-request timeout in ms. Default: 600_000 (10 min). */
   requestTimeout?: number;
 }

@@ -70,9 +70,9 @@ import { buildKnowledgeGraph } from '../services/knowledge-graph/graph-service.j
 import { extractEntitiesFromVLM } from '../services/knowledge-graph/vlm-entity-extractor.js';
 import { mapExtractionEntitiesToDB } from '../services/knowledge-graph/extraction-entity-mapper.js';
 import {
-  processSegmentsAndStoreEntities,
-  MAX_CHARS_PER_CALL,
-  SEGMENT_OVERLAP_CHARS,
+  extractEntitiesAndRelationships,
+  storeJointExtractionResults,
+  buildKGEntityHints,
 } from '../utils/entity-extraction-helpers.js';
 import { handleCoreferenceResolve, createEntityExtractionProvenance } from './entity-analysis.js';
 import {
@@ -863,9 +863,11 @@ interface AutoEntityResult {
   document_id: string;
   total_entities: number;
   total_mentions: number;
+  total_nodes: number;
+  total_edges: number;
   entities_by_type: Record<string, number>;
-  chunk_mapped: number;
   processing_duration_ms: number;
+  kg_built_inline: boolean;
 }
 
 /**
@@ -925,8 +927,7 @@ async function autoExtractEntitiesForDocument(
     processing_params: {
       entity_types: ENTITY_TYPES,
       text_length: text.length,
-      segment_size: MAX_CHARS_PER_CALL,
-      segment_overlap: SEGMENT_OVERLAP_CHARS,
+      extraction_mode: 'joint_single_call',
       source: 'auto-pipeline',
     },
     processing_duration_ms: null,
@@ -937,48 +938,102 @@ async function autoExtractEntitiesForDocument(
     chain_path: JSON.stringify(['DOCUMENT', 'OCR_RESULT', 'ENTITY_EXTRACTION']),
   });
 
-  const typeFilter = `Extract all entity types: ${ENTITY_TYPES.join(', ')}.`;
+  // Create KNOWLEDGE_GRAPH provenance record (chained from ENTITY_EXTRACTION)
+  const kgProvId = uuidv4();
+  db.insertProvenance({
+    id: kgProvId,
+    type: ProvenanceType.KNOWLEDGE_GRAPH,
+    created_at: now,
+    processed_at: now,
+    source_file_created_at: null,
+    source_file_modified_at: null,
+    source_type: 'KNOWLEDGE_GRAPH',
+    source_path: doc.file_path,
+    source_id: entityProvId,
+    root_document_id: doc.provenance_id,
+    location: null,
+    content_hash: computeHash(`knowledge-graph-${docId}-${now}`),
+    input_hash: computeHash(`entity-extraction-${docId}`),
+    file_hash: doc.file_hash,
+    processor: 'gemini-joint-extraction',
+    processor_version: '1.0.0',
+    processing_params: {
+      extraction_mode: 'joint_single_call',
+      text_length: text.length,
+      source: 'auto-pipeline',
+    },
+    processing_duration_ms: null,
+    processing_quality_score: null,
+    parent_id: entityProvId,
+    parent_ids: JSON.stringify([doc.provenance_id, ocrResult.provenance_id, entityProvId]),
+    chain_depth: 3,
+    chain_path: JSON.stringify(['DOCUMENT', 'OCR_RESULT', 'ENTITY_EXTRACTION', 'KNOWLEDGE_GRAPH']),
+  });
 
-  const result = await processSegmentsAndStoreEntities(
+  // Build KG entity hints for cross-document context
+  const entityHints = buildKGEntityHints(conn);
+
+  // Single-call joint entity + relationship extraction
+  const extractionResult = await extractEntitiesAndRelationships(client, text, entityHints);
+
+  // Store entities, mentions, KG nodes, and KG edges in one transaction
+  const result = storeJointExtractionResults(
     conn,
-    client,
     docId,
     ocrResult.id,
     text,
+    extractionResult,
     entityProvId,
-    typeFilter,
-    ENTITY_TYPES,
-    startTime,
-    'auto-pipeline'
+    kgProvId
   );
 
-  // Auto-merge into existing KG
-  const kgNodeCount = (
-    conn.prepare('SELECT COUNT(*) as cnt FROM knowledge_nodes').get() as { cnt: number }
-  ).cnt;
-  if (kgNodeCount > 0) {
+  // Cross-document KG resolution: if other documents have KG nodes, merge for dedup
+  const otherNodesCount = (conn.prepare(
+    'SELECT COUNT(*) as cnt FROM knowledge_nodes WHERE provenance_id != ?'
+  ).get(kgProvId) as { cnt: number }).cnt;
+
+  if (otherNodesCount > 0) {
     console.error(
-      `[INFO] Auto-pipeline: KG detected (${kgNodeCount} nodes), auto-merging entities for document ${docId}`
+      `[INFO] Auto-pipeline: ${otherNodesCount} existing KG nodes from other documents, running cross-document resolution for ${docId}`
     );
-    await incrementalBuildGraph(db, {
-      document_ids: [docId],
-      resolution_mode: 'fuzzy',
-    });
+    try {
+      await incrementalBuildGraph(db, {
+        document_ids: [docId],
+        resolution_mode: 'fuzzy',
+      });
+    } catch (mergeErr) {
+      console.error(
+        `[WARN] Auto-pipeline: cross-document KG resolution failed for ${docId}: ${mergeErr instanceof Error ? mergeErr.message : String(mergeErr)}`
+      );
+    }
+  }
+
+  const processingDurationMs = Date.now() - startTime;
+
+  // Update entity and KG provenance with final duration
+  try {
+    const updateDuration = conn.prepare('UPDATE provenance SET processing_duration_ms = ? WHERE id = ?');
+    updateDuration.run(processingDurationMs, entityProvId);
+    updateDuration.run(processingDurationMs, kgProvId);
+  } catch (provErr) {
+    console.error(`[WARN] Failed to update provenance duration: ${provErr instanceof Error ? provErr.message : String(provErr)}`);
   }
 
   console.error(
-    `[INFO] Auto-pipeline: entity extraction complete for ${docId}: ` +
+    `[INFO] Auto-pipeline: joint extraction complete for ${docId}: ` +
       `${result.totalEntities} entities, ${result.totalMentions} mentions, ` +
-      `${result.chunkMapped} chunk-mapped (${result.segmentsTotal} segments)`
+      `${result.totalNodes} KG nodes, ${result.totalEdges} KG edges`
   );
 
   return {
     document_id: docId,
     total_entities: result.totalEntities,
     total_mentions: result.totalMentions,
+    total_nodes: result.totalNodes,
+    total_edges: result.totalEdges,
     entities_by_type: result.entitiesByType,
-    chunk_mapped: result.chunkMapped,
-    processing_duration_ms: result.processingDurationMs,
+    processing_duration_ms: processingDurationMs,
+    kg_built_inline: true,
   };
 }
 
@@ -997,9 +1052,8 @@ export async function handleProcessPending(
     const { db, vector, generation } = requireDatabase();
 
     // Validate auto-pipeline parameters upfront
-    if (input.auto_build_kg && !input.auto_extract_entities) {
-      throw new Error('auto_build_kg requires auto_extract_entities=true');
-    }
+    // auto_build_kg no longer strictly requires auto_extract_entities
+    // It can work standalone for legacy data where entities exist but KG doesn't
     if (input.auto_coreference_resolve && !input.auto_extract_entities) {
       throw new Error('auto_coreference_resolve requires auto_extract_entities=true');
     }
@@ -1562,14 +1616,28 @@ export async function handleProcessPending(
       extractionEntityResults.some((r) => r.entities_created > 0);
     let kgBuildResult: Record<string, unknown> | undefined;
     if (input.auto_build_kg && successfulDocIds.length > 0 && hasEntities) {
+      // Joint extraction already built KG nodes/edges inline for each document.
+      // auto_build_kg now only handles cross-document resolution for multi-document batches
+      // and legacy data where entities exist but no KG was built.
       try {
         const conn = db.getConnection();
         const kgNodeCount = (
           conn.prepare('SELECT COUNT(*) as cnt FROM knowledge_nodes').get() as { cnt: number }
         ).cnt;
-        if (kgNodeCount === 0) {
-          // No KG exists yet -- incremental merges in autoExtractEntitiesForDocument were no-ops.
-          // Do an initial full build across all documents that have entities.
+
+        if (kgNodeCount > 0 && input.auto_extract_entities) {
+          // KG was already built inline during joint extraction
+          console.error(
+            `[INFO] Auto-pipeline: KG already built inline during entity extraction (${kgNodeCount} nodes). Skipping separate KG build.`
+          );
+          kgBuildResult = {
+            auto_built: true,
+            built_inline: true,
+            message: 'Knowledge graph built inline during joint entity+relationship extraction',
+            nodes: kgNodeCount,
+          };
+        } else if (kgNodeCount === 0) {
+          // Legacy path: entities exist but no KG (e.g., old data before joint extraction)
           console.error(
             `[INFO] Auto-pipeline: no KG exists, running initial knowledge graph build`
           );
@@ -1578,6 +1646,7 @@ export async function handleProcessPending(
           });
           kgBuildResult = {
             auto_built: true,
+            built_inline: false,
             nodes: kgResult.total_nodes,
             edges: kgResult.total_edges,
             entities_resolved: kgResult.entities_resolved,
@@ -1590,11 +1659,9 @@ export async function handleProcessPending(
             `[INFO] Auto-pipeline: KG built with ${kgResult.total_nodes} nodes, ${kgResult.total_edges} edges`
           );
         } else {
-          // KG already existed -- incremental merges already ran in autoExtractEntitiesForDocument
           kgBuildResult = {
             auto_built: false,
-            message:
-              'Knowledge graph already existed; entities were incrementally merged during extraction',
+            message: 'Knowledge graph already existed with nodes from prior processing',
             nodes: kgNodeCount,
           };
         }
@@ -1697,7 +1764,9 @@ export async function handleProcessPending(
         documents_extracted: entityResults.length,
         total_entities: entityResults.reduce((sum, r) => sum + r.total_entities, 0),
         total_mentions: entityResults.reduce((sum, r) => sum + r.total_mentions, 0),
-        total_chunk_mapped: entityResults.reduce((sum, r) => sum + r.chunk_mapped, 0),
+        total_nodes: entityResults.reduce((sum, r) => sum + r.total_nodes, 0),
+        total_edges: entityResults.reduce((sum, r) => sum + r.total_edges, 0),
+        kg_built_inline: entityResults.every((r) => r.kg_built_inline),
         total_processing_duration_ms: entityResults.reduce(
           (sum, r) => sum + r.processing_duration_ms,
           0

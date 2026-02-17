@@ -19,30 +19,21 @@ import {
   insertEntityMention,
 } from '../services/storage/database/entity-operations.js';
 import { getChunksByDocumentId } from '../services/storage/database/chunk-operations.js';
-import { computeHash } from './hash.js';
+import { RELATIONSHIP_TYPES, type RelationshipType, computeImportanceScore } from '../models/knowledge-graph.js';
+import {
+  insertKnowledgeNode,
+  insertKnowledgeEdge,
+  insertNodeEntityLink,
+} from '../services/storage/database/knowledge-graph-operations.js';
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // CONSTANTS
 // ═══════════════════════════════════════════════════════════════════════════════
 
-/** Maximum characters per single Gemini call for entity extraction.
- * Tested: 50K works in ~18s, 100K+ times out with schema-constrained JSON. */
-export const MAX_CHARS_PER_CALL = 50_000;
-
 /** Output token limit for entity extraction.
  * 50K char segments produce ~200-400 entities = ~5-10K tokens of JSON.
  * 16K is generous; 65K caused API throttling (reserved capacity). */
 export const ENTITY_EXTRACTION_MAX_OUTPUT_TOKENS = 16_384;
-
-/** Overlap characters between segments (5% of MAX_CHARS_PER_CALL) */
-export const SEGMENT_OVERLAP_CHARS = 2_500;
-
-/** Maximum parallel Gemini API calls for segment processing. */
-const MAX_PARALLEL_SEGMENTS = parseInt(process.env.GEMINI_PARALLEL_SEGMENTS ?? '3', 10);
-
-/** Request timeout for entity extraction per segment.
- * 50K segments complete in ~18s; 60s allows for API latency spikes. */
-export const ENTITY_EXTRACTION_TIMEOUT_MS = 60_000;
 
 /**
  * JSON schema for Gemini entity extraction response.
@@ -68,6 +59,120 @@ export const ENTITY_EXTRACTION_SCHEMA = {
   },
   required: ['entities'],
 };
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// JOINT EXTRACTION CONSTANTS & SCHEMAS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/** Maximum chars before falling back to 2-chunk extraction (750K ~ 187K tokens, well within 1M limit) */
+export const MAX_SINGLE_CALL_CHARS = 750_000;
+
+/** Output token budget for joint extraction */
+export const JOINT_EXTRACTION_MAX_OUTPUT_TOKENS = 65_536;
+
+/** JSON response schema for joint entity + relationship extraction */
+export const JOINT_EXTRACTION_SCHEMA = {
+  type: 'object' as const,
+  properties: {
+    entities: {
+      type: 'array' as const,
+      items: {
+        type: 'object' as const,
+        properties: {
+          id: { type: 'string' as const },
+          canonical_name: { type: 'string' as const },
+          type: { type: 'string' as const },
+          aliases: { type: 'array' as const, items: { type: 'string' as const } },
+          confidence: { type: 'number' as const },
+        },
+        required: ['id', 'canonical_name', 'type', 'confidence'] as const,
+      },
+    },
+    relationships: {
+      type: 'array' as const,
+      items: {
+        type: 'object' as const,
+        properties: {
+          source_id: { type: 'string' as const },
+          target_id: { type: 'string' as const },
+          relationship_type: { type: 'string' as const },
+          confidence: { type: 'number' as const },
+          evidence: { type: 'string' as const },
+          temporal: { type: 'string' as const },
+        },
+        required: ['source_id', 'target_id', 'relationship_type', 'confidence'] as const,
+      },
+    },
+  },
+  required: ['entities', 'relationships'] as const,
+};
+
+/** Entity-only schema for 2-pass fallback (pass 1) */
+const ENTITY_ONLY_SCHEMA = {
+  type: 'object' as const,
+  properties: {
+    entities: {
+      type: 'array' as const,
+      items: {
+        type: 'object' as const,
+        properties: {
+          id: { type: 'string' as const },
+          canonical_name: { type: 'string' as const },
+          type: { type: 'string' as const },
+          aliases: { type: 'array' as const, items: { type: 'string' as const } },
+          confidence: { type: 'number' as const },
+        },
+        required: ['id', 'canonical_name', 'type', 'confidence'] as const,
+      },
+    },
+  },
+  required: ['entities'] as const,
+};
+
+/** Relationship-only schema for 2-pass fallback (pass 2) */
+const RELATIONSHIP_ONLY_SCHEMA = {
+  type: 'object' as const,
+  properties: {
+    relationships: {
+      type: 'array' as const,
+      items: {
+        type: 'object' as const,
+        properties: {
+          source_id: { type: 'string' as const },
+          target_id: { type: 'string' as const },
+          relationship_type: { type: 'string' as const },
+          confidence: { type: 'number' as const },
+          evidence: { type: 'string' as const },
+          temporal: { type: 'string' as const },
+        },
+        required: ['source_id', 'target_id', 'relationship_type', 'confidence'] as const,
+      },
+    },
+  },
+  required: ['relationships'] as const,
+};
+
+/** Result type for joint extraction */
+export interface JointExtractionResult {
+  entities: Array<{
+    id: string;
+    canonical_name: string;
+    type: string;
+    aliases?: string[];
+    confidence: number;
+  }>;
+  relationships: Array<{
+    source_id: string;
+    target_id: string;
+    relationship_type: string;
+    confidence: number;
+    evidence?: string;
+    temporal?: string;
+  }>;
+  token_usage: { inputTokens: number; outputTokens: number };
+  processing_time_ms: number;
+  was_chunked: boolean;
+}
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // ENTITY NORMALIZATION
@@ -110,41 +215,6 @@ export function normalizeEntity(rawText: string, entityType: string): string {
     default:
       return trimmed.toLowerCase();
   }
-}
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// TEXT SPLITTING
-// ═══════════════════════════════════════════════════════════════════════════════
-
-/**
- * Split text into overlapping segments for adaptive batching.
- * Used only for very large documents (> maxCharsPerCall) that exceed
- * a single Gemini call. Splits at sentence boundaries with overlap
- * to avoid losing entities at segment borders.
- *
- * @param text - Full document text
- * @param maxChars - Maximum characters per segment
- * @param overlapChars - Characters of overlap between segments
- * @returns Array of text segments
- */
-export function splitWithOverlap(text: string, maxChars: number, overlapChars: number): string[] {
-  const segments: string[] = [];
-  let start = 0;
-  while (start < text.length) {
-    let end = start + maxChars;
-    if (end < text.length) {
-      const lastPeriod = text.lastIndexOf('.', end);
-      if (lastPeriod > start + maxChars * 0.5) {
-        end = lastPeriod + 1;
-      }
-    }
-    segments.push(text.slice(start, end));
-    start = end - overlapChars;
-    if (start <= end - maxChars + overlapChars) {
-      start = end;
-    }
-  }
-  return segments;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -408,6 +478,540 @@ export async function callGeminiForEntities(
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
+// JOINT ENTITY + RELATIONSHIP EXTRACTION
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/**
+ * Build the joint extraction prompt for combined entity + relationship extraction.
+ */
+function buildJointExtractionPrompt(ocrText: string, entityHints?: string): string {
+  const hintsSection = entityHints
+    ? `\n## Known Entities (from other documents in this corpus)\n${entityHints}\n`
+    : '';
+
+  return (
+    `You are an expert entity and relationship extractor for document analysis.\n` +
+    `Extract ALL entities and their relationships from the provided text.\n\n` +
+    `## Entity Types\n` +
+    `person, organization, date, amount, case_number, location, statute,\n` +
+    `exhibit, medication, diagnosis, medical_device\n\n` +
+    `## Relationship Types\n` +
+    `treated_with, diagnosed_with, administered_via, managed_by, interacts_with,\n` +
+    `works_at, located_in, filed_in, party_to, represents, cites, references,\n` +
+    `occurred_at, precedes, related_to, supervised_by, prescribed_by, admitted_to,\n` +
+    `filed_by, contraindicated_with\n\n` +
+    `## Coreference Resolution\n` +
+    `If the same entity appears with different names, abbreviations, or pronouns,\n` +
+    `group them under ONE canonical entry with the MOST COMPLETE name form.\n` +
+    `List ALL name variants as aliases.\n` +
+    `Example: "Dr. Robert Smith" / "Dr. Smith" / "R. Smith"\n` +
+    `→ canonical: "Dr. Robert Smith", aliases: ["Dr. Smith", "R. Smith"]\n\n` +
+    `## Rules\n` +
+    `1. Extract EVERY named entity with its type and confidence (0.0-1.0)\n` +
+    `2. Normalize dates to YYYY-MM-DD format\n` +
+    `3. Do NOT extract noise: bare numbers, time patterns (HH:MM), phone numbers,\n` +
+    `   SSN patterns (XXX-XX-XXXX), blood pressure readings (120/80)\n` +
+    `4. Identify ALL relationships between extracted entities\n` +
+    `5. Include brief evidence quote (max 15 words) for each relationship\n` +
+    `6. Use entity IDs (e1, e2, ...) to reference entities in relationships\n` +
+    `7. Medications with different salt forms are DIFFERENT entities\n` +
+    `   (Metoprolol Tartrate ≠ Metoprolol Succinate)\n` +
+    `8. Only use relationship types from the list above\n` +
+    hintsSection +
+    `\n## Document Text:\n${ocrText}`
+  );
+}
+
+/**
+ * Split text into 2 roughly equal chunks at a sentence boundary, with overlap.
+ * Used for documents exceeding MAX_SINGLE_CALL_CHARS.
+ */
+function splitIntoTwoChunks(text: string, overlapChars: number = 20_000): string[] {
+  const midpoint = Math.floor(text.length / 2);
+  // Search for a sentence boundary near the midpoint
+  let splitAt = text.lastIndexOf('. ', midpoint + 5000);
+  if (splitAt < midpoint - 50_000 || splitAt < 0) {
+    splitAt = text.lastIndexOf('.', midpoint + 5000);
+  }
+  if (splitAt < midpoint - 50_000 || splitAt < 0) {
+    splitAt = midpoint; // Fallback: split at midpoint
+  } else {
+    splitAt += 1; // Include the period
+  }
+
+  const chunk1End = splitAt;
+  const chunk2Start = Math.max(0, splitAt - overlapChars);
+
+  return [text.slice(0, chunk1End), text.slice(chunk2Start)];
+}
+
+/**
+ * Recover valid entities and relationships from truncated/malformed JSON output.
+ * Uses regex to extract complete entity and relationship objects.
+ */
+function recoverPartialJointExtraction(text: string): JointExtractionResult {
+  const entities: JointExtractionResult['entities'] = [];
+  const relationships: JointExtractionResult['relationships'] = [];
+
+  // Find balanced JSON objects by tracking brace depth.
+  // This handles arbitrary field order from the model.
+  const objects: string[] = [];
+  let depth = 0;
+  let objStart = -1;
+  let inString = false;
+  let escaped = false;
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (escaped) { escaped = false; continue; }
+    if (ch === '\\') { escaped = true; continue; }
+    if (ch === '"') { inString = !inString; continue; }
+    if (inString) continue;
+    if (ch === '{') {
+      if (depth === 1) objStart = i; // top-level array items start at depth 1
+      if (depth === 2) objStart = i; // entities/relationships array items at depth 2
+      depth++;
+    } else if (ch === '}') {
+      depth--;
+      if ((depth === 1 || depth === 2) && objStart >= 0) {
+        objects.push(text.slice(objStart, i + 1));
+        objStart = -1;
+      }
+    }
+  }
+
+  // Try parsing each complete object as entity or relationship
+  for (const objStr of objects) {
+    try {
+      const obj = JSON.parse(objStr);
+      if (obj.id && obj.canonical_name && obj.type && typeof obj.confidence === 'number') {
+        const normalizedType = String(obj.type).toLowerCase();
+        if (ENTITY_TYPES.includes(normalizedType as EntityType)) {
+          entities.push({
+            id: obj.id,
+            canonical_name: obj.canonical_name,
+            type: normalizedType,
+            aliases: Array.isArray(obj.aliases) ? obj.aliases : undefined,
+            confidence: obj.confidence,
+          });
+        }
+      } else if (obj.source_id && obj.target_id && obj.relationship_type) {
+        relationships.push({
+          source_id: obj.source_id,
+          target_id: obj.target_id,
+          relationship_type: String(obj.relationship_type).toLowerCase(),
+          confidence: typeof obj.confidence === 'number' ? obj.confidence : 0.5,
+          evidence: obj.evidence,
+          temporal: obj.temporal,
+        });
+      }
+    } catch {
+      // Skip malformed objects (e.g. truncated at end)
+    }
+  }
+
+  if (entities.length > 0 || relationships.length > 0) {
+    console.error(
+      `[INFO] Recovered ${entities.length} entities and ${relationships.length} relationships from truncated JSON`
+    );
+  }
+
+  return {
+    entities,
+    relationships,
+    token_usage: { inputTokens: 0, outputTokens: 0 },
+    processing_time_ms: 0,
+    was_chunked: false,
+  };
+}
+
+/**
+ * Two-pass extraction fallback: entities first, then relationships.
+ * Used when single-call extraction produces suspicious premature stop.
+ */
+async function twoPassExtraction(
+  client: GeminiClient,
+  ocrText: string,
+  entityHints?: string
+): Promise<JointExtractionResult> {
+  const startTime = Date.now();
+  let totalInputTokens = 0;
+  let totalOutputTokens = 0;
+
+  // Pass 1: Extract entities only
+  const hintsSection = entityHints
+    ? `\n## Known Entities (from other documents)\n${entityHints}\n`
+    : '';
+
+  const entityPrompt =
+    `You are an expert entity extractor for document analysis.\n` +
+    `Extract ALL entities from the provided text.\n\n` +
+    `## Entity Types\n` +
+    `person, organization, date, amount, case_number, location, statute,\n` +
+    `exhibit, medication, diagnosis, medical_device\n\n` +
+    `## Coreference Resolution\n` +
+    `Group same-entity variants under ONE canonical entry with the MOST COMPLETE name.\n` +
+    `List ALL name variants as aliases.\n\n` +
+    `## Rules\n` +
+    `1. Extract EVERY named entity with its type and confidence (0.0-1.0)\n` +
+    `2. Normalize dates to YYYY-MM-DD format\n` +
+    `3. Do NOT extract noise: bare numbers, time patterns, phone numbers, SSNs, blood pressure\n` +
+    `4. Use sequential IDs (e1, e2, ...)\n` +
+    `5. Medications with different salt forms are DIFFERENT entities\n` +
+    hintsSection +
+    `\n## Document Text:\n${ocrText}`;
+
+  let entities: JointExtractionResult['entities'] = [];
+  try {
+    const entityResponse = await client.fast(entityPrompt, ENTITY_ONLY_SCHEMA, {
+      maxOutputTokens: JOINT_EXTRACTION_MAX_OUTPUT_TOKENS,
+    });
+    totalInputTokens += entityResponse.usage.inputTokens;
+    totalOutputTokens += entityResponse.usage.outputTokens;
+
+    try {
+      const parsed = JSON.parse(entityResponse.text) as { entities?: JointExtractionResult['entities'] };
+      entities = parsed.entities ?? [];
+    } catch {
+      const recovered = recoverPartialJointExtraction(entityResponse.text);
+      entities = recovered.entities;
+    }
+  } catch (err) {
+    const errMsg = err instanceof Error ? err.message : String(err);
+    console.error(`[WARN] Two-pass entity extraction (pass 1) failed: ${errMsg}`);
+    throw new Error(`Two-pass entity extraction failed on pass 1: ${errMsg}`);
+  }
+
+  // Filter entities to valid types
+  entities = entities.filter((e) => ENTITY_TYPES.includes(e.type as EntityType));
+
+  // Pass 2: Extract relationships given entity context
+  let relationships: JointExtractionResult['relationships'] = [];
+  if (entities.length > 0) {
+    const entityListJson = JSON.stringify(
+      entities.map((e) => ({ id: e.id, canonical_name: e.canonical_name, type: e.type }))
+    );
+
+    const relPrompt =
+      `You are an expert relationship extractor for document analysis.\n` +
+      `Given the following entities extracted from the document, identify ALL relationships between them.\n\n` +
+      `## Extracted Entities\n${entityListJson}\n\n` +
+      `## Relationship Types\n` +
+      `treated_with, diagnosed_with, administered_via, managed_by, interacts_with,\n` +
+      `works_at, located_in, filed_in, party_to, represents, cites, references,\n` +
+      `occurred_at, precedes, related_to, supervised_by, prescribed_by, admitted_to,\n` +
+      `filed_by, contraindicated_with\n\n` +
+      `## Rules\n` +
+      `1. Use entity IDs from the list above to reference source and target\n` +
+      `2. Include brief evidence quote (max 15 words) for each relationship\n` +
+      `3. Only use relationship types from the list above\n` +
+      `4. Set confidence 0.0-1.0 based on evidence strength\n` +
+      `\n## Document Text:\n${ocrText}`;
+
+    try {
+      const relResponse = await client.fast(relPrompt, RELATIONSHIP_ONLY_SCHEMA, {
+        maxOutputTokens: JOINT_EXTRACTION_MAX_OUTPUT_TOKENS,
+      });
+      totalInputTokens += relResponse.usage.inputTokens;
+      totalOutputTokens += relResponse.usage.outputTokens;
+
+      try {
+        const parsed = JSON.parse(relResponse.text) as { relationships?: JointExtractionResult['relationships'] };
+        relationships = parsed.relationships ?? [];
+      } catch {
+        const recovered = recoverPartialJointExtraction(relResponse.text);
+        relationships = recovered.relationships;
+      }
+    } catch (err) {
+      const errMsg = err instanceof Error ? err.message : String(err);
+      console.error(`[WARN] Two-pass relationship extraction (pass 2) failed: ${errMsg}`);
+      // Relationships are best-effort; return entities without relationships
+    }
+  }
+
+  return {
+    entities,
+    relationships,
+    token_usage: { inputTokens: totalInputTokens, outputTokens: totalOutputTokens },
+    processing_time_ms: Date.now() - startTime,
+    was_chunked: true,
+  };
+}
+
+/**
+ * Extract entities AND relationships in a single Gemini call (or 2 chunks for large docs).
+ *
+ * For documents <= MAX_SINGLE_CALL_CHARS: single call with JOINT_EXTRACTION_SCHEMA.
+ * For larger documents: split into 2 overlapping chunks, call twice, merge results.
+ * Falls back to twoPassExtraction() if suspicious premature stop is detected.
+ */
+export async function extractEntitiesAndRelationships(
+  client: GeminiClient,
+  ocrText: string,
+  entityHints?: string
+): Promise<JointExtractionResult> {
+  const startTime = Date.now();
+
+  if (ocrText.length <= MAX_SINGLE_CALL_CHARS) {
+    // Single-call path
+    const prompt = buildJointExtractionPrompt(ocrText, entityHints);
+
+    // Always use max output tokens — thinking tokens share the output budget in
+    // gemini-3-flash-preview, so lower values cause truncated responses.
+    console.error(
+      `[INFO] Joint extraction: ${ocrText.length} chars, maxOutputTokens=${JOINT_EXTRACTION_MAX_OUTPUT_TOKENS}`
+    );
+
+    try {
+      const response = await client.fast(prompt, JOINT_EXTRACTION_SCHEMA, {
+        maxOutputTokens: JOINT_EXTRACTION_MAX_OUTPUT_TOKENS,
+      });
+
+      // Check for suspicious premature stop (very little output for large input)
+      if (response.usage.outputTokens < 2000 && ocrText.length > 50_000) {
+        console.error(
+          `[WARN] Suspicious premature stop: ${response.usage.outputTokens} output tokens ` +
+            `for ${ocrText.length} char input. Falling back to two-pass extraction.`
+        );
+        return twoPassExtraction(client, ocrText, entityHints);
+      }
+
+      let result: JointExtractionResult;
+
+      // Clean response text: strip markdown code fences if model wraps JSON
+      let responseText = response.text;
+      if (responseText.startsWith('```')) {
+        responseText = responseText.replace(/^```(?:json)?\s*\n?/, '').replace(/\n?```\s*$/, '');
+      }
+      responseText = responseText.trim();
+
+      try {
+        const parsed = JSON.parse(responseText) as {
+          entities?: JointExtractionResult['entities'];
+          relationships?: JointExtractionResult['relationships'];
+        };
+        result = {
+          entities: parsed.entities ?? [],
+          relationships: parsed.relationships ?? [],
+          token_usage: {
+            inputTokens: response.usage.inputTokens,
+            outputTokens: response.usage.outputTokens,
+          },
+          processing_time_ms: Date.now() - startTime,
+          was_chunked: false,
+        };
+      } catch (parseErr) {
+        console.error(
+          `[WARN] Joint extraction JSON parse failed: ${parseErr instanceof Error ? parseErr.message : parseErr}. ` +
+          `Response length=${responseText.length}, attempting recovery`
+        );
+        result = recoverPartialJointExtraction(responseText);
+        result.token_usage = {
+          inputTokens: response.usage.inputTokens,
+          outputTokens: response.usage.outputTokens,
+        };
+        result.processing_time_ms = Date.now() - startTime;
+      }
+
+      // Normalize entity types to lowercase (model may return "Person" instead of "person")
+      for (const e of result.entities) {
+        e.type = e.type.toLowerCase();
+      }
+
+      // Filter entities to valid types
+      result.entities = result.entities.filter((e) =>
+        ENTITY_TYPES.includes(e.type as EntityType)
+      );
+
+      // Apply noise filter (map canonical_name to raw_text for compatibility)
+      const noiseInput = result.entities.map((e) => ({
+        type: e.type,
+        raw_text: e.canonical_name,
+        confidence: e.confidence,
+      }));
+      const filtered = filterNoiseEntities(noiseInput);
+      const filteredNames = new Set(filtered.map((f) => f.raw_text));
+      result.entities = result.entities.filter((e) => filteredNames.has(e.canonical_name));
+
+      // Build valid entity ID set
+      const validEntityIds = new Set(result.entities.map((e) => e.id));
+
+      // Normalize relationship types to lowercase (model may return "LOCATED_AT" etc.)
+      for (const rel of result.relationships) {
+        rel.relationship_type = rel.relationship_type.toLowerCase();
+      }
+
+      // Validate relationships: reference valid entity IDs and valid types
+      const validRelTypes = new Set<string>(RELATIONSHIP_TYPES);
+      result.relationships = result.relationships.filter((rel) => {
+        if (!validEntityIds.has(rel.source_id)) {
+          console.error(
+            `[WARN] Dropping relationship: invalid source_id "${rel.source_id}"`
+          );
+          return false;
+        }
+        if (!validEntityIds.has(rel.target_id)) {
+          console.error(
+            `[WARN] Dropping relationship: invalid target_id "${rel.target_id}"`
+          );
+          return false;
+        }
+        if (!validRelTypes.has(rel.relationship_type)) {
+          console.error(
+            `[WARN] Dropping relationship: invalid type "${rel.relationship_type}"`
+          );
+          return false;
+        }
+        return true;
+      });
+
+      console.error(
+        `[INFO] Joint extraction complete: ${result.entities.length} entities, ` +
+          `${result.relationships.length} relationships, ${result.processing_time_ms}ms`
+      );
+
+      return result;
+    } catch (err) {
+      const errMsg = err instanceof Error ? err.message : String(err);
+      console.error(
+        `[ERROR] Single-call joint extraction failed: ${errMsg}`
+      );
+      throw new Error(`Entity extraction failed: ${errMsg}`);
+    }
+  } else {
+    // Large document: split into 2 overlapping chunks
+    console.error(
+      `[INFO] Document exceeds MAX_SINGLE_CALL_CHARS (${ocrText.length} > ${MAX_SINGLE_CALL_CHARS}), ` +
+        `splitting into 2 chunks`
+    );
+    const chunks = splitIntoTwoChunks(ocrText);
+    let totalInputTokens = 0;
+    let totalOutputTokens = 0;
+
+    const chunkResults: JointExtractionResult[] = [];
+    for (let i = 0; i < chunks.length; i++) {
+      const chunkPrompt = buildJointExtractionPrompt(chunks[i], entityHints);
+      try {
+        const response = await client.fast(chunkPrompt, JOINT_EXTRACTION_SCHEMA, {
+          maxOutputTokens: JOINT_EXTRACTION_MAX_OUTPUT_TOKENS,
+        });
+        totalInputTokens += response.usage.inputTokens;
+        totalOutputTokens += response.usage.outputTokens;
+
+        let parsed: { entities?: JointExtractionResult['entities']; relationships?: JointExtractionResult['relationships'] };
+        try {
+          parsed = JSON.parse(response.text);
+        } catch {
+          const recovered = recoverPartialJointExtraction(response.text);
+          parsed = { entities: recovered.entities, relationships: recovered.relationships };
+        }
+
+        chunkResults.push({
+          entities: parsed.entities ?? [],
+          relationships: parsed.relationships ?? [],
+          token_usage: { inputTokens: response.usage.inputTokens, outputTokens: response.usage.outputTokens },
+          processing_time_ms: 0,
+          was_chunked: true,
+        });
+      } catch (err) {
+        const errMsg = err instanceof Error ? err.message : String(err);
+        console.error(`[WARN] Chunk ${i + 1} extraction failed: ${errMsg}`);
+        // Continue with remaining chunks
+      }
+    }
+
+    // Merge chunk results, deduplicating entities by canonical_name + type
+    const entityMap = new Map<string, JointExtractionResult['entities'][0]>();
+    const entityIdRemap = new Map<string, string>(); // old chunk ID -> merged ID
+    let nextId = 1;
+
+    for (const chunkResult of chunkResults) {
+      for (const entity of chunkResult.entities) {
+        if (!ENTITY_TYPES.includes(entity.type as EntityType)) continue;
+        const key = `${entity.type}::${entity.canonical_name.toLowerCase()}`;
+        if (!entityMap.has(key)) {
+          const newId = `e${nextId++}`;
+          entityIdRemap.set(entity.id, newId);
+          entityMap.set(key, { ...entity, id: newId });
+        } else {
+          const existing = entityMap.get(key)!;
+          entityIdRemap.set(entity.id, existing.id);
+          // Merge aliases
+          if (entity.aliases) {
+            const existingAliases = new Set(existing.aliases ?? []);
+            for (const alias of entity.aliases) {
+              existingAliases.add(alias);
+            }
+            existing.aliases = [...existingAliases];
+          }
+          // Keep higher confidence
+          if (entity.confidence > existing.confidence) {
+            existing.confidence = entity.confidence;
+          }
+        }
+      }
+    }
+
+    // Merge relationships, remapping entity IDs and deduplicating
+    const relSet = new Set<string>();
+    const mergedRelationships: JointExtractionResult['relationships'] = [];
+    const validRelTypes = new Set<string>(RELATIONSHIP_TYPES);
+    const mergedEntityIds = new Set([...entityMap.values()].map((e) => e.id));
+
+    for (const chunkResult of chunkResults) {
+      for (const rel of chunkResult.relationships) {
+        const mappedSource = entityIdRemap.get(rel.source_id) ?? rel.source_id;
+        const mappedTarget = entityIdRemap.get(rel.target_id) ?? rel.target_id;
+        const relKey = `${mappedSource}::${mappedTarget}::${rel.relationship_type}`;
+
+        if (relSet.has(relKey)) continue;
+        if (!mergedEntityIds.has(mappedSource)) continue;
+        if (!mergedEntityIds.has(mappedTarget)) continue;
+        if (!validRelTypes.has(rel.relationship_type)) continue;
+
+        relSet.add(relKey);
+        mergedRelationships.push({
+          ...rel,
+          source_id: mappedSource,
+          target_id: mappedTarget,
+        });
+      }
+    }
+
+    // Apply noise filter
+    const mergedEntities = [...entityMap.values()];
+    const noiseInput = mergedEntities.map((e) => ({
+      type: e.type,
+      raw_text: e.canonical_name,
+      confidence: e.confidence,
+    }));
+    const filtered = filterNoiseEntities(noiseInput);
+    const filteredNames = new Set(filtered.map((f) => f.raw_text));
+    const finalEntities = mergedEntities.filter((e) => filteredNames.has(e.canonical_name));
+
+    // Re-validate relationships after noise filtering
+    const finalEntityIds = new Set(finalEntities.map((e) => e.id));
+    const finalRelationships = mergedRelationships.filter(
+      (r) => finalEntityIds.has(r.source_id) && finalEntityIds.has(r.target_id)
+    );
+
+    const result: JointExtractionResult = {
+      entities: finalEntities,
+      relationships: finalRelationships,
+      token_usage: { inputTokens: totalInputTokens, outputTokens: totalOutputTokens },
+      processing_time_ms: Date.now() - startTime,
+      was_chunked: true,
+    };
+
+    console.error(
+      `[INFO] Chunked joint extraction complete: ${result.entities.length} entities, ` +
+        `${result.relationships.length} relationships, ${result.processing_time_ms}ms (2 chunks)`
+    );
+
+    return result;
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
 // NOISE FILTERING
 // ═══════════════════════════════════════════════════════════════════════════════
 
@@ -539,163 +1143,12 @@ export function filterNoiseEntities(
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// SEGMENT-BASED EXTRACTION
-// ═══════════════════════════════════════════════════════════════════════════════
-
-/** Record representing one extraction segment stored in the database */
-export interface SegmentRecord {
-  id: string;
-  document_id: string;
-  ocr_result_id: string;
-  segment_index: number;
-  text: string;
-  character_start: number;
-  character_end: number;
-  text_length: number;
-  overlap_previous: number;
-  overlap_next: number;
-  extraction_status: 'pending' | 'processing' | 'complete' | 'failed';
-  entity_count: number;
-  extracted_at: string | null;
-  error_message: string | null;
-  provenance_id: string;
-  created_at: string;
-}
-
-/**
- * Create extraction segments from OCR text and store them in the database.
- * Each segment records its exact character range in the original OCR text
- * for provenance tracing.
- */
-export function createExtractionSegments(
-  conn: Database.Database,
-  documentId: string,
-  ocrResultId: string,
-  ocrText: string,
-  provenanceId: string
-): SegmentRecord[] {
-  conn.prepare('DELETE FROM entity_extraction_segments WHERE document_id = ?').run(documentId);
-
-  const segmentTexts = splitWithOverlap(ocrText, MAX_CHARS_PER_CALL, SEGMENT_OVERLAP_CHARS);
-  const now = new Date().toISOString();
-  const segments: SegmentRecord[] = [];
-
-  const insertStmt = conn.prepare(`
-    INSERT INTO entity_extraction_segments (
-      id, document_id, ocr_result_id, segment_index, text,
-      character_start, character_end, text_length,
-      overlap_previous, overlap_next,
-      extraction_status, entity_count, extracted_at, error_message,
-      provenance_id, created_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `);
-
-  let currentStart = 0;
-  for (let i = 0; i < segmentTexts.length; i++) {
-    const segText = segmentTexts[i];
-
-    // Locate this segment's start in the original text.
-    // For segment 0 it's always 0; for subsequent segments, search near the overlap region.
-    let charStart: number;
-    if (i === 0) {
-      charStart = 0;
-    } else {
-      const searchFrom = Math.max(0, currentStart - SEGMENT_OVERLAP_CHARS - 100);
-      const pos = ocrText.indexOf(segText.slice(0, Math.min(200, segText.length)), searchFrom);
-      charStart = pos >= 0 ? pos : currentStart;
-    }
-
-    const charEnd = charStart + segText.length;
-    const overlapPrevious = i > 0 ? Math.max(0, segments[i - 1].character_end - charStart) : 0;
-    const overlapNext = i < segmentTexts.length - 1 ? SEGMENT_OVERLAP_CHARS : 0;
-
-    const segId = uuidv4();
-    const segment: SegmentRecord = {
-      id: segId,
-      document_id: documentId,
-      ocr_result_id: ocrResultId,
-      segment_index: i,
-      text: segText,
-      character_start: charStart,
-      character_end: charEnd,
-      text_length: segText.length,
-      overlap_previous: overlapPrevious,
-      overlap_next: overlapNext,
-      extraction_status: 'pending',
-      entity_count: 0,
-      extracted_at: null,
-      error_message: null,
-      provenance_id: provenanceId,
-      created_at: now,
-    };
-
-    insertStmt.run(
-      segment.id,
-      segment.document_id,
-      segment.ocr_result_id,
-      segment.segment_index,
-      segment.text,
-      segment.character_start,
-      segment.character_end,
-      segment.text_length,
-      segment.overlap_previous,
-      segment.overlap_next,
-      segment.extraction_status,
-      segment.entity_count,
-      segment.extracted_at,
-      segment.error_message,
-      segment.provenance_id,
-      segment.created_at
-    );
-
-    segments.push(segment);
-    currentStart = charEnd - (overlapNext > 0 ? SEGMENT_OVERLAP_CHARS : 0);
-  }
-
-  console.error(
-    `[INFO] Created ${segments.length} extraction segments for document ${documentId} ` +
-      `(total text: ${ocrText.length} chars, segment size: ${MAX_CHARS_PER_CALL}, overlap: ${SEGMENT_OVERLAP_CHARS})`
-  );
-
-  return segments;
-}
-
-/**
- * Update a segment's status after extraction attempt.
- */
-export function updateSegmentStatus(
-  conn: Database.Database,
-  segmentId: string,
-  status: 'processing' | 'complete' | 'failed',
-  entityCount?: number,
-  errorMessage?: string
-): void {
-  const now = new Date().toISOString();
-  conn
-    .prepare(
-      `
-    UPDATE entity_extraction_segments
-    SET extraction_status = ?,
-        entity_count = COALESCE(?, entity_count),
-        extracted_at = CASE WHEN ? IN ('complete', 'failed') THEN ? ELSE extracted_at END,
-        error_message = ?
-    WHERE id = ?
-  `
-    )
-    .run(status, entityCount ?? null, status, now, errorMessage ?? null, segmentId);
-}
-
-// ═══════════════════════════════════════════════════════════════════════════════
 // CHUNK MAPPING HELPERS
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /**
- * Find which DB chunk contains a given character position in the OCR text.
- * Chunks have character_start (inclusive) and character_end (exclusive).
- */
-/**
  * Find the chunk that contains the given start position.
- * Entity mentions are assigned to the chunk where they START — if the mention
+ * Entity mentions are assigned to the chunk where they START -- if the mention
  * extends a few characters past the chunk boundary, that's expected behavior
  * at chunk edges and the verifier accounts for it.
  */
@@ -782,248 +1235,305 @@ export function findAllEntityOccurrences(
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// FULL EXTRACTION PIPELINE (shared by entity-analysis.ts and ingestion.ts)
+// JOINT EXTRACTION STORAGE (Phase 2)
 // ═══════════════════════════════════════════════════════════════════════════════
 
-/** Result of a full segment-based entity extraction run */
-export interface SegmentExtractionResult {
-  totalEntities: number;
-  totalMentions: number;
-  totalRawExtracted: number;
-  noiseFiltered: number;
-  deduplicated: number;
-  entitiesByType: Record<string, number>;
-  chunkMapped: number;
-  processingDurationMs: number;
-  segmentsTotal: number;
-  segmentsComplete: number;
-  segmentsFailed: number;
-  apiCalls: number;
-}
-
 /**
- * Run the full segment-based entity extraction pipeline:
- * create segments, call Gemini per segment, filter noise,
- * deduplicate, store entities + mentions in DB, and update provenance.
+ * Store joint extraction results: entities, mentions, KG nodes, KG edges.
+ * Idempotent: deletes existing entities/mentions/segments for the document first.
+ * All DB operations run in a single transaction for atomicity.
  *
- * Shared core used by both manual extraction (entity-analysis.ts)
- * and auto-pipeline extraction (ingestion.ts).
+ * @param conn - Database connection
+ * @param documentId - Document ID
+ * @param ocrResultId - OCR result ID (for segment tracking)
+ * @param ocrText - Full OCR text (for mention occurrence scanning)
+ * @param result - Joint extraction result from extractEntitiesAndRelationships()
+ * @param entityProvId - Provenance ID for entity extraction operations
+ * @param kgProvId - Provenance ID for knowledge graph operations
+ * @returns Counts of stored items
  */
-export async function processSegmentsAndStoreEntities(
+export function storeJointExtractionResults(
   conn: Database.Database,
-  client: GeminiClient,
   documentId: string,
   ocrResultId: string,
   ocrText: string,
+  result: JointExtractionResult,
   entityProvId: string,
-  typeFilter: string,
-  entityTypes: readonly string[],
-  startTime: number,
-  source?: string
-): Promise<SegmentExtractionResult> {
-  const textLength = ocrText.length;
+  kgProvId: string
+): {
+  totalEntities: number;
+  totalMentions: number;
+  totalNodes: number;
+  totalEdges: number;
+  entitiesByType: Record<string, number>;
+} {
   const now = new Date().toISOString();
-
-  const segments = createExtractionSegments(conn, documentId, ocrResultId, ocrText, entityProvId);
-
-  // Build grouped KG entity hints with aliases for better extraction recall
-  const entityHints = buildKGEntityHints(conn);
-
-  // Process segments in parallel batches. Rate limiting handled by GeminiRateLimiter.
-  const allRawEntities: Array<{ type: string; raw_text: string; confidence: number }> = [];
-  let segmentsComplete = 0;
-  let segmentsFailed = 0;
-
-  for (let i = 0; i < segments.length; i += MAX_PARALLEL_SEGMENTS) {
-    const batch = segments.slice(i, i + MAX_PARALLEL_SEGMENTS);
-
-    // Mark batch as processing
-    for (const seg of batch) {
-      updateSegmentStatus(conn, seg.id, 'processing');
-    }
-
-    const results = await Promise.allSettled(
-      batch.map(async (segment) => {
-        const entities = await callGeminiForEntities(client, segment.text, typeFilter, entityHints);
-        return { segment, entities };
-      })
-    );
-
-    for (const result of results) {
-      if (result.status === 'fulfilled') {
-        const { segment, entities } = result.value;
-        allRawEntities.push(...entities);
-        updateSegmentStatus(conn, segment.id, 'complete', entities.length);
-        segmentsComplete++;
-      } else {
-        // Find which segment failed by index in batch
-        const failedIndex = results.indexOf(result);
-        const failedSegment = batch[failedIndex];
-        const segMsg =
-          result.reason instanceof Error ? result.reason.message : String(result.reason);
-        console.error(
-          `[WARN] Segment ${failedSegment.segment_index} failed for ${documentId}: ${segMsg}`
-        );
-        updateSegmentStatus(conn, failedSegment.id, 'failed', 0, segMsg);
-        segmentsFailed++;
-      }
-    }
-  }
-
-  const apiCalls = segments.length;
-  const processingDurationMs = Date.now() - startTime;
-
-  const filteredEntities = filterNoiseEntities(allRawEntities);
-  const noiseFilteredCount = allRawEntities.length - filteredEntities.length;
-
-  const mergedEntities = filteredEntities;
-
-  // Deduplicate by type::normalized_text, keeping highest confidence per key
-  // Also count segment occurrences for cross-segment agreement boosting
-  const dedupMap = new Map<
-    string,
-    { type: string; raw_text: string; confidence: number; segment_count: number }
-  >();
-  for (const entity of mergedEntities) {
-    const normalized = normalizeEntity(entity.raw_text, entity.type);
-    const key = `${entity.type}::${normalized}`;
-    const existing = dedupMap.get(key);
-    if (!existing) {
-      dedupMap.set(key, { ...entity, segment_count: 1 });
-    } else {
-      existing.segment_count++;
-      if (entity.confidence > existing.confidence) {
-        existing.raw_text = entity.raw_text;
-        existing.confidence = entity.confidence;
-      }
-    }
-  }
-
-  // Cross-segment agreement boosting: entities found in multiple segments
-  // get a confidence boost (capped at 0.15 total boost, 0.05 per additional segment)
-  for (const [, entityData] of dedupMap) {
-    if (entityData.segment_count > 1) {
-      const boost = Math.min(0.15, (entityData.segment_count - 1) * 0.05);
-      entityData.confidence = Math.min(1.0, entityData.confidence + boost);
-    }
-  }
-
-  const entityContent = JSON.stringify([...dedupMap.values()]);
-  const entityHash = computeHash(entityContent);
-  const processingParams: Record<string, unknown> = {
-    entity_types: entityTypes,
-    api_calls: apiCalls,
-    text_length: textLength,
-    segment_size: MAX_CHARS_PER_CALL,
-    segment_overlap: SEGMENT_OVERLAP_CHARS,
-    segments_total: segments.length,
-    segments_complete: segmentsComplete,
-    segments_failed: segmentsFailed,
-  };
-  if (source) {
-    processingParams.source = source;
-  }
-
-  conn
-    .prepare(
-      `
-    UPDATE provenance SET content_hash = ?, processed_at = ?, processing_duration_ms = ?,
-      processing_params = ?
-    WHERE id = ?
-  `
-    )
-    .run(
-      entityHash,
-      new Date().toISOString(),
-      processingDurationMs,
-      JSON.stringify(processingParams),
-      entityProvId
-    );
-
   const dbChunks = getChunksByDocumentId(conn, documentId);
-  let chunkMappedCount = 0;
-  const typeCounts: Record<string, number> = {};
-  let totalInserted = 0;
+
+  let totalEntities = 0;
   let totalMentions = 0;
+  let totalNodes = 0;
+  let totalEdges = 0;
+  const entitiesByType: Record<string, number> = {};
 
-  for (const [, entityData] of dedupMap) {
-    const normalized = normalizeEntity(entityData.raw_text, entityData.type);
-    const entityId = uuidv4();
+  // Maps from Gemini entity IDs (e1, e2, ...) to database UUIDs
+  const entityIdToDbId = new Map<string, string>();
+  const entityIdToNodeId = new Map<string, string>();
 
-    insertEntity(conn, {
-      id: entityId,
-      document_id: documentId,
-      entity_type: entityData.type as EntityType,
-      raw_text: entityData.raw_text,
-      normalized_text: normalized,
-      confidence: entityData.confidence,
-      metadata:
-        entityData.segment_count > 1
-          ? JSON.stringify({ agreement_count: entityData.segment_count })
+  const runInTransaction = conn.transaction(() => {
+    // (a) Delete existing entities/mentions for this document (idempotent re-extraction)
+    // Must delete mentions before entities due to FK constraint
+    conn.prepare('DELETE FROM entity_mentions WHERE document_id = ?').run(documentId);
+    conn.prepare('DELETE FROM entities WHERE document_id = ?').run(documentId);
+
+    // (b) Delete existing extraction segments for this document
+    conn.prepare('DELETE FROM entity_extraction_segments WHERE document_id = ?').run(documentId);
+
+    // (c) Store entities and their mentions
+    for (const entity of result.entities) {
+      const entityId = uuidv4();
+      const normalized = normalizeEntity(entity.canonical_name, entity.type);
+
+      insertEntity(conn, {
+        id: entityId,
+        document_id: documentId,
+        entity_type: entity.type as EntityType,
+        raw_text: entity.canonical_name,
+        normalized_text: normalized,
+        confidence: entity.confidence,
+        metadata: entity.aliases && entity.aliases.length > 0
+          ? JSON.stringify({ aliases: entity.aliases })
           : null,
-      provenance_id: entityProvId,
-      created_at: now,
-    });
+        provenance_id: entityProvId,
+        created_at: now,
+      });
 
-    const occurrences = findAllEntityOccurrences(entityData.raw_text, ocrText, dbChunks);
+      entityIdToDbId.set(entity.id, entityId);
+      entitiesByType[entity.type] = (entitiesByType[entity.type] ?? 0) + 1;
+      totalEntities++;
 
-    if (occurrences.length > 0) {
-      let entityHasChunkMapping = false;
+      // Find all occurrences of canonical_name AND aliases in the OCR text
+      const allSearchTerms = [entity.canonical_name];
+      if (entity.aliases) {
+        for (const alias of entity.aliases) {
+          if (alias && alias.trim().length > 0) {
+            allSearchTerms.push(alias);
+          }
+        }
+      }
 
-      for (const occ of occurrences) {
+      const seenPositions = new Set<number>();
+      let entityMentionCount = 0;
+
+      for (const searchTerm of allSearchTerms) {
+        const occurrences = findAllEntityOccurrences(searchTerm, ocrText, dbChunks);
+        for (const occ of occurrences) {
+          // Deduplicate by character_start to avoid double-counting overlapping alias matches
+          if (seenPositions.has(occ.character_start)) continue;
+          seenPositions.add(occ.character_start);
+
+          insertEntityMention(conn, {
+            id: uuidv4(),
+            entity_id: entityId,
+            document_id: documentId,
+            chunk_id: occ.chunk_id,
+            page_number: occ.page_number,
+            character_start: occ.character_start,
+            character_end: occ.character_end,
+            context_text: occ.context_text,
+            created_at: now,
+          });
+          entityMentionCount++;
+          totalMentions++;
+        }
+      }
+
+      // Fallback: if no occurrences found at all, create 1 mention with null positions
+      if (entityMentionCount === 0) {
         insertEntityMention(conn, {
           id: uuidv4(),
           entity_id: entityId,
           document_id: documentId,
-          chunk_id: occ.chunk_id,
-          page_number: occ.page_number,
-          character_start: occ.character_start,
-          character_end: occ.character_end,
-          context_text: occ.context_text,
+          chunk_id: null,
+          page_number: null,
+          character_start: null,
+          character_end: null,
+          context_text: entity.canonical_name,
           created_at: now,
         });
         totalMentions++;
-        if (occ.chunk_id) {
-          entityHasChunkMapping = true;
-        }
+        entityMentionCount = 1;
       }
 
-      if (entityHasChunkMapping) {
-        chunkMappedCount++;
-      }
-    } else {
-      // No occurrences found -- create 1 fallback mention with null positions
-      insertEntityMention(conn, {
+      // (d) Create KG node for this entity
+      const nodeId = uuidv4();
+      const importanceScore = computeImportanceScore(
+        entity.confidence,
+        1, // document_count = 1 (single document extraction)
+        entityMentionCount
+      );
+
+      insertKnowledgeNode(conn, {
+        id: nodeId,
+        entity_type: entity.type as EntityType,
+        canonical_name: entity.canonical_name,
+        normalized_name: normalized,
+        aliases: entity.aliases && entity.aliases.length > 0
+          ? JSON.stringify(entity.aliases)
+          : null,
+        document_count: 1,
+        mention_count: entityMentionCount,
+        edge_count: 0, // Will be incremented by insertKnowledgeEdge
+        avg_confidence: entity.confidence,
+        importance_score: importanceScore,
+        metadata: null,
+        provenance_id: kgProvId,
+        created_at: now,
+        updated_at: now,
+      });
+
+      entityIdToNodeId.set(entity.id, nodeId);
+      totalNodes++;
+
+      // Link entity to KG node
+      insertNodeEntityLink(conn, {
         id: uuidv4(),
+        node_id: nodeId,
         entity_id: entityId,
         document_id: documentId,
-        chunk_id: null,
-        page_number: null,
-        character_start: null,
-        character_end: null,
-        context_text: entityData.raw_text,
+        similarity_score: 1.0,
+        resolution_method: 'gemini_coreference',
         created_at: now,
       });
-      totalMentions++;
     }
 
-    typeCounts[entityData.type] = (typeCounts[entityData.type] ?? 0) + 1;
-    totalInserted++;
-  }
+    // (e) Store relationships as KG edges
+    for (const rel of result.relationships) {
+      const sourceNodeId = entityIdToNodeId.get(rel.source_id);
+      const targetNodeId = entityIdToNodeId.get(rel.target_id);
+
+      if (!sourceNodeId) {
+        console.error(
+          `[WARN] storeJointExtractionResults: skipping relationship - ` +
+            `source_id "${rel.source_id}" not found in node mapping`
+        );
+        continue;
+      }
+      if (!targetNodeId) {
+        console.error(
+          `[WARN] storeJointExtractionResults: skipping relationship - ` +
+            `target_id "${rel.target_id}" not found in node mapping`
+        );
+        continue;
+      }
+
+      // Validate relationship type
+      if (!RELATIONSHIP_TYPES.includes(rel.relationship_type as RelationshipType)) {
+        console.error(
+          `[WARN] storeJointExtractionResults: skipping relationship - ` +
+            `invalid type "${rel.relationship_type}"`
+        );
+        continue;
+      }
+
+      // Direction convention: sort node IDs alphabetically, lower = source
+      const [edgeSource, edgeTarget] =
+        sourceNodeId < targetNodeId
+          ? [sourceNodeId, targetNodeId]
+          : [targetNodeId, sourceNodeId];
+
+      const edgeMetadata: Record<string, unknown> = {};
+      if (rel.evidence) {
+        edgeMetadata.evidence = rel.evidence;
+      }
+
+      // Parse temporal bounds if present
+      let validFrom: string | null = null;
+      let validUntil: string | null = null;
+      if (rel.temporal) {
+        // Try to parse temporal as a date or date range
+        const rangeMatch = rel.temporal.match(
+          /(\d{4}-\d{2}-\d{2})\s*(?:to|—|–|-)\s*(\d{4}-\d{2}-\d{2})/
+        );
+        if (rangeMatch) {
+          validFrom = rangeMatch[1];
+          validUntil = rangeMatch[2];
+        } else {
+          const dateMatch = rel.temporal.match(/(\d{4}-\d{2}-\d{2})/);
+          if (dateMatch) {
+            validFrom = dateMatch[1];
+          }
+        }
+        edgeMetadata.temporal_raw = rel.temporal;
+      }
+
+      insertKnowledgeEdge(conn, {
+        id: uuidv4(),
+        source_node_id: edgeSource,
+        target_node_id: edgeTarget,
+        relationship_type: rel.relationship_type as RelationshipType,
+        weight: rel.confidence,
+        evidence_count: 1,
+        document_ids: JSON.stringify([documentId]),
+        metadata: Object.keys(edgeMetadata).length > 0
+          ? JSON.stringify(edgeMetadata)
+          : null,
+        provenance_id: kgProvId,
+        created_at: now,
+        valid_from: validFrom,
+        valid_until: validUntil,
+      });
+
+      totalEdges++;
+    }
+
+    // (f) Store ONE entity_extraction_segments record for tracking
+    const segId = uuidv4();
+    conn
+      .prepare(
+        `INSERT INTO entity_extraction_segments (
+          id, document_id, ocr_result_id, segment_index, text,
+          character_start, character_end, text_length,
+          overlap_previous, overlap_next,
+          extraction_status, entity_count, extracted_at, error_message,
+          provenance_id, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      )
+      .run(
+        segId,
+        documentId,
+        ocrResultId,
+        0, // segment_index
+        ocrText, // full text
+        0, // character_start
+        ocrText.length, // character_end
+        ocrText.length, // text_length
+        0, // overlap_previous
+        0, // overlap_next
+        'complete', // extraction_status
+        result.entities.length, // entity_count
+        now, // extracted_at
+        null, // error_message
+        entityProvId, // provenance_id
+        now // created_at
+      );
+  });
+
+  // Execute the transaction
+  runInTransaction();
+
+  console.error(
+    `[INFO] storeJointExtractionResults: stored ${totalEntities} entities, ` +
+      `${totalMentions} mentions, ${totalNodes} nodes, ${totalEdges} edges ` +
+      `for document ${documentId}`
+  );
 
   return {
-    totalEntities: totalInserted,
+    totalEntities,
     totalMentions,
-    totalRawExtracted: allRawEntities.length,
-    noiseFiltered: noiseFilteredCount,
-    deduplicated: mergedEntities.length - totalInserted,
-    entitiesByType: typeCounts,
-    chunkMapped: chunkMappedCount,
-    processingDurationMs,
-    segmentsTotal: segments.length,
-    segmentsComplete,
-    segmentsFailed,
-    apiCalls,
+    totalNodes,
+    totalEdges,
+    entitiesByType,
   };
 }
 
