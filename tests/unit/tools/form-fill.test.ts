@@ -2,7 +2,7 @@
  * Unit Tests for Form Fill MCP Tools
  *
  * Tests the form fill tool handlers in src/tools/form-fill.ts
- * Tools: ocr_form_fill, ocr_form_fill_status, ocr_form_fill_suggest_fields
+ * Tools: ocr_form_fill, ocr_form_fill_status
  *
  * Focus: tool exports verification, error paths (no database, invalid params),
  * and input validation edge cases. Does NOT use real databases or APIs.

@@ -1,7 +1,7 @@
 {
   "name": "ocr-provenance-mcp",
   "version": "1.0.0",
-  "description": "MCP server for document OCR processing, semantic search, entity extraction, knowledge graph construction, and provenance tracking",
+  "description": "MCP server for document OCR processing, semantic search, document comparison, clustering, and provenance tracking",
   "type": "module",
   "main": "dist/index.js",
   "exports": {
@@ -31,9 +31,8 @@
     "mcp",
     "ocr",
     "provenance",
-    "knowledge-graph",
     "semantic-search",
-    "entity-extraction",
+    "document-clustering",
     "sqlite",
     "vector-search",
     "claude",

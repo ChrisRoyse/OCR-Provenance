@@ -254,7 +254,7 @@ describe('E2E-1: Schema v10 Physical Verification', () => {
       .map((r: Record<string, unknown>) => r.name as string);
 
     for (const required of REQUIRED_TABLES) {
-      if (required === 'vec_embeddings' || required === 'vec_entity_embeddings') continue; // Requires sqlite-vec extension
+      if (required === 'vec_embeddings') continue; // Requires sqlite-vec extension
       expect(tables).toContain(required);
     }
   });

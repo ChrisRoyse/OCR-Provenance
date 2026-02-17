@@ -1245,7 +1245,7 @@ export async function handleProcessPending(
       if (totalDocCount > 1) {
         response.next_steps = {
           auto_compare_hint:
-            'Multiple documents available. Use ocr_document_compare to find contradictions between documents.',
+            'Multiple documents available. Use ocr_document_compare to find differences between documents.',
           document_count: totalDocCount,
         };
       }
