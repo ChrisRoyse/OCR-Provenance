@@ -151,7 +151,6 @@ olddocs/
 # Documentation (tracked locally only - excluded from git history)
 # -----------------------------------------------------------------------------
 docs/
-docs2/
 fullcase/
 reports/
 

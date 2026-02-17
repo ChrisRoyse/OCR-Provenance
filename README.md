@@ -1,6 +1,6 @@
 # OCR Provenance MCP Server
 
-A comprehensive [Model Context Protocol](https://modelcontextprotocol.io/) server for document OCR processing, semantic search, entity extraction, knowledge graph construction, and full provenance tracking.
+A comprehensive [Model Context Protocol](https://modelcontextprotocol.io/) server for document OCR processing, semantic search, VLM image analysis, document clustering, document comparison, and full provenance tracking.
 
 Built with TypeScript and Python, backed by SQLite with vector search extensions. Designed for use with Claude Desktop, Claude Code, and any MCP-compatible client.
 
@@ -13,32 +13,33 @@ Built with TypeScript and Python, backed by SQLite with vector search extensions
 
 ## What It Does
 
-Drop documents into the system and get back a fully searchable, entity-linked, provenance-tracked knowledge base:
+Drop documents into the system and get back a fully searchable, provenance-tracked document intelligence platform:
 
 ```
-Documents (PDF, DOCX, images)
+Documents (PDF, DOCX, images, Office files)
     -> OCR text extraction (Datalab API)
     -> Text chunking + GPU embeddings (nomic-embed-text-v1.5)
-    -> Named entity extraction (Gemini AI)
-    -> Knowledge graph construction
-    -> Hybrid search (BM25 + vector + entity-aware)
-    -> Question answering with RAG
+    -> Image extraction + VLM analysis (Gemini 3 Flash)
+    -> Hybrid search (BM25 + vector + Gemini re-ranking)
+    -> Document clustering + comparison
+    -> RAG context assembly
 ```
 
 Every piece of data carries a SHA-256 provenance chain from source document through every derived artifact.
 
 ## Key Features
 
-- **104 MCP Tools** across 19 categories for end-to-end document intelligence
-- **Hybrid Search** combining BM25 keyword, semantic vector, and entity-aware retrieval
-- **Knowledge Graph** with 3-tier entity resolution (exact, fuzzy, AI), temporal reasoning, and contradiction detection
-- **Full Provenance** with SHA-256 content hashes and W3C PROV export
+- **69 MCP Tools** across 16 categories for end-to-end document intelligence
+- **Hybrid Search** combining BM25 keyword, semantic vector, and Gemini-powered re-ranking via Reciprocal Rank Fusion
+- **Full Provenance** with SHA-256 content hashes and W3C PROV export at every processing step
 - **GPU Embeddings** via local nomic-embed-text-v1.5 (768-dim, auto-detects CUDA / MPS / CPU)
-- **Auto-Pipeline** processing from OCR through entity extraction, KG build, and clustering in one call
-- **11 Entity Types** including medical (medication, diagnosis, medical_device)
-- **Document Clustering** via HDBSCAN, agglomerative, or k-means with entity overlap weighting
-- **VLM Image Analysis** using Gemini vision for image descriptions and classification
-- **Form Filling** via Datalab API with KG-based field validation
+- **VLM Image Analysis** using Gemini 3 Flash for image descriptions, classification, and PDF analysis
+- **Document Clustering** via HDBSCAN, agglomerative, or k-means with cosine similarity
+- **Document Comparison** with text diff and structural metadata comparison
+- **Form Filling** via Datalab API for PDF and image forms
+- **Structured Extraction** using JSON schemas for structured data from OCR results
+- **Cloud File Management** with Datalab cloud storage, deduplication by SHA-256 hash
+- **Cross-Platform** support for Linux (CUDA), macOS (MPS / CPU), and Windows
 
 ---
 
@@ -51,7 +52,7 @@ Every piece of data carries a SHA-256 provenance chain from source document thro
                                 | JSON-RPC over stdio
                     +-----------v-----------+
                     |   MCP Server (Node)   |
-                    |   104 registered tools|
+                    |   69 registered tools |
                     +-----------+-----------+
                        |        |        |
           +------------+   +----+----+   +----------+
@@ -60,20 +61,20 @@ Every piece of data carries a SHA-256 provenance chain from source document thro
 |   SQLite    |   |  Python  |  |   Gemini   |  |  Datalab   |
 | + sqlite-vec|   |  Workers |  |    API     |  |    API     |
 +-------------+   +----------+  +------------+  +------------+
-| 28 tables   |   | 8 workers|  | entities   |  | OCR        |
-| 58 indexes  |   | GPU embed|  | VLM vision |  | form fill  |
-| FTS5 search |   | clustering  | classify   |  | file mgmt  |
-| vec search  |   | img extract | QA answers |  |            |
-+-------------+   +----------+  +------------+  +------------+
+| 15 tables   |   | 8 workers|  | VLM vision |  | OCR        |
+| FTS5 search |   | GPU embed|  | re-ranking |  | form fill  |
+| vec search  |   | clustering  | PDF analyze|  | file mgmt  |
++-------------+   | img extract +------------+  +------------+
+                  +----------+
 ```
 
 **Components:**
-- **TypeScript MCP Server** -- 104 tools, Zod schema validation, provenance tracking
-- **Python Workers** (8) -- OCR, embedding (GPU), image extraction, clustering, form fill, file management
-- **SQLite + sqlite-vec** -- 28 tables, 58 indexes, FTS5 full-text search, vector similarity
-- **Gemini API** -- Entity extraction, relationship classification, VLM image descriptions, QA
+- **TypeScript MCP Server** -- 69 tools across 16 tool files, Zod schema validation, provenance tracking
+- **Python Workers** (8) -- OCR, embedding (GPU), image extraction (PDF + DOCX), clustering, form fill, file management
+- **SQLite + sqlite-vec** -- 15 core tables + FTS5 virtual tables + vector index, WAL mode
+- **Gemini API** (gemini-3-flash-preview) -- VLM image descriptions, search re-ranking, query expansion, PDF analysis
 - **Datalab API** -- Document OCR, form filling, cloud file storage
-- **nomic-embed-text-v1.5** -- 768-dim embeddings, local inference (CUDA, MPS, or CPU)
+- **nomic-embed-text-v1.5** -- 768-dim embeddings, local inference only (CUDA, MPS, or CPU)
 
 ---
 
@@ -94,7 +95,7 @@ Every piece of data carries a SHA-256 provenance chain from source document thro
 | Key | Required For | Get From |
 |-----|-------------|----------|
 | `DATALAB_API_KEY` | OCR processing, form fill, file upload | [datalab.to](https://www.datalab.to) |
-| `GEMINI_API_KEY` | Entity extraction, VLM, QA, relationship classification | [Google AI Studio](https://aistudio.google.com/) |
+| `GEMINI_API_KEY` | VLM image analysis, search re-ranking, query expansion | [Google AI Studio](https://aistudio.google.com/) |
 
 ---
 
@@ -126,7 +127,7 @@ cp .env.example .env
 # Edit .env with your DATALAB_API_KEY and GEMINI_API_KEY
 
 # 6. Verify it works
-ocr-provenance-mcp  # Should print "Tools registered: 104" on stderr
+ocr-provenance-mcp  # Should print "Tools registered: 69" on stderr
 ```
 
 After install, the `ocr-provenance-mcp` command is available system-wide. You can point it at **any directory or file** on your machine for OCR processing.
@@ -324,7 +325,7 @@ claude mcp add ocr-provenance \
   -- ocr-provenance-mcp
 ```
 
-Restart your Claude Code session. All 104 tools will be available immediately.
+Restart your Claude Code session. All 69 tools will be available immediately.
 
 ### Claude Desktop
 
@@ -395,61 +396,47 @@ npx ocr-provenance-mcp                # Via npx (after npm publish)
 1. Create a database         ->  ocr_db_create { name: "my-project" }
 2. Select it                 ->  ocr_db_select { database_name: "my-project" }
 3. Ingest documents          ->  ocr_ingest_directory { directory_path: "/path/to/docs" }
-4. Process through pipeline  ->  ocr_process_pending { auto_extract_entities: true, auto_build_kg: true }
+4. Process through pipeline  ->  ocr_process_pending {}
 5. Search your documents     ->  ocr_search_hybrid { query: "your question" }
-6. Ask questions             ->  ocr_question_answer { question: "What happened on March 15?" }
-7. Explore the graph         ->  ocr_knowledge_graph_query { entity_name: "Dr. Smith" }
-8. Verify provenance         ->  ocr_provenance_verify { item_id: "doc-id" }
+6. Build RAG context         ->  ocr_rag_context { question: "What happened on March 15?" }
+7. Verify provenance         ->  ocr_provenance_verify { item_id: "doc-id" }
 ```
 
-### One-Shot Auto-Pipeline
+The processing pipeline runs: OCR -> Chunk -> Embed -> Vector Index -> FTS Index
 
-Process everything in one call:
+For images in documents, use the VLM tools to generate searchable descriptions:
 
-```json
-{
-  "tool": "ocr_process_pending",
-  "arguments": {
-    "auto_extract_entities": true,
-    "auto_build_kg": true,
-    "auto_extract_vlm_entities": true,
-    "auto_coreference_resolve": true,
-    "auto_scan_contradictions": true
-  }
-}
 ```
-
-This runs: OCR -> Chunk -> Embed -> Entity Extract -> KG Build -> Coreference -> Contradiction Scan
+8. Extract images            ->  ocr_extract_images { document_id: "doc-id" }
+9. Analyze with VLM          ->  ocr_vlm_process_document { document_id: "doc-id" }
+```
 
 ---
 
 ## Tool Reference
 
-### Overview (104 Tools)
+### Overview (69 Tools)
 
 | Category | Count | Tools |
 |----------|-------|-------|
 | [Database Management](#database-management) | 5 | create, list, select, stats, delete |
 | [Ingestion & Processing](#ingestion--processing) | 8 | ingest_directory, ingest_files, process_pending, status, retry_failed, reprocess, chunk_complete, convert_raw |
 | [Document Management](#document-management) | 3 | document_list, document_get, document_delete |
-| [Search & Retrieval](#search--retrieval) | 8 | search (BM25), search_semantic, search_hybrid, fts_manage, search_export, benchmark_compare, related_documents, rag_context |
-| [Question Answering](#question-answering) | 1 | question_answer (RAG + Gemini) |
-| [Entity Analysis](#entity-analysis) | 10 | entity_extract, entity_search, timeline_build, legal_witness_analysis, entity_extract_from_vlm, entity_extract_from_extractions, entity_extraction_stats, coreference_resolve, entity_dossier, entity_update_confidence |
-| [Knowledge Graph](#knowledge-graph) | 22 | build, incremental_build, query, node, paths, stats, delete, export, merge, split, enrich, classify_relationships, normalize_weights, prune_edges, set_edge_temporal, contradictions, scan_contradictions, embed_entities, search_entities, entity_export, entity_import, visualize |
+| [Search & Retrieval](#search--retrieval) | 7 | search (BM25), search_semantic, search_hybrid, fts_manage, search_export, benchmark_compare, rag_context |
 | [Document Comparison](#document-comparison) | 3 | document_compare, comparison_list, comparison_get |
 | [Document Clustering](#document-clustering) | 5 | cluster_documents, cluster_list, cluster_get, cluster_assign, cluster_delete |
-| [VLM / Vision](#vlm--vision-analysis) | 6 | vlm_describe, vlm_classify, vlm_process_document, vlm_process_pending, vlm_analyze_pdf, vlm_status |
+| [VLM / Vision Analysis](#vlm--vision-analysis) | 6 | vlm_describe, vlm_classify, vlm_process_document, vlm_process_pending, vlm_analyze_pdf, vlm_status |
 | [Image Management](#image-management) | 8 | image_extract, image_list, image_get, image_stats, image_delete, image_delete_by_document, image_reset_failed, image_pending |
-| [Form Fill](#form-fill) | 3 | form_fill, form_fill_status, form_fill_suggest_fields |
+| [Image Extraction](#image-extraction) | 3 | extract_images, extract_images_batch, extraction_check |
+| [Form Fill](#form-fill) | 2 | form_fill, form_fill_status |
 | [Structured Extraction](#structured-extraction) | 2 | extract_structured, extraction_list |
-| [File Extraction](#file-extraction) | 3 | extract_images, extract_images_batch, extraction_check |
 | [File Management](#file-management) | 5 | file_upload, file_list, file_get, file_download, file_delete |
 | [Evaluation](#evaluation) | 3 | evaluate_single, evaluate_document, evaluate_pending |
 | [Reports & Analytics](#reports--analytics) | 4 | evaluation_report, document_report, quality_summary, cost_summary |
 | [Provenance](#provenance) | 3 | provenance_get, provenance_verify, provenance_export |
 | [Configuration](#configuration) | 2 | config_get, config_set |
 
-All tools are prefixed with `ocr_`. For example: `ocr_db_create`, `ocr_search_hybrid`, `ocr_knowledge_graph_build`.
+All tools are prefixed with `ocr_`. For example: `ocr_db_create`, `ocr_search_hybrid`, `ocr_cluster_documents`.
 
 ---
 
@@ -460,22 +447,25 @@ All tools are prefixed with `ocr_`. For example: `ocr_db_create`, `ocr_search_hy
 | `ocr_db_create` | Create a new isolated database |
 | `ocr_db_list` | List all databases with optional stats |
 | `ocr_db_select` | Select the active database for all operations |
-| `ocr_db_stats` | Detailed statistics including KG health metrics |
+| `ocr_db_stats` | Detailed statistics (documents, chunks, embeddings, images, clusters) |
 | `ocr_db_delete` | Permanently delete a database |
-
 
 ### Ingestion & Processing
 
 | Tool | Description |
 |------|-------------|
-| `ocr_ingest_directory` | Scan directory and register documents (PDF, DOCX, images) |
+| `ocr_ingest_directory` | Scan directory and register documents (PDF, DOCX, images, Office files) |
 | `ocr_ingest_files` | Ingest specific files by path |
-| `ocr_process_pending` | Full OCR pipeline with auto-pipeline flags |
-| `ocr_status` | Check processing status |
+| `ocr_process_pending` | Full OCR pipeline: OCR -> Chunk -> Embed -> Vector Index |
+| `ocr_status` | Check processing status for documents |
 | `ocr_retry_failed` | Reset failed documents for reprocessing |
-| `ocr_reprocess` | Reprocess with different OCR settings |
+| `ocr_reprocess` | Reprocess a document with different OCR settings |
 | `ocr_chunk_complete` | Repair documents missing chunks/embeddings |
 | `ocr_convert_raw` | Convert via OCR without storing results |
+
+**Supported file types (18):** PDF, PNG, JPG, JPEG, TIFF, TIF, BMP, GIF, WEBP, DOCX, DOC, PPTX, PPT, XLSX, XLS, TXT, CSV, MD
+
+**Processing options:** `ocr_mode` (fast/balanced/accurate), `chunking_strategy` (fixed/page_aware), `page_range`, `max_pages`, `extras` (track_changes, chart_understanding, extract_links, table_row_bboxes, infographic, new_block_types)
 
 ### Search & Retrieval
 
@@ -484,119 +474,124 @@ All tools are prefixed with `ocr_`. For example: `ocr_db_create`, `ocr_search_hy
 | `ocr_search` | Exact terms, codes, IDs, phrases | BM25 full-text (FTS5, porter stemming) |
 | `ocr_search_semantic` | Conceptual queries, paraphrases | Vector similarity (nomic-embed-text-v1.5) |
 | `ocr_search_hybrid` | General queries (recommended) | Reciprocal Rank Fusion (BM25 + semantic) |
-| `ocr_rag_context` | LLM context assembly | Hybrid + entity enrichment + KG paths |
-| `ocr_related_documents` | Find connected documents | Knowledge graph entity overlap |
+| `ocr_rag_context` | LLM context assembly | Hybrid search assembled into markdown context block |
 | `ocr_search_export` | Export results to file | CSV or JSON export |
 | `ocr_benchmark_compare` | Cross-database comparison | Multi-database search benchmarking |
 | `ocr_fts_manage` | Index maintenance | FTS5 rebuild/status |
 
-**Search enhancement features** (all three search modes):
-- `entity_filter` -- Filter by entity names, types, or related entities
-- `time_range` -- Temporal filtering via KG edge dates
-- `cluster_id` -- Restrict to a document cluster
-- `expand_query` -- Semantic query expansion using KG entities
-- `rerank` -- Entity-frequency reranking
-- `include_entities` / `include_provenance` / `include_cluster_context`
-
-### Entity Analysis
-
-| Tool | Description |
-|------|-------------|
-| `ocr_entity_extract` | Extract entities via Gemini AI (segmented, 50K char chunks) |
-| `ocr_entity_search` | Search entities by name, type, or document |
-| `ocr_timeline_build` | Build chronological timeline from date entities |
-| `ocr_legal_witness_analysis` | Expert witness analysis using Gemini thinking mode |
-| `ocr_entity_extract_from_vlm` | Extract entities from VLM image descriptions |
-| `ocr_entity_extract_from_extractions` | Create entities from structured extraction fields |
-| `ocr_entity_extraction_stats` | Entity extraction quality analytics |
-| `ocr_coreference_resolve` | Resolve pronouns/abbreviations to named entities |
-| `ocr_entity_dossier` | Comprehensive entity profile (mentions, relationships, timeline) |
-| `ocr_entity_update_confidence` | Recalculate confidence scores |
-
-**Supported entity types:** `person`, `organization`, `date`, `amount`, `location`, `case_number`, `statute`, `exhibit`, `medication`, `diagnosis`, `medical_device`
-
-### Knowledge Graph
-
-22 tools for building, querying, and managing an entity-based knowledge graph.
-
-| Tool | Description |
-|------|-------------|
-| `ocr_knowledge_graph_build` | Build/rebuild graph with entity resolution |
-| `ocr_knowledge_graph_incremental_build` | Add documents without full rebuild |
-| `ocr_knowledge_graph_query` | Query with entity/relationship filtering |
-| `ocr_knowledge_graph_node` | Get detailed node information |
-| `ocr_knowledge_graph_paths` | Find paths between entities |
-| `ocr_knowledge_graph_stats` | Graph-wide statistics |
-| `ocr_knowledge_graph_delete` | Delete graph data |
-| `ocr_knowledge_graph_export` | Export as GraphML, CSV, or JSON-LD |
-| `ocr_knowledge_graph_merge` | Merge duplicate nodes |
-| `ocr_knowledge_graph_split` | Split a node by entity links |
-| `ocr_knowledge_graph_enrich` | Enrich nodes from multiple sources |
-| `ocr_knowledge_graph_classify_relationships` | Classify edges via Gemini + rules |
-| `ocr_knowledge_graph_normalize_weights` | Normalize edge weights |
-| `ocr_knowledge_graph_prune_edges` | Remove low-quality edges |
-| `ocr_knowledge_graph_set_edge_temporal` | Set temporal bounds on edges |
-| `ocr_knowledge_graph_contradictions` | Query contradictory edges |
-| `ocr_knowledge_graph_scan_contradictions` | Proactive contradiction detection |
-| `ocr_knowledge_graph_embed_entities` | Generate node embeddings (GPU) |
-| `ocr_knowledge_graph_search_entities` | Semantic entity search |
-| `ocr_knowledge_graph_entity_export` | Export entity data |
-| `ocr_knowledge_graph_entity_import` | Import external entities with matching |
-| `ocr_knowledge_graph_visualize` | Generate Mermaid diagrams |
-
-**Entity resolution modes:**
-- **exact** -- String-identical entities only
-- **fuzzy** -- Sorensen-Dice similarity >= 0.85 (0.75 for persons)
-- **ai** -- Gemini semantic matching for the 0.70-0.85 similarity range
-
-**Relationship types:** `co_mentioned`, `co_located`, `employed_by`, `located_in`, `filed_on`, `prescribed`, `treated_with`, `diagnosed_with`, `administered_via`, `managed_by`, `interacts_with`, and more via rule-based + Gemini classification
+**Search enhancement features** (available on all search modes):
+- `rerank` -- Gemini-powered contextual re-ranking for improved relevance
+- `cluster_id` -- Restrict results to a specific document cluster
+- `min_quality_score` -- Filter by OCR quality score (0-5)
+- `include_provenance` / `include_cluster_context` -- Enrich results with metadata
+- `document_filter` -- Restrict to specific document IDs
+- `metadata_filter` -- Filter by document title, author, or subject
 
 ### Document Comparison
 
 | Tool | Description |
 |------|-------------|
-| `ocr_document_compare` | Compare two documents (text diff, entity diff, contradictions) |
-| `ocr_comparison_list` | List comparisons |
-| `ocr_comparison_get` | Get full comparison details |
+| `ocr_document_compare` | Compare two documents: text diff + structural metadata diff + similarity ratio |
+| `ocr_comparison_list` | List comparisons with optional filtering by document ID |
+| `ocr_comparison_get` | Get full comparison details with diff operations |
 
 ### Document Clustering
 
 | Tool | Description |
 |------|-------------|
-| `ocr_cluster_documents` | Cluster by semantic + entity similarity (HDBSCAN/agglomerative/k-means) |
-| `ocr_cluster_list` | List clusters with optional entity counts |
-| `ocr_cluster_get` | Detailed cluster info with shared entities |
-| `ocr_cluster_assign` | Auto-assign document to nearest cluster |
+| `ocr_cluster_documents` | Cluster by semantic similarity (HDBSCAN / agglomerative / k-means) |
+| `ocr_cluster_list` | List clusters with optional filtering by run ID or tag |
+| `ocr_cluster_get` | Detailed cluster info with member documents |
+| `ocr_cluster_assign` | Auto-assign a document to the nearest existing cluster |
 | `ocr_cluster_delete` | Delete a clustering run |
 
 ### VLM / Vision Analysis
 
 | Tool | Description |
 |------|-------------|
-| `ocr_vlm_describe` | Describe an image using Gemini vision |
-| `ocr_vlm_classify` | Classify image type and complexity |
-| `ocr_vlm_process_document` | Process all images in a document |
-| `ocr_vlm_process_pending` | Process all pending images |
-| `ocr_vlm_analyze_pdf` | Direct PDF analysis with Gemini vision |
-| `ocr_vlm_status` | VLM service status |
+| `ocr_vlm_describe` | Describe an image using Gemini 3 Flash vision (supports thinking mode) |
+| `ocr_vlm_classify` | Classify image type, complexity, and text density |
+| `ocr_vlm_process_document` | Process all images in a document with VLM |
+| `ocr_vlm_process_pending` | Process all pending images across all documents |
+| `ocr_vlm_analyze_pdf` | Analyze a PDF directly with Gemini 3 Flash (max 20MB) |
+| `ocr_vlm_status` | VLM service status (API config, rate limits, circuit breaker) |
+
+### Image Management
+
+| Tool | Description |
+|------|-------------|
+| `ocr_image_extract` | Extract images from a PDF document via Datalab OCR |
+| `ocr_image_list` | List all images extracted from a document |
+| `ocr_image_get` | Get detailed information about a specific image |
+| `ocr_image_stats` | Image processing statistics |
+| `ocr_image_delete` | Delete a specific image record |
+| `ocr_image_delete_by_document` | Delete all images for a document |
+| `ocr_image_reset_failed` | Reset failed images to pending status |
+| `ocr_image_pending` | Get images pending VLM processing |
+
+### Image Extraction
+
+| Tool | Description |
+|------|-------------|
+| `ocr_extract_images` | Extract images from a document using local Python tools (PyMuPDF for PDF, zipfile for DOCX) |
+| `ocr_extract_images_batch` | Extract images from all OCR-processed documents |
+| `ocr_extraction_check` | Check if Python environment has required packages (PyMuPDF, Pillow) |
 
 ### Form Fill
 
 | Tool | Description |
 |------|-------------|
-| `ocr_form_fill` | Fill PDF/image forms via Datalab with KG validation |
-| `ocr_form_fill_status` | Get form fill operation status |
-| `ocr_form_fill_suggest_fields` | Suggest field values from entities and KG |
+| `ocr_form_fill` | Fill PDF/image forms via Datalab API with field name-value mapping |
+| `ocr_form_fill_status` | Get form fill operation status and results |
 
-### Additional Tool Categories
+### Structured Extraction
 
-**Structured Extraction** (2): Extract structured data using JSON schemas
-**File Extraction** (3): Extract images from PDFs/DOCX using local Python tools (PyMuPDF)
-**File Management** (5): Upload/download files via Datalab cloud storage
-**Evaluation** (3): Evaluate image descriptions and OCR quality
-**Reports & Analytics** (4): Quality reports, cost summaries, document reports
-**Provenance** (3): Get, verify, and export provenance chains (JSON, W3C PROV, CSV)
-**Configuration** (2): Get/set runtime configuration
+| Tool | Description |
+|------|-------------|
+| `ocr_extract_structured` | Extract structured data from OCR'd documents using a JSON schema |
+| `ocr_extraction_list` | List all structured extractions for a document |
+
+### File Management
+
+| Tool | Description |
+|------|-------------|
+| `ocr_file_upload` | Upload a file to Datalab cloud storage (deduplicates by SHA-256 hash) |
+| `ocr_file_list` | List uploaded files with optional duplicate detection |
+| `ocr_file_get` | Get metadata for a specific uploaded file |
+| `ocr_file_download` | Get a download URL for an uploaded file |
+| `ocr_file_delete` | Delete an uploaded file record |
+
+### Evaluation
+
+| Tool | Description |
+|------|-------------|
+| `ocr_evaluate_single` | Evaluate a single image with the universal VLM prompt |
+| `ocr_evaluate_document` | Evaluate all pending images in a document |
+| `ocr_evaluate_pending` | Evaluate all pending images across all documents |
+
+### Reports & Analytics
+
+| Tool | Description |
+|------|-------------|
+| `ocr_evaluation_report` | Comprehensive evaluation report with OCR and VLM metrics (markdown) |
+| `ocr_document_report` | Detailed report for a single document (images, extractions, comparisons, clusters) |
+| `ocr_quality_summary` | Quick quality summary across all documents and images |
+| `ocr_cost_summary` | Cost analytics for OCR and form fill operations (by document, mode, month, or total) |
+
+### Provenance
+
+| Tool | Description |
+|------|-------------|
+| `ocr_provenance_get` | Get the complete provenance chain for any item |
+| `ocr_provenance_verify` | Verify integrity through SHA-256 hash chain |
+| `ocr_provenance_export` | Export provenance data (JSON, W3C PROV-JSON, CSV) |
+
+### Configuration
+
+| Tool | Description |
+|------|-------------|
+| `ocr_config_get` | Get current system configuration |
+| `ocr_config_set` | Update a configuration setting at runtime |
 
 ---
 
@@ -611,17 +606,14 @@ DOCUMENT (depth 0)
 |   |   +-- EMBEDDING (depth 3)
 |   +-- IMAGE (depth 2)
 |   |   +-- VLM_DESCRIPTION (depth 3)
-|   |   +-- EVALUATION (depth 3)
-|   +-- ENTITY_EXTRACTION (depth 2)
-|   |   +-- ENTITY_EMBEDDING (depth 3)
+|   |       +-- EMBEDDING (depth 4)
 |   +-- EXTRACTION (depth 2)
 +-- FORM_FILL (depth 0)
 +-- COMPARISON (depth 2)
 +-- CLUSTERING (depth 2)
-+-- KNOWLEDGE_GRAPH (depth 2)
 ```
 
-**28 tables** covering documents, OCR results, chunks, embeddings, images, entities, knowledge graph nodes/edges, extractions, comparisons, clusters, form fills, uploaded files, provenance, FTS5 search index, and configuration.
+**15 core tables** covering documents, OCR results, chunks, embeddings, images, extractions, comparisons, clusters, document-cluster assignments, form fills, uploaded files, provenance, database metadata, schema version, and FTS index metadata. Plus FTS5 virtual tables for full-text search and a sqlite-vec virtual table for vector similarity.
 
 ---
 
@@ -632,13 +624,13 @@ Eight Python workers handle computationally intensive tasks:
 | Worker | Purpose |
 |--------|---------|
 | `ocr_worker.py` | Datalab API OCR processing |
-| `embedding_worker.py` | nomic-embed-text-v1.5 GPU inference |
+| `embedding_worker.py` | nomic-embed-text-v1.5 GPU inference (CUDA / MPS / CPU) |
 | `image_extractor.py` | PyMuPDF PDF image extraction |
-| `docx_image_extractor.py` | python-docx image extraction |
-| `image_optimizer.py` | Image format conversion and optimization |
+| `docx_image_extractor.py` | python-docx / zipfile DOCX image extraction |
+| `image_optimizer.py` | Image relevance analysis and filtering |
 | `form_fill_worker.py` | Datalab form fill API |
 | `file_manager_worker.py` | Datalab cloud file operations |
-| `clustering_worker.py` | scikit-learn clustering (HDBSCAN/agglomerative/k-means) |
+| `clustering_worker.py` | scikit-learn clustering (HDBSCAN / agglomerative / k-means) |
 
 All workers output JSON to stdout and log to stderr. They are invoked by the TypeScript server via `child_process.spawn`.
 
@@ -651,7 +643,7 @@ All workers output JSON to stdout and log to stderr. They are invoked by the Typ
 npm run build
 
 # Run tests
-npm test                  # Unit + integration tests
+npm test                  # Unit + integration tests (1505 tests across 79 files)
 npm run test:unit         # Unit tests only
 npm run test:integration  # Integration tests only
 npm run test:gpu          # GPU-specific tests
@@ -677,17 +669,17 @@ npm run check
 
 ```
 src/
-  index.ts                  # MCP server entry point
-  tools/                    # 19 tool files + shared.ts
-  services/                 # OCR, embedding, storage, chunking, KG, entity services
-  models/                   # Zod schemas and TypeScript types
-  utils/                    # Helpers (hash, entity extraction, etc.)
-python/                     # 8 Python workers
+  index.ts                  # MCP server entry point (registers 69 tools)
+  tools/                    # 16 tool files + shared.ts
+  services/                 # OCR, embedding, storage, chunking, VLM, search, clustering, comparison, provenance, images, gemini
+  models/                   # Zod schemas and TypeScript types (11 model files)
+  utils/                    # Helpers (hash, validation)
+  server/                   # Server state, types, errors
+python/                     # 8 Python workers + GPU utils
 tests/
   unit/                     # Unit tests
   integration/              # Integration tests
-  gpu/                      # GPU-specific tests
-  manual/                   # Manual verification tests
+  fixtures/                 # Test fixtures and sample documents
 ```
 
 ---
@@ -698,7 +690,7 @@ tests/
 ```
 Error: Cannot find module 'sqlite-vec'
 ```
-Run `npm install` — sqlite-vec uses a prebuilt binary that must match your platform and Node.js version.
+Run `npm install` -- sqlite-vec uses a prebuilt binary that must match your platform and Node.js version.
 
 ### Python not found (Windows)
 ```
