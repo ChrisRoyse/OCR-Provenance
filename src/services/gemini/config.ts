@@ -5,9 +5,10 @@
 
 import { z } from 'zod';
 
-// Model ID - Gemini 3 Flash is the only supported model
+// Model IDs - gemini-2.0-flash is the stable default; preview models may truncate output
 export const GEMINI_MODELS = {
-  FLASH_3: 'gemini-3-flash-preview', // Primary model: 1M input, 65K output
+  FLASH_2: 'gemini-2.0-flash', // Stable: reliable JSON output, no truncation issues
+  FLASH_3: 'gemini-3-flash-preview', // Preview: may truncate structured output
 } as const;
 
 export type GeminiModelId = (typeof GEMINI_MODELS)[keyof typeof GEMINI_MODELS];
@@ -44,7 +45,7 @@ export type MediaResolution = 'MEDIA_RESOLUTION_HIGH' | 'MEDIA_RESOLUTION_LOW';
 // Configuration schema
 export const GeminiConfigSchema = z.object({
   apiKey: z.string().min(1, 'GEMINI_API_KEY is required'),
-  model: z.string().default(GEMINI_MODELS.FLASH_3),
+  model: z.string().default(GEMINI_MODELS.FLASH_2),
 
   // Generation defaults
   maxOutputTokens: z.number().default(8192),
@@ -90,7 +91,7 @@ export function loadGeminiConfig(overrides?: Partial<GeminiConfig>): GeminiConfi
 
   const envConfig = {
     apiKey,
-    model: process.env.GEMINI_MODEL || GEMINI_MODELS.FLASH_3,
+    model: process.env.GEMINI_MODEL || GEMINI_MODELS.FLASH_2,
     maxOutputTokens: process.env.GEMINI_MAX_OUTPUT_TOKENS
       ? parseInt(process.env.GEMINI_MAX_OUTPUT_TOKENS, 10)
       : 8192,

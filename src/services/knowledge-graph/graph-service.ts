@@ -1,7 +1,7 @@
 /**
  * Knowledge Graph Service - Orchestration layer
  *
- * Ties together entity resolution, co-occurrence analysis, and graph storage
+ * Ties together entity resolution and graph storage
  * to build and query knowledge graphs across documents.
  *
  * CRITICAL: NEVER use console.log() - stdout is JSON-RPC protocol.
@@ -13,22 +13,16 @@
 import { DatabaseService } from '../storage/database/index.js';
 import type { Entity, EntityMention } from '../../models/entity.js';
 import {
-  RELATIONSHIP_TYPES,
   type KnowledgeNode,
   type KnowledgeEdge,
-  type RelationshipType,
 } from '../../models/knowledge-graph.js';
 import { ProvenanceType } from '../../models/provenance.js';
 import { getProvenanceTracker } from '../provenance/tracker.js';
 import { resolveEntities, geminiEntityClassifier, type ResolutionMode, type ClusterContext } from './resolution-service.js';
-import { v4 as uuidv4 } from 'uuid';
 import { computeHash } from '../../utils/hash.js';
 import {
   insertKnowledgeNode,
-  insertKnowledgeEdge,
   insertNodeEntityLink,
-  findEdge,
-  updateKnowledgeEdge,
   deleteAllGraphData,
   deleteGraphDataForDocuments,
   getGraphStats as getGraphStatsFromDb,
@@ -42,14 +36,10 @@ import {
   getEvidenceChunksForEdge,
 } from '../storage/database/knowledge-graph-operations.js';
 import { getEntitiesByDocument, getEntityMentions } from '../storage/database/entity-operations.js';
-import { GeminiClient, getSharedClient } from '../gemini/client.js';
 
 // ============================================================
 // Types
 // ============================================================
-
-/** Maximum entities per document for co-occurrence to avoid O(n^2) blowup */
-const MAX_COOCCURRENCE_ENTITIES = 200;
 
 interface BuildGraphOptions {
   document_filter?: string[];
@@ -179,9 +169,7 @@ export async function buildKnowledgeGraph(
   const startTime = Date.now();
   const conn = db.getConnection();
   const resolutionMode = options.resolution_mode ?? 'fuzzy';
-  const classifyRelationships = options.classify_relationships ?? false;
   const rebuild = options.rebuild ?? false;
-  const autoTemporal = options.auto_temporal ?? true;
 
   // Step 1: Handle rebuild vs existing graph
   if (rebuild) {
@@ -252,7 +240,7 @@ export async function buildKnowledgeGraph(
     processor_version: '1.0.0',
     processing_params: {
       resolution_mode: resolutionMode,
-      classify_relationships: classifyRelationships,
+      classify_relationships: options.classify_relationships ?? false,
       document_count: documentIds.length,
       entity_count: allEntities.length,
     },
@@ -310,36 +298,7 @@ export async function buildKnowledgeGraph(
     insertNodeEntityLink(conn, link);
   }
 
-  // Step 7: Build co-occurrence edges
-  buildCoOccurrenceEdges(db, resolutionResult.nodes, provenanceId, autoTemporal);
-
-  // Step 8: Classify relationships using Gemini AI
-  if (classifyRelationships) {
-    if (!process.env.GEMINI_API_KEY) {
-      throw new Error('classify_relationships=true requires GEMINI_API_KEY to be set');
-    }
-
-    // Collect co_located edges for classification
-    const coLocatedEdges: KnowledgeEdge[] = [];
-    for (const node of resolutionResult.nodes) {
-      const nodeEdges = getEdgesForNode(conn, node.id, { relationship_type: 'co_located' });
-      for (const edge of nodeEdges) {
-        // Avoid duplicates (edges appear in both directions)
-        if (!coLocatedEdges.some((e) => e.id === edge.id)) {
-          coLocatedEdges.push(edge);
-        }
-      }
-    }
-
-    if (coLocatedEdges.length > 0) {
-      console.error(
-        `[KnowledgeGraph] Sending ALL ${coLocatedEdges.length} co_located edges to Gemini for classification`
-      );
-      await classifyRelationshipsWithGemini(db, coLocatedEdges);
-    }
-  }
-
-  // Step 9: Gather stats and return result
+  // Step 7: Gather stats and return result
   const processingDurationMs = Date.now() - startTime;
   const stats = getGraphStatsFromDb(conn);
 
@@ -455,71 +414,6 @@ function isValidDate(year: number, month: number, day: number): boolean {
 }
 
 /**
- * Batch-query date entities for multiple chunks and infer temporal bounds.
- *
- * Returns a Map of chunkId -> temporal bounds. Uses a single query
- * to avoid N+1 queries during edge creation.
- *
- * @param conn - Database connection
- * @param chunkIds - Array of chunk IDs to query
- * @returns Map of chunkId -> temporal bounds
- */
-function batchInferTemporalBounds(
-  conn: ReturnType<DatabaseService['getConnection']>,
-  chunkIds: string[]
-): Map<string, { valid_from?: string; valid_until?: string }> {
-  const result = new Map<string, { valid_from?: string; valid_until?: string }>();
-  if (chunkIds.length === 0) return result;
-
-  try {
-    const placeholders = chunkIds.map(() => '?').join(',');
-    const rows = conn
-      .prepare(
-        `
-      SELECT em.chunk_id, e.normalized_text
-      FROM entities e
-      JOIN entity_mentions em ON em.entity_id = e.id
-      WHERE em.chunk_id IN (${placeholders}) AND e.entity_type = 'date'
-      ORDER BY em.chunk_id, e.normalized_text ASC
-    `
-      )
-      .all(...chunkIds) as Array<{ chunk_id: string; normalized_text: string }>;
-
-    // Group parsed dates by chunk
-    const chunkDateMap = new Map<string, string[]>();
-    for (const row of rows) {
-      const parsed = parseToISODate(row.normalized_text);
-      if (parsed) {
-        if (!chunkDateMap.has(row.chunk_id)) {
-          chunkDateMap.set(row.chunk_id, []);
-        }
-        chunkDateMap.get(row.chunk_id)!.push(parsed);
-      }
-    }
-
-    for (const [chunkId, dates] of chunkDateMap) {
-      const uniqueDates = [...new Set(dates)].sort();
-      if (uniqueDates.length === 0) continue;
-      if (uniqueDates.length === 1) {
-        result.set(chunkId, { valid_from: uniqueDates[0] });
-      } else {
-        result.set(chunkId, {
-          valid_from: uniqueDates[0],
-          valid_until: uniqueDates[uniqueDates.length - 1],
-        });
-      }
-    }
-  } catch (e) {
-    console.error(
-      '[batchInferTemporalBounds] Failed to query date entities for temporal inference:',
-      e instanceof Error ? e.message : String(e)
-    );
-  }
-
-  return result;
-}
-
-/**
  * Check if new temporal bounds are more specific (narrower) than existing ones.
  *
  * @param existing - Current temporal bounds on the edge
@@ -550,497 +444,6 @@ export function isMoreSpecificTemporal(
   if (hasNewUntil && !hasExistingUntil) return true;
 
   return false;
-}
-
-// ============================================================
-// buildCoOccurrenceEdges - Deterministic edge creation
-// ============================================================
-
-/**
- * Build co-occurrence edges between nodes that share documents or chunks.
- *
- * For each pair of nodes:
- * - co_mentioned: share at least one document
- *   weight = shared_documents / max(doc_count_a, doc_count_b)
- * - co_located: share at least one chunk (higher weight, 1.5x boost)
- *
- * Direction convention: sort node IDs alphabetically, lower = source.
- * Cap at MAX_COOCCURRENCE_ENTITIES per document to avoid O(n^2) blowup.
- *
- * @param db - DatabaseService instance
- * @param nodes - Resolved knowledge nodes
- * @param provenanceId - Provenance record ID for edge creation
- * @param autoTemporal - When true, infer temporal bounds from co-located date entities
- * @returns Number of edges created
- */
-function buildCoOccurrenceEdges(
-  db: DatabaseService,
-  nodes: KnowledgeNode[],
-  provenanceId: string,
-  autoTemporal: boolean = true
-): number {
-  const conn = db.getConnection();
-  const now = new Date().toISOString();
-  let edgeCount = 0;
-
-  if (nodes.length < 2) {
-    return 0;
-  }
-
-  // Build a map of node ID -> set of document IDs (via node_entity_links)
-  const nodeDocMap = new Map<string, Set<string>>();
-  // Build a map of node ID -> set of chunk IDs (via entity_mentions)
-  const nodeChunkMap = new Map<string, Set<string>>();
-
-  for (const node of nodes) {
-    const links = getLinksForNode(conn, node.id);
-    const docSet = new Set<string>();
-    const chunkSet = new Set<string>();
-
-    for (const link of links) {
-      docSet.add(link.document_id);
-
-      // Get entity mentions to find chunk_ids
-      const mentions = getEntityMentions(conn, link.entity_id);
-      for (const mention of mentions) {
-        if (mention.chunk_id) {
-          chunkSet.add(mention.chunk_id);
-        }
-      }
-    }
-
-    nodeDocMap.set(node.id, docSet);
-    nodeChunkMap.set(node.id, chunkSet);
-  }
-
-  // Detect single-document graph: when all nodes share exactly one document,
-  // co_mentioned edges are meaningless (every pair shares that document, creating
-  // a complete graph with n*(n-1)/2 edges and zero information). Only co_located
-  // edges (shared chunks) carry signal in this case.
-  const allDocumentIds = new Set<string>();
-  for (const docSet of nodeDocMap.values()) {
-    for (const docId of docSet) {
-      allDocumentIds.add(docId);
-    }
-  }
-  const isSingleDocumentGraph = allDocumentIds.size === 1;
-  if (isSingleDocumentGraph) {
-    console.error(
-      `[KnowledgeGraph] Single-document graph detected (${allDocumentIds.size} doc, ${nodes.length} nodes). ` +
-        `Skipping co_mentioned edges to avoid complete graph. Only co_located edges will be created.`
-    );
-  }
-
-  // Build co_mentioned and co_located edges between node pairs
-  // Cap at MAX_COOCCURRENCE_ENTITIES nodes to avoid O(n^2) blowup
-  const nodeList =
-    nodes.length > MAX_COOCCURRENCE_ENTITIES
-      ? [...nodes]
-          .sort((a, b) => b.document_count - a.document_count)
-          .slice(0, MAX_COOCCURRENCE_ENTITIES)
-      : [...nodes];
-
-  if (nodes.length > MAX_COOCCURRENCE_ENTITIES) {
-    console.error(
-      `[KnowledgeGraph] Capping co-occurrence analysis to ${MAX_COOCCURRENCE_ENTITIES} nodes (had ${nodes.length})`
-    );
-  }
-
-  // Pre-compute temporal bounds for all chunks if auto_temporal is enabled
-  let chunkTemporalMap = new Map<string, { valid_from?: string; valid_until?: string }>();
-  if (autoTemporal) {
-    const allChunkIds = new Set<string>();
-    for (const chunkSet of nodeChunkMap.values()) {
-      for (const chunkId of chunkSet) {
-        allChunkIds.add(chunkId);
-      }
-    }
-    if (allChunkIds.size > 0) {
-      chunkTemporalMap = batchInferTemporalBounds(conn, [...allChunkIds]);
-    }
-  }
-  let temporalEdgesSet = 0;
-
-  // Build a node type lookup for fast date-entity filtering
-  const nodeTypeMap = new Map<string, string>();
-  for (const node of nodeList) {
-    nodeTypeMap.set(node.id, node.entity_type);
-  }
-
-  for (let i = 0; i < nodeList.length; i++) {
-    const nodeA = nodeList[i];
-    const docsA = nodeDocMap.get(nodeA.id)!;
-    const chunksA = nodeChunkMap.get(nodeA.id)!;
-
-    for (let j = i + 1; j < nodeList.length; j++) {
-      const nodeB = nodeList[j];
-      const docsB = nodeDocMap.get(nodeB.id)!;
-      const chunksB = nodeChunkMap.get(nodeB.id)!;
-
-      // Shared documents
-      const sharedDocs: string[] = [];
-      for (const docId of docsA) {
-        if (docsB.has(docId)) {
-          sharedDocs.push(docId);
-        }
-      }
-
-      if (sharedDocs.length === 0) {
-        continue;
-      }
-
-      // Direction convention: sort node IDs alphabetically
-      const [sourceId, targetId] =
-        nodeA.id < nodeB.id ? [nodeA.id, nodeB.id] : [nodeB.id, nodeA.id];
-
-      // co_mentioned edge — skip for single-document graphs (would be a useless clique)
-      if (!isSingleDocumentGraph) {
-        const maxDocCount = Math.max(docsA.size, docsB.size);
-        const coMentionedWeight =
-          maxDocCount > 0 ? Math.round((sharedDocs.length / maxDocCount) * 10000) / 10000 : 0;
-
-        const existingCoMentioned = findEdge(conn, sourceId, targetId, 'co_mentioned');
-        if (!existingCoMentioned) {
-          const edge: KnowledgeEdge = {
-            id: uuidv4(),
-            source_node_id: sourceId,
-            target_node_id: targetId,
-            relationship_type: 'co_mentioned',
-            weight: coMentionedWeight,
-            evidence_count: sharedDocs.length,
-            document_ids: JSON.stringify(sharedDocs),
-            metadata: null,
-            provenance_id: provenanceId,
-            created_at: now,
-          };
-          insertKnowledgeEdge(conn, edge);
-          edgeCount++;
-        }
-      }
-
-      // Check for shared chunks (co_located)
-      const sharedChunks: string[] = [];
-      for (const chunkId of chunksA) {
-        if (chunksB.has(chunkId)) {
-          sharedChunks.push(chunkId);
-        }
-      }
-
-      if (sharedChunks.length > 0) {
-        const maxDocCount = Math.max(docsA.size, docsB.size);
-        const baseWeight = maxDocCount > 0 ? sharedDocs.length / maxDocCount : 0;
-        const coLocatedWeight = Math.round(Math.min(baseWeight * 1.5, 1.0) * 10000) / 10000;
-
-        const existingCoLocated = findEdge(conn, sourceId, targetId, 'co_located');
-        if (!existingCoLocated) {
-          const edge: KnowledgeEdge = {
-            id: uuidv4(),
-            source_node_id: sourceId,
-            target_node_id: targetId,
-            relationship_type: 'co_located',
-            weight: coLocatedWeight,
-            evidence_count: sharedChunks.length,
-            document_ids: JSON.stringify(sharedDocs),
-            metadata: JSON.stringify({ shared_chunk_ids: sharedChunks }),
-            provenance_id: provenanceId,
-            created_at: now,
-          };
-          insertKnowledgeEdge(conn, edge);
-          edgeCount++;
-
-          // Auto-temporal: infer temporal bounds from co-located date entities
-          // Only for non-date entity pairs (date entities ARE the temporal context)
-          if (
-            autoTemporal &&
-            nodeTypeMap.get(sourceId) !== 'date' &&
-            nodeTypeMap.get(targetId) !== 'date'
-          ) {
-            const temporal = mergeTemporalFromChunks(sharedChunks, chunkTemporalMap);
-            if (temporal) {
-              try {
-                conn
-                  .prepare(
-                    'UPDATE knowledge_edges SET valid_from = ?, valid_until = ? WHERE id = ?'
-                  )
-                  .run(temporal.valid_from ?? null, temporal.valid_until ?? null, edge.id);
-                temporalEdgesSet++;
-              } catch (e) {
-                console.error(
-                  '[graph-service] buildCoOccurrenceEdges temporal update failed for edge:',
-                  e instanceof Error ? e.message : String(e)
-                );
-              }
-            }
-          }
-        }
-      }
-    }
-  }
-
-  if (autoTemporal && temporalEdgesSet > 0) {
-    console.error(
-      `[KnowledgeGraph] Auto-temporal: set temporal bounds on ${temporalEdgesSet} co_located edges`
-    );
-  }
-
-  return edgeCount;
-}
-
-/**
- * Merge temporal bounds from multiple shared chunks.
- *
- * When an edge is supported by multiple shared chunks, each chunk may
- * have different date entities. We take the union: earliest valid_from
- * across all chunks, latest valid_until across all chunks.
- *
- * @param sharedChunkIds - Chunk IDs shared by both endpoints
- * @param chunkTemporalMap - Pre-computed temporal bounds per chunk
- * @returns Merged temporal bounds or null
- */
-function mergeTemporalFromChunks(
-  sharedChunkIds: string[],
-  chunkTemporalMap: Map<string, { valid_from?: string; valid_until?: string }>
-): { valid_from?: string; valid_until?: string } | null {
-  let earliestFrom: string | undefined;
-  let latestUntil: string | undefined;
-
-  for (const chunkId of sharedChunkIds) {
-    const bounds = chunkTemporalMap.get(chunkId);
-    if (!bounds) continue;
-
-    if (bounds.valid_from) {
-      if (!earliestFrom || bounds.valid_from < earliestFrom) {
-        earliestFrom = bounds.valid_from;
-      }
-    }
-    if (bounds.valid_until) {
-      if (!latestUntil || bounds.valid_until > latestUntil) {
-        latestUntil = bounds.valid_until;
-      }
-    }
-  }
-
-  if (!earliestFrom && !latestUntil) return null;
-
-  const result: { valid_from?: string; valid_until?: string } = {};
-  if (earliestFrom) result.valid_from = earliestFrom;
-  if (latestUntil) result.valid_until = latestUntil;
-  return result;
-}
-
-// ============================================================
-// classifyRelationshipsWithGemini - Optional Gemini classification
-// ============================================================
-
-/**
- * Classify co_located edge relationships using Gemini AI in batches.
- *
- * Batches edges (10 per Gemini call) for ~10x throughput vs 1-per-call.
- * On batch failure, marks all edges in that batch with error metadata.
- * Matches the batching pattern from rule-classifier.ts (FIX-P1-1).
- *
- * @param db - DatabaseService instance
- * @param edges - Co-located edges to classify
- */
-async function classifyRelationshipsWithGemini(
-  db: DatabaseService,
-  edges: KnowledgeEdge[]
-): Promise<void> {
-  const conn = db.getConnection();
-  const BATCH_SIZE = 10;
-
-  let client: GeminiClient;
-  try {
-    client = getSharedClient();
-  } catch (error) {
-    const msg = error instanceof Error ? error.message : String(error);
-    console.error(`[KnowledgeGraph] Failed to initialize Gemini client: ${msg}`);
-    throw new Error(`Gemini client initialization failed for relationship classification: ${msg}`);
-  }
-
-  // Build edge contexts with chunk text
-  const edgeContexts: Array<{
-    edge: KnowledgeEdge;
-    sourceName: string;
-    sourceType: string;
-    targetName: string;
-    targetType: string;
-    chunkContext: string;
-  }> = [];
-
-  for (const edge of edges) {
-    const sourceNode = getKnowledgeNode(conn, edge.source_node_id);
-    const targetNode = getKnowledgeNode(conn, edge.target_node_id);
-    if (!sourceNode || !targetNode) continue;
-
-    let chunkContext = '';
-    if (edge.metadata) {
-      try {
-        const meta = JSON.parse(edge.metadata) as { shared_chunk_ids?: string[] };
-        if (meta.shared_chunk_ids?.[0]) {
-          const chunkRow = conn
-            .prepare('SELECT text FROM chunks WHERE id = ?')
-            .get(meta.shared_chunk_ids[0]) as { text: string } | undefined;
-          if (chunkRow) chunkContext = chunkRow.text.slice(0, 500);
-        }
-      } catch (e) {
-        console.error(
-          '[graph-service] classifyRelationshipsWithGemini metadata parse failed for edge',
-          edge.id,
-          ':',
-          e instanceof Error ? e.message : String(e)
-        );
-      }
-    }
-
-    edgeContexts.push({
-      edge,
-      sourceName: sourceNode.canonical_name,
-      sourceType: sourceNode.entity_type,
-      targetName: targetNode.canonical_name,
-      targetType: targetNode.entity_type,
-      chunkContext,
-    });
-  }
-
-  // JSON response schema for batch classification
-  const responseSchema = {
-    type: 'object' as const,
-    properties: {
-      classifications: {
-        type: 'array' as const,
-        items: {
-          type: 'object' as const,
-          properties: {
-            edge_id: { type: 'string' as const },
-            relationship_type: {
-              type: 'string' as const,
-              enum: [...RELATIONSHIP_TYPES],
-            },
-          },
-          required: ['edge_id', 'relationship_type'],
-        },
-      },
-    },
-    required: ['classifications'],
-  };
-
-  console.error(
-    `[KnowledgeGraph] Classifying ${edgeContexts.length} edges in batches of ${BATCH_SIZE}`
-  );
-
-  // Process in batches
-  for (let i = 0; i < edgeContexts.length; i += BATCH_SIZE) {
-    const batch = edgeContexts.slice(i, i + BATCH_SIZE);
-
-    const edgeDescriptions = batch
-      .map(
-        (ctx) =>
-          `- Edge "${ctx.edge.id}": "${ctx.sourceName}" (${ctx.sourceType}) <-> "${ctx.targetName}" (${ctx.targetType})${ctx.chunkContext ? ` | Context: "${ctx.chunkContext}"` : ''}`
-      )
-      .join('\n');
-
-    const prompt = `Classify the relationship type for each entity pair that co-occurs in text.
-
-${edgeDescriptions}
-
-Relationship types:
-- works_at: person employed by/works at organization
-- represents: person represents/is attorney for entity
-- located_in: entity is located in a place
-- filed_in: case filed in court/jurisdiction
-- cites: document/case cites another
-- references: entity references another entity
-- party_to: person/org is party to a case
-- treated_with: patient/condition treated with medication/procedure
-- administered_via: medication administered via route/method
-- managed_by: condition managed by provider/treatment
-- interacts_with: medication/substance interacts with another
-- related_to: general relationship (use only if no other type fits)
-- co_located: entities merely co-occur without clear relationship
-
-For each edge, choose EXACTLY ONE type. Use "co_located" only if no other type fits.`;
-
-    try {
-      const response = await client.fast(prompt, responseSchema);
-      let parsed: { classifications: Array<{ edge_id: string; relationship_type: string }> };
-      try {
-        parsed = JSON.parse(response.text);
-      } catch (parseErr) {
-        console.error(
-          `[KnowledgeGraph] Batch ${Math.floor(i / BATCH_SIZE) + 1} JSON parse failed:`,
-          parseErr instanceof Error ? parseErr.message : String(parseErr)
-        );
-        continue;
-      }
-
-      if (!parsed.classifications) continue;
-
-      for (const ctx of batch) {
-        const classification = parsed.classifications.find((c) => c.edge_id === ctx.edge.id);
-        if (!classification) continue;
-
-        const classifiedType = classification.relationship_type
-          .trim()
-          .toLowerCase()
-          .replace(/[^a-z_]/g, '') as RelationshipType;
-
-        if (RELATIONSHIP_TYPES.includes(classifiedType) && classifiedType !== 'co_located') {
-          const existingMeta = ctx.edge.metadata ? JSON.parse(ctx.edge.metadata) : {};
-          updateKnowledgeEdge(conn, ctx.edge.id, {
-            metadata: JSON.stringify({
-              ...existingMeta,
-              classified_by: 'gemini',
-              original_type: 'co_located',
-              classification_history: [
-                ...(existingMeta.classification_history ?? []),
-                {
-                  original_type: 'co_located',
-                  classified_type: classifiedType,
-                  classified_by: 'gemini',
-                  model: 'gemini-3-flash-preview',
-                  classified_at: new Date().toISOString(),
-                },
-              ],
-            }),
-          });
-          conn
-            .prepare('UPDATE knowledge_edges SET relationship_type = ? WHERE id = ?')
-            .run(classifiedType, ctx.edge.id);
-        }
-      }
-    } catch (error) {
-      console.error(
-        `[KnowledgeGraph] Batch ${Math.floor(i / BATCH_SIZE) + 1} classification failed:`,
-        error instanceof Error ? error.message : String(error)
-      );
-      // Mark all edges in the failed batch with error metadata
-      for (const ctx of batch) {
-        let existingMeta: Record<string, unknown> = {};
-        if (ctx.edge.metadata) {
-          try {
-            existingMeta = JSON.parse(ctx.edge.metadata);
-          } catch (e) {
-            console.error(
-              '[graph-service] failed to parse existing metadata for edge',
-              ctx.edge.id,
-              ':',
-              e instanceof Error ? e.message : String(e)
-            );
-          }
-        }
-        updateKnowledgeEdge(conn, ctx.edge.id, {
-          metadata: JSON.stringify({
-            ...existingMeta,
-            classification_failed: {
-              error: error instanceof Error ? error.message : String(error),
-              attempted_at: new Date().toISOString(),
-            },
-          }),
-        });
-      }
-    }
-  }
 }
 
 // ============================================================

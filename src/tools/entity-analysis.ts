@@ -41,11 +41,11 @@ import { mapExtractionEntitiesToDB } from '../services/knowledge-graph/extractio
 import { incrementalBuildGraph } from '../services/knowledge-graph/incremental-builder.js';
 import { findGraphPaths } from '../services/knowledge-graph/graph-service.js';
 import {
-  processSegmentsAndStoreEntities,
+  extractEntitiesAndRelationships,
+  storeJointExtractionResults,
+  buildKGEntityHints,
   computeExtractionQualityScore,
   TOTAL_ENTITY_TYPES,
-  MAX_CHARS_PER_CALL,
-  SEGMENT_OVERLAP_CHARS,
 } from '../utils/entity-extraction-helpers.js';
 import { detectEntityBoundaryIssues } from '../services/chunking/chunker.js';
 
@@ -399,7 +399,6 @@ async function handleEntityExtract(params: Record<string, unknown>) {
       );
     }
 
-    // Use default Gemini model (gemini-3-flash-preview) for entity extraction
     const client = new GeminiClient({
       retry: { maxAttempts: 2, baseDelayMs: 500, maxDelayMs: 5000 },
     });
@@ -432,8 +431,7 @@ async function handleEntityExtract(params: Record<string, unknown>) {
       processing_params: {
         entity_types: input.entity_types ?? ENTITY_TYPES,
         text_length: textLength,
-        segment_size: MAX_CHARS_PER_CALL,
-        segment_overlap: SEGMENT_OVERLAP_CHARS,
+        extraction_mode: 'joint_single_call',
       },
       processing_duration_ms: null,
       processing_quality_score: null,
@@ -443,22 +441,52 @@ async function handleEntityExtract(params: Record<string, unknown>) {
       chain_path: JSON.stringify(['DOCUMENT', 'OCR_RESULT', 'ENTITY_EXTRACTION']),
     });
 
-    // Build type filter prompt fragment
-    const entityTypes = input.entity_types ?? ENTITY_TYPES;
-    const typeFilter = input.entity_types
-      ? `Only extract entities of these types: ${input.entity_types.join(', ')}.`
-      : `Extract all entity types: ${ENTITY_TYPES.join(', ')}.`;
+    // Create KNOWLEDGE_GRAPH provenance record (chained from ENTITY_EXTRACTION)
+    const kgProvId = uuidv4();
+    db.insertProvenance({
+      id: kgProvId,
+      type: ProvenanceType.KNOWLEDGE_GRAPH,
+      created_at: now,
+      processed_at: now,
+      source_file_created_at: null,
+      source_file_modified_at: null,
+      source_type: 'KNOWLEDGE_GRAPH',
+      source_path: doc.file_path,
+      source_id: entityProvId,
+      root_document_id: doc.provenance_id,
+      location: null,
+      content_hash: computeHash(`knowledge-graph-${doc.id}-${now}`),
+      input_hash: computeHash(`entity-extraction-${doc.id}`),
+      file_hash: doc.file_hash,
+      processor: 'gemini-joint-extraction',
+      processor_version: '1.0.0',
+      processing_params: {
+        extraction_mode: 'joint_single_call',
+        text_length: textLength,
+      },
+      processing_duration_ms: null,
+      processing_quality_score: null,
+      parent_id: entityProvId,
+      parent_ids: JSON.stringify([doc.provenance_id, ocrResult.provenance_id, entityProvId]),
+      chain_depth: 3,
+      chain_path: JSON.stringify(['DOCUMENT', 'OCR_RESULT', 'ENTITY_EXTRACTION', 'KNOWLEDGE_GRAPH']),
+    });
 
-    const result = await processSegmentsAndStoreEntities(
+    // Build KG entity hints for cross-document context
+    const entityHints = buildKGEntityHints(conn);
+
+    // Single-call joint entity + relationship extraction
+    const extractionResult = await extractEntitiesAndRelationships(client, ocrText, entityHints);
+
+    // Store entities, mentions, KG nodes, and KG edges in one transaction
+    const result = storeJointExtractionResults(
       conn,
-      client,
       doc.id,
       ocrResult.id,
       ocrText,
+      extractionResult,
       entityProvId,
-      typeFilter,
-      entityTypes,
-      startTime
+      kgProvId
     );
 
     // Restore KG links for entities that existed before re-extraction
@@ -519,8 +547,33 @@ async function handleEntityExtract(params: Record<string, unknown>) {
       );
     }
 
-    // Auto-merge into knowledge graph if one exists
-    const kgMergeResult = await autoMergeIntoKnowledgeGraph(db, doc.id);
+    // Cross-document KG resolution: if other documents have KG nodes, merge for dedup
+    let kgMergeResult: Record<string, unknown> | null = null;
+    try {
+      const otherNodesCount = (conn.prepare(
+        'SELECT COUNT(*) as cnt FROM knowledge_nodes WHERE provenance_id != ?'
+      ).get(kgProvId) as { cnt: number }).cnt;
+
+      if (otherNodesCount > 0) {
+        console.error(`[INFO] ${otherNodesCount} existing KG nodes from other documents, running cross-document resolution`);
+        kgMergeResult = await autoMergeIntoKnowledgeGraph(db, doc.id);
+      } else {
+        kgMergeResult = {
+          kg_built_inline: true,
+          kg_nodes_created: result.totalNodes,
+          kg_edges_created: result.totalEdges,
+        };
+      }
+    } catch (mergeErr) {
+      const msg = mergeErr instanceof Error ? mergeErr.message : String(mergeErr);
+      console.error(`[WARN] Cross-document KG resolution failed: ${msg}`);
+      kgMergeResult = {
+        kg_built_inline: true,
+        kg_nodes_created: result.totalNodes,
+        kg_edges_created: result.totalEdges,
+        kg_cross_doc_resolution_error: msg,
+      };
+    }
 
     // Optionally reassign clusters after entity extraction + KG merge
     let clusterReassignment: ClusterReassignmentResult | undefined;
@@ -592,8 +645,8 @@ async function handleEntityExtract(params: Record<string, unknown>) {
         textLength,
         Object.keys(result.entitiesByType).length,
         TOTAL_ENTITY_TYPES,
-        result.noiseFiltered,
-        result.totalRawExtracted,
+        0, // noise filtering now happens inside extractEntitiesAndRelationships
+        result.totalEntities, // total raw = total entities (post-filtering)
         pagesWithEntities,
         totalPages
       );
@@ -629,27 +682,33 @@ async function handleEntityExtract(params: Record<string, unknown>) {
       );
     }
 
+    const processingDurationMs = Date.now() - startTime;
+
+    // Update entity and KG provenance with final duration
+    try {
+      const updateDuration = conn.prepare('UPDATE provenance SET processing_duration_ms = ? WHERE id = ?');
+      updateDuration.run(processingDurationMs, entityProvId);
+      updateDuration.run(processingDurationMs, kgProvId);
+    } catch (provErr) {
+      console.error(`[WARN] Failed to update provenance duration: ${provErr instanceof Error ? provErr.message : String(provErr)}`);
+    }
+
     return formatResponse(
       successResult({
         document_id: doc.id,
+        extraction_mode: 'joint_single_call',
         total_entities: result.totalEntities,
         total_mentions: result.totalMentions,
-        total_raw_extracted: result.totalRawExtracted,
-        noise_filtered: result.noiseFiltered,
-        deduplicated: result.deduplicated,
         entities_by_type: result.entitiesByType,
-        chunk_mapped: result.chunkMapped,
-        chunk_unmapped: result.totalEntities - result.chunkMapped,
         total_db_chunks: getChunksByDocumentId(conn, doc.id).length,
+        total_nodes: result.totalNodes,
+        total_edges: result.totalEdges,
         provenance_id: entityProvId,
-        processing_duration_ms: result.processingDurationMs,
+        kg_provenance_id: kgProvId,
+        processing_duration_ms: processingDurationMs,
         text_length: textLength,
-        api_calls: result.apiCalls,
-        segments_total: result.segmentsTotal,
-        segments_complete: result.segmentsComplete,
-        segments_failed: result.segmentsFailed,
-        segment_size: MAX_CHARS_PER_CALL,
-        segment_overlap: SEGMENT_OVERLAP_CHARS,
+        api_calls: extractionResult.was_chunked ? 2 : 1,
+        token_usage: extractionResult.token_usage,
         ...incrementalStats,
         ...kgMergeResult,
         ...(clusterReassignment ? { cluster_reassignment: clusterReassignment } : {}),

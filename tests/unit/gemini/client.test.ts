@@ -22,8 +22,9 @@ const CircuitState = {
 
 describe('Gemini Config', () => {
   it('should have correct model IDs', () => {
+    expect(GEMINI_MODELS.FLASH_2).toBe('gemini-2.0-flash');
     expect(GEMINI_MODELS.FLASH_3).toBe('gemini-3-flash-preview');
-    expect(Object.keys(GEMINI_MODELS)).toEqual(['FLASH_3']);
+    expect(Object.keys(GEMINI_MODELS)).toEqual(['FLASH_2', 'FLASH_3']);
   });
 
   it('should have correct rate limits', () => {
@@ -40,7 +41,7 @@ describe('Gemini Config', () => {
 
     const config = loadGeminiConfig();
     expect(config.apiKey).toBe('test-key');
-    expect(config.model).toBe(GEMINI_MODELS.FLASH_3);
+    expect(config.model).toBe(GEMINI_MODELS.FLASH_2);
     // Restore
     if (originalEnv) {
       process.env.GEMINI_API_KEY = originalEnv;
@@ -194,7 +195,7 @@ describe('GeminiClient', () => {
     expect(client).toBeDefined();
 
     const status = client.getStatus();
-    expect(status.model).toBe(GEMINI_MODELS.FLASH_3);
+    expect(status.model).toBe(GEMINI_MODELS.FLASH_2);
     if (originalModel) process.env.GEMINI_MODEL = originalModel;
   });
 
