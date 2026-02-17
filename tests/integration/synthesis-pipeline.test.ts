@@ -196,21 +196,21 @@ interface TestDataIds {
 function setupGeminiMock(): void {
   mockFastFn.mockImplementation(async (prompt: string) => {
     // Detect which synthesis stage is calling by examining the prompt
-    if (prompt.includes('Entity Census') && prompt.includes('corpus_summary')) {
+    if (prompt.includes('Entity Census')) {
       return { text: JSON.stringify(MOCK_CORPUS_MAP), inputTokens: 200, outputTokens: 150 };
     }
-    if (prompt.includes('narrative_text') && prompt.includes('Analyze document')) {
+    if (prompt.includes('Analyze document') && prompt.includes('narrative')) {
       return { text: JSON.stringify(MOCK_NARRATIVE), inputTokens: 300, outputTokens: 200 };
     }
-    if (prompt.includes('source_entity') && prompt.includes('target_entity') && prompt.includes('Identify ALL meaningful relationships')) {
-      return { text: JSON.stringify(MOCK_RELATIONSHIPS), inputTokens: 250, outputTokens: 180 };
+    if (prompt.includes('Identify ALL meaningful relationships')) {
+      return { text: JSON.stringify({ relationships: MOCK_RELATIONSHIPS }), inputTokens: 250, outputTokens: 180 };
     }
     if (prompt.includes('Cross-document relationship analysis')) {
       // Cross-document relationships: return empty for single-doc tests
-      return { text: JSON.stringify([]), inputTokens: 100, outputTokens: 20 };
+      return { text: JSON.stringify({ relationships: [] }), inputTokens: 100, outputTokens: 20 };
     }
-    if (prompt.includes('importance_rank') && prompt.includes('role')) {
-      return { text: JSON.stringify(MOCK_ENTITY_ROLES), inputTokens: 200, outputTokens: 150 };
+    if (prompt.includes('role') && prompt.includes('importance_rank')) {
+      return { text: JSON.stringify({ roles: MOCK_ENTITY_ROLES }), inputTokens: 200, outputTokens: 150 };
     }
     // Fallback: return empty object
     return { text: '{}', inputTokens: 10, outputTokens: 10 };
@@ -1090,18 +1090,18 @@ describe('AI Knowledge Synthesis Pipeline - Integration Tests', () => {
     it('should skip unresolved entities in relationship inference', async () => {
       // Mock relationships with unknown entity names
       mockFastFn.mockImplementation(async (prompt: string) => {
-        if (prompt.includes('narrative_text') && prompt.includes('Analyze document')) {
+        if (prompt.includes('Analyze document') && prompt.includes('narrative')) {
           return { text: JSON.stringify(MOCK_NARRATIVE), inputTokens: 100, outputTokens: 50 };
         }
-        if (prompt.includes('source_entity') && prompt.includes('Identify ALL meaningful relationships')) {
+        if (prompt.includes('Identify ALL meaningful relationships')) {
           return {
-            text: JSON.stringify([{
+            text: JSON.stringify({ relationships: [{
               source_entity: 'Unknown Person XYZ',
               target_entity: 'Robert James Smith',
               relationship_type: 'related_to',
               confidence: 0.5,
               evidence: 'test evidence',
-            }]),
+            }] }),
             inputTokens: 100,
             outputTokens: 50,
           };
@@ -1118,18 +1118,18 @@ describe('AI Knowledge Synthesis Pipeline - Integration Tests', () => {
 
       // Re-setup with the unresolved entity mock
       mockFastFn.mockImplementation(async (prompt: string) => {
-        if (prompt.includes('narrative_text') && prompt.includes('Analyze document')) {
+        if (prompt.includes('Analyze document') && prompt.includes('narrative')) {
           return { text: JSON.stringify(MOCK_NARRATIVE), inputTokens: 100, outputTokens: 50 };
         }
-        if (prompt.includes('source_entity') && prompt.includes('Identify ALL meaningful relationships')) {
+        if (prompt.includes('Identify ALL meaningful relationships')) {
           return {
-            text: JSON.stringify([{
+            text: JSON.stringify({ relationships: [{
               source_entity: 'Unknown Person XYZ',
               target_entity: 'Robert James Smith',
               relationship_type: 'related_to',
               confidence: 0.5,
               evidence: 'test evidence',
-            }]),
+            }] }),
             inputTokens: 100,
             outputTokens: 50,
           };

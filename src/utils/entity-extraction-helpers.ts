@@ -398,7 +398,6 @@ export async function callGeminiForEntities(
   try {
     const response = await client.fast(prompt, ENTITY_EXTRACTION_SCHEMA, {
       maxOutputTokens: ENTITY_EXTRACTION_MAX_OUTPUT_TOKENS,
-      requestTimeout: ENTITY_EXTRACTION_TIMEOUT_MS,
     });
     return parseEntityResponse(response.text);
   } catch (primaryError) {

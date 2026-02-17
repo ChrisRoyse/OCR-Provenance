@@ -24,6 +24,104 @@ let _model: string | null = null;
 function getModel(): string { if (!_model) _model = loadGeminiConfig().model; return _model; }
 const VALID_REL_TYPES = RELATIONSHIP_TYPES.filter(t => t !== 'co_mentioned' && t !== 'co_located').join(', ');
 
+// ---- Response Schemas for schema-constrained JSON output ----
+
+const CORPUS_MAP_SCHEMA = {
+  type: 'object' as const,
+  properties: {
+    corpus_summary: { type: 'string' as const },
+    key_actors: {
+      type: 'array' as const,
+      items: {
+        type: 'object' as const,
+        properties: {
+          name: { type: 'string' as const },
+          type: { type: 'string' as const },
+          importance: { type: 'number' as const },
+          reason: { type: 'string' as const },
+        },
+        required: ['name', 'type', 'importance', 'reason'],
+      },
+    },
+    themes: {
+      type: 'array' as const,
+      items: {
+        type: 'object' as const,
+        properties: {
+          name: { type: 'string' as const },
+          core_entities: { type: 'array' as const, items: { type: 'string' as const } },
+          description: { type: 'string' as const },
+        },
+        required: ['name', 'core_entities', 'description'],
+      },
+    },
+    narrative_arcs: {
+      type: 'array' as const,
+      items: {
+        type: 'object' as const,
+        properties: {
+          name: { type: 'string' as const },
+          entity_names: { type: 'array' as const, items: { type: 'string' as const } },
+          description: { type: 'string' as const },
+          document_ids: { type: 'array' as const, items: { type: 'string' as const } },
+        },
+        required: ['name', 'entity_names', 'description', 'document_ids'],
+      },
+    },
+  },
+  required: ['corpus_summary', 'key_actors', 'themes', 'narrative_arcs'],
+};
+
+const NARRATIVE_SCHEMA = {
+  type: 'object' as const,
+  properties: {
+    narrative_text: { type: 'string' as const },
+  },
+  required: ['narrative_text'],
+};
+
+const RELATIONSHIPS_SCHEMA = {
+  type: 'object' as const,
+  properties: {
+    relationships: {
+      type: 'array' as const,
+      items: {
+        type: 'object' as const,
+        properties: {
+          source_entity: { type: 'string' as const },
+          target_entity: { type: 'string' as const },
+          relationship_type: { type: 'string' as const },
+          confidence: { type: 'number' as const },
+          evidence: { type: 'string' as const },
+        },
+        required: ['source_entity', 'target_entity', 'relationship_type', 'confidence', 'evidence'],
+      },
+    },
+  },
+  required: ['relationships'],
+};
+
+const ROLES_SCHEMA = {
+  type: 'object' as const,
+  properties: {
+    roles: {
+      type: 'array' as const,
+      items: {
+        type: 'object' as const,
+        properties: {
+          entity_name: { type: 'string' as const },
+          role: { type: 'string' as const },
+          theme: { type: 'string' as const },
+          importance_rank: { type: 'number' as const },
+          context_summary: { type: 'string' as const },
+        },
+        required: ['entity_name', 'role', 'importance_rank', 'context_summary'],
+      },
+    },
+  },
+  required: ['roles'],
+};
+
 function sha256(content: string): string {
   return 'sha256:' + crypto.createHash('sha256').update(content).digest('hex');
 }
@@ -41,16 +139,29 @@ function createProvenance(db: Database.Database, rootDocId: string | null, scope
 
 function parseJson<T>(text: string, ctx: string): T {
   let s = text.trim();
+  // Strip markdown code fences
   if (s.startsWith('```')) {
     s = s.slice(s.indexOf('\n') + 1);
     const i = s.lastIndexOf('```');
     if (i >= 0) s = s.slice(0, i);
     s = s.trim();
   }
-  try { return JSON.parse(s) as T; } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    console.error(`[synthesis] JSON parse failed (${ctx}): ${msg}\nRaw: ${text.slice(0, 300)}`);
-    throw new Error(`Failed to parse Gemini response for ${ctx}: ${msg}`);
+  try { return JSON.parse(s) as T; } catch {
+    // Gemini sometimes returns malformed JSON - attempt recovery
+    try {
+      let fixed = s
+        .replace(/,\s*([}\]])/g, '$1')       // trailing commas
+        .replace(/'/g, '"')                   // single quotes → double quotes
+        .replace(/\/\/[^\n]*/g, '')           // line comments
+        .replace(/\/\*[\s\S]*?\*\//g, '');    // block comments
+      // Fix unquoted property names: { key: "val" } → { "key": "val" }
+      fixed = fixed.replace(/(?<=[\{,]\s*)([a-zA-Z_]\w*)\s*:/g, '"$1":');
+      return JSON.parse(fixed) as T;
+    } catch (err2) {
+      const msg = err2 instanceof Error ? err2.message : String(err2);
+      console.error(`[synthesis] JSON parse failed (${ctx}): ${msg}\nRaw: ${text.slice(0, 500)}`);
+      throw new Error(`Failed to parse Gemini response for ${ctx}: ${msg}`);
+    }
   }
 }
 
@@ -105,8 +216,11 @@ function formatRoster(entities: Array<{ name: string; type: string }>, includeMe
   return [...byType.entries()].map(([t, items]) => `### ${t.toUpperCase()}\n${items.join('\n')}`).join('\n');
 }
 
-async function gemini(prompt: string, maxTokens = 4096): Promise<string> {
-  const r = await getSharedClient().fast(prompt, undefined, { maxOutputTokens: maxTokens });
+// maxTokens must account for Gemini 3 thinking tokens (can use 4000-5000+)
+// which count toward maxOutputTokens budget. Use max (65K) to avoid truncation.
+const GEMINI_MAX_OUTPUT_TOKENS = 65536;
+async function gemini(prompt: string, schema?: object): Promise<string> {
+  const r = await getSharedClient().fast(prompt, schema, { maxOutputTokens: GEMINI_MAX_OUTPUT_TOKENS });
   return r.text;
 }
 
@@ -138,7 +252,7 @@ export async function generateCorpusMap(db: Database.Database, databaseName: str
   if (nodes.length === 0) throw new Error('No KG nodes found. Build the knowledge graph first.');
   const census = buildCensus(nodes, 500);
   const docCount = new Set(getDocIdsWithEntities(db)).size;
-  const text = await gemini(`You are analyzing a document corpus. Entity Census (${nodes.length} entities, ${docCount} docs):\n${census}\n\nReturn JSON: {"corpus_summary":"2-3 sentences","key_actors":[{"name":"exact name","type":"type","importance":1-20,"reason":"why"}],"themes":[{"name":"","core_entities":[""],"description":""}],"narrative_arcs":[{"name":"","entity_names":[""],"description":"","document_ids":[]}]}\nRules: key_actors top 20, themes 3-8, arcs 1-5. EXACT names. ONLY valid JSON.`);
+  const text = await gemini(`You are analyzing a document corpus. Entity Census (${nodes.length} entities, ${docCount} docs):\n${census}\n\nRules: key_actors top 20 by importance (1=most, 20=least). themes 3-8 themes. narrative_arcs 1-5 arcs. Use EXACT entity names from the census. corpus_summary should be 2-3 sentences.`, CORPUS_MAP_SCHEMA);
   const r = parseJson<CorpusMapResult>(text, 'corpus_map');
   if (force) deleteCorpusIntelligence(db, databaseName);
   const provId = createProvenance(db, null, 'corpus', sha256(JSON.stringify(r)));
@@ -164,7 +278,7 @@ export async function generateDocumentNarrative(db: Database.Database, documentI
   const mentionMap = new Map(entities.map(e => [e.name, e.mentions]));
   const roster = formatRoster(entities, true, mentionMap);
   const corpusCtx = corpus ? `\nCorpus: ${corpus.corpus_summary}\nThemes: ${corpus.themes}\n` : '';
-  const text = await gemini(`Analyze document "${doc.file_name}" in a corpus.${corpusCtx}\nText excerpt:\n${(ocrRow?.extracted_text ?? '').slice(0, 4000)}\n\nEntities:\n${roster}\n\nReturn JSON: {"narrative_text":"2-4 paragraph narrative of entity interactions, max 2000 chars. Reference entities by name. Focus on WHO did WHAT to WHOM and WHEN."}\nONLY valid JSON.`, 2048);
+  const text = await gemini(`Analyze document "${doc.file_name}" in a corpus.${corpusCtx}\nText excerpt:\n${(ocrRow?.extracted_text ?? '').slice(0, 4000)}\n\nEntities:\n${roster}\n\nWrite a 2-4 paragraph narrative (max 2000 chars) of entity interactions. Reference entities by EXACT name. Focus on WHO did WHAT to WHOM and WHEN.`, NARRATIVE_SCHEMA);
   const r = parseJson<{ narrative_text: string }>(text, 'narrative');
   const provId = createProvenance(db, documentId, 'document', sha256(r.narrative_text));
   const record: DocumentNarrative = {
@@ -191,8 +305,9 @@ export async function inferDocumentRelationships(db: Database.Database, document
   if (entities.length < 2) return [];
   const roster = formatRoster(entities);
   const corpusCtx = corpus ? `Corpus: ${corpus.corpus_summary}\nThemes: ${corpus.themes}\n\n` : '';
-  const text = await gemini(`${corpusCtx}Document Narrative:\n${narrative.narrative_text.slice(0, 2000)}\n\nEntities:\n${roster}\n\nIdentify ALL meaningful relationships. Return JSON array:\n[{"source_entity":"exact name","target_entity":"exact name","relationship_type":"one of: ${VALID_REL_TYPES}","confidence":0.0-1.0,"evidence":"1-2 sentences","temporal":{"from":"ISO or null","until":"ISO or null"} or null}]\nUse EXACT names. No co_mentioned/co_located. ONLY valid JSON array.`);
-  const rels = parseJson<InferredRel[]>(text, 'doc_relationships');
+  const text = await gemini(`${corpusCtx}Document Narrative:\n${narrative.narrative_text.slice(0, 2000)}\n\nEntities:\n${roster}\n\nIdentify ALL meaningful relationships between entities. Use EXACT entity names. relationship_type must be one of: ${VALID_REL_TYPES}. confidence 0.0-1.0. evidence should be 1-2 sentences. No co_mentioned or co_located types.`, RELATIONSHIPS_SCHEMA);
+  const parsed = parseJson<{ relationships: InferredRel[] }>(text, 'doc_relationships');
+  const rels = Array.isArray(parsed) ? parsed : (parsed.relationships ?? []);
   if (!Array.isArray(rels)) throw new Error('Non-array response for relationship inference');
   const nameMap = new Map(entities.map(e => [e.name.toLowerCase(), e.nodeId]));
   const provId = createProvenance(db, documentId, 'doc_relationships', sha256(JSON.stringify(rels)));
@@ -218,8 +333,9 @@ export async function inferCrossDocumentRelationships(db: Database.Database, _da
   const narrs: string[] = [];
   for (const d of docIds) { const n = getDocumentNarrative(db, d); if (n) narrs.push(`[${d}]: ${n.narrative_text.slice(0, 500)}`); }
   const entList = multiDoc.map(n => { const al = n.aliases ? JSON.parse(n.aliases) as string[] : []; return `- ${n.canonical_name} (${n.entity_type}, ${n.document_count} docs)${al.length ? ` aka: ${al.join(', ')}` : ''}`; }).join('\n');
-  const text = await gemini(`Cross-document relationship analysis.\nMulti-doc entities:\n${entList}\n\nDoc summaries:\n${narrs.join('\n').slice(0, 3000)}\n\nReturn JSON array:\n[{"source_entity":"exact name","target_entity":"exact name","relationship_type":"one of: ${VALID_REL_TYPES}","confidence":0.0-1.0,"evidence":"1-2 sentences"}]\nFocus on cross-document connections. ONLY valid JSON.`);
-  const rels = parseJson<InferredRel[]>(text, 'cross_doc');
+  const text = await gemini(`Cross-document relationship analysis.\nMulti-doc entities:\n${entList}\n\nDoc summaries:\n${narrs.join('\n').slice(0, 3000)}\n\nIdentify cross-document relationships. Use EXACT entity names. relationship_type must be one of: ${VALID_REL_TYPES}. confidence 0.0-1.0. Focus on connections that span multiple documents.`, RELATIONSHIPS_SCHEMA);
+  const parsed = parseJson<{ relationships: InferredRel[] }>(text, 'cross_doc');
+  const rels = Array.isArray(parsed) ? parsed : (parsed.relationships ?? []);
   if (!Array.isArray(rels)) throw new Error('Non-array response for cross-doc inference');
   const nameMap = new Map(multiDoc.map(n => [n.canonical_name.toLowerCase(), n.id]));
   const provId = createProvenance(db, null, 'cross_document', sha256(JSON.stringify(rels)));
@@ -247,8 +363,9 @@ export async function classifyEntityRoles(db: Database.Database, databaseName: s
   if (nodes.length === 0) return [];
   const entList = nodes.map(n => `- ${n.canonical_name} (${n.entity_type}, ${n.document_count} docs, ${n.mention_count} mentions)`).join('\n');
   const ctx = corpus ? `Corpus: ${corpus.corpus_summary}\nThemes: ${corpus.themes}\n\n` : '';
-  const text = await gemini(`${ctx}Entities:\n${entList}\n\nDetermine each entity's role in this ${scope}. Return JSON array:\n[{"entity_name":"exact name","role":"e.g. attending_physician","theme":"or null","importance_rank":1-50,"context_summary":"1 sentence"}]\nEXACT names. importance_rank 1=most important. ONLY valid JSON.`);
-  const roles = parseJson<Array<{ entity_name: string; role: string; theme: string | null; importance_rank: number; context_summary: string }>>(text, 'roles');
+  const text = await gemini(`${ctx}Entities:\n${entList}\n\nDetermine each entity's role in this ${scope}. Use EXACT entity names. importance_rank 1=most important, 50=least. role examples: attending_physician, plaintiff, defendant, medication, primary_diagnosis. context_summary should be 1 sentence.`, ROLES_SCHEMA);
+  const parsed = parseJson<{ roles: Array<{ entity_name: string; role: string; theme: string | null; importance_rank: number; context_summary: string }> }>(text, 'roles');
+  const roles = Array.isArray(parsed) ? parsed : (parsed.roles ?? []);
   if (!Array.isArray(roles)) throw new Error('Non-array response for role classification');
   deleteEntityRolesByScope(db, scope, scopeId);
   const provId = createProvenance(db, scopeId ?? null, `roles_${scope}`, sha256(JSON.stringify(roles)));
