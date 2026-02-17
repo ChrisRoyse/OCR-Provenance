@@ -195,11 +195,6 @@ describe('Comparison Operations', () => {
         doc1_ocr_mode: 'balanced',
         doc2_ocr_mode: 'balanced',
       }),
-      entity_diff_json: JSON.stringify({
-        doc1_total_entities: 10,
-        doc2_total_entities: 12,
-        by_type: {},
-      }),
       summary: 'Documents are 85% similar. Same page count (5). Text length differs by 200 chars.',
       content_hash: computeHash('comparison-content-' + id),
       provenance_id: provId,
@@ -260,7 +255,6 @@ describe('Comparison Operations', () => {
     expect(result!.similarity_ratio).toBe(0.85);
     expect(result!.text_diff_json).toBe(comp.text_diff_json);
     expect(result!.structural_diff_json).toBe(comp.structural_diff_json);
-    expect(result!.entity_diff_json).toBe(comp.entity_diff_json);
     expect(result!.summary).toBe(comp.summary);
     expect(result!.content_hash).toBe(comp.content_hash);
     expect(result!.provenance_id).toBe(comp.provenance_id);
@@ -316,7 +310,6 @@ describe('Comparison Operations', () => {
       similarity_ratio: 0.5,
       text_diff_json: '{}',
       structural_diff_json: '{}',
-      entity_diff_json: '{}',
       summary: 'Different docs',
       content_hash: computeHash('comp2-hash'),
       provenance_id: compProv2,
@@ -349,7 +342,6 @@ describe('Comparison Operations', () => {
       similarity_ratio: 0.7,
       text_diff_json: '{}',
       structural_diff_json: '{}',
-      entity_diff_json: '{}',
       summary: 'Somewhat similar',
       content_hash: computeHash('comp-doc2-test'),
       provenance_id: compProv,
@@ -441,31 +433,9 @@ describe('Comparison Operations', () => {
         doc2_ocr_mode: 'balanced',
       };
 
-      const complexEntityDiff = {
-        doc1_total_entities: 25,
-        doc2_total_entities: 30,
-        by_type: {
-          person: {
-            doc1_count: 5,
-            doc2_count: 7,
-            common: ['John Doe'],
-            doc1_only: ['Jane Smith'],
-            doc2_only: ['Bob Jones', 'Alice Brown'],
-          },
-          organization: {
-            doc1_count: 3,
-            doc2_count: 3,
-            common: ['Acme Corp', 'BigCo'],
-            doc1_only: ['SmallCo'],
-            doc2_only: ['MediumCo'],
-          },
-        },
-      };
-
       const comp = buildComparison({
         text_diff_json: JSON.stringify(complexTextDiff),
         structural_diff_json: JSON.stringify(complexStructDiff),
-        entity_diff_json: JSON.stringify(complexEntityDiff),
       });
       insertComparison(db, comp);
 
@@ -478,13 +448,6 @@ describe('Comparison Operations', () => {
 
       const retrievedStructDiff = JSON.parse(result!.structural_diff_json);
       expect(retrievedStructDiff).toEqual(complexStructDiff);
-
-      const retrievedEntityDiff = JSON.parse(result!.entity_diff_json);
-      expect(retrievedEntityDiff).toEqual(complexEntityDiff);
-
-      // Verify the entity diff contains the specific nested arrays
-      expect(retrievedEntityDiff.by_type.person.common).toEqual(['John Doe']);
-      expect(retrievedEntityDiff.by_type.person.doc2_only).toEqual(['Bob Jones', 'Alice Brown']);
     }
   );
 });

@@ -30,7 +30,6 @@ import { getImage } from '../services/storage/database/image-operations.js';
 import { getOCRResult } from '../services/storage/database/ocr-operations.js';
 import { ProvenanceVerifier } from '../services/provenance/verifier.js';
 import { ProvenanceTracker } from '../services/provenance/tracker.js';
-import { getEntityTypeDistribution } from '../services/storage/database/entity-operations.js';
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // HELPER FUNCTIONS
@@ -50,7 +49,7 @@ function csvEscape(field: string | number | null | undefined): string {
   return str;
 }
 
-/** Detected item types from findProvenanceId - includes 'provenance' for direct provenance ID lookups */
+/** Detected item types from findProvenanceId */
 type DetectedItemType =
   | 'document'
   | 'chunk'
@@ -59,7 +58,6 @@ type DetectedItemType =
   | 'image'
   | 'comparison'
   | 'clustering'
-  | 'knowledge_graph'
   | 'form_fill'
   | 'extraction'
   | 'provenance';
@@ -107,13 +105,6 @@ function findProvenanceId(
     return { provenanceId: cluster.provenance_id, itemType: 'clustering' };
   }
 
-  const knowledgeNode = dbConn
-    .prepare('SELECT provenance_id FROM knowledge_nodes WHERE id = ?')
-    .get(itemId) as { provenance_id: string } | undefined;
-  if (knowledgeNode) {
-    return { provenanceId: knowledgeNode.provenance_id, itemType: 'knowledge_graph' };
-  }
-
   const formFill = dbConn
     .prepare('SELECT provenance_id FROM form_fills WHERE id = ?')
     .get(itemId) as { provenance_id: string } | undefined;
@@ -143,9 +134,6 @@ export async function handleProvenanceGet(params: Record<string, unknown>): Prom
     const input = validateInput(ProvenanceGetInput, params);
     const { db } = requireDatabase();
 
-    // findProvenanceId handles all item types including direct provenance ID lookup.
-    // When item_type is specified (not 'auto'), it serves as a hint but findProvenanceId
-    // already tries all types in order, so we always use it for consistent behavior.
     const found = findProvenanceId(db, input.item_id);
     const provenanceId = found?.provenanceId ?? null;
     const itemType: DetectedItemType | 'auto' = found?.itemType ?? input.item_type ?? 'auto';
@@ -159,70 +147,16 @@ export async function handleProvenanceGet(params: Record<string, unknown>): Prom
       throw provenanceNotFoundError(input.item_id);
     }
 
-    // Enrich ENTITY_EXTRACTION provenance items with entity metrics
-    const dbConn = db.getConnection();
-    const enrichedChain = chain.map((p) => {
-      const item: Record<string, unknown> = {
-        id: p.id,
-        type: p.type,
-        chain_depth: p.chain_depth,
-        processor: p.processor,
-        processor_version: p.processor_version,
-        content_hash: p.content_hash,
-        created_at: p.created_at,
-        parent_id: p.parent_id,
-      };
-
-      if (p.type === 'ENTITY_EXTRACTION' && p.root_document_id) {
-        try {
-          // Find document_id from root_document_id provenance
-          const docRow = dbConn
-            .prepare('SELECT id FROM documents WHERE provenance_id = ?')
-            .get(p.root_document_id) as { id: string } | undefined;
-
-          if (docRow) {
-            const documentId = docRow.id;
-            const typeDist = getEntityTypeDistribution(dbConn, documentId);
-            const typeDistribution: Record<string, number> = {};
-            for (const row of typeDist) {
-              typeDistribution[row.entity_type] = row.count;
-            }
-
-            // Segment stats (uses extraction_status column, different shape from shared getSegmentStats)
-            const segmentStats = dbConn
-              .prepare(
-                `SELECT COUNT(*) as segment_count,
-                      COALESCE(SUM(entity_count), 0) as total_entities,
-                      SUM(CASE WHEN extraction_status = 'complete' THEN 1 ELSE 0 END) as complete_segments,
-                      SUM(CASE WHEN extraction_status = 'failed' THEN 1 ELSE 0 END) as failed_segments
-               FROM entity_extraction_segments WHERE document_id = ?`
-              )
-              .get(documentId) as
-              | {
-                  segment_count: number;
-                  total_entities: number;
-                  complete_segments: number;
-                  failed_segments: number;
-                }
-              | undefined;
-
-            item['entity_extraction_metrics'] = {
-              segment_count: segmentStats?.segment_count ?? 0,
-              total_entities: segmentStats?.total_entities ?? 0,
-              complete_segments: segmentStats?.complete_segments ?? 0,
-              failed_segments: segmentStats?.failed_segments ?? 0,
-              type_distribution: typeDistribution,
-            };
-          }
-        } catch (e: unknown) {
-          // Graceful degradation if entity tables don't exist
-          const msg = e instanceof Error ? e.message : String(e);
-          console.error(`[provenance] entity_extraction_metrics enrichment failed: ${msg}`);
-        }
-      }
-
-      return item;
-    });
+    const enrichedChain = chain.map((p) => ({
+      id: p.id,
+      type: p.type,
+      chain_depth: p.chain_depth,
+      processor: p.processor,
+      processor_version: p.processor_version,
+      content_hash: p.content_hash,
+      created_at: p.created_at,
+      parent_id: p.parent_id,
+    }));
 
     return formatResponse(
       successResult({
@@ -339,73 +273,6 @@ export async function handleProvenanceVerify(
     if (input.verify_content) {
       result.hashes_verified = chainResult.hashes_verified;
       result.hashes_failed = chainResult.hashes_failed;
-    }
-
-    // Entity integrity checks
-    try {
-      const dbConn = db.getConnection();
-
-      // Find document_id from the chain's root_document_id
-      const rootDocProvId = chain[0]?.root_document_id;
-      if (rootDocProvId) {
-        const docRow = dbConn
-          .prepare('SELECT id FROM documents WHERE provenance_id = ?')
-          .get(rootDocProvId) as { id: string } | undefined;
-
-        if (docRow) {
-          const documentId = docRow.id;
-
-          // Check entity mentions whose START position is outside their chunk boundaries.
-          // Mentions are assigned by start position, so character_end may extend slightly
-          // past chunk.character_end at chunk boundaries — that's expected and valid.
-          const outOfBoundsMentions = dbConn
-            .prepare(
-              `SELECT COUNT(*) as count
-             FROM entity_mentions em
-             JOIN chunks c ON em.chunk_id = c.id
-             WHERE em.document_id = ?
-             AND (em.character_start < c.character_start OR em.character_start >= c.character_end)`
-            )
-            .get(documentId) as { count: number } | undefined;
-
-          // Check orphaned node_entity_links (pointing to non-existent entities)
-          const orphanedLinks = dbConn
-            .prepare(
-              `SELECT COUNT(*) as count FROM node_entity_links nel
-             LEFT JOIN entities e ON nel.entity_id = e.id
-             WHERE e.id IS NULL`
-            )
-            .get() as { count: number } | undefined;
-
-          const outOfBounds = outOfBoundsMentions?.count ?? 0;
-          const orphaned = orphanedLinks?.count ?? 0;
-
-          result.entity_integrity = {
-            out_of_bounds_mentions: outOfBounds,
-            orphaned_node_entity_links: orphaned,
-            entity_integrity_ok: outOfBounds === 0 && orphaned === 0,
-          };
-
-          if (outOfBounds > 0) {
-            errors.push(
-              `${outOfBounds} entity mention(s) have positions outside their chunk boundaries`
-            );
-          }
-          if (orphaned > 0) {
-            errors.push(`${orphaned} node_entity_link(s) point to non-existent entities`);
-          }
-
-          // Update errors in result if new ones found
-          if (errors.length > 0) {
-            result.errors = errors;
-          }
-        }
-      }
-    } catch (err) {
-      console.error(
-        `[provenance] entity integrity check failed: ${err instanceof Error ? err.message : String(err)}`
-      );
-      // Graceful degradation if entity/KG tables don't exist
     }
 
     return formatResponse(successResult(result));
@@ -568,66 +435,6 @@ export async function handleProvenanceExport(
       data = [headers.join(','), ...rows].join('\n');
     }
 
-    // Include entity extraction metadata for ENTITY_EXTRACTION provenance items
-    let entityExtractionSummary: Record<string, unknown> | undefined;
-    try {
-      const dbConn = db.getConnection();
-      const entityExtractionRecords = records.filter((r) => r.type === 'ENTITY_EXTRACTION');
-
-      if (entityExtractionRecords.length > 0) {
-        let totalEntities = 0;
-        let totalSegments = 0;
-        const perDocMetrics: Array<Record<string, unknown>> = [];
-
-        for (const r of entityExtractionRecords) {
-          const docRow = dbConn
-            .prepare('SELECT id FROM documents WHERE provenance_id = ?')
-            .get(r.root_document_id) as { id: string } | undefined;
-
-          if (docRow) {
-            const typeDist = getEntityTypeDistribution(dbConn, docRow.id);
-            const typeDistribution: Record<string, number> = {};
-            for (const row of typeDist) {
-              typeDistribution[row.entity_type] = row.count;
-            }
-
-            const segStats = dbConn
-              .prepare(
-                `SELECT COUNT(*) as segment_count,
-                      COALESCE(SUM(entity_count), 0) as total_entities
-               FROM entity_extraction_segments WHERE document_id = ?`
-              )
-              .get(docRow.id) as { segment_count: number; total_entities: number } | undefined;
-
-            const entityCount = segStats?.total_entities ?? 0;
-            const segmentCount = segStats?.segment_count ?? 0;
-            totalEntities += entityCount;
-            totalSegments += segmentCount;
-
-            perDocMetrics.push({
-              provenance_id: r.id,
-              document_id: docRow.id,
-              entity_count: entityCount,
-              segment_count: segmentCount,
-              type_distribution: typeDistribution,
-            });
-          }
-        }
-
-        entityExtractionSummary = {
-          extraction_count: entityExtractionRecords.length,
-          total_entities: totalEntities,
-          total_segments: totalSegments,
-          per_document: perDocMetrics,
-        };
-      }
-    } catch (err) {
-      console.error(
-        `[provenance] entity extraction summary failed: ${err instanceof Error ? err.message : String(err)}`
-      );
-      // Graceful degradation if entity tables don't exist
-    }
-
     return formatResponse(
       successResult({
         scope: input.scope,
@@ -635,7 +442,6 @@ export async function handleProvenanceExport(
         document_id: input.document_id,
         record_count: records.length,
         data,
-        ...(entityExtractionSummary ? { entity_extraction_summary: entityExtractionSummary } : {}),
       })
     );
   } catch (error) {
@@ -653,13 +459,13 @@ export async function handleProvenanceExport(
 export const provenanceTools: Record<string, ToolDefinition> = {
   ocr_provenance_get: {
     description:
-      'Get the complete provenance chain for an item. ENTITY_EXTRACTION items include entity_extraction_metrics (segment counts, type distribution)',
+      'Get the complete provenance chain for an item',
     inputSchema: {
       item_id: z
         .string()
         .min(1)
         .describe(
-          'ID of the item (document, ocr_result, chunk, embedding, image, comparison, clustering, knowledge_graph, form_fill, extraction, or provenance)'
+          'ID of the item (document, ocr_result, chunk, embedding, image, comparison, clustering, form_fill, extraction, or provenance)'
         ),
       item_type: z
         .enum([
@@ -670,7 +476,6 @@ export const provenanceTools: Record<string, ToolDefinition> = {
           'image',
           'comparison',
           'clustering',
-          'knowledge_graph',
           'form_fill',
           'extraction',
           'auto',
@@ -682,7 +487,7 @@ export const provenanceTools: Record<string, ToolDefinition> = {
   },
   ocr_provenance_verify: {
     description:
-      'Verify the integrity of an item through its provenance chain. Includes entity_integrity checks (out-of-bounds mentions, orphaned node links)',
+      'Verify the integrity of an item through its provenance chain',
     inputSchema: {
       item_id: z.string().min(1).describe('ID of the item to verify'),
       verify_content: z.boolean().default(true).describe('Verify content hashes'),
@@ -692,7 +497,7 @@ export const provenanceTools: Record<string, ToolDefinition> = {
   },
   ocr_provenance_export: {
     description:
-      'Export provenance data in various formats. Includes entity_extraction_summary with per-document entity counts and type distributions',
+      'Export provenance data in various formats (JSON, W3C PROV-JSON, CSV)',
     inputSchema: {
       scope: z.enum(['document', 'database']).describe('Export scope'),
       document_id: z.string().optional().describe('Document ID (required when scope is document)'),

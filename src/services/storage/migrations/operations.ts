@@ -21,23 +21,212 @@ import {
   CREATE_EXTRACTIONS_FTS_TABLE,
   CREATE_EXTRACTIONS_FTS_TRIGGERS,
   CREATE_UPLOADED_FILES_TABLE,
-  CREATE_ENTITIES_TABLE,
-  CREATE_ENTITY_MENTIONS_TABLE,
   CREATE_COMPARISONS_TABLE,
   CREATE_CLUSTERS_TABLE,
   CREATE_DOCUMENT_CLUSTERS_TABLE,
-  CREATE_KNOWLEDGE_NODES_TABLE,
-  CREATE_KNOWLEDGE_EDGES_TABLE,
-  CREATE_NODE_ENTITY_LINKS_TABLE,
-  CREATE_KNOWLEDGE_NODES_FTS_TABLE,
-  CREATE_KNOWLEDGE_NODES_FTS_TRIGGERS,
-  CREATE_ENTITY_EXTRACTION_SEGMENTS_TABLE,
-  CREATE_ENTITY_EMBEDDINGS_TABLE,
-  CREATE_VEC_ENTITY_EMBEDDINGS_TABLE,
-  CREATE_CORPUS_INTELLIGENCE_TABLE,
-  CREATE_DOCUMENT_NARRATIVES_TABLE,
-  CREATE_ENTITY_ROLES_TABLE,
 } from './schema-definitions.js';
+
+// ─── Legacy entity/KG table definitions (inlined for migration chain v12→v25) ───
+// These tables were removed from schema-definitions.ts in v26 but the migration
+// functions that originally created them (v12→v13, v14→v15, v17→v18, etc.) still
+// reference these constants so that old databases can migrate through the full chain.
+// The v25→v26 migration then drops all of them.
+
+const CREATE_ENTITIES_TABLE = `
+CREATE TABLE IF NOT EXISTS entities (
+  id TEXT PRIMARY KEY NOT NULL,
+  document_id TEXT NOT NULL REFERENCES documents(id),
+  entity_type TEXT NOT NULL CHECK (entity_type IN ('person', 'organization', 'date', 'amount', 'case_number', 'location', 'statute', 'exhibit', 'medication', 'diagnosis', 'medical_device', 'other')),
+  raw_text TEXT NOT NULL,
+  normalized_text TEXT NOT NULL,
+  confidence REAL NOT NULL DEFAULT 0.0,
+  metadata TEXT,
+  provenance_id TEXT NOT NULL REFERENCES provenance(id),
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+)`;
+
+const CREATE_ENTITY_MENTIONS_TABLE = `
+CREATE TABLE IF NOT EXISTS entity_mentions (
+  id TEXT PRIMARY KEY NOT NULL,
+  entity_id TEXT NOT NULL REFERENCES entities(id),
+  document_id TEXT NOT NULL REFERENCES documents(id),
+  chunk_id TEXT REFERENCES chunks(id),
+  page_number INTEGER,
+  character_start INTEGER,
+  character_end INTEGER,
+  context_text TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+)`;
+
+const CREATE_KNOWLEDGE_NODES_TABLE = `
+CREATE TABLE IF NOT EXISTS knowledge_nodes (
+  id TEXT PRIMARY KEY,
+  entity_type TEXT NOT NULL CHECK (entity_type IN ('person', 'organization', 'date', 'amount', 'case_number', 'location', 'statute', 'exhibit', 'medication', 'diagnosis', 'medical_device', 'other')),
+  canonical_name TEXT NOT NULL,
+  normalized_name TEXT NOT NULL,
+  aliases TEXT,
+  document_count INTEGER NOT NULL DEFAULT 1,
+  mention_count INTEGER NOT NULL DEFAULT 0,
+  edge_count INTEGER NOT NULL DEFAULT 0,
+  avg_confidence REAL NOT NULL DEFAULT 0.0,
+  metadata TEXT,
+  provenance_id TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  importance_score REAL,
+  resolution_type TEXT,
+  FOREIGN KEY (provenance_id) REFERENCES provenance(id)
+)
+`;
+
+const CREATE_KNOWLEDGE_EDGES_TABLE = `
+CREATE TABLE IF NOT EXISTS knowledge_edges (
+  id TEXT PRIMARY KEY,
+  source_node_id TEXT NOT NULL,
+  target_node_id TEXT NOT NULL,
+  relationship_type TEXT NOT NULL CHECK (relationship_type IN ('co_mentioned', 'co_located', 'works_at', 'represents', 'located_in', 'filed_in', 'cites', 'references', 'party_to', 'related_to', 'precedes', 'occurred_at', 'treated_with', 'administered_via', 'managed_by', 'interacts_with', 'diagnosed_with', 'prescribed_by', 'admitted_to', 'supervised_by', 'filed_by', 'contraindicated_with')),
+  weight REAL NOT NULL DEFAULT 1.0,
+  evidence_count INTEGER NOT NULL DEFAULT 1,
+  document_ids TEXT NOT NULL,
+  metadata TEXT,
+  provenance_id TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  valid_from TEXT,
+  valid_until TEXT,
+  normalized_weight REAL DEFAULT 0,
+  contradiction_count INTEGER DEFAULT 0,
+  FOREIGN KEY (source_node_id) REFERENCES knowledge_nodes(id),
+  FOREIGN KEY (target_node_id) REFERENCES knowledge_nodes(id),
+  FOREIGN KEY (provenance_id) REFERENCES provenance(id)
+)
+`;
+
+const CREATE_NODE_ENTITY_LINKS_TABLE = `
+CREATE TABLE IF NOT EXISTS node_entity_links (
+  id TEXT PRIMARY KEY,
+  node_id TEXT NOT NULL,
+  entity_id TEXT NOT NULL UNIQUE,
+  document_id TEXT NOT NULL,
+  similarity_score REAL NOT NULL DEFAULT 1.0,
+  resolution_method TEXT,
+  created_at TEXT NOT NULL,
+  FOREIGN KEY (node_id) REFERENCES knowledge_nodes(id),
+  FOREIGN KEY (entity_id) REFERENCES entities(id),
+  FOREIGN KEY (document_id) REFERENCES documents(id)
+)
+`;
+
+const CREATE_KNOWLEDGE_NODES_FTS_TABLE = `
+CREATE VIRTUAL TABLE IF NOT EXISTS knowledge_nodes_fts USING fts5(
+  canonical_name,
+  content='knowledge_nodes',
+  content_rowid='rowid',
+  tokenize='porter unicode61'
+)
+`;
+
+const CREATE_KNOWLEDGE_NODES_FTS_TRIGGERS = [
+  `CREATE TRIGGER IF NOT EXISTS knowledge_nodes_fts_ai AFTER INSERT ON knowledge_nodes BEGIN
+    INSERT INTO knowledge_nodes_fts(rowid, canonical_name) VALUES (new.rowid, new.canonical_name);
+  END`,
+  `CREATE TRIGGER IF NOT EXISTS knowledge_nodes_fts_ad AFTER DELETE ON knowledge_nodes BEGIN
+    INSERT INTO knowledge_nodes_fts(knowledge_nodes_fts, rowid, canonical_name) VALUES ('delete', old.rowid, old.canonical_name);
+  END`,
+  `CREATE TRIGGER IF NOT EXISTS knowledge_nodes_fts_au AFTER UPDATE OF canonical_name ON knowledge_nodes BEGIN
+    INSERT INTO knowledge_nodes_fts(knowledge_nodes_fts, rowid, canonical_name) VALUES ('delete', old.rowid, old.canonical_name);
+    INSERT INTO knowledge_nodes_fts(rowid, canonical_name) VALUES (new.rowid, new.canonical_name);
+  END`,
+];
+
+const CREATE_ENTITY_EXTRACTION_SEGMENTS_TABLE = `
+CREATE TABLE IF NOT EXISTS entity_extraction_segments (
+  id TEXT PRIMARY KEY,
+  document_id TEXT NOT NULL REFERENCES documents(id),
+  ocr_result_id TEXT NOT NULL REFERENCES ocr_results(id),
+  segment_index INTEGER NOT NULL,
+  text TEXT NOT NULL,
+  character_start INTEGER NOT NULL,
+  character_end INTEGER NOT NULL,
+  text_length INTEGER NOT NULL,
+  overlap_previous INTEGER NOT NULL DEFAULT 0,
+  overlap_next INTEGER NOT NULL DEFAULT 0,
+  extraction_status TEXT NOT NULL DEFAULT 'pending'
+    CHECK (extraction_status IN ('pending', 'processing', 'complete', 'failed')),
+  entity_count INTEGER DEFAULT 0,
+  extracted_at TEXT,
+  error_message TEXT,
+  provenance_id TEXT REFERENCES provenance(id),
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  UNIQUE(document_id, segment_index)
+)
+`;
+
+const CREATE_ENTITY_EMBEDDINGS_TABLE = `
+CREATE TABLE IF NOT EXISTS entity_embeddings (
+  id TEXT PRIMARY KEY,
+  node_id TEXT NOT NULL REFERENCES knowledge_nodes(id),
+  original_text TEXT NOT NULL,
+  original_text_length INTEGER NOT NULL,
+  entity_type TEXT NOT NULL,
+  document_count INTEGER NOT NULL DEFAULT 1,
+  model_name TEXT NOT NULL DEFAULT 'nomic-embed-text-v1.5',
+  content_hash TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  provenance_id TEXT REFERENCES provenance(id)
+)
+`;
+
+const CREATE_VEC_ENTITY_EMBEDDINGS_TABLE = `
+CREATE VIRTUAL TABLE IF NOT EXISTS vec_entity_embeddings USING vec0(
+  entity_embedding_id TEXT PRIMARY KEY,
+  vector FLOAT[768] distance_metric=cosine
+)
+`;
+
+const CREATE_CORPUS_INTELLIGENCE_TABLE = `
+CREATE TABLE IF NOT EXISTS corpus_intelligence (
+  id TEXT PRIMARY KEY,
+  database_name TEXT NOT NULL,
+  corpus_summary TEXT NOT NULL,
+  key_actors TEXT NOT NULL,
+  themes TEXT NOT NULL,
+  narrative_arcs TEXT,
+  entity_count INTEGER NOT NULL,
+  document_count INTEGER NOT NULL,
+  model TEXT NOT NULL,
+  provenance_id TEXT NOT NULL REFERENCES provenance(id),
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+)`;
+
+const CREATE_DOCUMENT_NARRATIVES_TABLE = `
+CREATE TABLE IF NOT EXISTS document_narratives (
+  id TEXT PRIMARY KEY,
+  document_id TEXT NOT NULL UNIQUE REFERENCES documents(id),
+  narrative_text TEXT NOT NULL,
+  entity_roster TEXT NOT NULL,
+  corpus_context TEXT,
+  synthesis_count INTEGER DEFAULT 0,
+  model TEXT NOT NULL,
+  provenance_id TEXT NOT NULL REFERENCES provenance(id),
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+)`;
+
+const CREATE_ENTITY_ROLES_TABLE = `
+CREATE TABLE IF NOT EXISTS entity_roles (
+  id TEXT PRIMARY KEY,
+  node_id TEXT NOT NULL REFERENCES knowledge_nodes(id),
+  role TEXT NOT NULL,
+  theme TEXT,
+  importance_rank INTEGER,
+  context_summary TEXT,
+  scope TEXT NOT NULL DEFAULT 'database',
+  scope_id TEXT,
+  model TEXT NOT NULL,
+  provenance_id TEXT NOT NULL REFERENCES provenance(id),
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+)`;
 import {
   configurePragmas,
   initializeSchemaVersion,
@@ -1117,6 +1306,11 @@ export function migrateToLatest(db: Database.Database): void {
   if (currentVersion < 25) {
     migrateV24ToV25(db);
     bumpVersion(25);
+  }
+
+  if (currentVersion < 26) {
+    migrateV25ToV26(db);
+    bumpVersion(26);
   }
 }
 
@@ -2710,6 +2904,163 @@ function migrateV24ToV25(db: Database.Database): void {
       `Failed to migrate from v24 to v25 (AI Knowledge Synthesis tables): ${cause}`,
       'migrate',
       'corpus_intelligence',
+      error
+    );
+  }
+}
+
+/**
+ * Migrate from schema version 25 to version 26
+ *
+ * BREAKING CHANGE: Removes all entity extraction and knowledge graph tables.
+ * These features are being removed entirely - no backwards compatibility.
+ *
+ * Drops:
+ * - entities, entity_mentions, knowledge_nodes, knowledge_edges
+ * - node_entity_links, entity_extraction_segments
+ * - entity_embeddings, vec_entity_embeddings
+ * - corpus_intelligence, document_narratives, entity_roles
+ * - knowledge_nodes_fts (FTS5 virtual table)
+ * - All associated triggers and indexes
+ * - Recreates provenance table without ENTITY_EXTRACTION/KNOWLEDGE_GRAPH/CORPUS_INTELLIGENCE
+ * - Recreates comparisons table without entity_diff_json column
+ */
+function migrateV25ToV26(db: Database.Database): void {
+  try {
+    db.exec('PRAGMA foreign_keys = OFF');
+    db.exec('BEGIN TRANSACTION');
+
+    // Step 1: Drop entity/KG FTS triggers (must be before table drops)
+    db.exec('DROP TRIGGER IF EXISTS knowledge_nodes_fts_ai');
+    db.exec('DROP TRIGGER IF EXISTS knowledge_nodes_fts_ad');
+    db.exec('DROP TRIGGER IF EXISTS knowledge_nodes_fts_au');
+
+    // Step 2: Drop entity/KG indexes (IF EXISTS for safety)
+    const entityKgIndexes = [
+      'idx_entities_document_id', 'idx_entities_entity_type', 'idx_entities_normalized_text',
+      'idx_entity_mentions_entity_id', 'idx_entity_mentions_document_id', 'idx_entity_mentions_chunk_id',
+      'idx_kn_entity_type', 'idx_kn_normalized_name', 'idx_kn_document_count',
+      'idx_ke_source_node', 'idx_ke_target_node', 'idx_ke_relationship_type',
+      'idx_nel_node_id', 'idx_nel_document_id',
+      'idx_knowledge_nodes_canonical_lower',
+      'idx_segments_document', 'idx_segments_status', 'idx_segments_doc_status',
+      'idx_entity_embeddings_node_id', 'idx_entity_embeddings_content_hash',
+      'idx_corpus_intelligence_database',
+      'idx_document_narratives_document',
+      'idx_entity_roles_node', 'idx_entity_roles_theme', 'idx_entity_roles_role', 'idx_entity_roles_scope',
+    ];
+    for (const idx of entityKgIndexes) {
+      db.exec(`DROP INDEX IF EXISTS ${idx}`);
+    }
+
+    // Step 3: Drop entity/KG tables in FK-safe order
+    // Virtual tables first (no FK dependencies)
+    db.exec('DROP TABLE IF EXISTS vec_entity_embeddings');
+    db.exec('DROP TABLE IF EXISTS knowledge_nodes_fts');
+    // Tables with outgoing FKs first
+    db.exec('DROP TABLE IF EXISTS entity_roles');
+    db.exec('DROP TABLE IF EXISTS document_narratives');
+    db.exec('DROP TABLE IF EXISTS corpus_intelligence');
+    db.exec('DROP TABLE IF EXISTS entity_embeddings');
+    db.exec('DROP TABLE IF EXISTS entity_extraction_segments');
+    db.exec('DROP TABLE IF EXISTS node_entity_links');
+    db.exec('DROP TABLE IF EXISTS knowledge_edges');
+    db.exec('DROP TABLE IF EXISTS entity_mentions');
+    db.exec('DROP TABLE IF EXISTS entities');
+    db.exec('DROP TABLE IF EXISTS knowledge_nodes');
+
+    // Step 4: Recreate provenance table without entity/KG types
+    db.exec(`
+      CREATE TABLE provenance_new (
+        id TEXT PRIMARY KEY,
+        type TEXT NOT NULL CHECK (type IN ('DOCUMENT', 'OCR_RESULT', 'CHUNK', 'IMAGE', 'VLM_DESCRIPTION', 'EMBEDDING', 'EXTRACTION', 'FORM_FILL', 'COMPARISON', 'CLUSTERING')),
+        created_at TEXT NOT NULL,
+        processed_at TEXT NOT NULL,
+        source_file_created_at TEXT,
+        source_file_modified_at TEXT,
+        source_type TEXT NOT NULL CHECK (source_type IN ('FILE', 'OCR', 'CHUNKING', 'IMAGE_EXTRACTION', 'VLM', 'VLM_DEDUP', 'EMBEDDING', 'EXTRACTION', 'FORM_FILL', 'COMPARISON', 'CLUSTERING')),
+        source_path TEXT,
+        source_id TEXT,
+        root_document_id TEXT NOT NULL,
+        location TEXT,
+        content_hash TEXT NOT NULL,
+        input_hash TEXT,
+        file_hash TEXT,
+        processor TEXT NOT NULL,
+        processor_version TEXT NOT NULL,
+        processing_params TEXT NOT NULL,
+        processing_duration_ms INTEGER,
+        processing_quality_score REAL,
+        parent_id TEXT,
+        parent_ids TEXT NOT NULL,
+        chain_depth INTEGER NOT NULL,
+        chain_path TEXT,
+        FOREIGN KEY (source_id) REFERENCES provenance_new(id),
+        FOREIGN KEY (parent_id) REFERENCES provenance_new(id)
+      )
+    `);
+    // Only copy rows with valid types (discard entity/KG provenance records)
+    db.exec(`
+      INSERT INTO provenance_new SELECT * FROM provenance
+      WHERE type IN ('DOCUMENT', 'OCR_RESULT', 'CHUNK', 'IMAGE', 'VLM_DESCRIPTION', 'EMBEDDING', 'EXTRACTION', 'FORM_FILL', 'COMPARISON', 'CLUSTERING')
+    `);
+    db.exec('DROP TABLE provenance');
+    db.exec('ALTER TABLE provenance_new RENAME TO provenance');
+    db.exec('CREATE INDEX IF NOT EXISTS idx_provenance_source_id ON provenance(source_id)');
+    db.exec('CREATE INDEX IF NOT EXISTS idx_provenance_type ON provenance(type)');
+    db.exec('CREATE INDEX IF NOT EXISTS idx_provenance_root_document_id ON provenance(root_document_id)');
+    db.exec('CREATE INDEX IF NOT EXISTS idx_provenance_parent_id ON provenance(parent_id)');
+
+    // Step 5: Recreate comparisons table without entity_diff_json column
+    db.exec(`
+      CREATE TABLE comparisons_new (
+        id TEXT PRIMARY KEY NOT NULL,
+        document_id_1 TEXT NOT NULL REFERENCES documents(id),
+        document_id_2 TEXT NOT NULL REFERENCES documents(id),
+        similarity_ratio REAL NOT NULL,
+        text_diff_json TEXT NOT NULL,
+        structural_diff_json TEXT NOT NULL,
+        summary TEXT NOT NULL,
+        content_hash TEXT NOT NULL,
+        provenance_id TEXT NOT NULL REFERENCES provenance(id),
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        processing_duration_ms INTEGER
+      )
+    `);
+    db.exec(`
+      INSERT INTO comparisons_new
+      SELECT id, document_id_1, document_id_2, similarity_ratio,
+             text_diff_json, structural_diff_json,
+             summary, content_hash, provenance_id, created_at, processing_duration_ms
+      FROM comparisons
+    `);
+    db.exec('DROP TABLE comparisons');
+    db.exec('ALTER TABLE comparisons_new RENAME TO comparisons');
+    db.exec('CREATE INDEX IF NOT EXISTS idx_comparisons_doc1 ON comparisons(document_id_1)');
+    db.exec('CREATE INDEX IF NOT EXISTS idx_comparisons_doc2 ON comparisons(document_id_2)');
+    db.exec('CREATE INDEX IF NOT EXISTS idx_comparisons_created ON comparisons(created_at)');
+
+    db.exec('COMMIT');
+    db.exec('PRAGMA foreign_keys = ON');
+
+    // Verify FK integrity
+    const fkViolations = db.pragma('foreign_key_check') as unknown[];
+    if (fkViolations.length > 0) {
+      console.error(`[Migration v25->v26] FK violations detected: ${JSON.stringify(fkViolations.slice(0, 5))}`);
+      throw new Error(
+        `Foreign key integrity check failed after v25->v26 migration: ${fkViolations.length} violation(s)`
+      );
+    }
+
+    console.error('[Migration] v25 -> v26: Removed entity extraction and knowledge graph tables');
+  } catch (error) {
+    try { db.exec('ROLLBACK'); } catch { /* rollback best-effort */ }
+    db.exec('PRAGMA foreign_keys = ON');
+    const cause = error instanceof Error ? error.message : String(error);
+    throw new MigrationError(
+      `Failed to migrate from v25 to v26 (entity/KG removal): ${cause}`,
+      'migrate',
+      'entity_kg_removal',
       error
     );
   }

@@ -10,33 +10,12 @@
 import { describe, it, expect } from 'vitest';
 import {
   compareText,
-  compareEntities,
   generateSummary,
 } from '../../../../src/services/comparison/diff-service.js';
-import type { Entity } from '../../../../src/models/entity.js';
 import type {
   TextDiffResult,
   StructuralDiff,
-  EntityDiff,
 } from '../../../../src/models/comparison.js';
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// HELPERS
-// ═══════════════════════════════════════════════════════════════════════════════
-
-function makeEntity(type: string, normalized: string, docId: string = 'doc-1'): Entity {
-  return {
-    id: `ent-${Math.random().toString(36).slice(2, 10)}`,
-    document_id: docId,
-    entity_type: type as Entity['entity_type'],
-    raw_text: normalized,
-    normalized_text: normalized.toLowerCase(),
-    confidence: 0.9,
-    metadata: null,
-    provenance_id: 'prov-test',
-    created_at: new Date().toISOString(),
-  };
-}
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // compareText TESTS
@@ -222,111 +201,6 @@ describe('StructuralDiff', () => {
 });
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// compareEntities TESTS
-// ═══════════════════════════════════════════════════════════════════════════════
-
-describe('compareEntities', () => {
-  it('no entities for either doc -> by_type={}, totals=0', () => {
-    const result = compareEntities([], []);
-
-    expect(result.doc1_total_entities).toBe(0);
-    expect(result.doc2_total_entities).toBe(0);
-    expect(Object.keys(result.by_type).length).toBe(0);
-  });
-
-  it('identical entity sets -> all in common, none unique', () => {
-    const entities1 = [
-      makeEntity('person', 'John Smith', 'doc-1'),
-      makeEntity('organization', 'Acme Corp', 'doc-1'),
-    ];
-    const entities2 = [
-      makeEntity('person', 'John Smith', 'doc-2'),
-      makeEntity('organization', 'Acme Corp', 'doc-2'),
-    ];
-    const result = compareEntities(entities1, entities2);
-
-    expect(result.doc1_total_entities).toBe(2);
-    expect(result.doc2_total_entities).toBe(2);
-    expect(result.by_type['person'].common).toEqual(['john smith']);
-    expect(result.by_type['person'].doc1_only).toEqual([]);
-    expect(result.by_type['person'].doc2_only).toEqual([]);
-    expect(result.by_type['organization'].common).toEqual(['acme corp']);
-    expect(result.by_type['organization'].doc1_only).toEqual([]);
-    expect(result.by_type['organization'].doc2_only).toEqual([]);
-  });
-
-  it('disjoint entity sets -> all unique, none common', () => {
-    const entities1 = [
-      makeEntity('person', 'Alice', 'doc-1'),
-      makeEntity('location', 'New York', 'doc-1'),
-    ];
-    const entities2 = [
-      makeEntity('person', 'Bob', 'doc-2'),
-      makeEntity('date', 'January 1, 2025', 'doc-2'),
-    ];
-    const result = compareEntities(entities1, entities2);
-
-    expect(result.by_type['person'].common).toEqual([]);
-    expect(result.by_type['person'].doc1_only).toEqual(['alice']);
-    expect(result.by_type['person'].doc2_only).toEqual(['bob']);
-    expect(result.by_type['location'].doc1_only).toEqual(['new york']);
-    expect(result.by_type['location'].doc2_only).toEqual([]);
-    expect(result.by_type['date'].common).toEqual([]);
-    expect(result.by_type['date'].doc1_only).toEqual([]);
-    expect(result.by_type['date'].doc2_only).toEqual(['january 1, 2025']);
-  });
-
-  it('mixed entities (contract v1 vs v2) -> person common, org/date/amount unique', () => {
-    // Doc1 entities: person("John Smith"), organization("Acme Corp"), date("January 15, 2025"), amount("$50,000"), location("California")
-    const entities1 = [
-      makeEntity('person', 'John Smith', 'doc-1'),
-      makeEntity('organization', 'Acme Corp', 'doc-1'),
-      makeEntity('date', 'January 15, 2025', 'doc-1'),
-      makeEntity('amount', '$50,000', 'doc-1'),
-      makeEntity('location', 'California', 'doc-1'),
-    ];
-    // Doc2 entities: person("John Smith"), organization("Beta LLC"), date("March 1, 2025"), amount("$75,000"), location("California")
-    const entities2 = [
-      makeEntity('person', 'John Smith', 'doc-2'),
-      makeEntity('organization', 'Beta LLC', 'doc-2'),
-      makeEntity('date', 'March 1, 2025', 'doc-2'),
-      makeEntity('amount', '$75,000', 'doc-2'),
-      makeEntity('location', 'California', 'doc-2'),
-    ];
-
-    const result = compareEntities(entities1, entities2);
-
-    expect(result.doc1_total_entities).toBe(5);
-    expect(result.doc2_total_entities).toBe(5);
-
-    // person: common=["john smith"], doc1_only=[], doc2_only=[]
-    expect(result.by_type['person'].common).toEqual(['john smith']);
-    expect(result.by_type['person'].doc1_only).toEqual([]);
-    expect(result.by_type['person'].doc2_only).toEqual([]);
-
-    // organization: common=[], doc1_only=["acme corp"], doc2_only=["beta llc"]
-    expect(result.by_type['organization'].common).toEqual([]);
-    expect(result.by_type['organization'].doc1_only).toEqual(['acme corp']);
-    expect(result.by_type['organization'].doc2_only).toEqual(['beta llc']);
-
-    // date: common=[], doc1_only=["january 15, 2025"], doc2_only=["march 1, 2025"]
-    expect(result.by_type['date'].common).toEqual([]);
-    expect(result.by_type['date'].doc1_only).toEqual(['january 15, 2025']);
-    expect(result.by_type['date'].doc2_only).toEqual(['march 1, 2025']);
-
-    // amount: common=[], doc1_only=["$50,000"], doc2_only=["$75,000"]
-    expect(result.by_type['amount'].common).toEqual([]);
-    expect(result.by_type['amount'].doc1_only).toEqual(['$50,000']);
-    expect(result.by_type['amount'].doc2_only).toEqual(['$75,000']);
-
-    // location: common=["california"], doc1_only=[], doc2_only=[]
-    expect(result.by_type['location'].common).toEqual(['california']);
-    expect(result.by_type['location'].doc1_only).toEqual([]);
-    expect(result.by_type['location'].doc2_only).toEqual([]);
-  });
-});
-
-// ═══════════════════════════════════════════════════════════════════════════════
 // generateSummary TESTS
 // ═══════════════════════════════════════════════════════════════════════════════
 
@@ -356,7 +230,7 @@ describe('generateSummary', () => {
       doc2_ocr_mode: 'balanced',
     };
 
-    const summary = generateSummary(textDiff, structDiff, null, 'doc-a.pdf', 'doc-b.pdf');
+    const summary = generateSummary(textDiff, structDiff, 'doc-a.pdf', 'doc-b.pdf');
 
     expect(summary).toContain('75%');
     expect(summary).toContain('doc-a.pdf');
@@ -387,31 +261,10 @@ describe('generateSummary', () => {
       doc1_ocr_mode: 'balanced',
       doc2_ocr_mode: 'balanced',
     };
-    const entityDiff: EntityDiff = {
-      doc1_total_entities: 5,
-      doc2_total_entities: 7,
-      by_type: {
-        person: {
-          doc1_count: 2,
-          doc2_count: 3,
-          common: ['alice'],
-          doc1_only: ['bob'],
-          doc2_only: ['charlie', 'dave'],
-        },
-        location: {
-          doc1_count: 1,
-          doc2_count: 1,
-          common: ['new york'],
-          doc1_only: [],
-          doc2_only: [],
-        },
-      },
-    };
 
     const summary = generateSummary(
       textDiff,
       structDiff,
-      entityDiff,
       'contract-v1.pdf',
       'contract-v2.pdf'
     );
@@ -422,10 +275,5 @@ describe('generateSummary', () => {
     expect(summary).toContain('10 unchanged');
     // Page count difference: |5 - 7| = 2
     expect(summary).toContain('2 pages');
-    // Entity totals: 1 common (alice + new york), 1 unique to doc1 (bob), 2 unique to doc2 (charlie, dave)
-    expect(summary).toContain('Entities:');
-    expect(summary).toContain('common');
-    expect(summary).toContain('unique to doc1');
-    expect(summary).toContain('unique to doc2');
   });
 });

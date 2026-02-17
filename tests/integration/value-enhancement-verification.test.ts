@@ -96,7 +96,7 @@ describe.skipIf(!sqliteVecAvailable)('VALUE ENHANCEMENT VERIFICATION: Phases 1-5
       expect(row.version).toBe(SCHEMA_VERSION);
     });
 
-    it('should have all 24 required tables', () => {
+    it('should have all required tables', () => {
       const tables = db
         .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")
         .all() as Array<{ name: string }>;
@@ -105,10 +105,10 @@ describe.skipIf(!sqliteVecAvailable)('VALUE ENHANCEMENT VERIFICATION: Phases 1-5
       for (const required of REQUIRED_TABLES) {
         expect(tableNames).toContain(required);
       }
-      expect(REQUIRED_TABLES.length).toBe(31);
+      expect(REQUIRED_TABLES.length).toBe(19);
     });
 
-    it('should have all 51 required indexes', () => {
+    it('should have all required indexes', () => {
       const indexes = db
         .prepare("SELECT name FROM sqlite_master WHERE type='index' AND name LIKE 'idx_%'")
         .all() as Array<{ name: string }>;
@@ -117,8 +117,8 @@ describe.skipIf(!sqliteVecAvailable)('VALUE ENHANCEMENT VERIFICATION: Phases 1-5
       for (const required of REQUIRED_INDEXES) {
         expect(indexNames).toContain(required);
       }
-      expect(REQUIRED_INDEXES.length).toBe(65);
-      expect(indexNames.length).toBeGreaterThanOrEqual(65);
+      expect(REQUIRED_INDEXES.length).toBe(39);
+      expect(indexNames.length).toBeGreaterThanOrEqual(39);
     });
 
     it('should filter documents by quality score (QW-2)', () => {
@@ -471,194 +471,6 @@ describe.skipIf(!sqliteVecAvailable)('VALUE ENHANCEMENT VERIFICATION: Phases 1-5
   });
 
   // ─────────────────────────────────────────────────────────────────────────────
-  // PHASE 3: Legal Domain Entities
-  // ─────────────────────────────────────────────────────────────────────────────
-
-  describe('Phase 3: Legal Domain Entities', () => {
-    it('should store and retrieve entities with provenance', () => {
-      const docId = DOC_IDS.doc1;
-      const entityProvId = crypto.randomUUID();
-      db.prepare(
-        `
-        INSERT INTO provenance (id, type, created_at, processed_at, source_type, root_document_id, content_hash, processor, processor_version, processing_params, parent_ids, chain_depth)
-        VALUES (?, 'ENTITY_EXTRACTION', datetime('now'), datetime('now'), 'ENTITY_EXTRACTION', ?, 'sha256:entity1', 'gemini-entity', '1.0', '{}', '[]', 2)
-      `
-      ).run(entityProvId, docId);
-
-      // Insert entities
-      const entityId1 = crypto.randomUUID();
-      const entityId2 = crypto.randomUUID();
-
-      db.prepare(
-        `
-        INSERT INTO entities (id, document_id, entity_type, raw_text, normalized_text, confidence, provenance_id)
-        VALUES (?, ?, 'person', 'Dr. Jane Smith', 'jane smith', 0.95, ?)
-      `
-      ).run(entityId1, docId, entityProvId);
-
-      db.prepare(
-        `
-        INSERT INTO entities (id, document_id, entity_type, raw_text, normalized_text, confidence, provenance_id)
-        VALUES (?, ?, 'organization', 'Acme Corp', 'acme corp', 0.90, ?)
-      `
-      ).run(entityId2, docId, entityProvId);
-
-      // VERIFY: Entities exist
-      const entities = db
-        .prepare('SELECT * FROM entities WHERE document_id = ?')
-        .all(docId) as Array<Record<string, unknown>>;
-      expect(entities).toHaveLength(2);
-
-      // VERIFY: Entity type filtering works
-      const persons = db
-        .prepare("SELECT * FROM entities WHERE entity_type = 'person'")
-        .all() as Array<Record<string, unknown>>;
-      expect(persons.length).toBeGreaterThanOrEqual(1);
-      expect(persons[0].normalized_text).toBe('jane smith');
-      expect(persons[0].confidence).toBe(0.95);
-
-      const orgs = db
-        .prepare("SELECT * FROM entities WHERE entity_type = 'organization'")
-        .all() as Array<Record<string, unknown>>;
-      expect(orgs.length).toBeGreaterThanOrEqual(1);
-      expect(orgs[0].normalized_text).toBe('acme corp');
-
-      // Insert entity mentions
-      const mentionId = crypto.randomUUID();
-      db.prepare(
-        `
-        INSERT INTO entity_mentions (id, entity_id, document_id, page_number, character_start, character_end, context_text)
-        VALUES (?, ?, ?, 1, 0, 15, 'Dr. Jane Smith signed the document')
-      `
-      ).run(mentionId, entityId1, docId);
-
-      // VERIFY: Mention exists and links to entity
-      const mentions = db
-        .prepare('SELECT * FROM entity_mentions WHERE entity_id = ?')
-        .all(entityId1) as Array<Record<string, unknown>>;
-      expect(mentions).toHaveLength(1);
-      expect(mentions[0].context_text).toBe('Dr. Jane Smith signed the document');
-      expect(mentions[0].page_number).toBe(1);
-      expect(mentions[0].character_start).toBe(0);
-      expect(mentions[0].character_end).toBe(15);
-    });
-
-    it('should accept all valid entity types', () => {
-      const validTypes = [
-        'person',
-        'organization',
-        'date',
-        'amount',
-        'case_number',
-        'location',
-        'statute',
-        'exhibit',
-        'other',
-        'medication',
-        'diagnosis',
-        'medical_device',
-      ];
-      const entityProvId = crypto.randomUUID();
-      db.prepare(
-        `
-        INSERT INTO provenance (id, type, created_at, processed_at, source_type, root_document_id, content_hash, processor, processor_version, processing_params, parent_ids, chain_depth)
-        VALUES (?, 'ENTITY_EXTRACTION', datetime('now'), datetime('now'), 'ENTITY_EXTRACTION', ?, 'sha256:entitytypes', 'test', '1.0', '{}', '[]', 2)
-      `
-      ).run(entityProvId, DOC_IDS.doc2);
-
-      for (const entityType of validTypes) {
-        const id = crypto.randomUUID();
-        expect(() => {
-          db.prepare(
-            `
-            INSERT INTO entities (id, document_id, entity_type, raw_text, normalized_text, confidence, provenance_id)
-            VALUES (?, ?, ?, ?, ?, 0.5, ?)
-          `
-          ).run(
-            id,
-            DOC_IDS.doc2,
-            entityType,
-            `raw_${entityType}`,
-            `norm_${entityType}`,
-            entityProvId
-          );
-        }).not.toThrow();
-
-        // VERIFY in DB
-        const row = db.prepare('SELECT entity_type FROM entities WHERE id = ?').get(id) as {
-          entity_type: string;
-        };
-        expect(row.entity_type).toBe(entityType);
-      }
-    });
-
-    it('should reject invalid entity types via CHECK constraint', () => {
-      const entityProvId = crypto.randomUUID();
-      db.prepare(
-        `
-        INSERT INTO provenance (id, type, created_at, processed_at, source_type, root_document_id, content_hash, processor, processor_version, processing_params, parent_ids, chain_depth)
-        VALUES (?, 'ENTITY_EXTRACTION', datetime('now'), datetime('now'), 'ENTITY_EXTRACTION', ?, 'sha256:badtype', 'test', '1.0', '{}', '[]', 2)
-      `
-      ).run(entityProvId, DOC_IDS.doc1);
-
-      // TS-07: Multiple invalid entity type test cases
-      const invalidTypes = [
-        'INVALID_TYPE', // arbitrary invalid type
-        '', // empty string
-        'PERSON', // wrong case (uppercase)
-        'null', // string "null"
-        'Person', // wrong case (title case)
-        'medical_devices', // plural (close but wrong)
-      ];
-
-      for (const invalidType of invalidTypes) {
-        expect(() => {
-          db.prepare(
-            `
-            INSERT INTO entities (id, document_id, entity_type, raw_text, normalized_text, confidence, provenance_id)
-            VALUES (?, ?, ?, 'test', 'test', 0.5, ?)
-          `
-          ).run(crypto.randomUUID(), DOC_IDS.doc1, invalidType, entityProvId);
-        }, `Expected entity_type '${invalidType}' to be rejected by CHECK constraint`).toThrow();
-      }
-    });
-
-    it('should accept ENTITY_EXTRACTION provenance type', () => {
-      const id = crypto.randomUUID();
-      expect(() => {
-        db.prepare(
-          `
-          INSERT INTO provenance (id, type, created_at, processed_at, source_type, root_document_id, content_hash, processor, processor_version, processing_params, parent_ids, chain_depth)
-          VALUES (?, 'ENTITY_EXTRACTION', datetime('now'), datetime('now'), 'ENTITY_EXTRACTION', ?, 'sha256:provtest', 'test', '1.0', '{}', '[]', 2)
-        `
-        ).run(id, id);
-      }).not.toThrow();
-
-      // VERIFY: It was inserted
-      const row = db.prepare('SELECT type, source_type FROM provenance WHERE id = ?').get(id) as {
-        type: string;
-        source_type: string;
-      };
-      expect(row.type).toBe('ENTITY_EXTRACTION');
-      expect(row.source_type).toBe('ENTITY_EXTRACTION');
-    });
-
-    it('should have entity indexes for lookup performance', () => {
-      const indexes = db
-        .prepare(
-          "SELECT name FROM sqlite_master WHERE type='index' AND (name LIKE 'idx_entities_%' OR name LIKE 'idx_entity_mentions_%')"
-        )
-        .all() as Array<{ name: string }>;
-      const indexNames = indexes.map((i) => i.name);
-
-      expect(indexNames).toContain('idx_entities_document_id');
-      expect(indexNames).toContain('idx_entities_entity_type');
-      expect(indexNames).toContain('idx_entities_normalized_text');
-      expect(indexNames).toContain('idx_entity_mentions_entity_id');
-    });
-  });
-
-  // ─────────────────────────────────────────────────────────────────────────────
   // PHASE 4: Search Enhancement
   // ─────────────────────────────────────────────────────────────────────────────
 
@@ -820,45 +632,13 @@ describe.skipIf(!sqliteVecAvailable)('VALUE ENHANCEMENT VERIFICATION: Phases 1-5
   // ─────────────────────────────────────────────────────────────────────────────
 
   describe('Cross-cutting Verification', () => {
-    it('should cascade delete entities when document entities are removed', () => {
-      const docId = DOC_IDS.doc1;
-
-      // Count entities before
-      const beforeEntities = db
-        .prepare('SELECT COUNT(*) as count FROM entities WHERE document_id = ?')
-        .get(docId) as { count: number };
-      expect(beforeEntities.count).toBeGreaterThan(0);
-
-      // Count mentions before
-      const beforeMentions = db
-        .prepare('SELECT COUNT(*) as count FROM entity_mentions WHERE document_id = ?')
-        .get(docId) as { count: number };
-      expect(beforeMentions.count).toBeGreaterThan(0);
-
-      // Delete the mentions first (child), then entities
-      db.prepare('DELETE FROM entity_mentions WHERE document_id = ?').run(docId);
-      db.prepare('DELETE FROM entities WHERE document_id = ?').run(docId);
-
-      // VERIFY: Entities are gone
-      const afterEntities = db
-        .prepare('SELECT COUNT(*) as count FROM entities WHERE document_id = ?')
-        .get(docId) as { count: number };
-      expect(afterEntities.count).toBe(0);
-
-      // VERIFY: Mentions are gone
-      const afterMentions = db
-        .prepare('SELECT COUNT(*) as count FROM entity_mentions WHERE document_id = ?')
-        .get(docId) as { count: number };
-      expect(afterMentions.count).toBe(0);
-    });
-
     it('should pass FK integrity check across all tables', () => {
       db.exec('PRAGMA foreign_keys = ON');
       const violations = db.pragma('foreign_key_check') as unknown[];
       expect(violations).toHaveLength(0);
     });
 
-    it('should accept all provenance types from v13 schema', () => {
+    it('should accept all provenance types from current schema', () => {
       const validTypes = [
         { type: 'DOCUMENT', sourceType: 'FILE' },
         { type: 'OCR_RESULT', sourceType: 'OCR' },
@@ -868,7 +648,6 @@ describe.skipIf(!sqliteVecAvailable)('VALUE ENHANCEMENT VERIFICATION: Phases 1-5
         { type: 'EMBEDDING', sourceType: 'EMBEDDING' },
         { type: 'EXTRACTION', sourceType: 'EXTRACTION' },
         { type: 'FORM_FILL', sourceType: 'FORM_FILL' },
-        { type: 'ENTITY_EXTRACTION', sourceType: 'ENTITY_EXTRACTION' },
       ];
 
       for (const { type, sourceType } of validTypes) {
@@ -1092,22 +871,6 @@ describe.skipIf(!sqliteVecAvailable)('VALUE ENHANCEMENT VERIFICATION: Phases 1-5
         .prepare('SELECT parse_quality_score FROM ocr_results WHERE document_id = ?')
         .get(docId) as { parse_quality_score: number | null };
       expect(ocrRow.parse_quality_score).toBeNull();
-
-      emptyDb.close();
-    });
-
-    it('should handle empty entity search on fresh database', () => {
-      const emptyDb = new Database(':memory:');
-      // eslint-disable-next-line @typescript-eslint/no-require-imports
-      const sqliteVec = require('sqlite-vec');
-      sqliteVec.load(emptyDb);
-      migrateToLatest(emptyDb);
-
-      const entities = emptyDb.prepare('SELECT * FROM entities').all();
-      expect(entities).toHaveLength(0);
-
-      const mentions = emptyDb.prepare('SELECT * FROM entity_mentions').all();
-      expect(mentions).toHaveLength(0);
 
       emptyDb.close();
     });

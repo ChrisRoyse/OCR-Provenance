@@ -8,7 +8,7 @@
  */
 
 /** Current schema version */
-export const SCHEMA_VERSION = 25;
+export const SCHEMA_VERSION = 26;
 
 /**
  * Database configuration pragmas for optimal performance and safety
@@ -42,12 +42,12 @@ CREATE TABLE IF NOT EXISTS schema_version (
 export const CREATE_PROVENANCE_TABLE = `
 CREATE TABLE IF NOT EXISTS provenance (
   id TEXT PRIMARY KEY,
-  type TEXT NOT NULL CHECK (type IN ('DOCUMENT', 'OCR_RESULT', 'CHUNK', 'IMAGE', 'VLM_DESCRIPTION', 'EMBEDDING', 'EXTRACTION', 'FORM_FILL', 'ENTITY_EXTRACTION', 'COMPARISON', 'CLUSTERING', 'KNOWLEDGE_GRAPH', 'CORPUS_INTELLIGENCE')),
+  type TEXT NOT NULL CHECK (type IN ('DOCUMENT', 'OCR_RESULT', 'CHUNK', 'IMAGE', 'VLM_DESCRIPTION', 'EMBEDDING', 'EXTRACTION', 'FORM_FILL', 'COMPARISON', 'CLUSTERING')),
   created_at TEXT NOT NULL,
   processed_at TEXT NOT NULL,
   source_file_created_at TEXT,
   source_file_modified_at TEXT,
-  source_type TEXT NOT NULL CHECK (source_type IN ('FILE', 'OCR', 'CHUNKING', 'IMAGE_EXTRACTION', 'VLM', 'VLM_DEDUP', 'EMBEDDING', 'EXTRACTION', 'FORM_FILL', 'ENTITY_EXTRACTION', 'COMPARISON', 'CLUSTERING', 'KNOWLEDGE_GRAPH', 'CORPUS_INTELLIGENCE')),
+  source_type TEXT NOT NULL CHECK (source_type IN ('FILE', 'OCR', 'CHUNKING', 'IMAGE_EXTRACTION', 'VLM', 'VLM_DEDUP', 'EMBEDDING', 'EXTRACTION', 'FORM_FILL', 'COMPARISON', 'CLUSTERING')),
   source_path TEXT,
   source_id TEXT,
   root_document_id TEXT NOT NULL,
@@ -441,40 +441,6 @@ CREATE TABLE IF NOT EXISTS uploaded_files (
 )`;
 
 /**
- * Entities table - named entities extracted from documents
- * Provenance depth: 2 (parallel to CHUNK, after OCR_RESULT)
- */
-export const CREATE_ENTITIES_TABLE = `
-CREATE TABLE IF NOT EXISTS entities (
-  id TEXT PRIMARY KEY NOT NULL,
-  document_id TEXT NOT NULL REFERENCES documents(id),
-  entity_type TEXT NOT NULL CHECK (entity_type IN ('person', 'organization', 'date', 'amount', 'case_number', 'location', 'statute', 'exhibit', 'medication', 'diagnosis', 'medical_device', 'other')),
-  raw_text TEXT NOT NULL,
-  normalized_text TEXT NOT NULL,
-  confidence REAL NOT NULL DEFAULT 0.0,
-  metadata TEXT,
-  provenance_id TEXT NOT NULL REFERENCES provenance(id),
-  created_at TEXT NOT NULL DEFAULT (datetime('now'))
-)`;
-
-/**
- * Entity mentions table - individual occurrences of entities in documents
- * Links entities to specific locations in chunks/pages
- */
-export const CREATE_ENTITY_MENTIONS_TABLE = `
-CREATE TABLE IF NOT EXISTS entity_mentions (
-  id TEXT PRIMARY KEY NOT NULL,
-  entity_id TEXT NOT NULL REFERENCES entities(id),
-  document_id TEXT NOT NULL REFERENCES documents(id),
-  chunk_id TEXT REFERENCES chunks(id),
-  page_number INTEGER,
-  character_start INTEGER,
-  character_end INTEGER,
-  context_text TEXT,
-  created_at TEXT NOT NULL DEFAULT (datetime('now'))
-)`;
-
-/**
  * Comparisons table - document comparison results
  * Provenance depth: 2 (parallel to CHUNK, after OCR_RESULT)
  */
@@ -486,7 +452,6 @@ CREATE TABLE IF NOT EXISTS comparisons (
   similarity_ratio REAL NOT NULL,
   text_diff_json TEXT NOT NULL,
   structural_diff_json TEXT NOT NULL,
-  entity_diff_json TEXT NOT NULL,
   summary TEXT NOT NULL,
   content_hash TEXT NOT NULL,
   provenance_id TEXT NOT NULL REFERENCES provenance(id),
@@ -536,223 +501,6 @@ CREATE TABLE IF NOT EXISTS document_clusters (
   assigned_at TEXT NOT NULL,
   UNIQUE(document_id, run_id)
 )`;
-
-/**
- * Knowledge graph nodes - unified entities resolved across documents
- * Provenance depth: 2 (parallel to ENTITY_EXTRACTION, after OCR_RESULT)
- */
-export const CREATE_KNOWLEDGE_NODES_TABLE = `
-CREATE TABLE IF NOT EXISTS knowledge_nodes (
-  id TEXT PRIMARY KEY,
-  entity_type TEXT NOT NULL CHECK (entity_type IN ('person', 'organization', 'date', 'amount', 'case_number', 'location', 'statute', 'exhibit', 'medication', 'diagnosis', 'medical_device', 'other')),
-  canonical_name TEXT NOT NULL,
-  normalized_name TEXT NOT NULL,
-  aliases TEXT,
-  document_count INTEGER NOT NULL DEFAULT 1,
-  mention_count INTEGER NOT NULL DEFAULT 0,
-  edge_count INTEGER NOT NULL DEFAULT 0,
-  avg_confidence REAL NOT NULL DEFAULT 0.0,
-  metadata TEXT,
-  provenance_id TEXT NOT NULL,
-  created_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL,
-  importance_score REAL,
-  resolution_type TEXT,
-  FOREIGN KEY (provenance_id) REFERENCES provenance(id)
-)
-`;
-
-/**
- * Knowledge graph edges - relationships between nodes
- * Provenance depth: 2 (parallel to ENTITY_EXTRACTION, after OCR_RESULT)
- */
-export const CREATE_KNOWLEDGE_EDGES_TABLE = `
-CREATE TABLE IF NOT EXISTS knowledge_edges (
-  id TEXT PRIMARY KEY,
-  source_node_id TEXT NOT NULL,
-  target_node_id TEXT NOT NULL,
-  relationship_type TEXT NOT NULL CHECK (relationship_type IN ('co_mentioned', 'co_located', 'works_at', 'represents', 'located_in', 'filed_in', 'cites', 'references', 'party_to', 'related_to', 'precedes', 'occurred_at', 'treated_with', 'administered_via', 'managed_by', 'interacts_with', 'diagnosed_with', 'prescribed_by', 'admitted_to', 'supervised_by', 'filed_by', 'contraindicated_with')),
-  weight REAL NOT NULL DEFAULT 1.0,
-  evidence_count INTEGER NOT NULL DEFAULT 1,
-  document_ids TEXT NOT NULL,
-  metadata TEXT,
-  provenance_id TEXT NOT NULL,
-  created_at TEXT NOT NULL,
-  valid_from TEXT,
-  valid_until TEXT,
-  normalized_weight REAL DEFAULT 0,
-  contradiction_count INTEGER DEFAULT 0,
-  FOREIGN KEY (source_node_id) REFERENCES knowledge_nodes(id),
-  FOREIGN KEY (target_node_id) REFERENCES knowledge_nodes(id),
-  FOREIGN KEY (provenance_id) REFERENCES provenance(id)
-)
-`;
-
-/**
- * Entity extraction segments - text segments used for chunked entity extraction
- * Each segment stores its exact character range in the OCR text for provenance tracing.
- * Provenance depth: 2 (parallel to ENTITY_EXTRACTION, after OCR_RESULT)
- */
-export const CREATE_ENTITY_EXTRACTION_SEGMENTS_TABLE = `
-CREATE TABLE IF NOT EXISTS entity_extraction_segments (
-  id TEXT PRIMARY KEY,
-  document_id TEXT NOT NULL REFERENCES documents(id),
-  ocr_result_id TEXT NOT NULL REFERENCES ocr_results(id),
-  segment_index INTEGER NOT NULL,
-  text TEXT NOT NULL,
-  character_start INTEGER NOT NULL,
-  character_end INTEGER NOT NULL,
-  text_length INTEGER NOT NULL,
-  overlap_previous INTEGER NOT NULL DEFAULT 0,
-  overlap_next INTEGER NOT NULL DEFAULT 0,
-  extraction_status TEXT NOT NULL DEFAULT 'pending'
-    CHECK (extraction_status IN ('pending', 'processing', 'complete', 'failed')),
-  entity_count INTEGER DEFAULT 0,
-  extracted_at TEXT,
-  error_message TEXT,
-  provenance_id TEXT REFERENCES provenance(id),
-  created_at TEXT NOT NULL DEFAULT (datetime('now')),
-  UNIQUE(document_id, segment_index)
-)
-`;
-
-/**
- * Entity embeddings table - vector embeddings for entity semantic search
- * Links entities to their embedding vectors via knowledge nodes
- * Provenance depth: 3 (after ENTITY_EXTRACTION)
- */
-export const CREATE_ENTITY_EMBEDDINGS_TABLE = `
-CREATE TABLE IF NOT EXISTS entity_embeddings (
-  id TEXT PRIMARY KEY,
-  node_id TEXT NOT NULL REFERENCES knowledge_nodes(id),
-  original_text TEXT NOT NULL,
-  original_text_length INTEGER NOT NULL,
-  entity_type TEXT NOT NULL,
-  document_count INTEGER NOT NULL DEFAULT 1,
-  model_name TEXT NOT NULL DEFAULT 'nomic-embed-text-v1.5',
-  content_hash TEXT NOT NULL,
-  created_at TEXT NOT NULL DEFAULT (datetime('now')),
-  provenance_id TEXT REFERENCES provenance(id)
-)
-`;
-
-/**
- * Vector entity embeddings virtual table using sqlite-vec
- * 768-dimensional float32 vectors for entity semantic search (cosine distance)
- */
-export const CREATE_VEC_ENTITY_EMBEDDINGS_TABLE = `
-CREATE VIRTUAL TABLE IF NOT EXISTS vec_entity_embeddings USING vec0(
-  entity_embedding_id TEXT PRIMARY KEY,
-  vector FLOAT[768] distance_metric=cosine
-)
-`;
-
-/**
- * Corpus-level intelligence - bird's eye view of the entire database
- * Stores AI-generated summaries, key actors, themes, and narrative arcs
- * Provenance depth: 2 (parallel to KNOWLEDGE_GRAPH)
- */
-export const CREATE_CORPUS_INTELLIGENCE_TABLE = `
-CREATE TABLE IF NOT EXISTS corpus_intelligence (
-  id TEXT PRIMARY KEY,
-  database_name TEXT NOT NULL,
-  corpus_summary TEXT NOT NULL,
-  key_actors TEXT NOT NULL,
-  themes TEXT NOT NULL,
-  narrative_arcs TEXT,
-  entity_count INTEGER NOT NULL,
-  document_count INTEGER NOT NULL,
-  model TEXT NOT NULL,
-  provenance_id TEXT NOT NULL REFERENCES provenance(id),
-  created_at TEXT NOT NULL DEFAULT (datetime('now')),
-  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
-)`;
-
-/**
- * Document-level narratives - AI-generated summaries focused on entity interactions
- * Each document gets one narrative, updated on re-synthesis
- * Provenance depth: 2 (parallel to KNOWLEDGE_GRAPH)
- */
-export const CREATE_DOCUMENT_NARRATIVES_TABLE = `
-CREATE TABLE IF NOT EXISTS document_narratives (
-  id TEXT PRIMARY KEY,
-  document_id TEXT NOT NULL UNIQUE REFERENCES documents(id),
-  narrative_text TEXT NOT NULL,
-  entity_roster TEXT NOT NULL,
-  corpus_context TEXT,
-  synthesis_count INTEGER DEFAULT 0,
-  model TEXT NOT NULL,
-  provenance_id TEXT NOT NULL REFERENCES provenance(id),
-  created_at TEXT NOT NULL DEFAULT (datetime('now')),
-  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
-)`;
-
-/**
- * Entity roles - AI-determined role and importance of entities
- * Can be scoped to entire database or a specific document
- * Provenance depth: 2 (parallel to KNOWLEDGE_GRAPH)
- */
-export const CREATE_ENTITY_ROLES_TABLE = `
-CREATE TABLE IF NOT EXISTS entity_roles (
-  id TEXT PRIMARY KEY,
-  node_id TEXT NOT NULL REFERENCES knowledge_nodes(id),
-  role TEXT NOT NULL,
-  theme TEXT,
-  importance_rank INTEGER,
-  context_summary TEXT,
-  scope TEXT NOT NULL DEFAULT 'database',
-  scope_id TEXT,
-  model TEXT NOT NULL,
-  provenance_id TEXT NOT NULL REFERENCES provenance(id),
-  created_at TEXT NOT NULL DEFAULT (datetime('now'))
-)`;
-
-/**
- * Node-entity links - maps knowledge nodes to source entity extractions
- */
-export const CREATE_NODE_ENTITY_LINKS_TABLE = `
-CREATE TABLE IF NOT EXISTS node_entity_links (
-  id TEXT PRIMARY KEY,
-  node_id TEXT NOT NULL,
-  entity_id TEXT NOT NULL UNIQUE,
-  document_id TEXT NOT NULL,
-  similarity_score REAL NOT NULL DEFAULT 1.0,
-  resolution_method TEXT,
-  created_at TEXT NOT NULL,
-  FOREIGN KEY (node_id) REFERENCES knowledge_nodes(id),
-  FOREIGN KEY (entity_id) REFERENCES entities(id),
-  FOREIGN KEY (document_id) REFERENCES documents(id)
-)
-`;
-
-/**
- * FTS5 table for knowledge node full-text search
- * External content mode: references knowledge_nodes table
- */
-export const CREATE_KNOWLEDGE_NODES_FTS_TABLE = `
-CREATE VIRTUAL TABLE IF NOT EXISTS knowledge_nodes_fts USING fts5(
-  canonical_name,
-  content='knowledge_nodes',
-  content_rowid='rowid',
-  tokenize='porter unicode61'
-)
-`;
-
-/**
- * FTS5 sync triggers for knowledge_nodes
- */
-export const CREATE_KNOWLEDGE_NODES_FTS_TRIGGERS = [
-  `CREATE TRIGGER IF NOT EXISTS knowledge_nodes_fts_ai AFTER INSERT ON knowledge_nodes BEGIN
-    INSERT INTO knowledge_nodes_fts(rowid, canonical_name) VALUES (new.rowid, new.canonical_name);
-  END`,
-  `CREATE TRIGGER IF NOT EXISTS knowledge_nodes_fts_ad AFTER DELETE ON knowledge_nodes BEGIN
-    INSERT INTO knowledge_nodes_fts(knowledge_nodes_fts, rowid, canonical_name) VALUES ('delete', old.rowid, old.canonical_name);
-  END`,
-  `CREATE TRIGGER IF NOT EXISTS knowledge_nodes_fts_au AFTER UPDATE OF canonical_name ON knowledge_nodes BEGIN
-    INSERT INTO knowledge_nodes_fts(knowledge_nodes_fts, rowid, canonical_name) VALUES ('delete', old.rowid, old.canonical_name);
-    INSERT INTO knowledge_nodes_fts(rowid, canonical_name) VALUES (new.rowid, new.canonical_name);
-  END`,
-];
 
 /**
  * All required indexes for query performance
@@ -808,13 +556,6 @@ export const CREATE_INDEXES = [
   'CREATE INDEX IF NOT EXISTS idx_uploaded_files_status ON uploaded_files(upload_status)',
   'CREATE INDEX IF NOT EXISTS idx_uploaded_files_datalab_file_id ON uploaded_files(datalab_file_id)',
 
-  // Entity indexes
-  'CREATE INDEX IF NOT EXISTS idx_entities_document_id ON entities(document_id)',
-  'CREATE INDEX IF NOT EXISTS idx_entities_entity_type ON entities(entity_type)',
-  'CREATE INDEX IF NOT EXISTS idx_entities_normalized_text ON entities(normalized_text)',
-  'CREATE INDEX IF NOT EXISTS idx_entity_mentions_entity_id ON entity_mentions(entity_id)',
-  'CREATE INDEX IF NOT EXISTS idx_entity_mentions_document_id ON entity_mentions(document_id)',
-
   // Comparison indexes
   'CREATE INDEX IF NOT EXISTS idx_comparisons_doc1 ON comparisons(document_id_1)',
   'CREATE INDEX IF NOT EXISTS idx_comparisons_doc2 ON comparisons(document_id_2)',
@@ -827,37 +568,6 @@ export const CREATE_INDEXES = [
   'CREATE INDEX IF NOT EXISTS idx_doc_clusters_document ON document_clusters(document_id)',
   'CREATE INDEX IF NOT EXISTS idx_doc_clusters_cluster ON document_clusters(cluster_id)',
   'CREATE INDEX IF NOT EXISTS idx_doc_clusters_run ON document_clusters(run_id)',
-
-  // Knowledge graph indexes
-  'CREATE INDEX IF NOT EXISTS idx_kn_entity_type ON knowledge_nodes(entity_type)',
-  'CREATE INDEX IF NOT EXISTS idx_kn_normalized_name ON knowledge_nodes(normalized_name)',
-  'CREATE INDEX IF NOT EXISTS idx_kn_document_count ON knowledge_nodes(document_count DESC)',
-  'CREATE INDEX IF NOT EXISTS idx_ke_source_node ON knowledge_edges(source_node_id)',
-  'CREATE INDEX IF NOT EXISTS idx_ke_target_node ON knowledge_edges(target_node_id)',
-  'CREATE INDEX IF NOT EXISTS idx_ke_relationship_type ON knowledge_edges(relationship_type)',
-  'CREATE INDEX IF NOT EXISTS idx_nel_node_id ON node_entity_links(node_id)',
-  'CREATE INDEX IF NOT EXISTS idx_nel_document_id ON node_entity_links(document_id)',
-
-  // Knowledge graph optimization indexes (v17)
-  'CREATE INDEX IF NOT EXISTS idx_knowledge_nodes_canonical_lower ON knowledge_nodes(canonical_name COLLATE NOCASE)',
-  'CREATE INDEX IF NOT EXISTS idx_entity_mentions_chunk_id ON entity_mentions(chunk_id)',
-
-  // Entity extraction segment indexes (v19)
-  'CREATE INDEX IF NOT EXISTS idx_segments_document ON entity_extraction_segments(document_id)',
-  'CREATE INDEX IF NOT EXISTS idx_segments_status ON entity_extraction_segments(extraction_status)',
-  'CREATE INDEX IF NOT EXISTS idx_segments_doc_status ON entity_extraction_segments(document_id, extraction_status)',
-
-  // Entity embeddings indexes (v21)
-  'CREATE INDEX IF NOT EXISTS idx_entity_embeddings_node_id ON entity_embeddings(node_id)',
-  'CREATE INDEX IF NOT EXISTS idx_entity_embeddings_content_hash ON entity_embeddings(content_hash)',
-
-  // AI Knowledge Synthesis indexes (v25)
-  'CREATE INDEX IF NOT EXISTS idx_corpus_intelligence_database ON corpus_intelligence(database_name)',
-  'CREATE INDEX IF NOT EXISTS idx_document_narratives_document ON document_narratives(document_id)',
-  'CREATE INDEX IF NOT EXISTS idx_entity_roles_node ON entity_roles(node_id)',
-  'CREATE INDEX IF NOT EXISTS idx_entity_roles_theme ON entity_roles(theme)',
-  'CREATE INDEX IF NOT EXISTS idx_entity_roles_role ON entity_roles(role)',
-  'CREATE INDEX IF NOT EXISTS idx_entity_roles_scope ON entity_roles(scope, scope_id)',
 ] as const;
 
 /**
@@ -874,19 +584,9 @@ export const TABLE_DEFINITIONS = [
   { name: 'extractions', sql: CREATE_EXTRACTIONS_TABLE },
   { name: 'form_fills', sql: CREATE_FORM_FILLS_TABLE },
   { name: 'uploaded_files', sql: CREATE_UPLOADED_FILES_TABLE },
-  { name: 'entities', sql: CREATE_ENTITIES_TABLE },
-  { name: 'entity_mentions', sql: CREATE_ENTITY_MENTIONS_TABLE },
   { name: 'comparisons', sql: CREATE_COMPARISONS_TABLE },
   { name: 'clusters', sql: CREATE_CLUSTERS_TABLE },
   { name: 'document_clusters', sql: CREATE_DOCUMENT_CLUSTERS_TABLE },
-  { name: 'knowledge_nodes', sql: CREATE_KNOWLEDGE_NODES_TABLE },
-  { name: 'knowledge_edges', sql: CREATE_KNOWLEDGE_EDGES_TABLE },
-  { name: 'node_entity_links', sql: CREATE_NODE_ENTITY_LINKS_TABLE },
-  { name: 'entity_extraction_segments', sql: CREATE_ENTITY_EXTRACTION_SEGMENTS_TABLE },
-  { name: 'entity_embeddings', sql: CREATE_ENTITY_EMBEDDINGS_TABLE },
-  { name: 'corpus_intelligence', sql: CREATE_CORPUS_INTELLIGENCE_TABLE },
-  { name: 'document_narratives', sql: CREATE_DOCUMENT_NARRATIVES_TABLE },
-  { name: 'entity_roles', sql: CREATE_ENTITY_ROLES_TABLE },
 ] as const;
 
 /**
@@ -909,21 +609,9 @@ export const REQUIRED_TABLES = [
   'form_fills',
   'extractions_fts',
   'uploaded_files',
-  'entities',
-  'entity_mentions',
   'comparisons',
   'clusters',
   'document_clusters',
-  'knowledge_nodes',
-  'knowledge_edges',
-  'node_entity_links',
-  'knowledge_nodes_fts',
-  'entity_extraction_segments',
-  'entity_embeddings',
-  'vec_entity_embeddings',
-  'corpus_intelligence',
-  'document_narratives',
-  'entity_roles',
 ] as const;
 
 /**
@@ -960,11 +648,6 @@ export const REQUIRED_INDEXES = [
   'idx_uploaded_files_file_hash',
   'idx_uploaded_files_status',
   'idx_uploaded_files_datalab_file_id',
-  'idx_entities_document_id',
-  'idx_entities_entity_type',
-  'idx_entities_normalized_text',
-  'idx_entity_mentions_entity_id',
-  'idx_entity_mentions_document_id',
   'idx_comparisons_doc1',
   'idx_comparisons_doc2',
   'idx_comparisons_created',
@@ -974,27 +657,4 @@ export const REQUIRED_INDEXES = [
   'idx_doc_clusters_document',
   'idx_doc_clusters_cluster',
   'idx_doc_clusters_run',
-  'idx_kn_entity_type',
-  'idx_kn_normalized_name',
-  'idx_kn_document_count',
-  'idx_ke_source_node',
-  'idx_ke_target_node',
-  'idx_ke_relationship_type',
-  'idx_nel_node_id',
-  'idx_nel_document_id',
-  'idx_knowledge_nodes_canonical_lower',
-  'idx_entity_mentions_chunk_id',
-  'idx_segments_document',
-  'idx_segments_status',
-  'idx_segments_doc_status',
-  'idx_entity_embeddings_node_id',
-  'idx_entity_embeddings_content_hash',
-
-  // AI Knowledge Synthesis indexes (v25)
-  'idx_corpus_intelligence_database',
-  'idx_document_narratives_document',
-  'idx_entity_roles_node',
-  'idx_entity_roles_theme',
-  'idx_entity_roles_role',
-  'idx_entity_roles_scope',
 ] as const;

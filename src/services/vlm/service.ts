@@ -88,8 +88,6 @@ export interface DeepAnalysisResult {
 export interface DescribeImageOptions {
   /** Surrounding text context from document */
   contextText?: string;
-  /** KG entity names known to be on this page for entity-aware descriptions */
-  entityHints?: string[];
   /** Use high resolution mode */
   highResolution?: boolean;
   /** Use universal blind-person-detail prompt (default: true) */
@@ -180,7 +178,7 @@ export class VLMService {
     }
     if (options.contextText) {
       return {
-        prompt: createContextPrompt(options.contextText, options.entityHints),
+        prompt: createContextPrompt(options.contextText),
         schema: IMAGE_ANALYSIS_SCHEMA,
       };
     }

@@ -2,7 +2,7 @@
  * OCR Provenance MCP Server
  *
  * Entry point for the MCP server using stdio transport.
- * Exposes 104 OCR, search, provenance, clustering, and knowledge graph tools via JSON-RPC.
+ * Exposes OCR, search, provenance, and clustering tools via JSON-RPC.
  *
  * CRITICAL: NEVER use console.log() - stdout is reserved for JSON-RPC protocol.
  * Use console.error() for all logging.
@@ -52,11 +52,8 @@ import { reportTools } from './tools/reports.js';
 import { formFillTools } from './tools/form-fill.js';
 import { structuredExtractionTools } from './tools/extraction-structured.js';
 import { fileManagementTools } from './tools/file-management.js';
-import { entityAnalysisTools } from './tools/entity-analysis.js';
 import { comparisonTools } from './tools/comparison.js';
 import { clusteringTools } from './tools/clustering.js';
-import { knowledgeGraphTools } from './tools/knowledge-graph.js';
-import { questionAnswerTools } from './tools/question-answer.js';
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // SERVER INITIALIZATION
@@ -87,11 +84,8 @@ const allToolModules: Record<string, ToolDefinition>[] = [
   formFillTools, // 3 tools
   structuredExtractionTools, // 2 tools
   fileManagementTools, // 5 tools
-  entityAnalysisTools, // 10 tools
   comparisonTools, // 3 tools
   clusteringTools, // 5 tools
-  knowledgeGraphTools, // 25 tools
-  questionAnswerTools, // 1 tool
 ];
 
 // Register tools with duplicate detection
@@ -130,7 +124,7 @@ function validateStartupDependencies(): void {
   }
   if (!process.env.GEMINI_API_KEY) {
     warnings.push(
-      'GEMINI_API_KEY is not set. Entity extraction, VLM, and QA will fail. Get one at https://aistudio.google.com/'
+      'GEMINI_API_KEY is not set. VLM processing and evaluation will fail. Get one at https://aistudio.google.com/'
     );
   }
 

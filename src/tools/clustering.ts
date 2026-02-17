@@ -14,7 +14,6 @@ import { v4 as uuidv4 } from 'uuid';
 import {
   formatResponse,
   handleError,
-  queryEntitiesForDocuments,
   fetchProvenanceChain,
   type ToolDefinition,
   type ToolResponse,
@@ -37,8 +36,6 @@ import {
   deleteClustersByRunId,
   insertDocumentCluster,
   getClusterSummariesByRunId,
-  getClusterDocumentEntityNodes,
-  getDocumentEntityNodeIds,
 } from '../services/storage/database/cluster-operations.js';
 import type { ClusterRunConfig, DocumentCluster } from '../models/cluster.js';
 
@@ -81,14 +78,6 @@ const ClusterDocumentsInput = z.object({
     .array(z.string())
     .optional()
     .describe('Cluster only these document IDs. Default: all documents with embeddings.'),
-  entity_weight: z
-    .number()
-    .min(0)
-    .max(1.0)
-    .default(0)
-    .describe(
-      'Weight for KG entity overlap in similarity (0=embedding only, 0.3=recommended blend)'
-    ),
 });
 
 const ClusterListInput = z.object({
@@ -96,35 +85,17 @@ const ClusterListInput = z.object({
   classification_tag: z.string().optional().describe('Filter by classification tag'),
   limit: z.number().int().min(1).max(100).default(50),
   offset: z.number().int().min(0).default(0),
-  include_entities: z
-    .boolean()
-    .default(false)
-    .describe('Include entities for documents in each cluster'),
 });
 
 const ClusterGetInput = z.object({
   cluster_id: z.string().min(1).describe('Cluster ID'),
   include_documents: z.boolean().default(true).describe('Include member document list'),
   include_provenance: z.boolean().default(false).describe('Include provenance chain'),
-  include_entities: z
-    .boolean()
-    .default(false)
-    .describe('Include entities for documents in this cluster'),
-  include_shared_entities: z
-    .boolean()
-    .default(false)
-    .describe('Include entity nodes shared across documents in this cluster'),
 });
 
 const ClusterAssignInput = z.object({
   document_id: z.string().min(1).describe('Document ID to classify'),
   run_id: z.string().min(1).describe('Run ID to classify against'),
-  entity_weight: z
-    .number()
-    .min(0)
-    .max(1)
-    .default(0)
-    .describe('Weight for KG entity overlap (0=embedding only, 0.3=recommended blend)'),
 });
 
 const ClusterDeleteInput = z.object({
@@ -155,7 +126,6 @@ async function handleClusterDocuments(params: Record<string, unknown>): Promise<
       min_cluster_size: input.min_cluster_size ?? 3,
       distance_threshold: input.distance_threshold ?? null,
       linkage: input.linkage ?? 'average',
-      entity_weight: input.entity_weight ?? 0,
     };
 
     const result = await runClustering(db, vector, config, input.document_filter);
@@ -164,7 +134,6 @@ async function handleClusterDocuments(params: Record<string, unknown>): Promise<
       successResult({
         run_id: result.run_id,
         algorithm: result.algorithm,
-        entity_weight: config.entity_weight,
         n_clusters: result.n_clusters,
         total_documents: result.total_documents,
         noise_count: result.noise_document_ids.length,
@@ -276,53 +245,6 @@ async function handleClusterGet(params: Record<string, unknown>): Promise<ToolRe
         fetchProvenanceChain(db, cluster.provenance_id, 'clustering') ?? null;
     }
 
-    if (input.include_entities) {
-      try {
-        const docIds = getClusterDocuments(conn, input.cluster_id).map((d) => d.document_id);
-        result.entities = queryEntitiesForDocuments(conn, docIds);
-      } catch (err) {
-        console.error(
-          `[clustering] Entity query failed: ${err instanceof Error ? err.message : String(err)}`
-        );
-        result.entities = [];
-      }
-    }
-
-    if (input.include_shared_entities) {
-      try {
-        const clusterEntityNodes = getClusterDocumentEntityNodes(conn, input.cluster_id);
-        // Query node details for shared entities
-        if (clusterEntityNodes.size > 0) {
-          const nodeIds = [...clusterEntityNodes];
-          const placeholders = nodeIds.map(() => '?').join(',');
-          const sharedNodes = conn
-            .prepare(
-              `
-            SELECT kn.id as node_id, kn.canonical_name, kn.entity_type, kn.document_count
-            FROM knowledge_nodes kn
-            WHERE kn.id IN (${placeholders}) AND kn.document_count > 1
-            ORDER BY kn.document_count DESC
-            LIMIT 50
-          `
-            )
-            .all(...nodeIds) as Array<{
-            node_id: string;
-            canonical_name: string;
-            entity_type: string;
-            document_count: number;
-          }>;
-          result.shared_entities = sharedNodes;
-        } else {
-          result.shared_entities = [];
-        }
-      } catch (err) {
-        console.error(
-          `[clustering] Shared entity query failed: ${err instanceof Error ? err.message : String(err)}`
-        );
-        result.shared_entities = [];
-      }
-    }
-
     return formatResponse(successResult(result));
   } catch (error) {
     return handleError(error);
@@ -355,19 +277,6 @@ async function handleClusterAssign(params: Record<string, unknown>): Promise<Too
 
     const docEmb = docEmbeddings[0].embedding;
 
-    // Compute document KG entity nodes once (outside loop)
-    let docNodeIds: Set<string> | undefined;
-    const entityWeight = input.entity_weight ?? 0;
-    if (entityWeight > 0) {
-      try {
-        docNodeIds = getDocumentEntityNodeIds(conn, input.document_id);
-      } catch (err) {
-        console.error(
-          `[clustering] KG tables not available for entity-weighted assignment, using pure cosine: ${err instanceof Error ? err.message : String(err)}`
-        );
-      }
-    }
-
     // Get all clusters for the specified run
     const clusters = getClusterSummariesByRunId(conn, input.run_id);
     if (clusters.length === 0) {
@@ -384,23 +293,7 @@ async function handleClusterAssign(params: Record<string, unknown>): Promise<Too
       if (!fullCluster?.centroid_json) continue;
 
       const centroid = JSON.parse(fullCluster.centroid_json) as number[];
-      let similarity = cosineSimilarity(docEmb, centroid);
-
-      if (entityWeight > 0 && docNodeIds && docNodeIds.size > 0) {
-        try {
-          const clusterNodeIds = getClusterDocumentEntityNodes(conn, cluster.id);
-          if (clusterNodeIds.size > 0) {
-            const intersection = new Set([...docNodeIds].filter((id) => clusterNodeIds.has(id)));
-            const union = new Set([...docNodeIds, ...clusterNodeIds]);
-            const jaccard = union.size > 0 ? intersection.size / union.size : 0;
-            similarity = (1 - entityWeight) * similarity + entityWeight * jaccard;
-          }
-        } catch (err) {
-          console.error(
-            `[clustering] KG entity overlap query failed for cluster ${cluster.id}: ${err instanceof Error ? err.message : String(err)}`
-          );
-        }
-      }
+      const similarity = cosineSimilarity(docEmb, centroid);
 
       if (similarity > bestSimilarity) {
         bestSimilarity = similarity;
@@ -452,7 +345,6 @@ async function handleClusterAssign(params: Record<string, unknown>): Promise<Too
           document_id: input.document_id,
           cluster_id: bestClusterId,
           run_id: input.run_id,
-          entity_weight: input.entity_weight,
           similarity_to_centroid: dc.similarity_to_centroid,
         })
       ),
@@ -464,7 +356,6 @@ async function handleClusterAssign(params: Record<string, unknown>): Promise<Too
         document_id: input.document_id,
         cluster_id: bestClusterId,
         run_id: input.run_id,
-        entity_weight: input.entity_weight,
         similarity_to_centroid: dc.similarity_to_centroid,
       },
       processing_duration_ms: null,
@@ -481,7 +372,6 @@ async function handleClusterAssign(params: Record<string, unknown>): Promise<Too
         cluster_id: bestClusterId,
         cluster_index: bestClusterIndex,
         similarity_to_centroid: dc.similarity_to_centroid,
-        entity_weight: input.entity_weight,
         run_id: input.run_id,
         assigned: true,
         provenance_id: assignProvId,
@@ -543,7 +433,7 @@ async function handleClusterDelete(params: Record<string, unknown>): Promise<Too
 export const clusteringTools: Record<string, ToolDefinition> = {
   ocr_cluster_documents: {
     description:
-      'Cluster documents by semantic similarity using HDBSCAN, agglomerative, or k-means algorithms. Set entity_weight > 0 to blend KG entity overlap with embedding similarity.',
+      'Cluster documents by semantic similarity using HDBSCAN, agglomerative, or k-means algorithms.',
     inputSchema: ClusterDocumentsInput.shape,
     handler: handleClusterDocuments,
   },
@@ -559,7 +449,7 @@ export const clusteringTools: Record<string, ToolDefinition> = {
   },
   ocr_cluster_assign: {
     description:
-      'Auto-classify a document by assigning it to the nearest existing cluster. Set entity_weight > 0 to blend KG entity overlap with embedding similarity.',
+      'Auto-classify a document by assigning it to the nearest existing cluster based on embedding similarity.',
     inputSchema: ClusterAssignInput.shape,
     handler: handleClusterAssign,
   },

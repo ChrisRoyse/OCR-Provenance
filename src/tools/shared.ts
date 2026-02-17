@@ -12,7 +12,6 @@
 
 import { z } from 'zod';
 import { MCPError, formatErrorResponse } from '../server/errors.js';
-import { getClusterSummariesForDocument } from '../services/storage/database/cluster-operations.js';
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // TYPE DEFINITIONS
@@ -57,34 +56,6 @@ export function handleError(error: unknown): ToolResponse {
 // SHARED QUERY HELPERS
 // ═══════════════════════════════════════════════════════════════════════════════
 
-/** Entity row shape returned by queryEntitiesForDocuments */
-export interface DocumentEntityRow {
-  id: string;
-  text: string;
-  type: string;
-  normalized_text: string;
-  confidence: number;
-}
-
-/**
- * Query entities for a set of document IDs.
- * Shared by clustering, comparison, and file-management tools.
- */
-export function queryEntitiesForDocuments(
-  conn: import('better-sqlite3').Database,
-  documentIds: string[]
-): DocumentEntityRow[] {
-  if (documentIds.length === 0) return [];
-  const placeholders = documentIds.map(() => '?').join(',');
-  return conn
-    .prepare(
-      `SELECT id, raw_text as text, entity_type as type, normalized_text, confidence
-     FROM entities WHERE document_id IN (${placeholders})
-     ORDER BY entity_type, confidence DESC`
-    )
-    .all(...documentIds) as DocumentEntityRow[];
-}
-
 /**
  * Fetch provenance chain for a given provenance ID and attach to response object.
  * Returns the chain array on success, or undefined on failure (with error logged).
@@ -107,36 +78,3 @@ export function fetchProvenanceChain(
   }
 }
 
-/**
- * Build a cluster reassignment hint for a document whose content has changed.
- * Returns an object with hint text and current cluster info, or undefined if
- * the document has no cluster memberships.
- *
- * Shared by vlm, extraction-structured, and other tools that modify document content.
- */
-export function buildClusterReassignmentHint(
-  conn: import('better-sqlite3').Database,
-  documentId: string,
-  logPrefix: string
-):
-  | {
-      cluster_reassignment_hint: string;
-      current_clusters: Array<{ cluster_id: string; label: string | null }>;
-    }
-  | undefined {
-  try {
-    const clusterSummaries = getClusterSummariesForDocument(conn, documentId);
-    if (clusterSummaries.length > 0) {
-      return {
-        cluster_reassignment_hint:
-          'Document content changed. Run ocr_cluster_documents to update cluster assignments.',
-        current_clusters: clusterSummaries.map((s) => ({ cluster_id: s.id, label: s.label })),
-      };
-    }
-  } catch (clusterErr) {
-    console.error(
-      `[${logPrefix}] Cluster check failed: ${clusterErr instanceof Error ? clusterErr.message : String(clusterErr)}`
-    );
-  }
-  return undefined;
-}

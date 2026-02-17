@@ -16,7 +16,7 @@ import { requireDatabase } from '../server/state.js';
 import { successResult } from '../server/types.js';
 import { MCPError } from '../server/errors.js';
 import { formatResponse, handleError, type ToolResponse, type ToolDefinition } from './shared.js';
-import { validateInput, escapeLikePattern } from '../utils/validation.js';
+import { validateInput } from '../utils/validation.js';
 import { ImageExtractor } from '../services/images/extractor.js';
 import {
   getImage,
@@ -52,12 +52,10 @@ const ImageListInput = z.object({
   document_id: z.string().min(1),
   include_descriptions: z.boolean().default(false),
   vlm_status: z.enum(['pending', 'processing', 'complete', 'failed']).optional(),
-  entity_filter: z.string().optional(),
 });
 
 const ImageGetInput = z.object({
   image_id: z.string().min(1),
-  include_page_entities: z.boolean().default(false),
 });
 
 const ImageStatsInput = z.object({});
@@ -215,7 +213,6 @@ export async function handleImageList(params: Record<string, unknown>): Promise<
     const documentId = input.document_id;
     const includeDescriptions = input.include_descriptions ?? false;
     const vlmStatusFilter = input.vlm_status;
-    const entityFilter = input.entity_filter;
 
     const { db } = requireDatabase();
 
@@ -227,43 +224,16 @@ export async function handleImageList(params: Record<string, unknown>): Promise<
       });
     }
 
-    let images = getImagesByDocument(
+    const images = getImagesByDocument(
       db.getConnection(),
       documentId,
       vlmStatusFilter ? { vlmStatus: vlmStatusFilter } : undefined
     );
 
-    // Filter images by entity co-located on the same page
-    if (entityFilter && images.length > 0) {
-      try {
-        const conn = db.getConnection();
-        const escapedPattern = `%${escapeLikePattern(entityFilter)}%`;
-        const matchingPages = conn
-          .prepare(
-            `
-          SELECT DISTINCT i.page_number
-          FROM images i
-          JOIN entity_mentions em ON em.document_id = i.document_id AND em.page_number = i.page_number
-          JOIN entities e ON em.entity_id = e.id
-          WHERE i.document_id = ? AND LOWER(e.normalized_text) LIKE LOWER(?) ESCAPE '\\'
-        `
-          )
-          .all(documentId, escapedPattern) as Array<{ page_number: number }>;
-        const pageSet = new Set(matchingPages.map((r) => r.page_number));
-        images = images.filter((img) => pageSet.has(img.page_number));
-      } catch (err) {
-        console.error(
-          `[images] entity_filter image list query failed: ${err instanceof Error ? err.message : String(err)}`
-        );
-        // Entity tables may not exist yet - skip filtering
-      }
-    }
-
     return formatResponse(
       successResult({
         document_id: documentId,
         count: images.length,
-        entity_filter: entityFilter || undefined,
         images: images.map((img) => ({
           id: img.id,
           page: img.page_number,
@@ -292,7 +262,6 @@ export async function handleImageGet(params: Record<string, unknown>): Promise<T
   try {
     const input = validateInput(ImageGetInput, params);
     const imageId = input.image_id;
-    const includePageEntities = input.include_page_entities ?? false;
 
     const { db } = requireDatabase();
 
@@ -331,36 +300,6 @@ export async function handleImageGet(params: Record<string, unknown>): Promise<T
       },
     };
 
-    // Include entities co-located on the same page as the image
-    if (includePageEntities) {
-      try {
-        const conn = db.getConnection();
-        const pageEntities = conn
-          .prepare(
-            `
-          SELECT DISTINCT e.raw_text, e.entity_type, e.confidence
-          FROM entity_mentions em
-          JOIN entities e ON em.entity_id = e.id
-          WHERE em.document_id = ? AND em.page_number = ?
-          ORDER BY e.confidence DESC
-          LIMIT 20
-        `
-          )
-          .all(img.document_id, img.page_number) as Array<{
-          raw_text: string;
-          entity_type: string;
-          confidence: number;
-        }>;
-        responseData.page_entities = pageEntities;
-      } catch (err) {
-        console.error(
-          `[images] page_entities image get query failed: ${err instanceof Error ? err.message : String(err)}`
-        );
-        // Entity tables may not exist yet
-        responseData.page_entities = [];
-      }
-    }
-
     return formatResponse(successResult(responseData));
   } catch (error) {
     return handleError(error);
@@ -379,64 +318,19 @@ export async function handleImageStats(params: Record<string, unknown>): Promise
 
     const stats = getImageStats(conn);
 
-    const responseData: Record<string, unknown> = {
-      stats: {
-        total: stats.total,
-        processed: stats.processed,
-        pending: stats.pending,
-        processing: stats.processing,
-        failed: stats.failed,
-        processing_rate:
-          stats.total > 0 ? ((stats.processed / stats.total) * 100).toFixed(1) + '%' : '0%',
-      },
-    };
-
-    // Add entity coverage metrics for image pages
-    try {
-      const totalImagePages = conn
-        .prepare("SELECT COUNT(DISTINCT document_id || ':' || page_number) as cnt FROM images")
-        .get() as { cnt: number };
-
-      const pagesWithEntities = conn
-        .prepare(
-          `
-        SELECT COUNT(DISTINCT i.document_id || ':' || i.page_number) as cnt
-        FROM images i
-        JOIN entity_mentions em ON em.document_id = i.document_id AND em.page_number = i.page_number
-      `
-        )
-        .get() as { cnt: number };
-
-      const avgEntities = conn
-        .prepare(
-          `
-        SELECT COALESCE(AVG(entity_count), 0) as avg_count FROM (
-          SELECT i.document_id, i.page_number, COUNT(DISTINCT em.entity_id) as entity_count
-          FROM images i
-          JOIN entity_mentions em ON em.document_id = i.document_id AND em.page_number = i.page_number
-          GROUP BY i.document_id, i.page_number
-        )
-      `
-        )
-        .get() as { avg_count: number };
-
-      responseData.entity_coverage = {
-        total_image_pages: totalImagePages.cnt,
-        pages_with_entities: pagesWithEntities.cnt,
-        coverage_rate:
-          totalImagePages.cnt > 0
-            ? ((pagesWithEntities.cnt / totalImagePages.cnt) * 100).toFixed(1) + '%'
-            : '0%',
-        avg_entities_per_image_page: Number(avgEntities.avg_count.toFixed(1)),
-      };
-    } catch (err) {
-      console.error(
-        `[images] entity_coverage image stats query failed: ${err instanceof Error ? err.message : String(err)}`
-      );
-      // Entity tables may not exist yet
-    }
-
-    return formatResponse(successResult(responseData));
+    return formatResponse(
+      successResult({
+        stats: {
+          total: stats.total,
+          processed: stats.processed,
+          pending: stats.pending,
+          processing: stats.processing,
+          failed: stats.failed,
+          processing_rate:
+            stats.total > 0 ? ((stats.processed / stats.total) * 100).toFixed(1) + '%' : '0%',
+        },
+      })
+    );
   } catch (error) {
     return handleError(error);
   }
@@ -606,7 +500,7 @@ export const imageTools: Record<string, ToolDefinition> = {
   },
 
   ocr_image_list: {
-    description: 'List all images extracted from a document, with optional entity-based filtering',
+    description: 'List all images extracted from a document',
     inputSchema: {
       document_id: z.string().min(1).describe('Document ID'),
       include_descriptions: z.boolean().default(false).describe('Include VLM descriptions'),
@@ -614,31 +508,20 @@ export const imageTools: Record<string, ToolDefinition> = {
         .enum(['pending', 'processing', 'complete', 'failed'])
         .optional()
         .describe('Filter by VLM status'),
-      entity_filter: z
-        .string()
-        .optional()
-        .describe(
-          'Filter images to pages containing entities matching this text (substring match)'
-        ),
     },
     handler: handleImageList,
   },
 
   ocr_image_get: {
-    description:
-      'Get detailed information about a specific image, optionally including co-located page entities',
+    description: 'Get detailed information about a specific image',
     inputSchema: {
       image_id: z.string().min(1).describe('Image ID'),
-      include_page_entities: z
-        .boolean()
-        .default(false)
-        .describe('Include entities found on the same page as this image'),
     },
     handler: handleImageGet,
   },
 
   ocr_image_stats: {
-    description: 'Get image processing statistics including entity coverage metrics',
+    description: 'Get image processing statistics',
     inputSchema: {},
     handler: handleImageStats,
   },

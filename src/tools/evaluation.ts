@@ -37,13 +37,6 @@ import { computeHash } from '../utils/hash.js';
 import type { VLMResult } from '../models/image.js';
 import { ProvenanceType } from '../models/provenance.js';
 import type { ProvenanceRecord } from '../models/provenance.js';
-import type Database from 'better-sqlite3';
-import {
-  getEntityCount,
-  getEntityTypeDistribution,
-  getPagesWithEntities,
-  getSegmentStats,
-} from '../services/storage/database/entity-operations.js';
 
 // ===============================================================================
 // VALIDATION SCHEMAS
@@ -57,7 +50,6 @@ const EvaluateSingleInput = z.object({
 const EvaluateDocumentInput = z.object({
   document_id: z.string().min(1),
   batch_size: z.number().int().min(1).max(20).default(5),
-  include_entity_quality: z.boolean().default(false),
 });
 
 const EvaluatePendingInput = z.object({
@@ -305,29 +297,20 @@ export async function handleEvaluateDocument(
       .filter((r) => r.success && r.confidence)
       .reduce((sum, r, _, arr) => sum + (r.confidence || 0) / arr.length, 0);
 
-    const responseData: Record<string, unknown> = {
-      document_id: documentId,
-      file_name: doc.file_name,
-      total_images: images.length,
-      evaluated: results.length,
-      successful,
-      failed,
-      total_tokens: totalTokens,
-      processing_time_ms: Date.now() - startTime,
-      average_confidence: avgConfidence,
-      results: results.slice(0, 20), // Limit results in response
-    };
-
-    // Entity quality assessment
-    if (input.include_entity_quality) {
-      responseData.entity_quality = getDocumentEntityQuality(
-        db.getConnection(),
-        documentId,
-        doc.page_count
-      );
-    }
-
-    return formatResponse(successResult(responseData));
+    return formatResponse(
+      successResult({
+        document_id: documentId,
+        file_name: doc.file_name,
+        total_images: images.length,
+        evaluated: results.length,
+        successful,
+        failed,
+        total_tokens: totalTokens,
+        processing_time_ms: Date.now() - startTime,
+        average_confidence: avgConfidence,
+        results: results.slice(0, 20), // Limit results in response
+      })
+    );
   } catch (error) {
     return handleError(error);
   }
@@ -638,37 +621,6 @@ async function generateAndStoreEmbedding(
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// ENTITY QUALITY HELPERS
-// ═══════════════════════════════════════════════════════════════════════════════
-
-/**
- * Query entity quality metrics for a document.
- * Returns zeros/defaults if entity tables do not exist (graceful degradation).
- * Uses shared helpers from entity-operations.ts.
- */
-function getDocumentEntityQuality(
-  conn: Database.Database,
-  documentId: string,
-  pageCount: number | null
-): Record<string, unknown> {
-  const entityCount = getEntityCount(conn, documentId);
-  const typeDist = getEntityTypeDistribution(conn, documentId);
-  const pagesWithEntities = getPagesWithEntities(conn, documentId);
-  const segmentStats = getSegmentStats(conn, documentId);
-  const totalPages = pageCount ?? 0;
-
-  return {
-    entity_count: entityCount,
-    entity_density_per_page: totalPages > 0 ? entityCount / totalPages : 0,
-    type_distribution: typeDist,
-    pages_with_entities: pagesWithEntities,
-    total_pages: totalPages,
-    extraction_coverage_pct: totalPages > 0 ? (pagesWithEntities / totalPages) * 100 : 0,
-    segment_stats: segmentStats,
-  };
-}
-
-// ═══════════════════════════════════════════════════════════════════════════════
 // TOOL DEFINITIONS FOR MCP REGISTRATION
 // ═══════════════════════════════════════════════════════════════════════════════
 
@@ -688,16 +640,10 @@ export const evaluationTools: Record<string, ToolDefinition> = {
 
   ocr_evaluate_document: {
     description:
-      'Evaluate all pending images in a document with the universal prompt. Optionally includes entity quality assessment (density, type distribution, extraction coverage).',
+      'Evaluate all pending images in a document with the universal prompt.',
     inputSchema: {
       document_id: z.string().min(1).describe('Document ID'),
       batch_size: z.number().int().min(1).max(20).default(5).describe('Images per batch'),
-      include_entity_quality: z
-        .boolean()
-        .default(false)
-        .describe(
-          'Include entity quality metrics (density, type distribution, extraction coverage)'
-        ),
     },
     handler: handleEvaluateDocument,
   },

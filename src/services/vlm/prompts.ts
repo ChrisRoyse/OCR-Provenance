@@ -54,19 +54,15 @@ Return as JSON:
  * @param contextText - Text surrounding the image in the document
  * @returns Complete prompt with context
  */
-export function createContextPrompt(contextText: string, entityHints?: string[]): string {
+export function createContextPrompt(contextText: string): string {
   const truncatedContext = contextText.slice(0, 2000);
-  const entitySection =
-    entityHints && entityHints.length > 0
-      ? `\nKNOWN ENTITIES ON THIS PAGE:\n${entityHints.join(', ')}\n\nUse these known entity names to identify signatures, logos, letterheads, or references in the image.\n`
-      : '';
   return `You are analyzing an image from a legal or medical document.
 
 SURROUNDING TEXT CONTEXT:
 """
 ${truncatedContext}
 """
-${entitySection}
+
 Relate your description to this context where relevant. The context may help identify what the image represents.
 
 ${LEGAL_IMAGE_PROMPT}`;

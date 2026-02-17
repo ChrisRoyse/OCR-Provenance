@@ -14,9 +14,9 @@ import { runWithForeignKeyCheck } from './helpers.js';
 export function insertComparison(db: Database.Database, comparison: Comparison): string {
   const stmt = db.prepare(`
     INSERT INTO comparisons (id, document_id_1, document_id_2, similarity_ratio,
-      text_diff_json, structural_diff_json, entity_diff_json, summary,
+      text_diff_json, structural_diff_json, summary,
       content_hash, provenance_id, created_at, processing_duration_ms)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
 
   runWithForeignKeyCheck(
@@ -28,7 +28,6 @@ export function insertComparison(db: Database.Database, comparison: Comparison):
       comparison.similarity_ratio,
       comparison.text_diff_json,
       comparison.structural_diff_json,
-      comparison.entity_diff_json,
       comparison.summary,
       comparison.content_hash,
       comparison.provenance_id,

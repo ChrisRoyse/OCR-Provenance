@@ -543,10 +543,10 @@ export class ProvenanceVerifier {
       case ProvenanceType.COMPARISON: {
         const comparison = this.rawDb
           .prepare(
-            'SELECT text_diff_json, structural_diff_json, entity_diff_json FROM comparisons WHERE provenance_id = ?'
+            'SELECT text_diff_json, structural_diff_json FROM comparisons WHERE provenance_id = ?'
           )
           .get(record.id) as
-          | { text_diff_json: string; structural_diff_json: string; entity_diff_json: string }
+          | { text_diff_json: string; structural_diff_json: string }
           | undefined;
 
         if (!comparison) {
@@ -576,7 +576,6 @@ export class ProvenanceVerifier {
         const diffContent = JSON.stringify({
           text_diff: parseDiffField(comparison.text_diff_json, 'text_diff_json'),
           structural_diff: parseDiffField(comparison.structural_diff_json, 'structural_diff_json'),
-          entity_diff: parseDiffField(comparison.entity_diff_json, 'entity_diff_json'),
         });
 
         return { content: diffContent, expectedHash: record.content_hash, isFile: false };
@@ -632,71 +631,6 @@ export class ProvenanceVerifier {
         return { content: formFillContent, expectedHash: record.content_hash, isFile: false };
       }
 
-      case ProvenanceType.ENTITY_EXTRACTION: {
-        // ENTITY_EXTRACTION has 3 creation paths:
-        // 1. Gemini extraction: computeHash(JSON.stringify([...dedupMap.values()]))
-        //    processor = 'gemini-entity-extraction'
-        // 2. VLM extraction: computeHash(JSON.stringify({ document_id, source: 'vlm' }))
-        //    processor = 'vlm-entity-extraction'
-        // 3. Extraction mapper: computeHash(JSON.stringify({ document_id, source: 'extraction' }))
-        //    processor = 'extraction-entity-mapper'
-
-        const processingParams = record.processing_params
-          ? typeof record.processing_params === 'string'
-            ? JSON.parse(record.processing_params)
-            : record.processing_params
-          : {};
-
-        if (processingParams.source === 'vlm' || processingParams.source === 'extraction') {
-          // VLM and extraction entity extraction hash a simple metadata object
-          // Find the document_id from entities linked to this provenance
-          const entityRow = this.rawDb
-            .prepare('SELECT document_id FROM entities WHERE provenance_id = ? LIMIT 1')
-            .get(record.id) as { document_id: string } | undefined;
-
-          if (!entityRow) {
-            throw new VerifierError(
-              `No entities found for entity_extraction provenance ${record.id}`,
-              VerifierErrorCode.CONTENT_NOT_FOUND,
-              { provenanceId: record.id, type: record.type }
-            );
-          }
-
-          const entityContent = JSON.stringify({
-            document_id: entityRow.document_id,
-            source: processingParams.source,
-          });
-          return { content: entityContent, expectedHash: record.content_hash, isFile: false };
-        }
-
-        // Gemini entity extraction: hash was computed over the deduped entity array
-        // Re-derive by loading entities for this provenance_id, ordered the same way
-        const entities = this.rawDb
-          .prepare(
-            'SELECT raw_text, entity_type, confidence FROM entities WHERE provenance_id = ? ORDER BY entity_type, normalized_text'
-          )
-          .all(record.id) as Array<{ raw_text: string; entity_type: string; confidence: number }>;
-
-        if (entities.length === 0) {
-          throw new VerifierError(
-            `No entities found for entity_extraction provenance ${record.id}`,
-            VerifierErrorCode.CONTENT_NOT_FOUND,
-            { provenanceId: record.id, type: record.type }
-          );
-        }
-
-        // The original hash was: computeHash(JSON.stringify([...dedupMap.values()]))
-        // where dedupMap values were { type, raw_text, confidence }
-        const entityContent = JSON.stringify(
-          entities.map((e) => ({
-            type: e.entity_type,
-            raw_text: e.raw_text,
-            confidence: e.confidence,
-          }))
-        );
-        return { content: entityContent, expectedHash: record.content_hash, isFile: false };
-      }
-
       case ProvenanceType.CLUSTERING: {
         // CLUSTERING: content_hash = computeHash(JSON.stringify(centroid) + ':' + runId)
         // Re-derive: Load cluster record and reconstruct the same input
@@ -716,131 +650,6 @@ export class ProvenanceVerifier {
         // centroid_json is already JSON.stringify(centroid), so use it directly
         const clusterContent = cluster.centroid_json + ':' + cluster.run_id;
         return { content: clusterContent, expectedHash: record.content_hash, isFile: false };
-      }
-
-      case ProvenanceType.KNOWLEDGE_GRAPH: {
-        // KNOWLEDGE_GRAPH has two creation paths:
-        // 1. Build provenance: computeHash(JSON.stringify(sortedEntityIds))
-        //    processor = 'knowledge-graph-builder'
-        // 2. Per-node provenance: computeHash(JSON.stringify({ node_id, canonical_name }))
-        //    processor = 'entity-resolution'
-
-        const processor = record.processor ?? '';
-
-        if (processor === 'entity-resolution') {
-          // Per-node provenance: hash was computed over { node_id, canonical_name }
-          const kgNode = this.rawDb
-            .prepare('SELECT id, canonical_name FROM knowledge_nodes WHERE provenance_id = ?')
-            .get(record.id) as { id: string; canonical_name: string } | undefined;
-
-          if (!kgNode) {
-            // Node provenance references may also be stored differently: the node's
-            // provenance_id is the build-level provenance, while per-node provenance
-            // records are separate. Search by processing_params.node_id.
-            const params = record.processing_params
-              ? typeof record.processing_params === 'string'
-                ? JSON.parse(record.processing_params)
-                : record.processing_params
-              : {};
-
-            if (params.node_id) {
-              const nodeRow = this.rawDb
-                .prepare('SELECT id, canonical_name FROM knowledge_nodes WHERE id = ?')
-                .get(params.node_id) as { id: string; canonical_name: string } | undefined;
-
-              if (nodeRow) {
-                const nodeContent = JSON.stringify({
-                  node_id: nodeRow.id,
-                  canonical_name: nodeRow.canonical_name,
-                });
-                return { content: nodeContent, expectedHash: record.content_hash, isFile: false };
-              }
-            }
-
-            throw new VerifierError(
-              `Knowledge node not found for provenance ${record.id}`,
-              VerifierErrorCode.CONTENT_NOT_FOUND,
-              { provenanceId: record.id, type: record.type }
-            );
-          }
-
-          const nodeContent = JSON.stringify({
-            node_id: kgNode.id,
-            canonical_name: kgNode.canonical_name,
-          });
-          return { content: nodeContent, expectedHash: record.content_hash, isFile: false };
-        }
-
-        // Build-level provenance: hash was computed over sorted entity IDs
-        // Re-derive: collect all entity IDs from the documents that were part of this build
-        const processingParams = record.processing_params
-          ? typeof record.processing_params === 'string'
-            ? JSON.parse(record.processing_params)
-            : record.processing_params
-          : {};
-
-        // Get all nodes created with this provenance_id to find which entities were included
-        // The nodes' entity links point to the entities that were resolved
-        const linkedEntityIds = this.rawDb
-          .prepare(
-            `
-          SELECT nel.entity_id FROM node_entity_links nel
-          JOIN knowledge_nodes kn ON nel.node_id = kn.id
-          WHERE kn.provenance_id = ?
-          ORDER BY nel.entity_id
-        `
-          )
-          .all(record.id) as Array<{ entity_id: string }>;
-
-        if (linkedEntityIds.length === 0) {
-          throw new VerifierError(
-            `No knowledge graph data found for provenance ${record.id}`,
-            VerifierErrorCode.CONTENT_NOT_FOUND,
-            { provenanceId: record.id, type: record.type, processingParams }
-          );
-        }
-
-        // The original hash: computeHash(JSON.stringify(sortedEntityIds))
-        const sortedIds = linkedEntityIds.map((r) => r.entity_id).sort();
-        const kgContent = JSON.stringify(sortedIds);
-        return { content: kgContent, expectedHash: record.content_hash, isFile: false };
-      }
-
-      case ProvenanceType.CORPUS_INTELLIGENCE: {
-        // Corpus intelligence provenance: the content_hash was computed over the synthesis output
-        // Re-derive by reading the corpus_intelligence or document_narratives or entity_roles row
-        const ciRow = this.rawDb
-          .prepare('SELECT corpus_summary, key_actors, themes FROM corpus_intelligence WHERE provenance_id = ?')
-          .get(record.id) as { corpus_summary: string; key_actors: string; themes: string } | undefined;
-
-        if (ciRow) {
-          const ciContent = JSON.stringify({ corpus_summary: ciRow.corpus_summary, key_actors: ciRow.key_actors, themes: ciRow.themes });
-          return { content: ciContent, expectedHash: record.content_hash, isFile: false };
-        }
-
-        const dnRow = this.rawDb
-          .prepare('SELECT narrative_text, entity_roster FROM document_narratives WHERE provenance_id = ?')
-          .get(record.id) as { narrative_text: string; entity_roster: string } | undefined;
-
-        if (dnRow) {
-          const dnContent = JSON.stringify({ narrative_text: dnRow.narrative_text, entity_roster: dnRow.entity_roster });
-          return { content: dnContent, expectedHash: record.content_hash, isFile: false };
-        }
-
-        const erRow = this.rawDb
-          .prepare('SELECT node_id, role, scope FROM entity_roles WHERE provenance_id = ?')
-          .get(record.id) as { node_id: string; role: string; scope: string } | undefined;
-
-        if (erRow) {
-          const erContent = JSON.stringify({ node_id: erRow.node_id, role: erRow.role, scope: erRow.scope });
-          return { content: erContent, expectedHash: record.content_hash, isFile: false };
-        }
-
-        throw new VerifierError(
-          `No corpus intelligence data found for provenance ${record.id}`,
-          VerifierErrorCode.CONTENT_NOT_FOUND,
-          { provenanceId: record.id, type: record.type }
-        );
       }
 
       default: {

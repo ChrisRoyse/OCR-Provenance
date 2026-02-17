@@ -504,25 +504,6 @@ describe('handleDocumentCompare', () => {
   );
 
   it.skipIf(!sqliteVecAvailable)(
-    'include_entity_diff=false -> entity_diff is null in response',
-    async () => {
-      const handler = comparisonTools['ocr_document_compare'].handler;
-      const response = await handler({
-        document_id_1: doc1.docId,
-        document_id_2: doc2.docId,
-        include_entity_diff: false,
-      });
-      const result = parseResponse(response);
-
-      expect(result.success).toBe(true);
-      const data = result.data as Record<string, unknown>;
-      expect(data.entity_diff).toBeNull();
-      // Text diff should still be present
-      expect(data.text_diff).toBeDefined();
-    }
-  );
-
-  it.skipIf(!sqliteVecAvailable)(
     'provenance created after compare -> COMPARISON provenance record exists',
     async () => {
       const handler = comparisonTools['ocr_document_compare'].handler;
@@ -572,21 +553,14 @@ describe('handleDocumentCompare', () => {
       const conn = dbService.getConnection();
       const row = conn
         .prepare(
-          'SELECT content_hash, text_diff_json, structural_diff_json, entity_diff_json FROM comparisons WHERE id = ?'
+          'SELECT content_hash, text_diff_json, structural_diff_json FROM comparisons WHERE id = ?'
         )
         .get(compId) as Record<string, unknown>;
 
       // Recompute the hash using same formula as comparison.ts
-      // entity_diff_json stores entity diff with embedded contradictions
-      const storedEntityDiff = JSON.parse(row.entity_diff_json as string);
-      // The content hash is computed from entity_diff (without contradictions key)
-      // and contradictions as a separate top-level key
-      const { contradictions: storedContradictions, ...entityDiffOnly } = storedEntityDiff;
       const diffContent = JSON.stringify({
         text_diff: JSON.parse(row.text_diff_json as string),
         structural_diff: JSON.parse(row.structural_diff_json as string),
-        entity_diff: entityDiffOnly,
-        contradictions: storedContradictions ?? null,
       });
       const expectedHash = computeHash(diffContent);
 
@@ -753,8 +727,6 @@ describe('handleComparisonGet', () => {
     expect(typeof data.text_diff_json).toBe('object');
     expect(data.structural_diff_json).toBeDefined();
     expect(typeof data.structural_diff_json).toBe('object');
-    expect(data.entity_diff_json).toBeDefined();
-    expect(typeof data.entity_diff_json).toBe('object');
   });
 
   it.skipIf(!sqliteVecAvailable)('get non-existent -> error response', async () => {

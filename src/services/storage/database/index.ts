@@ -43,35 +43,3 @@ export {
 // Export converters
 export { rowToImage } from './converters.js';
 
-// Export knowledge graph operations
-export {
-  insertKnowledgeNode,
-  getKnowledgeNode,
-  updateKnowledgeNode,
-  deleteKnowledgeNode,
-  listKnowledgeNodes,
-  countKnowledgeNodes,
-  insertKnowledgeEdge,
-  getKnowledgeEdge,
-  getEdgesForNode,
-  updateKnowledgeEdge,
-  findEdge,
-  deleteKnowledgeEdge,
-  deleteEdgesForNode,
-  countKnowledgeEdges,
-  getEdgeTypeCounts,
-  insertNodeEntityLink,
-  getLinksForNode,
-  getLinkForEntity,
-  getLinksForDocument,
-  deleteLinksForNode,
-  deleteLinksForDocument,
-  countNodeEntityLinks,
-  getGraphData,
-  findPaths,
-  getGraphStats,
-  getKnowledgeNodeSummariesByDocument,
-  cleanupGraphForDocument,
-  deleteAllGraphData,
-  deleteGraphDataForDocuments,
-} from './knowledge-graph-operations.js';

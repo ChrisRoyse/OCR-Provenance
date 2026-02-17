@@ -416,38 +416,9 @@ export class VLMPipeline {
       }
 
       try {
-        // Query page-level KG entities for entity-aware VLM descriptions
-        let entityHints: string[] | undefined;
-        if (image.page_number !== null) {
-          try {
-            const hintRows = this.db
-              .prepare(
-                `
-              SELECT DISTINCT kn.canonical_name
-              FROM entity_mentions em
-              JOIN entities e ON em.entity_id = e.id
-              JOIN node_entity_links nel ON nel.entity_id = e.id
-              JOIN knowledge_nodes kn ON nel.node_id = kn.id
-              JOIN chunks c ON em.chunk_id = c.id
-              WHERE c.document_id = ? AND c.page_number = ?
-              LIMIT 30
-            `
-              )
-              .all(image.document_id, image.page_number) as Array<{ canonical_name: string }>;
-            if (hintRows.length > 0) {
-              entityHints = hintRows.map((r) => r.canonical_name);
-            }
-          } catch (error) {
-            console.error(
-              `[VLMPipeline] Failed to query KG entity hints for image: ${String(error)}`
-            );
-          }
-        }
-
         // Run VLM analysis
         const vlmResult = await this.vlm.describeImage(imagePath, {
           contextText: image.context_text ?? undefined,
-          entityHints,
           useUniversalPrompt: this.config.useUniversalPrompt,
         });
 
