@@ -107,7 +107,7 @@ describe('handleImageExtract', () => {
     const result = parseResponse(response);
 
     expect(result.success).toBe(false);
-    expect(result.error?.category).toBe('INTERNAL_ERROR');
+    expect(result.error?.category).toBe('VALIDATION_ERROR');
   });
 
   it('returns INTERNAL_ERROR when pdf_path is empty string', async () => {
@@ -120,7 +120,7 @@ describe('handleImageExtract', () => {
     const result = parseResponse(response);
 
     expect(result.success).toBe(false);
-    expect(result.error?.category).toBe('INTERNAL_ERROR');
+    expect(result.error?.category).toBe('VALIDATION_ERROR');
   });
 
   it('returns INTERNAL_ERROR when output_dir is missing', async () => {
@@ -132,7 +132,7 @@ describe('handleImageExtract', () => {
     const result = parseResponse(response);
 
     expect(result.success).toBe(false);
-    expect(result.error?.category).toBe('INTERNAL_ERROR');
+    expect(result.error?.category).toBe('VALIDATION_ERROR');
   });
 
   it('returns INTERNAL_ERROR when output_dir is empty string', async () => {
@@ -145,7 +145,7 @@ describe('handleImageExtract', () => {
     const result = parseResponse(response);
 
     expect(result.success).toBe(false);
-    expect(result.error?.category).toBe('INTERNAL_ERROR');
+    expect(result.error?.category).toBe('VALIDATION_ERROR');
   });
 
   it('returns INTERNAL_ERROR when document_id is missing', async () => {
@@ -157,7 +157,7 @@ describe('handleImageExtract', () => {
     const result = parseResponse(response);
 
     expect(result.success).toBe(false);
-    expect(result.error?.category).toBe('INTERNAL_ERROR');
+    expect(result.error?.category).toBe('VALIDATION_ERROR');
   });
 
   it('returns INTERNAL_ERROR when document_id is empty string', async () => {
@@ -170,7 +170,7 @@ describe('handleImageExtract', () => {
     const result = parseResponse(response);
 
     expect(result.success).toBe(false);
-    expect(result.error?.category).toBe('INTERNAL_ERROR');
+    expect(result.error?.category).toBe('VALIDATION_ERROR');
   });
 
   it('returns INTERNAL_ERROR when ocr_result_id is missing', async () => {
@@ -182,7 +182,7 @@ describe('handleImageExtract', () => {
     const result = parseResponse(response);
 
     expect(result.success).toBe(false);
-    expect(result.error?.category).toBe('INTERNAL_ERROR');
+    expect(result.error?.category).toBe('VALIDATION_ERROR');
   });
 
   it('returns INTERNAL_ERROR when ocr_result_id is empty string', async () => {
@@ -195,7 +195,7 @@ describe('handleImageExtract', () => {
     const result = parseResponse(response);
 
     expect(result.success).toBe(false);
-    expect(result.error?.category).toBe('INTERNAL_ERROR');
+    expect(result.error?.category).toBe('VALIDATION_ERROR');
   });
 
   it('returns PATH_NOT_FOUND when pdf_path does not exist on disk', async () => {
@@ -223,7 +223,7 @@ describe('handleImageExtract', () => {
     const result = parseResponse(response);
 
     expect(result.success).toBe(false);
-    expect(result.error?.category).toBe('INTERNAL_ERROR');
+    expect(result.error?.category).toBe('VALIDATION_ERROR');
   });
 
   it('returns INTERNAL_ERROR when min_size is negative', async () => {
@@ -237,7 +237,7 @@ describe('handleImageExtract', () => {
     const result = parseResponse(response);
 
     expect(result.success).toBe(false);
-    expect(result.error?.category).toBe('INTERNAL_ERROR');
+    expect(result.error?.category).toBe('VALIDATION_ERROR');
   });
 
   it('returns INTERNAL_ERROR when max_images is zero', async () => {
@@ -251,7 +251,7 @@ describe('handleImageExtract', () => {
     const result = parseResponse(response);
 
     expect(result.success).toBe(false);
-    expect(result.error?.category).toBe('INTERNAL_ERROR');
+    expect(result.error?.category).toBe('VALIDATION_ERROR');
   });
 
   it('returns INTERNAL_ERROR when max_images exceeds 1000', async () => {
@@ -265,7 +265,7 @@ describe('handleImageExtract', () => {
     const result = parseResponse(response);
 
     expect(result.success).toBe(false);
-    expect(result.error?.category).toBe('INTERNAL_ERROR');
+    expect(result.error?.category).toBe('VALIDATION_ERROR');
   });
 
   it('returns INTERNAL_ERROR when min_size is not an integer', async () => {
@@ -279,7 +279,7 @@ describe('handleImageExtract', () => {
     const result = parseResponse(response);
 
     expect(result.success).toBe(false);
-    expect(result.error?.category).toBe('INTERNAL_ERROR');
+    expect(result.error?.category).toBe('VALIDATION_ERROR');
   });
 
   it('returns INTERNAL_ERROR when max_images is not an integer', async () => {
@@ -293,7 +293,7 @@ describe('handleImageExtract', () => {
     const result = parseResponse(response);
 
     expect(result.success).toBe(false);
-    expect(result.error?.category).toBe('INTERNAL_ERROR');
+    expect(result.error?.category).toBe('VALIDATION_ERROR');
   });
 });
 
@@ -316,7 +316,7 @@ describe('handleImageList', () => {
     const result = parseResponse(response);
 
     expect(result.success).toBe(false);
-    expect(result.error?.category).toBe('INTERNAL_ERROR');
+    expect(result.error?.category).toBe('VALIDATION_ERROR');
   });
 
   it('returns INTERNAL_ERROR when document_id is empty string', async () => {
@@ -324,7 +324,7 @@ describe('handleImageList', () => {
     const result = parseResponse(response);
 
     expect(result.success).toBe(false);
-    expect(result.error?.category).toBe('INTERNAL_ERROR');
+    expect(result.error?.category).toBe('VALIDATION_ERROR');
   });
 
   it('returns DATABASE_NOT_SELECTED when no database and valid params', async () => {
@@ -343,7 +343,7 @@ describe('handleImageList', () => {
     const result = parseResponse(response);
 
     expect(result.success).toBe(false);
-    expect(result.error?.category).toBe('INTERNAL_ERROR');
+    expect(result.error?.category).toBe('VALIDATION_ERROR');
   });
 
   it('accepts valid vlm_status values without crashing on validation', async () => {
@@ -403,7 +403,7 @@ describe('handleImageGet', () => {
     const result = parseResponse(response);
 
     expect(result.success).toBe(false);
-    expect(result.error?.category).toBe('INTERNAL_ERROR');
+    expect(result.error?.category).toBe('VALIDATION_ERROR');
   });
 
   it('returns INTERNAL_ERROR when image_id is empty string', async () => {
@@ -411,7 +411,7 @@ describe('handleImageGet', () => {
     const result = parseResponse(response);
 
     expect(result.success).toBe(false);
-    expect(result.error?.category).toBe('INTERNAL_ERROR');
+    expect(result.error?.category).toBe('VALIDATION_ERROR');
   });
 
   it('returns DATABASE_NOT_SELECTED when no database and valid params', async () => {
@@ -495,7 +495,7 @@ describe('handleImageDelete', () => {
     const result = parseResponse(response);
 
     expect(result.success).toBe(false);
-    expect(result.error?.category).toBe('INTERNAL_ERROR');
+    expect(result.error?.category).toBe('VALIDATION_ERROR');
   });
 
   it('returns INTERNAL_ERROR when image_id is empty string', async () => {
@@ -503,7 +503,7 @@ describe('handleImageDelete', () => {
     const result = parseResponse(response);
 
     expect(result.success).toBe(false);
-    expect(result.error?.category).toBe('INTERNAL_ERROR');
+    expect(result.error?.category).toBe('VALIDATION_ERROR');
   });
 
   it('returns DATABASE_NOT_SELECTED when no database and valid params', async () => {
@@ -554,7 +554,7 @@ describe('handleImageDeleteByDocument', () => {
     const result = parseResponse(response);
 
     expect(result.success).toBe(false);
-    expect(result.error?.category).toBe('INTERNAL_ERROR');
+    expect(result.error?.category).toBe('VALIDATION_ERROR');
   });
 
   it('returns INTERNAL_ERROR when document_id is empty string', async () => {
@@ -562,7 +562,7 @@ describe('handleImageDeleteByDocument', () => {
     const result = parseResponse(response);
 
     expect(result.success).toBe(false);
-    expect(result.error?.category).toBe('INTERNAL_ERROR');
+    expect(result.error?.category).toBe('VALIDATION_ERROR');
   });
 
   it('returns DATABASE_NOT_SELECTED when no database and valid params', async () => {
@@ -669,7 +669,7 @@ describe('handleImagePending', () => {
     const result = parseResponse(response);
 
     expect(result.success).toBe(false);
-    expect(result.error?.category).toBe('INTERNAL_ERROR');
+    expect(result.error?.category).toBe('VALIDATION_ERROR');
   });
 
   it('returns INTERNAL_ERROR when limit is negative', async () => {
@@ -677,7 +677,7 @@ describe('handleImagePending', () => {
     const result = parseResponse(response);
 
     expect(result.success).toBe(false);
-    expect(result.error?.category).toBe('INTERNAL_ERROR');
+    expect(result.error?.category).toBe('VALIDATION_ERROR');
   });
 
   it('returns INTERNAL_ERROR when limit exceeds 1000', async () => {
@@ -685,7 +685,7 @@ describe('handleImagePending', () => {
     const result = parseResponse(response);
 
     expect(result.success).toBe(false);
-    expect(result.error?.category).toBe('INTERNAL_ERROR');
+    expect(result.error?.category).toBe('VALIDATION_ERROR');
   });
 
   it('returns INTERNAL_ERROR when limit is not an integer', async () => {
@@ -693,7 +693,7 @@ describe('handleImagePending', () => {
     const result = parseResponse(response);
 
     expect(result.success).toBe(false);
-    expect(result.error?.category).toBe('INTERNAL_ERROR');
+    expect(result.error?.category).toBe('VALIDATION_ERROR');
   });
 
   it('accepts boundary limit value 1', async () => {
@@ -753,7 +753,7 @@ describe('Edge Cases', () => {
       const result = parseResponse(response);
 
       expect(result.success).toBe(false);
-      expect(result.error?.category).toBe('INTERNAL_ERROR');
+      expect(result.error?.category).toBe('VALIDATION_ERROR');
       expect(result.error?.message).toBeDefined();
       expect(typeof result.error?.message).toBe('string');
       expect(result.error!.message.length).toBeGreaterThan(0);
@@ -847,7 +847,7 @@ describe('Edge Cases', () => {
       const result = parseResponse(response);
 
       expect(result.success).toBe(false);
-      expect(result.error?.category).toBe('INTERNAL_ERROR');
+      expect(result.error?.category).toBe('VALIDATION_ERROR');
     });
 
     it('image_extract rejects non-string document_id', async () => {
@@ -860,7 +860,7 @@ describe('Edge Cases', () => {
       const result = parseResponse(response);
 
       expect(result.success).toBe(false);
-      expect(result.error?.category).toBe('INTERNAL_ERROR');
+      expect(result.error?.category).toBe('VALIDATION_ERROR');
     });
 
     it('image_list rejects non-string document_id', async () => {
@@ -868,7 +868,7 @@ describe('Edge Cases', () => {
       const result = parseResponse(response);
 
       expect(result.success).toBe(false);
-      expect(result.error?.category).toBe('INTERNAL_ERROR');
+      expect(result.error?.category).toBe('VALIDATION_ERROR');
     });
 
     it('image_get rejects non-string image_id', async () => {
@@ -876,7 +876,7 @@ describe('Edge Cases', () => {
       const result = parseResponse(response);
 
       expect(result.success).toBe(false);
-      expect(result.error?.category).toBe('INTERNAL_ERROR');
+      expect(result.error?.category).toBe('VALIDATION_ERROR');
     });
 
     it('image_delete rejects non-string image_id', async () => {
@@ -884,7 +884,7 @@ describe('Edge Cases', () => {
       const result = parseResponse(response);
 
       expect(result.success).toBe(false);
-      expect(result.error?.category).toBe('INTERNAL_ERROR');
+      expect(result.error?.category).toBe('VALIDATION_ERROR');
     });
 
     it('image_delete_by_document rejects non-string document_id', async () => {
@@ -892,7 +892,7 @@ describe('Edge Cases', () => {
       const result = parseResponse(response);
 
       expect(result.success).toBe(false);
-      expect(result.error?.category).toBe('INTERNAL_ERROR');
+      expect(result.error?.category).toBe('VALIDATION_ERROR');
     });
 
     it('image_pending rejects string limit', async () => {
@@ -900,7 +900,7 @@ describe('Edge Cases', () => {
       const result = parseResponse(response);
 
       expect(result.success).toBe(false);
-      expect(result.error?.category).toBe('INTERNAL_ERROR');
+      expect(result.error?.category).toBe('VALIDATION_ERROR');
     });
 
     it('image_extract rejects string min_size', async () => {
@@ -914,7 +914,7 @@ describe('Edge Cases', () => {
       const result = parseResponse(response);
 
       expect(result.success).toBe(false);
-      expect(result.error?.category).toBe('INTERNAL_ERROR');
+      expect(result.error?.category).toBe('VALIDATION_ERROR');
     });
   });
 

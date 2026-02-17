@@ -72,7 +72,7 @@ const server = new McpServer({
 const allToolModules: Record<string, ToolDefinition>[] = [
   databaseTools, // 5 tools
   ingestionTools, // 8 tools
-  searchTools, // 8 tools
+  searchTools, // 7 tools
   documentTools, // 3 tools
   provenanceTools, // 3 tools
   configTools, // 2 tools
@@ -81,12 +81,12 @@ const allToolModules: Record<string, ToolDefinition>[] = [
   evaluationTools, // 3 tools
   extractionTools, // 3 tools
   reportTools, // 4 tools
-  formFillTools, // 3 tools
+  formFillTools, // 2 tools
   structuredExtractionTools, // 2 tools
   fileManagementTools, // 5 tools
   comparisonTools, // 3 tools
   clusteringTools, // 5 tools
-];
+]; // Total: 69 tools
 
 // Register tools with duplicate detection
 const registeredToolNames = new Set<string>();

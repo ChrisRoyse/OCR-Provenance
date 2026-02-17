@@ -9,16 +9,16 @@
  *
  * Coverage:
  *   DBOPS-1: Create database via MCP handler, verify file on disk
- *   DBOPS-2: Verify schema version is 24 via direct SQL query
+ *   DBOPS-2: Verify schema version is 26 via direct SQL query
  *   DBOPS-3: List databases via MCP handler, confirm test DB appears
  *   DBOPS-4: Select database via MCP handler, verify stats
  *   DBOPS-5: Delete database via MCP handler, confirm file removed
- *   DBOPS-6: Database stats include KG health metrics
+ *   DBOPS-6: Database stats return correct structure
  *   ERR-1:   Selecting non-existent database returns structured error
  *   ERR-2:   Creating duplicate database returns structured error
  *   ERR-3:   Deleting non-existent database returns structured error
  *   ERR-4:   Querying without selected database returns structured error
- *   SCHEMA-1: Fresh database has all 28 expected tables
+ *   SCHEMA-1: Fresh database has all expected tables (19 core + virtual)
  *   SCHEMA-2: Fresh database has correct indexes
  *   SCHEMA-3: Foreign key constraints are enforced
  *
@@ -149,7 +149,7 @@ describe.skipIf(!sqliteVecAvailable)(
       console.error('[DBOPS-1 VERDICT] PASS - Database file created and initialized on disk');
     });
 
-    it('DBOPS-2: Verify schema version is 24 via direct SQL query', async () => {
+    it('DBOPS-2: Verify schema version is 26 via direct SQL query', async () => {
       // SETUP: Create the database
       await handleDatabaseCreate({ name: dbName });
 
@@ -163,9 +163,9 @@ describe.skipIf(!sqliteVecAvailable)(
       console.error('[DBOPS-2] Schema version from DB:', row.version);
       console.error('[DBOPS-2] Expected SCHEMA_VERSION constant:', SCHEMA_VERSION);
       expect(row.version).toBe(SCHEMA_VERSION);
-      expect(row.version).toBe(24);
+      expect(row.version).toBe(26);
 
-      console.error('[DBOPS-2 VERDICT] PASS - Schema version is 24');
+      console.error('[DBOPS-2 VERDICT] PASS - Schema version is 26');
     });
 
     it('DBOPS-3: List databases via handler, confirm test DB appears', async () => {
@@ -279,7 +279,7 @@ describe.skipIf(!sqliteVecAvailable)(
       console.error('[DBOPS-5 VERDICT] PASS - Database file and all artifacts removed');
     });
 
-    it('DBOPS-6: Database stats include KG health metrics', async () => {
+    it('DBOPS-6: Database stats return correct structure', async () => {
       // SETUP: Create and select
       await handleDatabaseCreate({ name: dbName });
 
@@ -293,27 +293,14 @@ describe.skipIf(!sqliteVecAvailable)(
       const data = statsParsed.data as Record<string, unknown>;
       expect(data.document_count).toBe(0);
       expect(data.chunk_count).toBe(0);
+      expect(typeof data.embedding_count).toBe('number');
+      expect(typeof data.image_count).toBe('number');
+      expect(typeof data.vector_count).toBe('number');
 
-      // VERIFY: KG health metrics block
-      const kgHealth = data.kg_health as Record<string, unknown>;
-      console.error('[DBOPS-6] KG health metrics:', JSON.stringify(kgHealth));
-      expect(kgHealth).toBeDefined();
-      expect(typeof kgHealth.docs_with_entities).toBe('number');
-      expect(typeof kgHealth.total_entities).toBe('number');
-      expect(typeof kgHealth.linked_entities).toBe('number');
-      expect(typeof kgHealth.entity_link_coverage).toBe('number');
-      expect(typeof kgHealth.avg_edges_per_node).toBe('number');
-      expect(typeof kgHealth.orphaned_nodes).toBe('number');
-      expect(typeof kgHealth.contradiction_edges).toBe('number');
-      expect(typeof kgHealth.temporal_edges).toBe('number');
-      expect(typeof kgHealth.total_edges).toBe('number');
-      expect(typeof kgHealth.temporal_coverage_pct).toBe('number');
+      // VERIFY: No KG health metrics (removed in v26)
+      expect(data.kg_health).toBeUndefined();
 
-      // All should be zero on fresh database
-      expect(kgHealth.docs_with_entities).toBe(0);
-      expect(kgHealth.total_entities).toBe(0);
-
-      console.error('[DBOPS-6 VERDICT] PASS - KG health metrics present with correct structure');
+      console.error('[DBOPS-6 VERDICT] PASS - Stats structure correct, no KG health metrics');
     });
   }
 );
@@ -448,6 +435,8 @@ describe.skipIf(!sqliteVecAvailable)('Schema Verification (SCHEMA-1 through SCHE
     console.error('[SCHEMA-1] Table list:', tableNames.join(', '));
 
     // Expected core tables (not counting FTS virtual tables and vec tables)
+    // Entity/KG tables removed in v26: entities, entity_mentions,
+    // entity_extraction_segments, knowledge_nodes, knowledge_edges, node_entity_links
     const expectedCoreTables = [
       'schema_version',
       'database_metadata',
@@ -459,15 +448,11 @@ describe.skipIf(!sqliteVecAvailable)('Schema Verification (SCHEMA-1 through SCHE
       'images',
       'extractions',
       'form_fills',
-      'entities',
-      'entity_mentions',
-      'entity_extraction_segments',
-      'knowledge_nodes',
-      'knowledge_edges',
-      'node_entity_links',
+      'uploaded_files',
       'clusters',
       'document_clusters',
       'comparisons',
+      'fts_index_metadata',
     ];
 
     for (const table of expectedCoreTables) {
@@ -497,7 +482,7 @@ describe.skipIf(!sqliteVecAvailable)('Schema Verification (SCHEMA-1 through SCHE
 
     console.error('[SCHEMA-2] Total indexes:', indexNames.length);
 
-    // Critical indexes that must exist
+    // Critical indexes that must exist (entity/KG indexes removed in v26)
     const criticalIndexes = [
       'idx_documents_status',
       'idx_documents_file_hash',
@@ -506,9 +491,9 @@ describe.skipIf(!sqliteVecAvailable)('Schema Verification (SCHEMA-1 through SCHE
       'idx_embeddings_document_id',
       'idx_provenance_type',
       'idx_provenance_source_id',
-      'idx_entities_document_id',
-      'idx_entities_normalized_text',
-      'idx_segments_status',
+      'idx_images_document_id',
+      'idx_clusters_run_id',
+      'idx_comparisons_input_hash',
     ];
 
     for (const idx of criticalIndexes) {

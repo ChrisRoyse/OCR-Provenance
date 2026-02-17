@@ -684,8 +684,8 @@ describe('handleDocumentDelete', () => {
     const result = parseResponse(response);
 
     expect(result.success).toBe(false);
-    // confirm: false fails z.literal(true) Zod validation -> INTERNAL_ERROR
-    expect(result.error?.category).toBe('INTERNAL_ERROR');
+    // confirm: false fails z.literal(true) Zod validation -> VALIDATION_ERROR
+    expect(result.error?.category).toBe('VALIDATION_ERROR');
 
     // PHYSICAL VERIFICATION: Document still exists
     const docAfter = db.getDocument(docId);
@@ -779,7 +779,7 @@ describe('Edge Cases', () => {
       const result = parseResponse(response);
 
       expect(result.success).toBe(false);
-      expect(result.error?.category).toBe('INTERNAL_ERROR');
+      expect(result.error?.category).toBe('VALIDATION_ERROR');
     });
 
     it.skipIf(!sqliteVecAvailable)('delete handles empty string document_id', async () => {
@@ -791,7 +791,7 @@ describe('Edge Cases', () => {
       const result = parseResponse(response);
 
       expect(result.success).toBe(false);
-      expect(result.error?.category).toBe('INTERNAL_ERROR');
+      expect(result.error?.category).toBe('VALIDATION_ERROR');
     });
 
     it.skipIf(!sqliteVecAvailable)('get handles special characters in document_id', async () => {
@@ -1057,9 +1057,9 @@ describe('Input Validation', () => {
   it('document_list rejects invalid status_filter', async () => {
     const response = await handleDocumentList({ status_filter: 'invalid' });
     const result = parseResponse(response);
-    // Should fail - either validation or database not selected
+    // Should fail - Zod validation rejects invalid enum value
     expect(result.success).toBe(false);
-    expect(result.error?.category).toBe('INTERNAL_ERROR');
+    expect(result.error?.category).toBe('VALIDATION_ERROR');
   });
 
   it('document_list strips unknown params like sort_by', async () => {
@@ -1075,35 +1075,35 @@ describe('Input Validation', () => {
     const response = await handleDocumentList({ limit: -1 });
     const result = parseResponse(response);
     expect(result.success).toBe(false);
-    expect(result.error?.category).toBe('INTERNAL_ERROR');
+    expect(result.error?.category).toBe('VALIDATION_ERROR');
   });
 
   it('document_list rejects negative offset', async () => {
     const response = await handleDocumentList({ offset: -1 });
     const result = parseResponse(response);
     expect(result.success).toBe(false);
-    expect(result.error?.category).toBe('INTERNAL_ERROR');
+    expect(result.error?.category).toBe('VALIDATION_ERROR');
   });
 
   it('document_get rejects missing document_id', async () => {
     const response = await handleDocumentGet({});
     const result = parseResponse(response);
     expect(result.success).toBe(false);
-    expect(result.error?.category).toBe('INTERNAL_ERROR');
+    expect(result.error?.category).toBe('VALIDATION_ERROR');
   });
 
   it('document_delete rejects missing confirm', async () => {
     const response = await handleDocumentDelete({ document_id: 'test-id' });
     const result = parseResponse(response);
     expect(result.success).toBe(false);
-    expect(result.error?.category).toBe('INTERNAL_ERROR');
+    expect(result.error?.category).toBe('VALIDATION_ERROR');
   });
 
   it('document_delete rejects missing document_id', async () => {
     const response = await handleDocumentDelete({ confirm: true });
     const result = parseResponse(response);
     expect(result.success).toBe(false);
-    expect(result.error?.category).toBe('INTERNAL_ERROR');
+    expect(result.error?.category).toBe('VALIDATION_ERROR');
   });
 });
 

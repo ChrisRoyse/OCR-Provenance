@@ -180,8 +180,8 @@ describe('handleConfigSet', () => {
     const result = parseResponse(response);
 
     expect(result.success).toBe(false);
-    // Zod validation rejects invalid enum value with INTERNAL_ERROR
-    expect(result.error?.category).toBe('INTERNAL_ERROR');
+    // Zod validation rejects invalid enum value with VALIDATION_ERROR
+    expect(result.error?.category).toBe('VALIDATION_ERROR');
     expect(result.error?.message).toContain('Invalid enum value');
   });
 
@@ -191,8 +191,8 @@ describe('handleConfigSet', () => {
     const result = parseResponse(response);
 
     expect(result.success).toBe(false);
-    // Zod validation rejects invalid enum value with INTERNAL_ERROR
-    expect(result.error?.category).toBe('INTERNAL_ERROR');
+    // Zod validation rejects invalid enum value with VALIDATION_ERROR
+    expect(result.error?.category).toBe('VALIDATION_ERROR');
     expect(result.error?.message).toContain('Invalid enum value');
   });
 
@@ -202,8 +202,8 @@ describe('handleConfigSet', () => {
     const result = parseResponse(response);
 
     expect(result.success).toBe(false);
-    // Zod validation rejects invalid enum value with INTERNAL_ERROR
-    expect(result.error?.category).toBe('INTERNAL_ERROR');
+    // Zod validation rejects invalid enum value with VALIDATION_ERROR
+    expect(result.error?.category).toBe('VALIDATION_ERROR');
     expect(result.error?.message).toContain('Invalid enum value');
   });
 
@@ -365,7 +365,7 @@ describe('Edge Cases', () => {
 
         // FAIL FAST: Should reject immediately with Zod enum validation error
         expect(result.success).toBe(false);
-        expect(result.error?.category).toBe('INTERNAL_ERROR');
+        expect(result.error?.category).toBe('VALIDATION_ERROR');
         expect(result.error?.message).toContain('Invalid enum value');
 
         // STATE VERIFICATION: Original values unchanged (via handleConfigGet)

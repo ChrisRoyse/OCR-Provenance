@@ -141,7 +141,7 @@ export class GeminiClient {
    *
    * @param prompt - Text prompt
    * @param schema - Optional JSON response schema
-   * @param options - Optional overrides (e.g. maxOutputTokens for large entity extraction)
+   * @param options - Optional overrides (e.g. maxOutputTokens for large structured extraction)
    */
   async fast(
     prompt: string,

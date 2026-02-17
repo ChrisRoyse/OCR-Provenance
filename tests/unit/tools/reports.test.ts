@@ -9,8 +9,8 @@
  *
  * Note on error categories:
  * - DATABASE_NOT_SELECTED: thrown by requireDatabase() as MCPError (preserved)
- * - INTERNAL_ERROR: Zod ValidationError from validateInput() is a plain Error,
- *   so MCPError.fromUnknown() maps it to INTERNAL_ERROR (default category)
+ * - VALIDATION_ERROR: Zod ValidationError from validateInput() has error.name === 'ValidationError',
+ *   so MCPError.fromUnknown() maps it to VALIDATION_ERROR category
  *
  * @module tests/unit/tools/reports
  */
@@ -138,8 +138,8 @@ describe('handleEvaluationReport', () => {
     const result = parseResponse(response);
 
     expect(result.success).toBe(false);
-    // ValidationError from validateInput() maps to INTERNAL_ERROR via MCPError.fromUnknown()
-    expect(result.error?.category).toBe('INTERNAL_ERROR');
+    // ValidationError from validateInput() maps to VALIDATION_ERROR via MCPError.fromUnknown()
+    expect(result.error?.category).toBe('VALIDATION_ERROR');
     expect(result.error?.message).toContain('greater than or equal to 0');
   });
 
@@ -148,7 +148,7 @@ describe('handleEvaluationReport', () => {
     const result = parseResponse(response);
 
     expect(result.success).toBe(false);
-    expect(result.error?.category).toBe('INTERNAL_ERROR');
+    expect(result.error?.category).toBe('VALIDATION_ERROR');
     expect(result.error?.message).toContain('less than or equal to 1');
   });
 
@@ -157,7 +157,7 @@ describe('handleEvaluationReport', () => {
     const result = parseResponse(response);
 
     expect(result.success).toBe(false);
-    expect(result.error?.category).toBe('INTERNAL_ERROR');
+    expect(result.error?.category).toBe('VALIDATION_ERROR');
     expect(result.error?.message).toContain('Expected number');
   });
 
@@ -166,7 +166,7 @@ describe('handleEvaluationReport', () => {
     const result = parseResponse(response);
 
     expect(result.success).toBe(false);
-    expect(result.error?.category).toBe('INTERNAL_ERROR');
+    expect(result.error?.category).toBe('VALIDATION_ERROR');
     expect(result.error?.message).toContain('Expected string');
   });
 
@@ -201,7 +201,7 @@ describe('handleEvaluationReport', () => {
 
     expect(result.success).toBe(false);
     // Validation error comes first, not DATABASE_NOT_SELECTED
-    expect(result.error?.category).toBe('INTERNAL_ERROR');
+    expect(result.error?.category).toBe('VALIDATION_ERROR');
     expect(result.error?.message).toContain('confidence_threshold');
   });
 });
@@ -225,7 +225,7 @@ describe('handleDocumentReport', () => {
     const result = parseResponse(response);
 
     expect(result.success).toBe(false);
-    expect(result.error?.category).toBe('INTERNAL_ERROR');
+    expect(result.error?.category).toBe('VALIDATION_ERROR');
     expect(result.error?.message).toContain('Required');
   });
 
@@ -234,7 +234,7 @@ describe('handleDocumentReport', () => {
     const result = parseResponse(response);
 
     expect(result.success).toBe(false);
-    expect(result.error?.category).toBe('INTERNAL_ERROR');
+    expect(result.error?.category).toBe('VALIDATION_ERROR');
     expect(result.error?.message).toContain('at least 1 character');
   });
 
@@ -243,7 +243,7 @@ describe('handleDocumentReport', () => {
     const result = parseResponse(response);
 
     expect(result.success).toBe(false);
-    expect(result.error?.category).toBe('INTERNAL_ERROR');
+    expect(result.error?.category).toBe('VALIDATION_ERROR');
     expect(result.error?.message).toContain('Expected string');
   });
 
@@ -252,7 +252,7 @@ describe('handleDocumentReport', () => {
     const result = parseResponse(response);
 
     expect(result.success).toBe(false);
-    expect(result.error?.category).toBe('INTERNAL_ERROR');
+    expect(result.error?.category).toBe('VALIDATION_ERROR');
     expect(result.error?.message).toContain('Expected string');
   });
 
@@ -281,8 +281,8 @@ describe('handleDocumentReport', () => {
     const result = parseResponse(response);
 
     expect(result.success).toBe(false);
-    // Validation error (INTERNAL_ERROR) comes first, not DATABASE_NOT_SELECTED
-    expect(result.error?.category).toBe('INTERNAL_ERROR');
+    // Validation error (VALIDATION_ERROR) comes first, not DATABASE_NOT_SELECTED
+    expect(result.error?.category).toBe('VALIDATION_ERROR');
     expect(result.error?.message).toContain('at least 1 character');
   });
 
@@ -292,7 +292,7 @@ describe('handleDocumentReport', () => {
     const result = parseResponse(response);
 
     expect(result.success).toBe(false);
-    expect(result.error?.category).toBe('INTERNAL_ERROR');
+    expect(result.error?.category).toBe('VALIDATION_ERROR');
     expect(result.error?.message).toContain('Required');
   });
 });
@@ -422,8 +422,8 @@ describe('response format', () => {
     const result = parseResponse(response);
 
     expect(result.success).toBe(false);
-    // ValidationError maps to INTERNAL_ERROR via MCPError.fromUnknown()
-    expect(result.error?.category).toBe('INTERNAL_ERROR');
+    // ValidationError maps to VALIDATION_ERROR via MCPError.fromUnknown()
+    expect(result.error?.category).toBe('VALIDATION_ERROR');
     expect(typeof result.error?.message).toBe('string');
     expect(result.error!.message.length).toBeGreaterThan(0);
     expect(result.error!.message).toContain('at least 1 character');
@@ -434,8 +434,8 @@ describe('response format', () => {
     const result = parseResponse(response);
 
     expect(result.success).toBe(false);
-    expect(result.error?.category).toBe('INTERNAL_ERROR');
-    // MCPError.fromUnknown() includes original error name in details
+    expect(result.error?.category).toBe('VALIDATION_ERROR');
+    // MCPError.fromUnknown() detects ValidationError and includes original error name in details
     expect(result.error?.details?.originalName).toBe('ValidationError');
   });
 });
@@ -482,7 +482,7 @@ describe('edge cases', () => {
     const result = parseResponse(response);
 
     expect(result.success).toBe(false);
-    expect(result.error?.category).toBe('INTERNAL_ERROR');
+    expect(result.error?.category).toBe('VALIDATION_ERROR');
     expect(result.error?.details?.originalName).toBe('ValidationError');
   });
 
@@ -491,7 +491,7 @@ describe('edge cases', () => {
     const result = parseResponse(response);
 
     expect(result.success).toBe(false);
-    expect(result.error?.category).toBe('INTERNAL_ERROR');
+    expect(result.error?.category).toBe('VALIDATION_ERROR');
     expect(result.error?.details?.originalName).toBe('ValidationError');
   });
 
@@ -500,7 +500,7 @@ describe('edge cases', () => {
     const result = parseResponse(response);
 
     expect(result.success).toBe(false);
-    expect(result.error?.category).toBe('INTERNAL_ERROR');
+    expect(result.error?.category).toBe('VALIDATION_ERROR');
     expect(result.error?.details?.originalName).toBe('ValidationError');
   });
 
@@ -509,7 +509,7 @@ describe('edge cases', () => {
     const result = parseResponse(response);
 
     expect(result.success).toBe(false);
-    expect(result.error?.category).toBe('INTERNAL_ERROR');
+    expect(result.error?.category).toBe('VALIDATION_ERROR');
     expect(result.error?.details?.originalName).toBe('ValidationError');
   });
 
@@ -518,7 +518,7 @@ describe('edge cases', () => {
     const result = parseResponse(response);
 
     expect(result.success).toBe(false);
-    expect(result.error?.category).toBe('INTERNAL_ERROR');
+    expect(result.error?.category).toBe('VALIDATION_ERROR');
     expect(result.error?.details?.originalName).toBe('ValidationError');
   });
 
@@ -527,7 +527,7 @@ describe('edge cases', () => {
     const result = parseResponse(response);
 
     expect(result.success).toBe(false);
-    expect(result.error?.category).toBe('INTERNAL_ERROR');
+    expect(result.error?.category).toBe('VALIDATION_ERROR');
     expect(result.error?.details?.originalName).toBe('ValidationError');
   });
 

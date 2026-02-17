@@ -85,7 +85,9 @@ export class MCPError extends Error {
     }
 
     if (error instanceof Error) {
-      return new MCPError(defaultCategory, error.message, {
+      // Map ValidationError to VALIDATION_ERROR category
+      const category = error.name === 'ValidationError' ? 'VALIDATION_ERROR' as ErrorCategory : defaultCategory;
+      return new MCPError(category, error.message, {
         originalName: error.name,
         stack: error.stack,
       });

@@ -26,8 +26,6 @@ const sqliteVecAvailable = isSqliteVecAvailable();
 const SQLITE_VEC_DEPENDENT_CATEGORIES = [
   'tests/unit/migrations/ (12+ migration test files)',
   'tests/unit/tools/search.test.ts (semantic + hybrid search)',
-  'tests/unit/tools/knowledge-graph.test.ts',
-  'tests/unit/tools/entity-analysis.test.ts',
   'tests/unit/tools/comparison.test.ts',
   'tests/unit/tools/clustering.test.ts',
   'tests/unit/tools/documents.test.ts',
@@ -43,8 +41,6 @@ const SQLITE_VEC_DEPENDENT_CATEGORIES = [
   'tests/unit/services/search/quality-filter.test.ts',
   'tests/unit/services/clustering/',
   'tests/unit/services/comparison/',
-  'tests/unit/services/knowledge-graph/',
-  'tests/unit/services/storage/kg-archive.test.ts',
   'tests/integration/server/ (database, document, provenance, ingestion tools)',
   'tests/integration/value-enhancement-verification.test.ts',
   'tests/integration/task-7-8-full-state-verification.test.ts',
