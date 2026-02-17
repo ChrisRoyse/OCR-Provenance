@@ -27,309 +27,6 @@ import {
   getClusteringStats,
   getClusterSummariesForDocument,
 } from '../services/storage/database/cluster-operations.js';
-import { getKnowledgeNodeSummariesByDocument } from '../services/storage/database/knowledge-graph-operations.js';
-import type Database from 'better-sqlite3';
-import {
-  getEntityCount,
-  getEntityTypeDistribution,
-  getPagesWithEntities,
-  getSegmentStats,
-  getKGLinkedEntityCount,
-} from '../services/storage/database/entity-operations.js';
-
-// ===============================================================================
-// KNOWLEDGE GRAPH QUALITY METRICS
-// ===============================================================================
-
-interface KGQualityMetrics {
-  total_nodes: number;
-  total_edges: number;
-  avg_document_count: number | null;
-  max_document_count: number | null;
-  avg_edge_count: number | null;
-  max_edge_count: number | null;
-  orphaned_nodes: number;
-  entity_extraction_coverage: {
-    docs_with_entities: number;
-    total_complete_docs: number;
-    coverage_pct: number;
-  };
-  resolution_method_distribution: Array<{ method: string; count: number }>;
-  relationship_type_distribution: Array<{ type: string; count: number }>;
-  entity_type_distribution: Array<{ type: string; count: number }>;
-}
-
-/**
- * Gather detailed KG health metrics from the database.
- * Queries knowledge_nodes, knowledge_edges, entities, and documents tables.
- */
-function getKnowledgeGraphQualityMetrics(conn: Database.Database): KGQualityMetrics {
-  const nodeTotals = conn
-    .prepare(
-      `
-    SELECT
-      COUNT(*) as total_nodes,
-      AVG(document_count) as avg_doc_count,
-      MAX(document_count) as max_doc_count,
-      AVG(edge_count) as avg_edge_count,
-      MAX(edge_count) as max_edge_count,
-      SUM(CASE WHEN edge_count = 0 THEN 1 ELSE 0 END) as orphaned_nodes
-    FROM knowledge_nodes
-  `
-    )
-    .get() as {
-    total_nodes: number;
-    avg_doc_count: number | null;
-    max_doc_count: number | null;
-    avg_edge_count: number | null;
-    max_edge_count: number | null;
-    orphaned_nodes: number;
-  };
-
-  const totalEdges = (
-    conn.prepare('SELECT COUNT(*) as cnt FROM knowledge_edges').get() as { cnt: number }
-  ).cnt;
-
-  const coverage = conn
-    .prepare(
-      `
-    SELECT
-      (SELECT COUNT(DISTINCT document_id) FROM entities) as docs_with_entities,
-      (SELECT COUNT(*) FROM documents WHERE status = 'complete') as total_complete
-  `
-    )
-    .get() as { docs_with_entities: number; total_complete: number };
-
-  const resolutionDist = conn
-    .prepare(
-      "SELECT COALESCE(resolution_method, 'unknown') as method, COUNT(*) as count FROM node_entity_links GROUP BY resolution_method ORDER BY count DESC"
-    )
-    .all() as Array<{ method: string; count: number }>;
-
-  const relTypeDist = conn
-    .prepare(
-      'SELECT relationship_type as type, COUNT(*) as count FROM knowledge_edges GROUP BY relationship_type ORDER BY count DESC'
-    )
-    .all() as Array<{ type: string; count: number }>;
-
-  const entityTypeDist = conn
-    .prepare(
-      'SELECT entity_type as type, COUNT(*) as count FROM knowledge_nodes GROUP BY entity_type ORDER BY count DESC'
-    )
-    .all() as Array<{ type: string; count: number }>;
-
-  const coveragePct =
-    coverage.total_complete > 0 ? (coverage.docs_with_entities / coverage.total_complete) * 100 : 0;
-
-  return {
-    total_nodes: nodeTotals.total_nodes,
-    total_edges: totalEdges,
-    avg_document_count: nodeTotals.total_nodes > 0 ? nodeTotals.avg_doc_count : null,
-    max_document_count: nodeTotals.total_nodes > 0 ? nodeTotals.max_doc_count : null,
-    avg_edge_count: nodeTotals.total_nodes > 0 ? nodeTotals.avg_edge_count : null,
-    max_edge_count: nodeTotals.total_nodes > 0 ? nodeTotals.max_edge_count : null,
-    orphaned_nodes: nodeTotals.orphaned_nodes,
-    entity_extraction_coverage: {
-      docs_with_entities: coverage.docs_with_entities,
-      total_complete_docs: coverage.total_complete,
-      coverage_pct: coveragePct,
-    },
-    resolution_method_distribution: resolutionDist,
-    relationship_type_distribution: relTypeDist,
-    entity_type_distribution: entityTypeDist,
-  };
-}
-
-// ===============================================================================
-// ENTITY QUALITY METRICS
-// ===============================================================================
-
-interface DocumentEntityQuality {
-  entity_count: number;
-  entity_density_per_page: number;
-  type_distribution: Array<{ entity_type: string; count: number }>;
-  pages_with_entities: number;
-  total_pages: number;
-  extraction_coverage_pct: number;
-  kg_linked_entities: number;
-  kg_link_coverage_pct: number;
-  segment_stats: {
-    total_segments: number;
-    complete: number;
-    failed: number;
-    total_entities_extracted: number;
-  } | null;
-}
-
-/**
- * Get entity quality metrics for a single document.
- * Returns zeros if entity tables do not exist.
- * Uses shared helpers from entity-operations.ts.
- */
-function getDocumentEntityQualityMetrics(
-  conn: Database.Database,
-  documentId: string,
-  pageCount: number | null
-): DocumentEntityQuality {
-  const entityCount = getEntityCount(conn, documentId);
-  const typeDist = getEntityTypeDistribution(conn, documentId);
-  const pagesWithEntities = getPagesWithEntities(conn, documentId);
-  const kgLinked = getKGLinkedEntityCount(conn, documentId);
-  const segmentStats = getSegmentStats(conn, documentId);
-  const totalPages = pageCount ?? 0;
-
-  return {
-    entity_count: entityCount,
-    entity_density_per_page: totalPages > 0 ? entityCount / totalPages : 0,
-    type_distribution: typeDist,
-    pages_with_entities: pagesWithEntities,
-    total_pages: totalPages,
-    extraction_coverage_pct: totalPages > 0 ? (pagesWithEntities / totalPages) * 100 : 0,
-    kg_linked_entities: kgLinked,
-    kg_link_coverage_pct: entityCount > 0 ? (kgLinked / entityCount) * 100 : 0,
-    segment_stats: segmentStats,
-  };
-}
-
-/**
- * Get aggregate entity quality metrics across all documents.
- * Returns zeros if entity tables do not exist.
- */
-function getAggregateEntityQualityMetrics(conn: Database.Database): Record<string, unknown> {
-  const defaults = {
-    total_entities: 0,
-    docs_with_entities: 0,
-    total_complete_docs: 0,
-    entity_extraction_coverage_pct: 0,
-    avg_entities_per_doc: 0,
-    total_entity_mentions: 0,
-    type_distribution: [] as Array<{ entity_type: string; count: number }>,
-    kg_linked_entities: 0,
-    kg_link_coverage_pct: 0,
-    low_coverage_documents: [] as Array<{
-      document_id: string;
-      file_name: string;
-      entity_count: number;
-      page_count: number;
-      density: number;
-    }>,
-  };
-
-  try {
-    const totalEntities = (
-      conn.prepare('SELECT COUNT(*) as cnt FROM entities').get() as { cnt: number }
-    ).cnt;
-
-    const docsWithEntities = (
-      conn.prepare('SELECT COUNT(DISTINCT document_id) as cnt FROM entities').get() as {
-        cnt: number;
-      }
-    ).cnt;
-
-    const totalCompleteDocs = (
-      conn.prepare("SELECT COUNT(*) as cnt FROM documents WHERE status = 'complete'").get() as {
-        cnt: number;
-      }
-    ).cnt;
-
-    const avgEntitiesPerDoc = totalCompleteDocs > 0 ? totalEntities / totalCompleteDocs : 0;
-
-    let totalMentions = 0;
-    try {
-      totalMentions = (
-        conn.prepare('SELECT COUNT(*) as cnt FROM entity_mentions').get() as { cnt: number }
-      ).cnt;
-    } catch (err) {
-      console.error(
-        `[reports] entity_mentions count query failed: ${err instanceof Error ? err.message : String(err)}`
-      );
-      // entity_mentions may not exist
-    }
-
-    const typeDist = conn
-      .prepare(
-        'SELECT entity_type, COUNT(*) as count FROM entities GROUP BY entity_type ORDER BY count DESC'
-      )
-      .all() as Array<{ entity_type: string; count: number }>;
-
-    let kgLinked = 0;
-    try {
-      kgLinked = (
-        conn.prepare('SELECT COUNT(DISTINCT entity_id) as cnt FROM node_entity_links').get() as {
-          cnt: number;
-        }
-      ).cnt;
-    } catch (err) {
-      console.error(
-        `[reports] node_entity_links count query failed: ${err instanceof Error ? err.message : String(err)}`
-      );
-      // node_entity_links may not exist
-    }
-
-    // Documents with low entity coverage (< 1 entity per page)
-    const lowCoverageDocs = conn
-      .prepare(
-        `
-      SELECT e.document_id, d.file_name, COUNT(*) as entity_count, COALESCE(d.page_count, 1) as page_count,
-             CAST(COUNT(*) AS REAL) / MAX(1, COALESCE(d.page_count, 1)) as density
-      FROM entities e
-      JOIN documents d ON d.id = e.document_id
-      WHERE d.status = 'complete' AND d.page_count > 0
-      GROUP BY e.document_id
-      HAVING density < 1.0
-      ORDER BY density ASC
-      LIMIT 10
-    `
-      )
-      .all() as Array<{
-      document_id: string;
-      file_name: string;
-      entity_count: number;
-      page_count: number;
-      density: number;
-    }>;
-
-    // Also find complete docs with zero entities
-    const zeroEntityDocs = conn
-      .prepare(
-        `
-      SELECT d.id as document_id, d.file_name, 0 as entity_count, COALESCE(d.page_count, 0) as page_count, 0.0 as density
-      FROM documents d
-      WHERE d.status = 'complete'
-        AND NOT EXISTS (SELECT 1 FROM entities e WHERE e.document_id = d.id)
-      ORDER BY d.file_name
-      LIMIT 10
-    `
-      )
-      .all() as Array<{
-      document_id: string;
-      file_name: string;
-      entity_count: number;
-      page_count: number;
-      density: number;
-    }>;
-
-    const coveragePct = totalCompleteDocs > 0 ? (docsWithEntities / totalCompleteDocs) * 100 : 0;
-
-    return {
-      total_entities: totalEntities,
-      docs_with_entities: docsWithEntities,
-      total_complete_docs: totalCompleteDocs,
-      entity_extraction_coverage_pct: coveragePct,
-      avg_entities_per_doc: avgEntitiesPerDoc,
-      total_entity_mentions: totalMentions,
-      type_distribution: typeDist,
-      kg_linked_entities: kgLinked,
-      kg_link_coverage_pct: totalEntities > 0 ? (kgLinked / totalEntities) * 100 : 0,
-      low_coverage_documents: [...zeroEntityDocs, ...lowCoverageDocs].slice(0, 10),
-    };
-  } catch (err) {
-    console.error(
-      `[reports] aggregate entity quality metrics failed: ${err instanceof Error ? err.message : String(err)}`
-    );
-    return defaults;
-  }
-}
 
 // ===============================================================================
 // VALIDATION SCHEMAS
@@ -498,9 +195,6 @@ export async function handleEvaluationReport(
     // Clustering statistics
     const clusteringStats = getClusteringStats(db.getConnection());
 
-    // Knowledge graph quality metrics
-    const kgMetrics = getKnowledgeGraphQualityMetrics(db.getConnection());
-
     // Generate markdown report
     const report = generateMarkdownReport({
       dbStats,
@@ -512,7 +206,6 @@ export async function handleEvaluationReport(
       confidenceThreshold,
       comparisonStats: { total: comparisonCount, avg_similarity: avgComparisonSimilarity },
       clusteringStats,
-      kgMetrics,
     });
 
     // Save to file if path provided
@@ -542,19 +235,6 @@ export async function handleEvaluationReport(
           total_clusters: clusteringStats.total_clusters,
           total_cluster_runs: clusteringStats.total_runs,
           avg_coherence: clusteringStats.avg_coherence,
-          knowledge_graph: {
-            total_nodes: kgMetrics.total_nodes,
-            total_edges: kgMetrics.total_edges,
-            avg_document_count: kgMetrics.avg_document_count,
-            max_document_count: kgMetrics.max_document_count,
-            avg_edge_count: kgMetrics.avg_edge_count,
-            max_edge_count: kgMetrics.max_edge_count,
-            orphaned_nodes: kgMetrics.orphaned_nodes,
-            entity_extraction_coverage_pct: kgMetrics.entity_extraction_coverage.coverage_pct,
-            resolution_method_distribution: kgMetrics.resolution_method_distribution,
-            relationship_type_distribution: kgMetrics.relationship_type_distribution,
-            entity_type_distribution: kgMetrics.entity_type_distribution,
-          },
         },
         image_type_distribution: imageTypeDistribution,
         output_path: outputPath || null,
@@ -696,22 +376,6 @@ export async function handleDocumentReport(params: Record<string, unknown>): Pro
             coherence_score: c.coherence_score,
           })),
         },
-        knowledge_graph: (() => {
-          const kgNodes = getKnowledgeNodeSummariesByDocument(db.getConnection(), documentId);
-          if (kgNodes.length === 0)
-            return { total_nodes: 0, cross_document_nodes: 0, total_edges: 0, nodes: [] };
-          return {
-            total_nodes: kgNodes.length,
-            cross_document_nodes: kgNodes.filter((n) => n.document_count > 1).length,
-            total_edges: kgNodes.reduce((sum, n) => sum + n.edge_count, 0),
-            nodes: kgNodes,
-          };
-        })(),
-        entity_quality: getDocumentEntityQualityMetrics(
-          db.getConnection(),
-          documentId,
-          doc.page_count
-        ),
       })
     );
   } catch (error) {
@@ -890,33 +554,6 @@ export async function handleQualitySummary(params: Record<string, unknown>): Pro
           avg_coherence:
             qualityClusteringStats.total_clusters > 0 ? qualityClusteringStats.avg_coherence : null,
         },
-        knowledge_graph: (() => {
-          const conn = db.getConnection();
-          const totalEntities = (
-            conn.prepare('SELECT COUNT(*) as cnt FROM entities').get() as { cnt: number }
-          ).cnt;
-          const linkedEntities = (
-            conn.prepare('SELECT COUNT(*) as cnt FROM node_entity_links').get() as { cnt: number }
-          ).cnt;
-          const kgMetrics = getKnowledgeGraphQualityMetrics(conn);
-          return {
-            entities_resolved: linkedEntities,
-            total_entities: totalEntities,
-            resolution_coverage: totalEntities > 0 ? linkedEntities / totalEntities : 0,
-            total_nodes: kgMetrics.total_nodes,
-            total_edges: kgMetrics.total_edges,
-            avg_document_count: kgMetrics.avg_document_count,
-            max_document_count: kgMetrics.max_document_count,
-            avg_edge_count: kgMetrics.avg_edge_count,
-            max_edge_count: kgMetrics.max_edge_count,
-            orphaned_nodes: kgMetrics.orphaned_nodes,
-            entity_extraction_coverage: kgMetrics.entity_extraction_coverage,
-            resolution_method_distribution: kgMetrics.resolution_method_distribution,
-            relationship_type_distribution: kgMetrics.relationship_type_distribution,
-            entity_type_distribution: kgMetrics.entity_type_distribution,
-          };
-        })(),
-        entity_quality: getAggregateEntityQualityMetrics(db.getConnection()),
       })
     );
   } catch (error) {
@@ -1036,18 +673,6 @@ async function handleCostSummary(params: Record<string, unknown>): Promise<ToolR
       avg_duration_ms: clusterDurations.avg_ms,
     };
 
-    // Knowledge graph build costs (Gemini calls for AI resolution + relationship classification)
-    const kgProvenance = conn
-      .prepare(
-        "SELECT COUNT(*) as cnt, COALESCE(SUM(processing_duration_ms), 0) as total_ms FROM provenance WHERE type = 'KNOWLEDGE_GRAPH'"
-      )
-      .get() as { cnt: number; total_ms: number };
-
-    result.knowledge_graph_build = {
-      total_builds: kgProvenance.cnt,
-      total_duration_ms: kgProvenance.total_ms,
-    };
-
     return formatResponse(successResult(result));
   } catch (error) {
     return handleError(error);
@@ -1068,7 +693,6 @@ interface ReportParams {
   confidenceThreshold: number;
   comparisonStats: { total: number; avg_similarity: number | null };
   clusteringStats: { total_clusters: number; total_runs: number; avg_coherence: number | null };
-  kgMetrics: KGQualityMetrics;
 }
 
 function generateMarkdownReport(params: ReportParams): string {
@@ -1174,62 +798,12 @@ These images may need manual review or reprocessing.
 - **Form Fills**: ${dbStats.total_form_fills} form fills
 - **Comparisons**: ${params.comparisonStats.total} document comparisons
 - **Clusters**: ${params.clusteringStats.total_clusters} clusters across ${params.clusteringStats.total_runs} runs${params.clusteringStats.avg_coherence !== null ? ` (avg coherence: ${(params.clusteringStats.avg_coherence * 100).toFixed(1)}%)` : ''}
-- **Knowledge Graph**: ${params.kgMetrics.total_nodes} nodes, ${params.kgMetrics.total_edges} edges
 
 ### VLM Processing Rate
 
 \`\`\`
 ${imageStats.total > 0 ? `Processed: ${'█'.repeat(Math.round((imageStats.processed / imageStats.total) * 40))}${'░'.repeat(40 - Math.round((imageStats.processed / imageStats.total) * 40))} ${((imageStats.processed / imageStats.total) * 100).toFixed(1)}%` : 'No images to process.'}
 \`\`\`
-
----
-
-## Knowledge Graph Health
-
-| Metric | Value |
-|--------|-------|
-| Total Nodes | ${params.kgMetrics.total_nodes} |
-| Total Edges | ${params.kgMetrics.total_edges} |
-| Avg Document Count per Node | ${params.kgMetrics.avg_document_count !== null ? params.kgMetrics.avg_document_count.toFixed(2) : 'N/A'} |
-| Max Document Count | ${params.kgMetrics.max_document_count ?? 'N/A'} |
-| Avg Edge Count per Node | ${params.kgMetrics.avg_edge_count !== null ? params.kgMetrics.avg_edge_count.toFixed(2) : 'N/A'} |
-| Max Edge Count | ${params.kgMetrics.max_edge_count ?? 'N/A'} |
-| Orphaned Nodes (no edges) | ${params.kgMetrics.orphaned_nodes} |
-| Entity Extraction Coverage | ${params.kgMetrics.entity_extraction_coverage.coverage_pct.toFixed(1)}% (${params.kgMetrics.entity_extraction_coverage.docs_with_entities}/${params.kgMetrics.entity_extraction_coverage.total_complete_docs} docs) |
-
-### Resolution Method Distribution
-
-| Method | Count |
-|--------|-------|
-${
-  params.kgMetrics.resolution_method_distribution.length > 0
-    ? params.kgMetrics.resolution_method_distribution
-        .map((r) => `| ${r.method} | ${r.count} |`)
-        .join('\n')
-    : '| (none) | 0 |'
-}
-
-### Entity Type Distribution
-
-| Type | Count |
-|------|-------|
-${
-  params.kgMetrics.entity_type_distribution.length > 0
-    ? params.kgMetrics.entity_type_distribution.map((r) => `| ${r.type} | ${r.count} |`).join('\n')
-    : '| (none) | 0 |'
-}
-
-### Relationship Type Distribution
-
-| Type | Count |
-|------|-------|
-${
-  params.kgMetrics.relationship_type_distribution.length > 0
-    ? params.kgMetrics.relationship_type_distribution
-        .map((r) => `| ${r.type} | ${r.count} |`)
-        .join('\n')
-    : '| (none) | 0 |'
-}
 
 ---
 
@@ -1264,7 +838,7 @@ export const reportTools: Record<string, ToolDefinition> = {
 
   ocr_document_report: {
     description:
-      'Get detailed report for a single document including image analysis, entity quality metrics (density, type distribution, KG coverage), and knowledge graph details',
+      'Get detailed report for a single document including image analysis, extractions, comparisons, and cluster memberships',
     inputSchema: {
       document_id: z.string().min(1).describe('Document ID'),
     },
@@ -1273,7 +847,7 @@ export const reportTools: Record<string, ToolDefinition> = {
 
   ocr_quality_summary: {
     description:
-      'Get quick quality summary across all documents and images, including aggregate entity quality metrics and low-coverage document flagging',
+      'Get quick quality summary across all documents and images',
     inputSchema: {},
     handler: handleQualitySummary,
   },

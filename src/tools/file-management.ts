@@ -17,7 +17,6 @@ import { v4 as uuidv4 } from 'uuid';
 import {
   formatResponse,
   handleError,
-  queryEntitiesForDocuments,
   fetchProvenanceChain,
   type ToolDefinition,
 } from './shared.js';
@@ -61,10 +60,6 @@ const FileListInput = z.object({
 
 const FileGetInput = z.object({
   file_id: z.string().min(1).describe('Uploaded file record ID'),
-  include_entities: z
-    .boolean()
-    .default(false)
-    .describe('Include entities associated with this file'),
   include_provenance: z.boolean().default(false).describe('Include provenance chain for this file'),
 });
 
@@ -175,8 +170,6 @@ async function handleFileUpload(params: Record<string, unknown>) {
       const nextSteps: string[] = [
         'Use ocr_ingest_document to create a document record and start OCR processing',
         'Use ocr_process_pending to OCR process the ingested document',
-        'Use ocr_entity_extract to extract entities after OCR completes',
-        'Use ocr_kg_build to build knowledge graph from extracted entities',
       ];
 
       return formatResponse(
@@ -243,8 +236,6 @@ async function handleFileList(params: Record<string, unknown>) {
       for (const f of files) {
         if (!f.file_size || f.file_size === 0) continue;
 
-        // Round size to nearest 10% bucket for grouping
-        // Files within 10% of each other share the same bucket key
         const bucketSize = Math.max(1, Math.round(f.file_size * 0.1));
         const bucketKey = String(Math.round(f.file_size / bucketSize));
 
@@ -262,7 +253,6 @@ async function handleFileList(params: Record<string, unknown>) {
         }
       }
 
-      // Flag groups with 3+ files as potential duplicates
       const potentialDuplicates: Array<{
         group_size: number;
         avg_file_size: number;
@@ -273,7 +263,6 @@ async function handleFileList(params: Record<string, unknown>) {
       for (const [, group] of sizeGroups) {
         if (group.length >= 3) {
           const avgSize = Math.round(group.reduce((sum, f) => sum + f.file_size, 0) / group.length);
-          // Check if any files in group share the same hash (true duplicates)
           const hashCounts = new Map<string, number>();
           for (const f of group) {
             hashCounts.set(f.file_hash, (hashCounts.get(f.file_hash) ?? 0) + 1);
@@ -312,21 +301,6 @@ async function handleFileGet(params: Record<string, unknown>) {
     }
 
     const response: Record<string, unknown> = { uploaded_file: file };
-
-    if (input.include_entities) {
-      try {
-        const doc = conn
-          .prepare('SELECT id FROM documents WHERE file_hash = ? LIMIT 1')
-          .get(file.file_hash) as { id: string } | undefined;
-        if (doc) {
-          response.entities = queryEntitiesForDocuments(conn, [doc.id]);
-        }
-      } catch (entErr) {
-        console.error(
-          `[file-management] Entity query failed: ${entErr instanceof Error ? entErr.message : String(entErr)}`
-        );
-      }
-    }
 
     if (input.include_provenance) {
       response.provenance_chain = fetchProvenanceChain(db, file.provenance_id, 'file-management');

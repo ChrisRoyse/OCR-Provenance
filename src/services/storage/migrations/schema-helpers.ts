@@ -14,7 +14,6 @@ import {
   DATABASE_PRAGMAS,
   CREATE_SCHEMA_VERSION_TABLE,
   CREATE_VEC_EMBEDDINGS_TABLE,
-  CREATE_VEC_ENTITY_EMBEDDINGS_TABLE,
   CREATE_CHUNKS_FTS_TABLE,
   CREATE_FTS_TRIGGERS,
   CREATE_FTS_INDEX_METADATA,
@@ -22,8 +21,6 @@ import {
   CREATE_VLM_FTS_TRIGGERS,
   CREATE_EXTRACTIONS_FTS_TABLE,
   CREATE_EXTRACTIONS_FTS_TRIGGERS,
-  CREATE_KNOWLEDGE_NODES_FTS_TABLE,
-  CREATE_KNOWLEDGE_NODES_FTS_TRIGGERS,
   CREATE_INDEXES,
   TABLE_DEFINITIONS,
   SCHEMA_VERSION,
@@ -105,16 +102,6 @@ export function createVecTable(db: Database.Database): void {
       error
     );
   }
-  try {
-    db.exec(CREATE_VEC_ENTITY_EMBEDDINGS_TABLE);
-  } catch (error) {
-    throw new MigrationError(
-      'Failed to create vec_entity_embeddings virtual table. Ensure sqlite-vec extension is loaded.',
-      'create_virtual_table',
-      'vec_entity_embeddings',
-      error
-    );
-  }
 }
 
 /**
@@ -189,11 +176,6 @@ export function createFTSTables(db: Database.Database): void {
     `
     ).run(now);
 
-    // Knowledge Nodes FTS5
-    db.exec(CREATE_KNOWLEDGE_NODES_FTS_TABLE);
-    for (const trigger of CREATE_KNOWLEDGE_NODES_FTS_TRIGGERS) {
-      db.exec(trigger);
-    }
   } catch (error) {
     throw new MigrationError('Failed to create FTS5 tables', 'create_table', 'chunks_fts', error);
   }

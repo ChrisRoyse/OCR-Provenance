@@ -62,8 +62,6 @@ describe('structuredExtractionTools exports', () => {
     const schema = structuredExtractionTools['ocr_extract_structured'].inputSchema;
     expect(schema).toHaveProperty('document_id');
     expect(schema).toHaveProperty('page_schema');
-    expect(schema).toHaveProperty('auto_extract_entities');
-    expect(schema).toHaveProperty('auto_reassign_clusters');
   });
 
   it('ocr_extraction_list has expected input schema fields', () => {

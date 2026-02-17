@@ -72,7 +72,6 @@ export const ItemType = z.enum([
   'image',
   'comparison',
   'clustering',
-  'knowledge_graph',
   'form_fill',
   'extraction',
   'auto',
@@ -251,68 +250,6 @@ export const ProcessPendingInput = z.object({
     .enum(['fixed', 'page_aware'])
     .default('fixed')
     .describe('Chunking strategy: fixed-size or page-boundary-aware'),
-  auto_extract_entities: z
-    .boolean()
-    .default(false)
-    .describe('Auto-extract entities after OCR+embed completes'),
-  auto_build_kg: z
-    .boolean()
-    .default(false)
-    .describe(
-      'Auto-build/update knowledge graph after entity extraction (requires auto_extract_entities=true)'
-    ),
-  auto_extract_vlm_entities: z
-    .boolean()
-    .default(false)
-    .describe(
-      'Auto-extract entities from VLM image descriptions after VLM processing. Requires GEMINI_API_KEY.'
-    ),
-  auto_extract_from_extractions: z
-    .boolean()
-    .default(false)
-    .describe('Auto-extract entities from structured extractions after processing'),
-  auto_coreference_resolve: z
-    .boolean()
-    .default(false)
-    .describe(
-      'Auto-resolve coreferences (pronouns, abbreviations) after entity extraction. Requires auto_extract_entities=true and GEMINI_API_KEY.'
-    ),
-  auto_scan_contradictions: z
-    .boolean()
-    .default(false)
-    .describe(
-      'Auto-scan for contradictions after knowledge graph build. Requires auto_build_kg=true.'
-    ),
-  auto_reassign_clusters: z
-    .boolean()
-    .default(false)
-    .describe(
-      'After entity extraction + KG merge, reassign documents to clusters if clusters exist. Requires auto_extract_entities=true.'
-    ),
-  auto_embed_entities: z
-    .boolean()
-    .default(false)
-    .describe(
-      'Auto-generate embeddings for KG entity nodes after knowledge graph build. Requires auto_build_kg=true.'
-    ),
-  auto_synthesize_document: z
-    .boolean()
-    .default(false)
-    .describe(
-      'Auto-run AI synthesis (narrative + relationship inference + evidence grounding) after entity extraction + KG build. Requires auto_build_kg=true and GEMINI_API_KEY.'
-    ),
-  auto_corpus_map: z
-    .boolean()
-    .default(false)
-    .describe(
-      'Auto-regenerate corpus-level intelligence map after processing all documents. Requires auto_build_kg=true and GEMINI_API_KEY.'
-    ),
-  check_semantic_duplicates: z
-    .boolean()
-    .default(false)
-    .describe(
-      'After OCR completes, check for semantically similar documents by entity overlap (Jaccard > 0.85). Informational only.'
-    ),
 });
 
 /**
@@ -339,36 +276,6 @@ export const MetadataFilter = z
   .optional();
 
 /**
- * Entity filter for filtering search results by KG entities (shared across all search schemas)
- */
-export const EntityFilter = z
-  .object({
-    entity_names: z.array(z.string()).optional(),
-    entity_types: z.array(z.string()).optional(),
-    include_related: z
-      .boolean()
-      .default(false)
-      .describe('Include documents from 1-hop related entities via KG edges'),
-  })
-  .optional()
-  .describe('Filter results by knowledge graph entities');
-
-/** Temporal filter for entity relationships */
-const TimeRange = z
-  .object({
-    from: z
-      .string()
-      .optional()
-      .describe('ISO date - only include results from entities active after this date'),
-    to: z
-      .string()
-      .optional()
-      .describe('ISO date - only include results from entities active before this date'),
-  })
-  .optional()
-  .describe('Temporal filter for entity relationships');
-
-/**
  * Schema for semantic search
  */
 export const SearchSemanticInput = z.object({
@@ -376,10 +283,6 @@ export const SearchSemanticInput = z.object({
   limit: z.number().int().min(1).max(100).default(10),
   similarity_threshold: z.number().min(0).max(1).default(0.7),
   include_provenance: z.boolean().default(false),
-  include_entities: z
-    .boolean()
-    .default(false)
-    .describe('Include knowledge graph entities for each result'),
   document_filter: z.array(z.string()).optional(),
   metadata_filter: MetadataFilter,
   min_quality_score: z
@@ -391,31 +294,11 @@ export const SearchSemanticInput = z.object({
   expand_query: z
     .boolean()
     .default(false)
-    .describe(
-      'Expand query with domain-specific legal/medical synonyms and knowledge graph aliases'
-    ),
-  entity_filter: EntityFilter,
-  time_range: TimeRange,
+    .describe('Expand query with domain-specific legal/medical synonyms'),
   rerank: z
     .boolean()
     .default(false)
     .describe('Re-rank results using Gemini AI for contextual relevance scoring'),
-  entity_rescue: z
-    .boolean()
-    .default(false)
-    .describe(
-      'Rescue borderline results (within 0.1 of threshold) if they contain entities matching query terms'
-    ),
-  deduplicate_by_entity: z
-    .boolean()
-    .default(false)
-    .describe('Deduplicate results by primary entity (max 2 results per entity)'),
-  min_entity_confidence: z
-    .number()
-    .min(0)
-    .max(1)
-    .optional()
-    .describe('Minimum entity confidence score (0-1) for including entities in results'),
   cluster_id: z.string().optional().describe('Filter results to documents in this cluster'),
   include_cluster_context: z
     .boolean()
@@ -432,10 +315,6 @@ export const SearchInput = z.object({
   phrase_search: z.boolean().default(false),
   include_highlight: z.boolean().default(true),
   include_provenance: z.boolean().default(false),
-  include_entities: z
-    .boolean()
-    .default(false)
-    .describe('Include knowledge graph entities for each result'),
   document_filter: z.array(z.string()).optional(),
   metadata_filter: MetadataFilter,
   min_quality_score: z
@@ -447,25 +326,11 @@ export const SearchInput = z.object({
   expand_query: z
     .boolean()
     .default(false)
-    .describe(
-      'Expand query with domain-specific legal/medical synonyms and knowledge graph aliases'
-    ),
-  entity_filter: EntityFilter,
-  time_range: TimeRange,
+    .describe('Expand query with domain-specific legal/medical synonyms'),
   rerank: z
     .boolean()
     .default(false)
     .describe('Re-rank results using Gemini AI for contextual relevance scoring'),
-  deduplicate_by_entity: z
-    .boolean()
-    .default(false)
-    .describe('Deduplicate results by primary entity (max 2 results per entity)'),
-  min_entity_confidence: z
-    .number()
-    .min(0)
-    .max(1)
-    .optional()
-    .describe('Minimum entity confidence score (0-1) for including entities in results'),
   cluster_id: z.string().optional().describe('Filter results to documents in this cluster'),
   include_cluster_context: z
     .boolean()
@@ -483,10 +348,6 @@ export const SearchHybridInput = z.object({
   semantic_weight: z.number().min(0).max(2).default(1.0),
   rrf_k: z.number().int().min(1).max(100).default(60),
   include_provenance: z.boolean().default(false),
-  include_entities: z
-    .boolean()
-    .default(false)
-    .describe('Include knowledge graph entities for each result'),
   document_filter: z.array(z.string()).optional(),
   metadata_filter: MetadataFilter,
   min_quality_score: z
@@ -503,26 +364,6 @@ export const SearchHybridInput = z.object({
     .boolean()
     .default(false)
     .describe('Re-rank results using Gemini AI for contextual relevance scoring'),
-  entity_filter: EntityFilter,
-  time_range: TimeRange,
-  entity_boost: z
-    .number()
-    .min(0)
-    .max(2)
-    .default(0)
-    .describe(
-      'Entity boost factor: results containing entities matching query terms get score boost in RRF fusion'
-    ),
-  deduplicate_by_entity: z
-    .boolean()
-    .default(false)
-    .describe('Deduplicate results by primary entity (max 2 results per entity)'),
-  min_entity_confidence: z
-    .number()
-    .min(0)
-    .max(1)
-    .optional()
-    .describe('Minimum entity confidence score (0-1) for including entities in results'),
   cluster_id: z.string().optional().describe('Filter results to documents in this cluster'),
   include_cluster_context: z
     .boolean()
@@ -548,39 +389,6 @@ export const DocumentListInput = z.object({
   status_filter: z.enum(['pending', 'processing', 'complete', 'failed']).optional(),
   limit: z.number().int().min(1).max(1000).default(50),
   offset: z.number().int().min(0).default(0),
-  include_entity_counts: z
-    .boolean()
-    .default(false)
-    .describe('Include entity_mention_count and kg_node_count per document'),
-  entity_type_filter: z
-    .array(
-      z.enum([
-        'person',
-        'organization',
-        'date',
-        'amount',
-        'case_number',
-        'location',
-        'statute',
-        'exhibit',
-        'medication',
-        'diagnosis',
-        'medical_device',
-        'other',
-      ])
-    )
-    .optional()
-    .describe('Only show documents containing entities of these types'),
-  min_entity_count: z
-    .number()
-    .int()
-    .min(1)
-    .optional()
-    .describe('Only show documents with at least this many entities'),
-  entity_name_filter: z
-    .string()
-    .optional()
-    .describe('Only show documents mentioning entities matching this text (substring match)'),
 });
 
 /**
@@ -592,12 +400,6 @@ export const DocumentGetInput = z.object({
   include_chunks: z.boolean().default(false),
   include_blocks: z.boolean().default(false),
   include_full_provenance: z.boolean().default(false),
-  include_entity_summary: z
-    .boolean()
-    .default(false)
-    .describe(
-      'Include per-type entity counts, top entities by mention count, and extraction coverage'
-    ),
 });
 
 /**

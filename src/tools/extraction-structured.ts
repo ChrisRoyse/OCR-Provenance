@@ -15,7 +15,6 @@ import { v4 as uuidv4 } from 'uuid';
 import {
   formatResponse,
   handleError,
-  buildClusterReassignmentHint,
   type ToolDefinition,
 } from './shared.js';
 import { successResult } from '../server/types.js';
@@ -30,22 +29,10 @@ import {
   MODEL_VERSION,
   EMBEDDING_DIM,
 } from '../services/embedding/nomic.js';
-import { mapExtractionEntitiesToDB } from '../services/knowledge-graph/extraction-entity-mapper.js';
-import { createEntityExtractionProvenance } from './entity-analysis.js';
 
 const ExtractStructuredInput = z.object({
   document_id: z.string().min(1).describe('Document ID (must be OCR processed)'),
   page_schema: z.string().min(1).describe('JSON schema string for structured extraction per page'),
-  auto_extract_entities: z
-    .boolean()
-    .default(false)
-    .describe(
-      'Automatically create entities from extracted fields (maps field names like vendor_name->organization, invoice_date->date, etc.)'
-    ),
-  auto_reassign_clusters: z
-    .boolean()
-    .default(false)
-    .describe('Hint that document clusters may need updating after structured extraction'),
 });
 
 const ExtractionListInput = z.object({
@@ -214,37 +201,6 @@ async function handleExtractStructured(params: Record<string, unknown>) {
       embeddingProvId = null;
     }
 
-    // Auto-extract entities from structured fields if requested
-    let entityResult: {
-      entities_created: number;
-      extractions_processed: number;
-      entity_provenance_id: string;
-    } | null = null;
-    if (input.auto_extract_entities) {
-      try {
-        const entityProvId = createEntityExtractionProvenance(
-          db,
-          doc,
-          'structured-extraction-entity-mapper',
-          'structured_extraction'
-        );
-        const conn = db.getConnection();
-        const mapped = mapExtractionEntitiesToDB(conn, doc.id, entityProvId);
-        entityResult = {
-          entities_created: mapped.entities_created,
-          extractions_processed: mapped.extractions_processed,
-          entity_provenance_id: entityProvId,
-        };
-        console.error(
-          `[INFO] auto_extract_entities: created ${mapped.entities_created} entities from ${mapped.extractions_processed} extractions for document ${doc.id}`
-        );
-      } catch (entityError) {
-        const errMsg = entityError instanceof Error ? entityError.message : String(entityError);
-        console.error(`[WARN] auto_extract_entities failed for document ${doc.id}: ${errMsg}`);
-        // Don't fail the extraction itself -- entity extraction is a best-effort add-on
-      }
-    }
-
     // Echo the schema back (parse to object if valid JSON, keep as string otherwise)
     let parsedSchema: unknown = input.page_schema;
     try {
@@ -257,10 +213,6 @@ async function handleExtractStructured(params: Record<string, unknown>) {
       /* keep as string */
     }
 
-    const clusterHint = input.auto_reassign_clusters
-      ? buildClusterReassignmentHint(db.getConnection(), doc.id, 'extraction-structured')
-      : undefined;
-
     return formatResponse(
       successResult({
         extraction_id: extractionId,
@@ -271,15 +223,6 @@ async function handleExtractStructured(params: Record<string, unknown>) {
         provenance_id: extractionProvId,
         embedding_id: embeddingId,
         embedding_provenance_id: embeddingProvId,
-        ...(entityResult
-          ? {
-              auto_extract_entities: true,
-              entities_created: entityResult.entities_created,
-              extractions_processed: entityResult.extractions_processed,
-              entity_provenance_id: entityResult.entity_provenance_id,
-            }
-          : {}),
-        ...(clusterHint ?? {}),
       })
     );
   } catch (error) {

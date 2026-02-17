@@ -7,13 +7,10 @@
 
 import Database from 'better-sqlite3';
 import { v4 as uuidv4 } from 'uuid';
-import { mkdirSync, writeFileSync } from 'fs';
-import { join } from 'path';
 import { Document, DocumentStatus } from '../../../models/document.js';
 import { DatabaseError, DatabaseErrorCode, DocumentRow, ListDocumentsOptions } from './types.js';
 import { runWithForeignKeyCheck } from './helpers.js';
 import { rowToDocument } from './converters.js';
-import { cleanupGraphForDocument, updateKnowledgeNode } from './knowledge-graph-operations.js';
 import { computeHash } from '../../../utils/hash.js';
 
 /**
@@ -332,87 +329,7 @@ function deleteDerivedRecords(db: Database.Database, documentId: string, caller:
     console.error('[document-operations] form_fills table not found, skipping:', msg);
   }
 
-  // Clean up entity_embeddings BEFORE graph cleanup (entity_embeddings.node_id -> knowledge_nodes.id)
-  try {
-    db.prepare(
-      `DELETE FROM vec_entity_embeddings WHERE entity_embedding_id IN (
-         SELECT ee.id FROM entity_embeddings ee
-         JOIN node_entity_links nel ON nel.node_id = ee.node_id
-         WHERE nel.document_id = ?
-       )`
-    ).run(documentId);
-    db.prepare(
-      `DELETE FROM entity_embeddings WHERE node_id IN (
-         SELECT DISTINCT node_id FROM node_entity_links WHERE document_id = ?
-       )`
-    ).run(documentId);
-  } catch (e: unknown) {
-    const msg = e instanceof Error ? e.message : String(e);
-    if (!msg.includes('no such table')) throw e;
-    console.error('[document-operations] entity_embeddings table not found, skipping:', msg);
-  }
-
-  // Delete document_narratives (document_narratives.document_id REFERENCES documents(id))
-  try {
-    db.prepare('DELETE FROM document_narratives WHERE document_id = ?').run(documentId);
-  } catch (e: unknown) {
-    const msg = e instanceof Error ? e.message : String(e);
-    if (!msg.includes('no such table')) throw e;
-    console.error('[document-operations] document_narratives table not found, skipping:', msg);
-  }
-
-  // Delete document-scoped entity_roles (entity_roles.scope='document', scope_id=documentId)
-  try {
-    db.prepare("DELETE FROM entity_roles WHERE scope = 'document' AND scope_id = ?").run(
-      documentId
-    );
-  } catch (e: unknown) {
-    const msg = e instanceof Error ? e.message : String(e);
-    if (!msg.includes('no such table')) throw e;
-    console.error('[document-operations] entity_roles table not found, skipping:', msg);
-  }
-
-  // Clean up knowledge graph data (must come before entities deletion since links reference entities)
-  cleanupGraphForDocument(db, documentId);
-
-  // Delete extraction segments (may not exist in pre-v19 schemas)
-  try {
-    db.prepare('DELETE FROM entity_extraction_segments WHERE document_id = ?').run(documentId);
-  } catch (e: unknown) {
-    const msg = e instanceof Error ? e.message : String(e);
-    if (!msg.includes('no such table')) throw e;
-    console.error(
-      '[document-operations] entity_extraction_segments table not found, skipping:',
-      msg
-    );
-  }
-
-  // Delete node_entity_links BEFORE entities (node_entity_links.entity_id -> entities.id, no CASCADE)
-  try {
-    db.prepare(
-      'DELETE FROM node_entity_links WHERE entity_id IN (SELECT id FROM entities WHERE document_id = ?)'
-    ).run(documentId);
-  } catch (e: unknown) {
-    const msg = e instanceof Error ? e.message : String(e);
-    if (!msg.includes('no such table')) throw e;
-    console.error('[document-operations] node_entity_links table not found, skipping:', msg);
-  }
-
-  // Delete entity mentions and entities BEFORE chunks
-  // (entity_mentions.chunk_id REFERENCES chunks(id) — must remove child FK first)
-  // (entity_mentions.entity_id -> entities.id — mentions before entities)
-  try {
-    db.prepare(
-      'DELETE FROM entity_mentions WHERE entity_id IN (SELECT id FROM entities WHERE document_id = ?)'
-    ).run(documentId);
-    db.prepare('DELETE FROM entities WHERE document_id = ?').run(documentId);
-  } catch (e: unknown) {
-    const msg = e instanceof Error ? e.message : String(e);
-    if (!msg.includes('no such table')) throw e;
-    console.error('[document-operations] entity_mentions/entities table not found, skipping:', msg);
-  }
-
-  // Delete from chunks (safe: entity_mentions.chunk_id references now gone)
+  // Delete from chunks
   db.prepare('DELETE FROM chunks WHERE document_id = ?').run(documentId);
 
   // Delete from extractions (BEFORE ocr_results: extractions.ocr_result_id REFERENCES ocr_results(id))
@@ -473,7 +390,7 @@ function deleteDerivedRecords(db: Database.Database, documentId: string, caller:
 /**
  * Get or create the synthetic ORPHANED_ROOT provenance record.
  * Used to re-parent provenance records when their original document is deleted
- * but surviving KG nodes or clusters still reference them (P1.4).
+ * but surviving clusters still reference them (P1.4).
  *
  * @param db - Database connection
  * @returns The ID of the ORPHANED_ROOT provenance record
@@ -525,175 +442,6 @@ function getOrCreateOrphanedRoot(db: Database.Database): string {
   return id;
 }
 
-// ============================================================
-// KG Snapshot Archival
-// ============================================================
-
-/**
- * Row type for knowledge node archive query
- */
-interface ArchiveNodeRow {
-  id: string;
-  entity_type: string;
-  canonical_name: string;
-  normalized_name: string;
-  aliases: string | null;
-  document_count: number;
-  mention_count: number;
-  edge_count: number;
-  avg_confidence: number;
-  importance_score: number;
-  metadata: string | null;
-  provenance_id: string;
-  created_at: string;
-  updated_at: string;
-  resolution_type: string | null;
-}
-
-/**
- * Row type for knowledge edge archive query
- */
-interface ArchiveEdgeRow {
-  id: string;
-  source_node_id: string;
-  target_node_id: string;
-  relationship_type: string;
-  weight: number;
-  evidence_count: number;
-  document_ids: string;
-  metadata: string | null;
-  provenance_id: string;
-  created_at: string;
-  valid_from: string | null;
-  valid_until: string | null;
-  normalized_weight: number | null;
-  contradiction_count: number;
-}
-
-/**
- * Row type for node_entity_links archive query
- */
-interface ArchiveLinkRow {
-  id: string;
-  node_id: string;
-  entity_id: string;
-  document_id: string;
-  similarity_score: number;
-  resolution_method: string | null;
-  created_at: string;
-}
-
-/**
- * Row type for entities archive query
- */
-interface ArchiveEntityRow {
-  id: string;
-  document_id: string;
-  entity_type: string;
-  raw_text: string;
-  normalized_text: string;
-  confidence: number;
-  metadata: string | null;
-  provenance_id: string;
-  created_at: string;
-}
-
-/**
- * Result of a KG snapshot archival operation
- */
-export interface KGArchiveResult {
-  archived: boolean;
-  archive_path: string | null;
-  nodes_archived: number;
-  edges_archived: number;
-}
-
-/**
- * Archive the knowledge graph subgraph linked to a document before cascade deletion.
- *
- * Queries all knowledge_nodes connected via node_entity_links -> entities for the
- * given document, plus all edges between those nodes, and writes a JSON snapshot
- * to the archive directory.
- *
- * @param conn - Database connection
- * @param documentId - The document being deleted
- * @param archiveDir - Directory to write the archive file into
- * @returns Archive result with path and counts
- */
-export function archiveKGSubgraphForDocument(
-  conn: Database.Database,
-  documentId: string,
-  archiveDir: string
-): KGArchiveResult {
-  // Find all knowledge nodes linked to this document
-  const nodes = conn
-    .prepare(
-      `
-    SELECT DISTINCT kn.*
-    FROM knowledge_nodes kn
-    JOIN node_entity_links nel ON nel.node_id = kn.id
-    WHERE nel.document_id = ?
-  `
-    )
-    .all(documentId) as ArchiveNodeRow[];
-
-  if (nodes.length === 0) {
-    return { archived: false, archive_path: null, nodes_archived: 0, edges_archived: 0 };
-  }
-
-  const nodeIds = nodes.map((n) => n.id);
-  const placeholders = nodeIds.map(() => '?').join(',');
-
-  // Find all edges between the affected nodes
-  const edges = conn
-    .prepare(
-      `
-    SELECT * FROM knowledge_edges
-    WHERE source_node_id IN (${placeholders})
-       OR target_node_id IN (${placeholders})
-  `
-    )
-    .all(...nodeIds, ...nodeIds) as ArchiveEdgeRow[];
-
-  // Get the node_entity_links for this document
-  const links = conn
-    .prepare('SELECT * FROM node_entity_links WHERE document_id = ?')
-    .all(documentId) as ArchiveLinkRow[];
-
-  // Get the entities for this document
-  const entities = conn
-    .prepare('SELECT * FROM entities WHERE document_id = ?')
-    .all(documentId) as ArchiveEntityRow[];
-
-  // Build the archive payload
-  const archive = {
-    archive_type: 'kg_snapshot',
-    document_id: documentId,
-    archived_at: new Date().toISOString(),
-    nodes,
-    edges,
-    node_entity_links: links,
-    entities,
-  };
-
-  // Write to disk
-  mkdirSync(archiveDir, { recursive: true });
-  const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
-  const archivePath = join(archiveDir, `kg-archive-${documentId}-${timestamp}.json`);
-  writeFileSync(archivePath, JSON.stringify(archive, null, 2), 'utf-8');
-
-  console.error(
-    `[INFO] KG snapshot archived for document ${documentId}: ${nodes.length} nodes, ${edges.length} edges -> ${archivePath}`
-  );
-
-  return {
-    archived: true,
-    archive_path: archivePath,
-    nodes_archived: nodes.length,
-    edges_archived: edges.length,
-  };
-}
-
 /**
  * Delete a document and all related data (CASCADE DELETE)
  *
@@ -742,56 +490,16 @@ export function deleteDocument(
   const clusterRefCheck = db.prepare(
     'SELECT COUNT(*) as cnt FROM clusters WHERE provenance_id = ?'
   );
-  const kgNodeRefCheck = db.prepare(
-    'SELECT COUNT(*) as cnt FROM knowledge_nodes WHERE provenance_id = ?'
-  );
   const reparentProvStmt = db.prepare(
     'UPDATE provenance SET source_id = NULL, parent_id = ?, root_document_id = ? WHERE id = ?'
   );
-  const getKgNodesForProv = db.prepare(
-    'SELECT id, metadata FROM knowledge_nodes WHERE provenance_id = ?'
-  );
   for (const { id: provId } of provenanceIds) {
     // Skip CLUSTERING provenance still referenced by clusters (NOT NULL FK).
-    // Skip KNOWLEDGE_GRAPH provenance still referenced by surviving knowledge_nodes (NOT NULL FK).
     // Re-parent to orphaned root so provenance chain is preserved (P1.4).
-    // These are cleaned up when the cluster run / knowledge graph is deleted.
+    // These are cleaned up when the cluster run is deleted.
     const clusterRefs = (clusterRefCheck.get(provId) as { cnt: number }).cnt;
-    const kgNodeRefs = (kgNodeRefCheck.get(provId) as { cnt: number }).cnt;
-    if (clusterRefs > 0 || kgNodeRefs > 0) {
+    if (clusterRefs > 0) {
       reparentProvStmt.run(orphanedRootId, 'ORPHANED_ROOT', provId);
-
-      // Store re-parenting info in KG node metadata
-      if (kgNodeRefs > 0) {
-        const kgNodes = getKgNodesForProv.all(provId) as { id: string; metadata: string | null }[];
-        for (const kgNode of kgNodes) {
-          const existingMeta = kgNode.metadata
-            ? (() => {
-                try {
-                  return JSON.parse(kgNode.metadata!);
-                } catch (error) {
-                  console.error(
-                    `[document-operations] Failed to parse KG node metadata for ${kgNode.id}:`,
-                    error instanceof Error ? error.message : String(error)
-                  );
-                  return {};
-                }
-              })()
-            : {};
-          updateKnowledgeNode(db, kgNode.id, {
-            metadata: JSON.stringify({
-              ...existingMeta,
-              reparented: {
-                original_document_id: id,
-                original_root_document_id: doc.provenance_id,
-                orphaned_root_id: orphanedRootId,
-                reparented_at: new Date().toISOString(),
-              },
-            }),
-            updated_at: new Date().toISOString(),
-          });
-        }
-      }
       continue;
     }
     deleteProvStmt.run(provId);

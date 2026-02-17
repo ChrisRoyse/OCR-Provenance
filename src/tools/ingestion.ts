@@ -29,7 +29,7 @@ import type { ChunkingConfig } from '../models/chunk.js';
 import { EmbeddingService } from '../services/embedding/embedder.js';
 import { ProvenanceTracker } from '../services/provenance/tracker.js';
 import { computeHash, hashFile, computeFileHashSync } from '../utils/hash.js';
-import { state, requireDatabase, validateGeneration, getCurrentDatabaseName } from '../server/state.js';
+import { state, requireDatabase, validateGeneration } from '../server/state.js';
 import { successResult } from '../server/types.js';
 import {
   validateInput,
@@ -58,28 +58,6 @@ import {
 import { getProvenanceTracker } from '../services/provenance/index.js';
 import { createVLMPipeline } from '../services/vlm/pipeline.js';
 import { ImageExtractor } from '../services/images/extractor.js';
-import { GeminiClient } from '../services/gemini/client.js';
-import { ENTITY_TYPES } from '../models/entity.js';
-import { deleteEntitiesByDocument } from '../services/storage/database/entity-operations.js';
-import {
-  reassignDocumentToCluster,
-  type ClusterReassignmentResult,
-} from '../services/storage/database/cluster-operations.js';
-import { incrementalBuildGraph } from '../services/knowledge-graph/incremental-builder.js';
-import { buildKnowledgeGraph } from '../services/knowledge-graph/graph-service.js';
-import { extractEntitiesFromVLM } from '../services/knowledge-graph/vlm-entity-extractor.js';
-import { mapExtractionEntitiesToDB } from '../services/knowledge-graph/extraction-entity-mapper.js';
-import {
-  extractEntitiesAndRelationships,
-  storeJointExtractionResults,
-  buildKGEntityHints,
-} from '../utils/entity-extraction-helpers.js';
-import { handleCoreferenceResolve, createEntityExtractionProvenance } from './entity-analysis.js';
-import {
-  handleKnowledgeGraphScanContradictions,
-  handleKnowledgeGraphEmbedEntities,
-} from './knowledge-graph.js';
-import { synthesizeDocument, generateCorpusMap } from '../services/knowledge-graph/synthesis-service.js';
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // TYPE DEFINITIONS
@@ -852,196 +830,10 @@ export async function handleIngestFiles(
   }
 }
 
-// ═══════════════════════════════════════════════════════════════════════════════
-// AUTO-PIPELINE: ENTITY EXTRACTION + KNOWLEDGE GRAPH
-// ═══════════════════════════════════════════════════════════════════════════════
-
-/**
- * Result of auto-entity extraction for a single document
- */
-interface AutoEntityResult {
-  document_id: string;
-  total_entities: number;
-  total_mentions: number;
-  total_nodes: number;
-  total_edges: number;
-  entities_by_type: Record<string, number>;
-  processing_duration_ms: number;
-  kg_built_inline: boolean;
-}
-
-/**
- * Extract entities from a single completed document and store them in DB.
- * This is the core extraction logic used by the auto-pipeline.
- * Returns entity stats for the response.
- */
-async function autoExtractEntitiesForDocument(
-  db: DatabaseService,
-  docId: string
-): Promise<AutoEntityResult> {
-  const conn = db.getConnection();
-  const doc = db.getDocument(docId);
-  if (!doc) {
-    throw new Error(`Document not found: ${docId}`);
-  }
-
-  const ocrResult = db.getOCRResultByDocumentId(docId);
-  if (!ocrResult) {
-    throw new Error(`No OCR result found for document ${docId}`);
-  }
-
-  // Delete existing entities before re-extracting
-  const existingCount = deleteEntitiesByDocument(conn, docId);
-  if (existingCount > 0) {
-    console.error(
-      `[INFO] Auto-pipeline: deleted ${existingCount} existing entities for document ${docId}`
-    );
-  }
-
-  const client = new GeminiClient({
-    retry: { maxAttempts: 2, baseDelayMs: 500, maxDelayMs: 5000 },
-  });
-  const startTime = Date.now();
-  const text = ocrResult.extracted_text;
-  const now = new Date().toISOString();
-
-  const entityProvId = uuidv4();
-
-  db.insertProvenance({
-    id: entityProvId,
-    type: ProvenanceType.ENTITY_EXTRACTION,
-    created_at: now,
-    processed_at: now,
-    source_file_created_at: null,
-    source_file_modified_at: null,
-    source_type: 'ENTITY_EXTRACTION',
-    source_path: doc.file_path,
-    source_id: ocrResult.provenance_id,
-    root_document_id: doc.provenance_id,
-    location: null,
-    content_hash: computeHash(`entity-extraction-pending-${docId}-${now}`),
-    input_hash: ocrResult.content_hash,
-    file_hash: doc.file_hash,
-    processor: 'gemini-entity-extraction',
-    processor_version: '2.0.0',
-    processing_params: {
-      entity_types: ENTITY_TYPES,
-      text_length: text.length,
-      extraction_mode: 'joint_single_call',
-      source: 'auto-pipeline',
-    },
-    processing_duration_ms: null,
-    processing_quality_score: null,
-    parent_id: ocrResult.provenance_id,
-    parent_ids: JSON.stringify([doc.provenance_id, ocrResult.provenance_id]),
-    chain_depth: 2,
-    chain_path: JSON.stringify(['DOCUMENT', 'OCR_RESULT', 'ENTITY_EXTRACTION']),
-  });
-
-  // Create KNOWLEDGE_GRAPH provenance record (chained from ENTITY_EXTRACTION)
-  const kgProvId = uuidv4();
-  db.insertProvenance({
-    id: kgProvId,
-    type: ProvenanceType.KNOWLEDGE_GRAPH,
-    created_at: now,
-    processed_at: now,
-    source_file_created_at: null,
-    source_file_modified_at: null,
-    source_type: 'KNOWLEDGE_GRAPH',
-    source_path: doc.file_path,
-    source_id: entityProvId,
-    root_document_id: doc.provenance_id,
-    location: null,
-    content_hash: computeHash(`knowledge-graph-${docId}-${now}`),
-    input_hash: computeHash(`entity-extraction-${docId}`),
-    file_hash: doc.file_hash,
-    processor: 'gemini-joint-extraction',
-    processor_version: '1.0.0',
-    processing_params: {
-      extraction_mode: 'joint_single_call',
-      text_length: text.length,
-      source: 'auto-pipeline',
-    },
-    processing_duration_ms: null,
-    processing_quality_score: null,
-    parent_id: entityProvId,
-    parent_ids: JSON.stringify([doc.provenance_id, ocrResult.provenance_id, entityProvId]),
-    chain_depth: 3,
-    chain_path: JSON.stringify(['DOCUMENT', 'OCR_RESULT', 'ENTITY_EXTRACTION', 'KNOWLEDGE_GRAPH']),
-  });
-
-  // Build KG entity hints for cross-document context
-  const entityHints = buildKGEntityHints(conn);
-
-  // Single-call joint entity + relationship extraction
-  const extractionResult = await extractEntitiesAndRelationships(client, text, entityHints);
-
-  // Store entities, mentions, KG nodes, and KG edges in one transaction
-  const result = storeJointExtractionResults(
-    conn,
-    docId,
-    ocrResult.id,
-    text,
-    extractionResult,
-    entityProvId,
-    kgProvId
-  );
-
-  // Cross-document KG resolution: if other documents have KG nodes, merge for dedup
-  const otherNodesCount = (conn.prepare(
-    'SELECT COUNT(*) as cnt FROM knowledge_nodes WHERE provenance_id != ?'
-  ).get(kgProvId) as { cnt: number }).cnt;
-
-  if (otherNodesCount > 0) {
-    console.error(
-      `[INFO] Auto-pipeline: ${otherNodesCount} existing KG nodes from other documents, running cross-document resolution for ${docId}`
-    );
-    try {
-      await incrementalBuildGraph(db, {
-        document_ids: [docId],
-        resolution_mode: 'fuzzy',
-      });
-    } catch (mergeErr) {
-      console.error(
-        `[WARN] Auto-pipeline: cross-document KG resolution failed for ${docId}: ${mergeErr instanceof Error ? mergeErr.message : String(mergeErr)}`
-      );
-    }
-  }
-
-  const processingDurationMs = Date.now() - startTime;
-
-  // Update entity and KG provenance with final duration
-  try {
-    const updateDuration = conn.prepare('UPDATE provenance SET processing_duration_ms = ? WHERE id = ?');
-    updateDuration.run(processingDurationMs, entityProvId);
-    updateDuration.run(processingDurationMs, kgProvId);
-  } catch (provErr) {
-    console.error(`[WARN] Failed to update provenance duration: ${provErr instanceof Error ? provErr.message : String(provErr)}`);
-  }
-
-  console.error(
-    `[INFO] Auto-pipeline: joint extraction complete for ${docId}: ` +
-      `${result.totalEntities} entities, ${result.totalMentions} mentions, ` +
-      `${result.totalNodes} KG nodes, ${result.totalEdges} KG edges`
-  );
-
-  return {
-    document_id: docId,
-    total_entities: result.totalEntities,
-    total_mentions: result.totalMentions,
-    total_nodes: result.totalNodes,
-    total_edges: result.totalEdges,
-    entities_by_type: result.entitiesByType,
-    processing_duration_ms: processingDurationMs,
-    kg_built_inline: true,
-  };
-}
-
 /**
  * Handle ocr_process_pending - Process pending documents through full OCR pipeline
  *
  * Pipeline: OCR -> Extract Images -> Chunk -> Embed -> VLM Process Images -> Complete
- * Optional: -> Entity Extraction -> Knowledge Graph Build
  * Provenance chain: DOCUMENT(0) -> OCR_RESULT(1) -> CHUNK(2)/IMAGE(2) -> EMBEDDING(3)/VLM_DESC(3)
  */
 export async function handleProcessPending(
@@ -1051,33 +843,6 @@ export async function handleProcessPending(
     const input = validateInput(ProcessPendingInput, params);
     const { db, vector, generation } = requireDatabase();
 
-    // Validate auto-pipeline parameters upfront
-    // auto_build_kg no longer strictly requires auto_extract_entities
-    // It can work standalone for legacy data where entities exist but KG doesn't
-    if (input.auto_coreference_resolve && !input.auto_extract_entities) {
-      throw new Error('auto_coreference_resolve requires auto_extract_entities=true');
-    }
-    if (input.auto_scan_contradictions && !input.auto_build_kg) {
-      throw new Error('auto_scan_contradictions requires auto_build_kg=true');
-    }
-    if (input.auto_embed_entities && !input.auto_build_kg) {
-      throw new Error('auto_embed_entities requires auto_build_kg=true');
-    }
-    if (input.auto_synthesize_document && !input.auto_build_kg) {
-      throw new Error('auto_synthesize_document requires auto_build_kg=true');
-    }
-    if (input.auto_corpus_map && !input.auto_build_kg) {
-      throw new Error('auto_corpus_map requires auto_build_kg=true');
-    }
-    if (input.auto_reassign_clusters && !input.auto_extract_entities) {
-      throw new Error('auto_reassign_clusters requires auto_extract_entities=true');
-    }
-    if (input.auto_extract_entities && !process.env.GEMINI_API_KEY) {
-      throw new Error('auto_extract_entities requires GEMINI_API_KEY');
-    }
-    if (input.auto_extract_vlm_entities && !process.env.GEMINI_API_KEY) {
-      throw new Error('auto_extract_vlm_entities requires GEMINI_API_KEY');
-    }
     if (!process.env.DATALAB_API_KEY) {
       throw new Error('DATALAB_API_KEY environment variable is required for OCR processing');
     }
@@ -1120,17 +885,6 @@ export async function handleProcessPending(
       failed: 0,
       errors: [] as Array<{ document_id: string; error: string }>,
     };
-    const entityResults: AutoEntityResult[] = [];
-    const vlmEntityResults: Array<{
-      document_id: string;
-      entities_created: number;
-      descriptions_processed: number;
-    }> = [];
-    const extractionEntityResults: Array<{
-      document_id: string;
-      entities_created: number;
-      extractions_processed: number;
-    }> = [];
     const successfulDocIds: string[] = [];
 
     const batchId = uuidv4();
@@ -1351,67 +1105,6 @@ export async function handleProcessPending(
               `[WARN] Document ${doc.id}: ${vlmResult.failed}/${vlmResult.total} VLM image processing failures`
             );
           }
-
-          // Step 5.1: Auto-extract entities from VLM descriptions if enabled
-          if (input.auto_extract_vlm_entities && vlmResult.successful > 0) {
-            try {
-              console.error(
-                `[INFO] Auto-pipeline: extracting entities from VLM descriptions for document ${doc.id}`
-              );
-              const conn = db.getConnection();
-
-              // Create VLM entity extraction provenance record
-              const vlmEntityProvId = uuidv4();
-              const vlmEntityNow = new Date().toISOString();
-              db.insertProvenance({
-                id: vlmEntityProvId,
-                type: ProvenanceType.ENTITY_EXTRACTION,
-                created_at: vlmEntityNow,
-                processed_at: vlmEntityNow,
-                source_file_created_at: null,
-                source_file_modified_at: null,
-                source_type: 'ENTITY_EXTRACTION',
-                source_path: doc.file_path,
-                source_id: ocrResult.provenance_id,
-                root_document_id: doc.provenance_id,
-                location: null,
-                content_hash: computeHash(`vlm-entities-${doc.id}-${vlmEntityNow}`),
-                input_hash: ocrResult.content_hash,
-                file_hash: doc.file_hash,
-                processor: 'gemini-vlm-entity-extraction',
-                processor_version: '1.0.0',
-                processing_params: {
-                  source: 'auto-pipeline-vlm',
-                  vlm_images_processed: vlmResult.successful,
-                },
-                processing_duration_ms: null,
-                processing_quality_score: null,
-                parent_id: ocrResult.provenance_id,
-                parent_ids: JSON.stringify([doc.provenance_id, ocrResult.provenance_id]),
-                chain_depth: 2,
-                chain_path: JSON.stringify(['DOCUMENT', 'OCR_RESULT', 'ENTITY_EXTRACTION']),
-              });
-
-              const vlmEntityResult = await extractEntitiesFromVLM(conn, doc.id, vlmEntityProvId);
-              vlmEntityResults.push({
-                document_id: doc.id,
-                entities_created: vlmEntityResult.entities_created,
-                descriptions_processed: vlmEntityResult.descriptions_processed,
-              });
-              console.error(
-                `[INFO] Auto-pipeline: VLM entity extraction complete for ${doc.id}: ` +
-                  `${vlmEntityResult.entities_created} entities from ${vlmEntityResult.descriptions_processed} descriptions`
-              );
-            } catch (vlmEntityError) {
-              const vlmEntityMsg =
-                vlmEntityError instanceof Error ? vlmEntityError.message : String(vlmEntityError);
-              console.error(`[WARN] VLM entity extraction failed for ${doc.id}: ${vlmEntityMsg}`);
-              results.errors.push({
-                document_id: doc.id,
-                error: `VLM entity extraction failed: ${vlmEntityMsg}`,
-              });
-            }
-          }
         }
 
         // Step 5.5: Store structured extraction if present
@@ -1492,89 +1185,11 @@ export async function handleProcessPending(
         successfulDocIds.push(doc.id);
 
         console.error(`[INFO] Document ${doc.id} processing complete`);
-
-        // Step 7: Auto-extract entities if enabled
-        // Wrapped in its own try-catch: entity extraction failure must NOT
-        // revert a successfully OCR'd/chunked/embedded document to 'failed'.
-        if (input.auto_extract_entities) {
-          try {
-            console.error(`[INFO] Auto-pipeline: extracting entities for document ${doc.id}`);
-            const entityResult = await autoExtractEntitiesForDocument(db, doc.id);
-            entityResults.push(entityResult);
-          } catch (entityError) {
-            const entityMsg =
-              entityError instanceof Error ? entityError.message : String(entityError);
-            console.error(`[WARN] Entity extraction failed for ${doc.id}: ${entityMsg}`);
-            results.errors.push({
-              document_id: doc.id,
-              error: `Entity extraction failed: ${entityMsg}`,
-            });
-          }
-        }
-
-        // Step 7b: Auto-extract entities from structured extractions if enabled
-        if (input.auto_extract_from_extractions && input.page_schema) {
-          try {
-            const conn = db.getConnection();
-            const extractionCount = (
-              conn
-                .prepare('SELECT COUNT(*) as cnt FROM extractions WHERE document_id = ?')
-                .get(doc.id) as { cnt: number }
-            ).cnt;
-            if (extractionCount > 0) {
-              console.error(
-                `[INFO] Auto-pipeline: extracting entities from ${extractionCount} structured extractions for ${doc.id}`
-              );
-              const entityProvId = createEntityExtractionProvenance(
-                db,
-                doc,
-                'extraction-entity-mapper',
-                'extraction'
-              );
-              const extractionResult = mapExtractionEntitiesToDB(conn, doc.id, entityProvId);
-              extractionEntityResults.push({
-                document_id: doc.id,
-                entities_created: extractionResult.entities_created,
-                extractions_processed: extractionResult.extractions_processed,
-              });
-              console.error(
-                `[INFO] Auto-pipeline: created ${extractionResult.entities_created} entities from extractions for ${doc.id}`
-              );
-            }
-          } catch (extError) {
-            const extMsg = extError instanceof Error ? extError.message : String(extError);
-            console.error(`[WARN] Extraction entity extraction failed for ${doc.id}: ${extMsg}`);
-            results.errors.push({
-              document_id: doc.id,
-              error: `Extraction entity extraction failed: ${extMsg}`,
-            });
-          }
-        }
-
-        // Step 7c: Auto-resolve coreferences if enabled
-        if (input.auto_coreference_resolve && input.auto_extract_entities) {
-          try {
-            console.error(`[INFO] Auto-pipeline: resolving coreferences for document ${doc.id}`);
-            await handleCoreferenceResolve({
-              document_id: doc.id,
-              merge_into_kg: input.auto_build_kg ?? false,
-              resolution_scope: 'document',
-            });
-            console.error(`[INFO] Auto-pipeline: coreference resolution complete for ${doc.id}`);
-          } catch (corefError) {
-            const corefMsg = corefError instanceof Error ? corefError.message : String(corefError);
-            console.error(`[WARN] Coreference resolution failed for ${doc.id}: ${corefMsg}`);
-            results.errors.push({
-              document_id: doc.id,
-              error: `Coreference resolution failed: ${corefMsg}`,
-            });
-          }
-        }
       } catch (error) {
         const errorMsg = error instanceof Error ? error.message : String(error);
         console.error(`[ERROR] Document ${doc.id} failed: ${errorMsg}`);
 
-        // F-INTEG-1: Clean up partial derived data (orphaned chunks, embeddings, entities)
+        // F-INTEG-1: Clean up partial derived data (orphaned chunks, embeddings)
         // before marking as failed, so a retry starts from a clean state.
         try {
           db.cleanDocumentDerivedData(doc.id);
@@ -1605,125 +1220,6 @@ export async function handleProcessPending(
         );
       }
       await Promise.allSettled(batch.map(processOneDocument));
-    }
-
-    // Step 8: Auto-build knowledge graph if enabled and no KG exists yet
-    // Wrapped in try-catch: KG build failure must not crash the pipeline response.
-    // Include documents with VLM entity extraction in KG build consideration.
-    const hasEntities =
-      entityResults.length > 0 ||
-      vlmEntityResults.some((r) => r.entities_created > 0) ||
-      extractionEntityResults.some((r) => r.entities_created > 0);
-    let kgBuildResult: Record<string, unknown> | undefined;
-    if (input.auto_build_kg && successfulDocIds.length > 0 && hasEntities) {
-      // Joint extraction already built KG nodes/edges inline for each document.
-      // auto_build_kg now only handles cross-document resolution for multi-document batches
-      // and legacy data where entities exist but no KG was built.
-      try {
-        const conn = db.getConnection();
-        const kgNodeCount = (
-          conn.prepare('SELECT COUNT(*) as cnt FROM knowledge_nodes').get() as { cnt: number }
-        ).cnt;
-
-        if (kgNodeCount > 0 && input.auto_extract_entities) {
-          // KG was already built inline during joint extraction
-          console.error(
-            `[INFO] Auto-pipeline: KG already built inline during entity extraction (${kgNodeCount} nodes). Skipping separate KG build.`
-          );
-          kgBuildResult = {
-            auto_built: true,
-            built_inline: true,
-            message: 'Knowledge graph built inline during joint entity+relationship extraction',
-            nodes: kgNodeCount,
-          };
-        } else if (kgNodeCount === 0) {
-          // Legacy path: entities exist but no KG (e.g., old data before joint extraction)
-          console.error(
-            `[INFO] Auto-pipeline: no KG exists, running initial knowledge graph build`
-          );
-          const kgResult = await buildKnowledgeGraph(db, {
-            resolution_mode: 'fuzzy',
-          });
-          kgBuildResult = {
-            auto_built: true,
-            built_inline: false,
-            nodes: kgResult.total_nodes,
-            edges: kgResult.total_edges,
-            entities_resolved: kgResult.entities_resolved,
-            cross_document_nodes: kgResult.cross_document_nodes,
-            documents_covered: kgResult.documents_covered,
-            provenance_id: kgResult.provenance_id,
-            processing_duration_ms: kgResult.processing_duration_ms,
-          };
-          console.error(
-            `[INFO] Auto-pipeline: KG built with ${kgResult.total_nodes} nodes, ${kgResult.total_edges} edges`
-          );
-        } else {
-          kgBuildResult = {
-            auto_built: false,
-            message: 'Knowledge graph already existed with nodes from prior processing',
-            nodes: kgNodeCount,
-          };
-        }
-      } catch (kgError) {
-        const kgMsg = kgError instanceof Error ? kgError.message : String(kgError);
-        console.error(`[WARN] Knowledge graph build failed: ${kgMsg}`);
-        kgBuildResult = { auto_built: false, error: `KG build failed: ${kgMsg}` };
-      }
-    }
-
-    // Step 9: Auto-scan contradictions after KG build
-    let contradictionScanResult: Record<string, unknown> | undefined;
-    if (input.auto_scan_contradictions && kgBuildResult) {
-      try {
-        console.error(`[INFO] Auto-pipeline: scanning for contradictions in knowledge graph`);
-        const scanResponse = await handleKnowledgeGraphScanContradictions({
-          scan_types: ['conflicting_relationships', 'temporal_conflicts', 'duplicate_nodes'],
-          limit: 50,
-        });
-        // Parse the formatted ToolResponse to extract result data
-        const scanText = scanResponse.content?.[0]?.text;
-        if (scanText) {
-          const scanData = JSON.parse(scanText);
-          const totalFound = scanData.data?.total_contradictions ?? 0;
-          contradictionScanResult = {
-            total_contradictions: totalFound,
-            scan_types: ['conflicting_relationships', 'temporal_conflicts', 'duplicate_nodes'],
-          };
-          console.error(`[INFO] Auto-pipeline: contradiction scan found ${totalFound} issues`);
-        }
-      } catch (scanError) {
-        const scanMsg = scanError instanceof Error ? scanError.message : String(scanError);
-        console.error(`[WARN] Contradiction scanning failed: ${scanMsg}`);
-        contradictionScanResult = { error: `Contradiction scan failed: ${scanMsg}` };
-      }
-    }
-
-    // Step 9b: Auto-embed entity nodes if enabled and KG was built
-    let entityEmbedResult: Record<string, unknown> | undefined;
-    if (input.auto_embed_entities && kgBuildResult) {
-      try {
-        console.error(`[INFO] Auto-pipeline: generating embeddings for KG entity nodes`);
-        const embedResponse = await handleKnowledgeGraphEmbedEntities({
-          document_filter: successfulDocIds.length > 0 ? successfulDocIds : undefined,
-          limit: 500,
-        });
-        const embedText = embedResponse.content?.[0]?.text;
-        if (embedText) {
-          const embedData = JSON.parse(embedText);
-          entityEmbedResult = {
-            embedded: embedData.data?.embedded ?? 0,
-            errors: embedData.data?.errors ?? 0,
-          };
-          console.error(
-            `[INFO] Auto-pipeline: embedded ${entityEmbedResult.embedded} entity nodes`
-          );
-        }
-      } catch (embedError) {
-        const embedMsg = embedError instanceof Error ? embedError.message : String(embedError);
-        console.error(`[WARN] Entity embedding failed: ${embedMsg}`);
-        entityEmbedResult = { error: `Entity embedding failed: ${embedMsg}` };
-      }
     }
 
     // Get remaining count - CRITICAL: use 'status' not 'statusFilter'
@@ -1757,237 +1253,6 @@ export async function handleProcessPending(
       console.error(
         `[Ingestion] Failed to query document count for auto-compare hint: ${String(error)}`
       );
-    }
-
-    if (input.auto_extract_entities && entityResults.length > 0) {
-      response.entity_extraction = {
-        documents_extracted: entityResults.length,
-        total_entities: entityResults.reduce((sum, r) => sum + r.total_entities, 0),
-        total_mentions: entityResults.reduce((sum, r) => sum + r.total_mentions, 0),
-        total_nodes: entityResults.reduce((sum, r) => sum + r.total_nodes, 0),
-        total_edges: entityResults.reduce((sum, r) => sum + r.total_edges, 0),
-        kg_built_inline: entityResults.every((r) => r.kg_built_inline),
-        total_processing_duration_ms: entityResults.reduce(
-          (sum, r) => sum + r.processing_duration_ms,
-          0
-        ),
-        per_document: entityResults,
-      };
-    }
-
-    if (input.auto_extract_vlm_entities && vlmEntityResults.length > 0) {
-      response.vlm_entity_extraction = {
-        documents_extracted: vlmEntityResults.length,
-        total_entities_created: vlmEntityResults.reduce((sum, r) => sum + r.entities_created, 0),
-        total_descriptions_processed: vlmEntityResults.reduce(
-          (sum, r) => sum + r.descriptions_processed,
-          0
-        ),
-        per_document: vlmEntityResults,
-      };
-    }
-
-    if (input.auto_extract_from_extractions && extractionEntityResults.length > 0) {
-      response.extraction_entity_extraction = {
-        documents_extracted: extractionEntityResults.length,
-        total_entities_created: extractionEntityResults.reduce(
-          (sum, r) => sum + r.entities_created,
-          0
-        ),
-        total_extractions_processed: extractionEntityResults.reduce(
-          (sum, r) => sum + r.extractions_processed,
-          0
-        ),
-        per_document: extractionEntityResults,
-      };
-    }
-
-    if (kgBuildResult) {
-      response.knowledge_graph = kgBuildResult;
-    }
-
-    if (contradictionScanResult) {
-      response.contradiction_scan = contradictionScanResult;
-    }
-
-    if (entityEmbedResult) {
-      response.entity_embeddings = entityEmbedResult;
-    }
-
-    if (input.auto_coreference_resolve) {
-      response.coreference_resolution = { enabled: true };
-    }
-
-    // Step 9c: Auto-synthesize documents if enabled and KG was built
-    const synthesisResults: Array<Record<string, unknown>> = [];
-    if (input.auto_synthesize_document && kgBuildResult && successfulDocIds.length > 0) {
-      const dbName = getCurrentDatabaseName() ?? 'default';
-      for (const docId of successfulDocIds) {
-        try {
-          console.error(`[INFO] Auto-pipeline: synthesizing document ${docId}`);
-          const conn = db.getConnection();
-          const result = await synthesizeDocument(conn, docId, { databaseName: dbName });
-          synthesisResults.push({
-            document_id: docId,
-            edges_created: result.edges_created,
-            evidence_grounded: result.evidence_grounded,
-            roles_assigned: result.roles_assigned,
-          });
-          console.error(
-            `[INFO] Auto-pipeline: synthesized ${docId}: ${result.edges_created} edges`
-          );
-        } catch (synthError) {
-          const synthMsg = synthError instanceof Error ? synthError.message : String(synthError);
-          console.error(`[WARN] Document synthesis failed for ${docId}: ${synthMsg}`);
-          synthesisResults.push({ document_id: docId, error: synthMsg });
-        }
-      }
-    }
-
-    // Step 9d: Auto-regenerate corpus map if enabled
-    let corpusMapResult: Record<string, unknown> | undefined;
-    if (input.auto_corpus_map && kgBuildResult) {
-      try {
-        const dbName = getCurrentDatabaseName() ?? 'default';
-        const conn = db.getConnection();
-        console.error(`[INFO] Auto-pipeline: generating corpus map`);
-        const corpus = await generateCorpusMap(conn, dbName, true);
-        let themesCount = 0;
-        try {
-          themesCount = (JSON.parse(corpus.themes) as unknown[]).length;
-        } catch {
-          /* themes not parseable */
-        }
-        corpusMapResult = {
-          corpus_summary: corpus.corpus_summary.slice(0, 200),
-          entity_count: corpus.entity_count,
-          document_count: corpus.document_count,
-          themes_count: themesCount,
-        };
-        console.error(`[INFO] Auto-pipeline: corpus map generated`);
-      } catch (mapError) {
-        const mapMsg = mapError instanceof Error ? mapError.message : String(mapError);
-        console.error(`[WARN] Corpus map generation failed: ${mapMsg}`);
-        corpusMapResult = { error: mapMsg };
-      }
-    }
-
-    if (synthesisResults.length > 0) {
-      response.document_synthesis = {
-        documents_synthesized: synthesisResults.filter((r) => !r.error).length,
-        total_edges_created: synthesisResults.reduce(
-          (sum, r) => sum + ((r.edges_created as number) ?? 0),
-          0
-        ),
-        per_document: synthesisResults,
-      };
-    }
-
-    if (corpusMapResult) {
-      response.corpus_map = corpusMapResult;
-    }
-
-    if (input.auto_reassign_clusters && successfulDocIds.length > 0) {
-      try {
-        const conn = db.getConnection();
-        const results: ClusterReassignmentResult[] = [];
-        for (const docId of successfulDocIds) {
-          try {
-            results.push(reassignDocumentToCluster(conn, docId));
-          } catch (docErr) {
-            const msg = docErr instanceof Error ? docErr.message : String(docErr);
-            console.error(`[ingestion] cluster reassignment failed for doc ${docId}: ${msg}`);
-            results.push({ document_id: docId, reassigned: false, error: msg });
-          }
-        }
-        response.cluster_reassignment = {
-          enabled: true,
-          documents: successfulDocIds.length,
-          results,
-        };
-      } catch (clusterErr) {
-        const msg = clusterErr instanceof Error ? clusterErr.message : String(clusterErr);
-        console.error(`[ingestion] cluster reassignment failed: ${msg}`);
-        response.cluster_reassignment = { enabled: true, error: msg };
-      }
-    }
-
-    // Semantic duplicate detection via entity overlap
-    if (input.check_semantic_duplicates && successfulDocIds.length > 0) {
-      try {
-        const conn = db.getConnection();
-        const semanticDuplicateWarnings: Array<{
-          document_id: string;
-          similar_to: string;
-          similar_file_name: string;
-          jaccard_similarity: number;
-        }> = [];
-
-        for (const docId of successfulDocIds) {
-          try {
-            // Get this document's entity normalized_text set
-            const docEntityRows = conn
-              .prepare('SELECT DISTINCT normalized_text FROM entities WHERE document_id = ?')
-              .all(docId) as Array<{ normalized_text: string }>;
-
-            if (docEntityRows.length === 0) continue;
-            const docEntitySet = new Set(docEntityRows.map((r) => r.normalized_text));
-
-            // Compare against other complete documents (limit to last 100 for performance)
-            const otherDocs = conn
-              .prepare(
-                `
-              SELECT DISTINCT e.document_id, d.file_name
-              FROM entities e
-              JOIN documents d ON d.id = e.document_id
-              WHERE e.document_id != ?
-              GROUP BY e.document_id
-              ORDER BY d.created_at DESC
-              LIMIT 100
-            `
-              )
-              .all(docId) as Array<{ document_id: string; file_name: string }>;
-
-            for (const otherDoc of otherDocs) {
-              const otherEntityRows = conn
-                .prepare('SELECT DISTINCT normalized_text FROM entities WHERE document_id = ?')
-                .all(otherDoc.document_id) as Array<{ normalized_text: string }>;
-
-              if (otherEntityRows.length === 0) continue;
-              const otherEntitySet = new Set(otherEntityRows.map((r) => r.normalized_text));
-
-              // Compute Jaccard similarity
-              let intersection = 0;
-              for (const ent of docEntitySet) {
-                if (otherEntitySet.has(ent)) intersection++;
-              }
-              const union = docEntitySet.size + otherEntitySet.size - intersection;
-              const jaccard = union > 0 ? intersection / union : 0;
-
-              if (jaccard > 0.85) {
-                semanticDuplicateWarnings.push({
-                  document_id: docId,
-                  similar_to: otherDoc.document_id,
-                  similar_file_name: otherDoc.file_name,
-                  jaccard_similarity: Math.round(jaccard * 1000) / 1000,
-                });
-              }
-            }
-          } catch (docCompErr) {
-            console.error(
-              `[ingestion] semantic duplicate check failed for doc ${docId}: ${docCompErr instanceof Error ? docCompErr.message : String(docCompErr)}`
-            );
-          }
-        }
-
-        if (semanticDuplicateWarnings.length > 0) {
-          response.semantic_duplicate_warnings = semanticDuplicateWarnings;
-        }
-      } catch (semDupErr) {
-        console.error(
-          `[ingestion] semantic duplicate check failed: ${semDupErr instanceof Error ? semDupErr.message : String(semDupErr)}`
-        );
-      }
     }
 
     return formatResponse(successResult(response));
@@ -2077,39 +1342,6 @@ export async function handleOCRStatus(
           total_form_fills: stats.total_form_fills,
           ocr_quality: stats.ocr_quality,
           costs: stats.costs,
-          ...(() => {
-            try {
-              const conn = db.getConnection();
-              const entityCount = (
-                conn.prepare('SELECT COUNT(*) as cnt FROM entities').get() as { cnt: number }
-              ).cnt;
-              const kgNodeCount = (
-                conn.prepare('SELECT COUNT(*) as cnt FROM knowledge_nodes').get() as { cnt: number }
-              ).cnt;
-              const kgEdgeCount = (
-                conn.prepare('SELECT COUNT(*) as cnt FROM knowledge_edges').get() as { cnt: number }
-              ).cnt;
-              const docsWithEntities = (
-                conn
-                  .prepare('SELECT COUNT(DISTINCT document_id) as cnt FROM entity_mentions')
-                  .get() as { cnt: number }
-              ).cnt;
-              return {
-                total_entities: entityCount,
-                total_kg_nodes: kgNodeCount,
-                total_kg_edges: kgEdgeCount,
-                entity_extraction_coverage_pct:
-                  stats.total_documents > 0
-                    ? Math.round((docsWithEntities / stats.total_documents) * 100)
-                    : 0,
-              };
-            } catch (statusErr) {
-              console.error(
-                `[ingestion] entity/KG status query failed: ${statusErr instanceof Error ? statusErr.message : String(statusErr)}`
-              );
-              return {};
-            }
-          })(),
         },
       })
     );
@@ -2409,7 +1641,7 @@ export const ingestionTools: Record<string, ToolDefinition> = {
   },
   ocr_process_pending: {
     description:
-      'Process pending documents through OCR pipeline (OCR -> Chunk -> Embed -> Vector). Optionally auto-extract entities and build/update knowledge graph. Supports semantic_duplicate_warnings when check_semantic_duplicates is enabled.',
+      'Process pending documents through OCR pipeline (OCR -> Chunk -> Embed -> Vector -> VLM). Optionally reassign to clusters after processing.',
     inputSchema: {
       max_concurrent: z
         .number()
@@ -2466,68 +1698,6 @@ export const ingestionTools: Record<string, ToolDefinition> = {
         .enum(['fixed', 'page_aware'])
         .default('fixed')
         .describe('Chunking strategy: fixed-size or page-boundary-aware (no chunks span pages)'),
-      auto_extract_entities: z
-        .boolean()
-        .default(false)
-        .describe('Auto-extract entities after OCR+embed completes'),
-      auto_build_kg: z
-        .boolean()
-        .default(false)
-        .describe(
-          'Auto-build/update knowledge graph after entity extraction (requires auto_extract_entities=true)'
-        ),
-      auto_extract_vlm_entities: z
-        .boolean()
-        .default(false)
-        .describe(
-          'Auto-extract entities from VLM image descriptions after VLM processing. Requires GEMINI_API_KEY.'
-        ),
-      auto_extract_from_extractions: z
-        .boolean()
-        .default(false)
-        .describe('Auto-extract entities from structured extractions after processing'),
-      auto_coreference_resolve: z
-        .boolean()
-        .default(false)
-        .describe(
-          'Auto-resolve coreferences (pronouns, abbreviations) after entity extraction. Requires auto_extract_entities=true and GEMINI_API_KEY.'
-        ),
-      auto_scan_contradictions: z
-        .boolean()
-        .default(false)
-        .describe(
-          'Auto-scan for contradictions after knowledge graph build. Requires auto_build_kg=true.'
-        ),
-      auto_reassign_clusters: z
-        .boolean()
-        .default(false)
-        .describe(
-          'After entity extraction + KG merge, reassign documents to clusters if clusters exist. Requires auto_extract_entities=true.'
-        ),
-      auto_embed_entities: z
-        .boolean()
-        .default(false)
-        .describe(
-          'Auto-generate embeddings for KG entity nodes after knowledge graph build. Requires auto_build_kg=true.'
-        ),
-      auto_synthesize_document: z
-        .boolean()
-        .default(false)
-        .describe(
-          'Auto-run AI synthesis (narrative + relationship inference + evidence grounding) after entity extraction + KG build. Requires auto_build_kg=true and GEMINI_API_KEY.'
-        ),
-      auto_corpus_map: z
-        .boolean()
-        .default(false)
-        .describe(
-          'Auto-regenerate corpus-level intelligence map after processing all documents. Requires auto_build_kg=true and GEMINI_API_KEY.'
-        ),
-      check_semantic_duplicates: z
-        .boolean()
-        .default(false)
-        .describe(
-          'After OCR completes, check for semantically similar documents by entity overlap (Jaccard > 0.85). Informational only.'
-        ),
     },
     handler: handleProcessPending,
   },

@@ -35,81 +35,6 @@ import { computeHash } from '../../utils/hash.js';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// ENTITY OVERLAP FOR KG-POWERED CLUSTERING
-// ═══════════════════════════════════════════════════════════════════════════════
-
-/**
- * Compute pairwise entity overlap matrix using KG node co-occurrence.
- *
- * For each document, looks up KG node IDs via node_entity_links.
- * Entity overlap for (doc_i, doc_j) = |shared_nodes| / max(|nodes_i|, |nodes_j|)
- * This is a Jaccard-like metric normalized by the larger set.
- *
- * @param conn - Raw better-sqlite3 connection
- * @param documentIds - Ordered array of document IDs (must match embedding order)
- * @returns n x n matrix of entity overlap scores in [0, 1]
- * @throws ClusteringError if no KG data exists for any of the documents
- */
-export function computeEntityOverlapMatrix(
-  conn: Database.Database,
-  documentIds: string[]
-): number[][] {
-  const n = documentIds.length;
-
-  // For each document, collect its set of KG node IDs
-  const docNodeSets: Set<string>[] = [];
-  const stmt = conn.prepare('SELECT DISTINCT node_id FROM node_entity_links WHERE document_id = ?');
-
-  let totalNodes = 0;
-  for (const docId of documentIds) {
-    const rows = stmt.all(docId) as Array<{ node_id: string }>;
-    const nodeSet = new Set(rows.map((r) => r.node_id));
-    docNodeSets.push(nodeSet);
-    totalNodes += nodeSet.size;
-  }
-
-  if (totalNodes === 0) {
-    throw new ClusteringError(
-      'entity_weight > 0 but no knowledge graph data found for these documents. Run entity extraction and KG build first.',
-      'NO_EMBEDDINGS',
-      { document_count: n }
-    );
-  }
-
-  // Compute pairwise overlap: |intersection| / max(|A|, |B|)
-  const matrix: number[][] = Array.from({ length: n }, () => new Array(n).fill(0));
-
-  for (let i = 0; i < n; i++) {
-    matrix[i][i] = 1.0; // Self-overlap is always 1
-    for (let j = i + 1; j < n; j++) {
-      const setI = docNodeSets[i];
-      const setJ = docNodeSets[j];
-      const maxSize = Math.max(setI.size, setJ.size);
-
-      if (maxSize === 0) {
-        matrix[i][j] = 0;
-        matrix[j][i] = 0;
-        continue;
-      }
-
-      // Count intersection
-      let shared = 0;
-      const smaller = setI.size <= setJ.size ? setI : setJ;
-      const larger = setI.size <= setJ.size ? setJ : setI;
-      for (const nodeId of smaller) {
-        if (larger.has(nodeId)) shared++;
-      }
-
-      const overlap = shared / maxSize;
-      matrix[i][j] = overlap;
-      matrix[j][i] = overlap;
-    }
-  }
-
-  return matrix;
-}
-
-// ═══════════════════════════════════════════════════════════════════════════════
 // ERRORS
 // ═══════════════════════════════════════════════════════════════════════════════
 
@@ -509,46 +434,12 @@ export async function runClustering(
   const orderedDocIds = docEmbeddings.map((d) => d.document_id);
   const embeddingMatrix = docEmbeddings.map((d) => Array.from(d.embedding));
 
-  // Step 2.5: Compute blended distance matrix when entity_weight > 0
-  let distanceMatrix: number[][] | undefined;
-
-  if (config.entity_weight > 0) {
-    console.error(
-      `[CLUSTER] Computing entity overlap matrix (entity_weight=${config.entity_weight})...`
-    );
-
-    // computeEntityOverlapMatrix throws if no KG data exists
-    const entityOverlap = computeEntityOverlapMatrix(conn, orderedDocIds);
-
-    // Compute cosine distance matrix in TypeScript (1 - cosine_similarity)
-    const n = embeddingMatrix.length;
-    distanceMatrix = Array.from({ length: n }, () => new Array(n).fill(0));
-
-    for (let i = 0; i < n; i++) {
-      for (let j = i + 1; j < n; j++) {
-        // Cosine similarity between L2-normalized vectors = dot product
-        const embSim = cosineSimilarity(docEmbeddings[i].embedding, embeddingMatrix[j]);
-        const embDist = 1 - embSim;
-        const entityDist = 1 - entityOverlap[i][j];
-
-        // Blend: weighted combination of embedding distance and entity distance
-        const blended = (1 - config.entity_weight) * embDist + config.entity_weight * entityDist;
-        distanceMatrix[i][j] = blended;
-        distanceMatrix[j][i] = blended;
-      }
-      // Diagonal is 0 (distance to self)
-    }
-
-    console.error(`[CLUSTER] Blended distance matrix computed (${n}x${n})`);
-  }
-
   // Step 3: Call Python clustering worker
   console.error(`[CLUSTER] Running ${config.algorithm} clustering...`);
   const workerResult = await runClusteringWorker(
     embeddingMatrix,
     orderedDocIds,
-    config,
-    distanceMatrix
+    config
   );
 
   if (!workerResult.success) {
@@ -569,7 +460,6 @@ export async function runClustering(
     min_cluster_size: config.min_cluster_size,
     distance_threshold: config.distance_threshold,
     linkage: config.linkage,
-    entity_weight: config.entity_weight,
   });
 
   // Build cluster result items and store cluster records

@@ -35,18 +35,16 @@ function parseResponse(response: { content: Array<{ type: string; text: string }
 // Extract handlers from the tools record for convenience
 const handleFormFill = formFillTools['ocr_form_fill'].handler;
 const handleFormFillStatus = formFillTools['ocr_form_fill_status'].handler;
-const handleFormFillSuggestFields = formFillTools['ocr_form_fill_suggest_fields'].handler;
 
 // =============================================================================
 // TOOL EXPORTS VERIFICATION
 // =============================================================================
 
 describe('formFillTools exports', () => {
-  it('exports all 3 form fill tools', () => {
-    expect(Object.keys(formFillTools)).toHaveLength(3);
+  it('exports all 2 form fill tools', () => {
+    expect(Object.keys(formFillTools)).toHaveLength(2);
     expect(formFillTools).toHaveProperty('ocr_form_fill');
     expect(formFillTools).toHaveProperty('ocr_form_fill_status');
-    expect(formFillTools).toHaveProperty('ocr_form_fill_suggest_fields');
   });
 
   it('each tool has description, inputSchema, and handler', () => {
@@ -69,12 +67,6 @@ describe('formFillTools exports', () => {
     expect(formFillTools['ocr_form_fill_status'].description.toLowerCase()).toContain('status');
   });
 
-  it('ocr_form_fill_suggest_fields description mentions suggest', () => {
-    expect(formFillTools['ocr_form_fill_suggest_fields'].description.toLowerCase()).toContain(
-      'suggest'
-    );
-  });
-
   it('inputSchema for ocr_form_fill has required fields', () => {
     const schema = formFillTools['ocr_form_fill'].inputSchema;
     expect(schema).toHaveProperty('file_path');
@@ -82,8 +74,6 @@ describe('formFillTools exports', () => {
     expect(schema).toHaveProperty('confidence_threshold');
     expect(schema).toHaveProperty('page_range');
     expect(schema).toHaveProperty('output_path');
-    expect(schema).toHaveProperty('document_id');
-    expect(schema).toHaveProperty('validate_against_kg');
     expect(schema).toHaveProperty('context');
   });
 
@@ -97,12 +87,6 @@ describe('formFillTools exports', () => {
     expect(schema).toHaveProperty('include_provenance');
   });
 
-  it('inputSchema for ocr_form_fill_suggest_fields has required fields', () => {
-    const schema = formFillTools['ocr_form_fill_suggest_fields'].inputSchema;
-    expect(schema).toHaveProperty('document_id');
-    expect(schema).toHaveProperty('field_names');
-    expect(schema).toHaveProperty('entity_types');
-  });
 });
 
 // =============================================================================
@@ -396,157 +380,6 @@ describe('handleFormFillStatus', () => {
 });
 
 // =============================================================================
-// handleFormFillSuggestFields - NO DATABASE SELECTED
-// =============================================================================
-
-describe('handleFormFillSuggestFields', () => {
-  beforeEach(() => {
-    resetState();
-  });
-
-  afterEach(() => {
-    clearDatabase();
-    resetState();
-  });
-
-  it('returns DATABASE_NOT_SELECTED when no database', async () => {
-    const response = await handleFormFillSuggestFields({
-      document_id: 'some-doc-id',
-      field_names: ['patient_name'],
-    });
-    const result = parseResponse(response);
-
-    expect(result.success).toBe(false);
-    expect(result.error?.category).toBe('DATABASE_NOT_SELECTED');
-  });
-
-  it('returns validation error when document_id is missing', async () => {
-    const response = await handleFormFillSuggestFields({
-      field_names: ['patient_name'],
-    });
-    const result = parseResponse(response);
-
-    expect(result.success).toBe(false);
-    expect(result.error?.message).toBeDefined();
-  });
-
-  it('returns validation error when document_id is empty string', async () => {
-    const response = await handleFormFillSuggestFields({
-      document_id: '',
-      field_names: ['patient_name'],
-    });
-    const result = parseResponse(response);
-
-    expect(result.success).toBe(false);
-    expect(result.error?.message).toBeDefined();
-  });
-
-  it('returns validation error when field_names is missing', async () => {
-    const response = await handleFormFillSuggestFields({
-      document_id: 'some-doc-id',
-    });
-    const result = parseResponse(response);
-
-    expect(result.success).toBe(false);
-    expect(result.error?.message).toBeDefined();
-  });
-
-  it('returns validation error when field_names is empty array', async () => {
-    const response = await handleFormFillSuggestFields({
-      document_id: 'some-doc-id',
-      field_names: [],
-    });
-    const result = parseResponse(response);
-
-    expect(result.success).toBe(false);
-    expect(result.error?.message).toBeDefined();
-  });
-
-  it('returns validation error when field_names contains empty strings', async () => {
-    const response = await handleFormFillSuggestFields({
-      document_id: 'some-doc-id',
-      field_names: [''],
-    });
-    const result = parseResponse(response);
-
-    expect(result.success).toBe(false);
-    expect(result.error?.message).toBeDefined();
-  });
-
-  it('returns validation error when field_names is not an array', async () => {
-    const response = await handleFormFillSuggestFields({
-      document_id: 'some-doc-id',
-      field_names: 'patient_name',
-    });
-    const result = parseResponse(response);
-
-    expect(result.success).toBe(false);
-    expect(result.error?.message).toBeDefined();
-  });
-
-  it('returns validation error when entity_types contains invalid type', async () => {
-    const response = await handleFormFillSuggestFields({
-      document_id: 'some-doc-id',
-      field_names: ['patient_name'],
-      entity_types: ['invalid_entity_type'],
-    });
-    const result = parseResponse(response);
-
-    expect(result.success).toBe(false);
-    expect(result.error?.message).toBeDefined();
-  });
-
-  it('accepts valid entity_types but fails at database check', async () => {
-    const validTypes = [
-      'person',
-      'organization',
-      'date',
-      'amount',
-      'case_number',
-      'location',
-      'statute',
-      'exhibit',
-      'medication',
-      'diagnosis',
-      'medical_device',
-      'other',
-    ];
-    const response = await handleFormFillSuggestFields({
-      document_id: 'some-doc-id',
-      field_names: ['test_field'],
-      entity_types: validTypes,
-    });
-    const result = parseResponse(response);
-
-    // Should fail with DATABASE_NOT_SELECTED, not validation error
-    expect(result.error?.category).toBe('DATABASE_NOT_SELECTED');
-  });
-
-  it('accepts multiple field_names but fails at database check', async () => {
-    const response = await handleFormFillSuggestFields({
-      document_id: 'doc-123',
-      field_names: ['patient_name', 'date_of_birth', 'address', 'diagnosis', 'medication'],
-    });
-    const result = parseResponse(response);
-
-    expect(result.success).toBe(false);
-    expect(result.error?.category).toBe('DATABASE_NOT_SELECTED');
-  });
-
-  it('accepts entity_types subset but fails at database check', async () => {
-    const response = await handleFormFillSuggestFields({
-      document_id: 'doc-123',
-      field_names: ['patient_name'],
-      entity_types: ['person', 'organization'],
-    });
-    const result = parseResponse(response);
-
-    expect(result.success).toBe(false);
-    expect(result.error?.category).toBe('DATABASE_NOT_SELECTED');
-  });
-});
-
-// =============================================================================
 // EDGE CASES
 // =============================================================================
 
@@ -672,42 +505,6 @@ describe('Edge Cases', () => {
     });
   });
 
-  describe('handleFormFillSuggestFields entity_types validation', () => {
-    it('accepts entity_types as undefined (optional)', async () => {
-      const response = await handleFormFillSuggestFields({
-        document_id: 'doc-123',
-        field_names: ['name'],
-      });
-      const result = parseResponse(response);
-
-      // entity_types is optional -- fails at database
-      expect(result.error?.category).toBe('DATABASE_NOT_SELECTED');
-    });
-
-    it('accepts single entity type', async () => {
-      const response = await handleFormFillSuggestFields({
-        document_id: 'doc-123',
-        field_names: ['name'],
-        entity_types: ['person'],
-      });
-      const result = parseResponse(response);
-
-      expect(result.error?.category).toBe('DATABASE_NOT_SELECTED');
-    });
-
-    it('rejects mixed valid and invalid entity types', async () => {
-      const response = await handleFormFillSuggestFields({
-        document_id: 'doc-123',
-        field_names: ['name'],
-        entity_types: ['person', 'invalid_type'],
-      });
-      const result = parseResponse(response);
-
-      expect(result.success).toBe(false);
-      expect(result.error?.message).toBeDefined();
-    });
-  });
-
   describe('state isolation between calls', () => {
     it('state is null after resetState', () => {
       expect(state.currentDatabase).toBe(null);
@@ -723,12 +520,6 @@ describe('Edge Cases', () => {
 
       const statusResponse = await handleFormFillStatus({});
       expect(parseResponse(statusResponse).error?.category).toBe('DATABASE_NOT_SELECTED');
-
-      const suggestResponse = await handleFormFillSuggestFields({
-        document_id: 'doc-123',
-        field_names: ['name'],
-      });
-      expect(parseResponse(suggestResponse).error?.category).toBe('DATABASE_NOT_SELECTED');
     });
   });
 
@@ -740,7 +531,6 @@ describe('Edge Cases', () => {
           params: { file_path: '/tmp/form.pdf', field_data: { n: { value: 'v' } } },
         },
         { fn: handleFormFillStatus, params: {} },
-        { fn: handleFormFillSuggestFields, params: { document_id: 'd', field_names: ['n'] } },
       ];
 
       for (const { fn, params } of handlers) {
