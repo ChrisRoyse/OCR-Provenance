@@ -91,8 +91,30 @@ export function listClusters(
  * Returns the number of clusters deleted.
  */
 export function deleteClustersByRunId(db: Database.Database, runId: string): number {
+  // Collect provenance IDs before deleting clusters (clusters.provenance_id NOT NULL REFERENCES provenance(id))
+  const provenanceIds = db
+    .prepare('SELECT provenance_id FROM clusters WHERE run_id = ?')
+    .all(runId) as { provenance_id: string }[];
+
   db.prepare('DELETE FROM document_clusters WHERE run_id = ?').run(runId);
   const result = db.prepare('DELETE FROM clusters WHERE run_id = ?').run(runId);
+
+  // Clean up orphaned provenance records now that the FK references are gone
+  if (provenanceIds.length > 0) {
+    const deleteProvStmt = db.prepare('DELETE FROM provenance WHERE id = ?');
+    for (const { provenance_id } of provenanceIds) {
+      try {
+        deleteProvStmt.run(provenance_id);
+      } catch (e: unknown) {
+        // Log but don't fail if provenance record is still referenced elsewhere
+        console.error(
+          `[cluster-operations] Failed to delete provenance ${provenance_id}:`,
+          e instanceof Error ? e.message : String(e)
+        );
+      }
+    }
+  }
+
   return result.changes;
 }
 

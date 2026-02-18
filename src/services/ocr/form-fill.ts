@@ -97,10 +97,17 @@ export class FormFillClient {
       const shell = new PythonShell(this.workerPath, shellOptions);
       const outputChunks: string[] = [];
       let stderr = '';
+      let sigkillTimer: ReturnType<typeof setTimeout> | null = null;
+
+      const cleanup = () => {
+        if (sigkillTimer) {
+          clearTimeout(sigkillTimer);
+          sigkillTimer = null;
+        }
+      };
 
       const timer = setTimeout(() => {
         if (settled) return;
-        settled = true;
         try {
           shell.kill();
         } catch (error) {
@@ -110,7 +117,26 @@ export class FormFillClient {
           );
           /* ignore */
         }
-        reject(new OCRError(`Form fill timeout after ${this.timeout}ms`, 'FORM_FILL_TIMEOUT'));
+        // M-6: SIGKILL escalation if SIGTERM doesn't exit within 5s
+        sigkillTimer = setTimeout(() => {
+          if (!settled) {
+            console.error(
+              `[FormFill] Process did not exit after SIGTERM, sending SIGKILL (pid: ${shell.childProcess?.pid})`
+            );
+            try {
+              shell.childProcess?.kill('SIGKILL');
+            } catch (error) {
+              console.error(
+                '[FormFill] Failed to SIGKILL process (may already be gone):',
+                error instanceof Error ? error.message : String(error)
+              );
+            }
+          }
+          if (!settled) {
+            settled = true;
+            reject(new OCRError(`Form fill timeout after ${this.timeout}ms (SIGKILL after 5s grace)`, 'FORM_FILL_TIMEOUT'));
+          }
+        }, 5000);
       }, this.timeout);
 
       shell.on('message', (msg: string) => {
@@ -125,6 +151,7 @@ export class FormFillClient {
 
       shell.end((err?: Error) => {
         clearTimeout(timer);
+        cleanup();
         if (settled) return;
         settled = true;
 

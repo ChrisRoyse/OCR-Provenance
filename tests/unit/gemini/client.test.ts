@@ -114,11 +114,15 @@ describe('CircuitBreaker', () => {
     expect(breaker.getState()).toBe(CircuitState.CLOSED);
   });
 
-  it('should open after threshold failures', async () => {
+  it('should open after threshold server failures', async () => {
+    // M-1: Only server errors (HTTP 500, 502, 503, 429, network) trip the breaker.
+    // Client errors (validation, parse) do NOT trip it.
     for (let i = 0; i < 3; i++) {
       try {
         await breaker.execute(async () => {
-          throw new Error('fail');
+          const err = new Error('500 Internal Server Error');
+          (err as unknown as Record<string, number>).status = 500;
+          throw err;
         });
       } catch {
         // Expected
@@ -126,6 +130,22 @@ describe('CircuitBreaker', () => {
     }
 
     expect(breaker.getState()).toBe(CircuitState.OPEN);
+  });
+
+  it('should NOT open after threshold client failures', async () => {
+    // Client errors (validation, parse) should NOT trip the circuit breaker
+    for (let i = 0; i < 5; i++) {
+      try {
+        await breaker.execute(async () => {
+          throw new Error('JSON parse error');
+        });
+      } catch {
+        // Expected
+      }
+    }
+
+    // Circuit should stay CLOSED - client errors don't count
+    expect(breaker.getState()).toBe(CircuitState.CLOSED);
   });
 
   it('should reject requests when OPEN', async () => {

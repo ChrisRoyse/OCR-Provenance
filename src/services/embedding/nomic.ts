@@ -232,11 +232,18 @@ export class NomicEmbeddingClient {
 
       const shell = new PythonShell(this.workerPath, options);
       let stderr = '';
+      let sigkillTimer: ReturnType<typeof setTimeout> | null = null;
+
+      const cleanup = () => {
+        if (sigkillTimer) {
+          clearTimeout(sigkillTimer);
+          sigkillTimer = null;
+        }
+      };
 
       // Timeout: kill the Python process if CUDA hangs
       const timer = setTimeout(() => {
         if (settled) return;
-        settled = true;
         try {
           shell.kill();
         } catch (error) {
@@ -246,13 +253,32 @@ export class NomicEmbeddingClient {
           );
           /* ignore */
         }
-        reject(
-          new EmbeddingError(
-            `Embedding worker timeout after ${NomicEmbeddingClient.WORKER_TIMEOUT_MS}ms (possible CUDA hang)`,
-            'WORKER_ERROR',
-            { stderr: stderr.substring(0, 1000) }
-          )
-        );
+        // M-6: SIGKILL escalation if SIGTERM doesn't exit within 5s
+        sigkillTimer = setTimeout(() => {
+          if (!settled) {
+            console.error(
+              `[NomicEmbedding] Process did not exit after SIGTERM, sending SIGKILL (pid: ${shell.childProcess?.pid})`
+            );
+            try {
+              shell.childProcess?.kill('SIGKILL');
+            } catch (error) {
+              console.error(
+                '[NomicEmbedding] Failed to SIGKILL process (may already be gone):',
+                error instanceof Error ? error.message : String(error)
+              );
+            }
+          }
+          if (!settled) {
+            settled = true;
+            reject(
+              new EmbeddingError(
+                `Embedding worker timeout after ${NomicEmbeddingClient.WORKER_TIMEOUT_MS}ms (SIGKILL after 5s grace)`,
+                'WORKER_ERROR',
+                { stderr: stderr.substring(0, 1000) }
+              )
+            );
+          }
+        }, 5000);
       }, NomicEmbeddingClient.WORKER_TIMEOUT_MS);
 
       const outputChunks: string[] = [];
@@ -269,6 +295,7 @@ export class NomicEmbeddingClient {
 
       const handleEnd = (err?: Error) => {
         clearTimeout(timer);
+        cleanup();
         if (settled) return;
         settled = true;
 

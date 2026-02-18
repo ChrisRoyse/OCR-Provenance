@@ -3,12 +3,61 @@
  * Based on gemini-flash-3-dev-guide.md:
  * - threshold: 5 failures
  * - recovery_ms: 60000 (60 seconds)
+ *
+ * Only server-side errors (HTTP 429, 500, 502, 503, network errors) trip the
+ * circuit breaker. Client-side errors (validation, file-not-found,
+ * context-length-exceeded, JSON parse) do NOT trip it.
  */
 
 enum CircuitState {
   CLOSED = 'CLOSED', // Normal operation
   OPEN = 'OPEN', // Failing, reject requests
   HALF_OPEN = 'HALF_OPEN', // Testing recovery
+}
+
+/**
+ * Determine whether an error represents a server-side / transient failure
+ * that should trip the circuit breaker.
+ *
+ * Server errors: HTTP 429 (rate limit), 500, 502, 503, and network errors
+ * like ECONNRESET, ETIMEDOUT, ENOTFOUND, socket hang up, fetch failed.
+ *
+ * Client errors that should NOT trip: ValidationError, file-not-found,
+ * context-length-exceeded, JSON parse errors, unsupported format, etc.
+ */
+export function isServerError(error: unknown): boolean {
+  if (!(error instanceof Error)) {
+    return false;
+  }
+
+  const msg = error.message || '';
+  const cause = (error as { cause?: Error })?.cause;
+  const causeMsg = cause instanceof Error ? cause.message || '' : '';
+  const causeCode = (cause as { code?: string })?.code || '';
+  const combined = `${msg} ${causeMsg} ${causeCode}`;
+
+  // HTTP status codes indicating server-side issues
+  if (/\b(429|500|502|503)\b/.test(combined)) {
+    return true;
+  }
+
+  // Rate limit messages
+  if (/rate.?limit/i.test(combined)) {
+    return true;
+  }
+
+  // Network-level errors
+  if (/ECONNRESET|ETIMEDOUT|ENOTFOUND|ECONNREFUSED|socket hang up|fetch failed/i.test(combined)) {
+    return true;
+  }
+
+  // Server overloaded / unavailable messages from Gemini
+  if (/server.?(error|overloaded|unavailable)|service.?unavailable|internal.?server/i.test(combined)) {
+    return true;
+  }
+
+  // Everything else is a client-side error
+  return false;
 }
 
 export interface CircuitBreakerConfig {
@@ -62,7 +111,17 @@ export class CircuitBreaker {
       this.recordSuccess();
       return result;
     } catch (error) {
-      this.recordFailure();
+      // Only trip the circuit breaker on server-side / transient errors.
+      // Client-side errors (validation, file-not-found, context-length,
+      // JSON parse) are not the server's fault and should not affect
+      // circuit breaker state.
+      if (isServerError(error)) {
+        this.recordFailure();
+      } else {
+        console.error(
+          `[CircuitBreaker] Client-side error (not counted): ${error instanceof Error ? error.message : String(error)}`
+        );
+      }
       throw error;
     }
   }

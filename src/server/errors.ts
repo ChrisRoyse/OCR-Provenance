@@ -41,6 +41,23 @@ export type ErrorCategory =
   | 'GPU_NOT_AVAILABLE'
   | 'EMBEDDING_FAILED'
 
+  // VLM/Gemini errors
+  | 'VLM_API_ERROR'
+  | 'VLM_RATE_LIMIT'
+
+  // Image errors
+  | 'IMAGE_EXTRACTION_FAILED'
+
+  // Form fill errors
+  | 'FORM_FILL_API_ERROR'
+
+  // Clustering errors
+  | 'CLUSTERING_ERROR'
+
+  // GPU errors
+  | 'GPU_OUT_OF_MEMORY'
+  | 'EMBEDDING_MODEL_ERROR'
+
   // File system errors
   | 'PATH_NOT_FOUND'
   | 'PATH_NOT_DIRECTORY'
@@ -48,6 +65,73 @@ export type ErrorCategory =
 
   // Internal errors
   | 'INTERNAL_ERROR';
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// ERROR NAME TO CATEGORY MAPPING
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/**
+ * Valid ErrorCategory values for runtime checking (OCRError has its own category field)
+ */
+const VALID_CATEGORIES = new Set<string>([
+  'VALIDATION_ERROR', 'DATABASE_NOT_FOUND', 'DATABASE_NOT_SELECTED',
+  'DATABASE_ALREADY_EXISTS', 'DOCUMENT_NOT_FOUND', 'PROVENANCE_NOT_FOUND',
+  'PROVENANCE_CHAIN_BROKEN', 'INTEGRITY_VERIFICATION_FAILED',
+  'OCR_API_ERROR', 'OCR_RATE_LIMIT', 'OCR_TIMEOUT',
+  'GPU_NOT_AVAILABLE', 'GPU_OUT_OF_MEMORY', 'EMBEDDING_FAILED', 'EMBEDDING_MODEL_ERROR',
+  'VLM_API_ERROR', 'VLM_RATE_LIMIT',
+  'IMAGE_EXTRACTION_FAILED', 'FORM_FILL_API_ERROR', 'CLUSTERING_ERROR',
+  'PATH_NOT_FOUND', 'PATH_NOT_DIRECTORY', 'PERMISSION_DENIED',
+  'INTERNAL_ERROR',
+]);
+
+/**
+ * Check if a string is a valid ErrorCategory
+ */
+function isValidCategory(value: string): boolean {
+  return VALID_CATEGORIES.has(value);
+}
+
+/**
+ * Map custom error class names to MCPError categories.
+ * CS-ERR-001: Every custom error gets its appropriate category so clients
+ * can programmatically distinguish rate limits from GPU failures from DB locks.
+ *
+ * OCRError and its subclasses are handled specially in fromUnknown() because
+ * they carry their own .category field with more specific information
+ * (e.g., OCR_RATE_LIMIT, OCR_TIMEOUT, FORM_FILL_API_ERROR).
+ */
+const ERROR_NAME_TO_CATEGORY: Record<string, ErrorCategory> = {
+  // Validation
+  ValidationError: 'VALIDATION_ERROR',
+
+  // Database / Storage
+  DatabaseError: 'DATABASE_NOT_FOUND',
+  VectorError: 'INTERNAL_ERROR',
+  MigrationError: 'INTERNAL_ERROR',
+
+  // OCR (default category; subclasses use their own .category field)
+  OCRError: 'OCR_API_ERROR',
+  OCRAPIError: 'OCR_API_ERROR',
+  OCRRateLimitError: 'OCR_RATE_LIMIT',
+  OCRTimeoutError: 'OCR_TIMEOUT',
+  OCRFileError: 'OCR_API_ERROR',
+  OCRAuthenticationError: 'OCR_API_ERROR',
+
+  // Embedding / GPU
+  EmbeddingError: 'EMBEDDING_FAILED',
+
+  // Provenance
+  ProvenanceError: 'PROVENANCE_CHAIN_BROKEN',
+  VerifierError: 'INTEGRITY_VERIFICATION_FAILED',
+  ExporterError: 'INTERNAL_ERROR',
+
+  // Gemini / VLM
+  CircuitBreakerOpenError: 'VLM_API_ERROR',
+
+  // Clustering
+  ClusteringError: 'CLUSTERING_ERROR',
+};
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // MCP ERROR CLASS
@@ -85,9 +169,21 @@ export class MCPError extends Error {
     }
 
     if (error instanceof Error) {
-      // Map ValidationError to VALIDATION_ERROR category
-      const category = error.name === 'ValidationError' ? 'VALIDATION_ERROR' as ErrorCategory : defaultCategory;
-      return new MCPError(category, error.message, {
+      // Map custom error class names to their appropriate MCPError categories.
+      // CS-ERR-001: Every custom error class maps to a specific category so
+      // clients can programmatically distinguish failure modes.
+      const category = ERROR_NAME_TO_CATEGORY[error.name] ?? defaultCategory;
+
+      // For OCRError subclasses, preserve the more specific category from the error itself
+      const ocrCategory = (error as { category?: string }).category;
+      const resolvedCategory = (error.name === 'OCRError' || error.name === 'OCRAPIError'
+        || error.name === 'OCRRateLimitError' || error.name === 'OCRTimeoutError'
+        || error.name === 'OCRFileError' || error.name === 'OCRAuthenticationError')
+        && ocrCategory && isValidCategory(ocrCategory)
+        ? ocrCategory as ErrorCategory
+        : category;
+
+      return new MCPError(resolvedCategory, error.message, {
         originalName: error.name,
         stack: error.stack,
       });

@@ -417,6 +417,22 @@ export class BM25SearchService {
     };
   }
 
+  /**
+   * Check whether all expected FTS triggers exist for a given set of trigger names.
+   * If all triggers are present, the FTS index is kept in sync atomically and cannot be stale.
+   * If any trigger is missing, the index IS stale (triggers are the sync mechanism).
+   */
+  private checkTriggersExist(triggerNames: string[]): boolean {
+    if (triggerNames.length === 0) return true;
+    const placeholders = triggerNames.map(() => '?').join(',');
+    const row = this.db
+      .prepare(
+        `SELECT COUNT(*) as cnt FROM sqlite_master WHERE type='trigger' AND name IN (${placeholders})`
+      )
+      .get(...triggerNames) as { cnt: number };
+    return row.cnt === triggerNames.length;
+  }
+
   getStatus(): {
     chunks_indexed: number;
     current_chunk_count: number;
@@ -448,10 +464,17 @@ export class BM25SearchService {
       );
     }
 
-    // Drift detection: compare stored count to actual count
     const chunkCount = (
       this.db.prepare('SELECT COUNT(*) as cnt FROM chunks').get() as { cnt: number }
     ).cnt;
+
+    // L-7 fix: Stale detection via trigger existence, not count comparison.
+    // FTS is maintained by triggers that fire atomically on INSERT/DELETE/UPDATE.
+    // If all triggers exist, the index is in sync by definition.
+    // If any trigger is missing, the index IS stale (sync mechanism is broken).
+    const chunksTriggersOk = this.checkTriggersExist([
+      'chunks_fts_ai', 'chunks_fts_ad', 'chunks_fts_au',
+    ]);
 
     // Get VLM FTS metadata (id=2) if it exists
     const vlmMeta = this.db.prepare('SELECT * FROM fts_index_metadata WHERE id = 2').get() as
@@ -468,6 +491,10 @@ export class BM25SearchService {
     ).cnt;
 
     const vlmIndexed = vlmMeta?.chunks_indexed ?? 0;
+
+    const vlmTriggersOk = this.checkTriggersExist([
+      'vlm_fts_ai', 'vlm_fts_ad', 'vlm_fts_au',
+    ]);
 
     // Get extraction FTS metadata (id=3) if it exists
     const extractionMeta = this.db
@@ -491,17 +518,21 @@ export class BM25SearchService {
 
     const extractionsIndexed = extractionMeta?.chunks_indexed ?? 0;
 
+    const extractionTriggersOk = this.checkTriggersExist([
+      'extractions_fts_ai', 'extractions_fts_ad', 'extractions_fts_au',
+    ]);
+
     return {
       ...meta,
       current_chunk_count: chunkCount,
-      index_stale: meta.chunks_indexed !== chunkCount,
+      index_stale: !chunksTriggersOk,
       vlm_indexed: vlmIndexed,
       current_vlm_count: vlmCount,
-      vlm_index_stale: vlmIndexed !== vlmCount,
+      vlm_index_stale: !vlmTriggersOk,
       vlm_last_rebuild_at: vlmMeta?.last_rebuild_at ?? null,
       extractions_indexed: extractionsIndexed,
       current_extraction_count: extractionCount,
-      extraction_index_stale: extractionsIndexed !== extractionCount,
+      extraction_index_stale: !extractionTriggersOk,
       extraction_last_rebuild_at: extractionMeta?.last_rebuild_at ?? null,
     };
   }

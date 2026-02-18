@@ -10,7 +10,7 @@ import type Database from 'better-sqlite3';
 import { REQUIRED_TABLES, REQUIRED_INDEXES } from './schema-definitions.js';
 
 /**
- * Required triggers for FTS sync (chunks_fts and vlm_fts)
+ * Required triggers for FTS sync (chunks_fts, vlm_fts, and extractions_fts)
  */
 const REQUIRED_TRIGGERS = [
   'chunks_fts_ai',
@@ -19,6 +19,9 @@ const REQUIRED_TRIGGERS = [
   'vlm_fts_ai',
   'vlm_fts_ad',
   'vlm_fts_au',
+  'extractions_fts_ai',
+  'extractions_fts_ad',
+  'extractions_fts_au',
 ] as const;
 
 /**

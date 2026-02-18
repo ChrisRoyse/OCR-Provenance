@@ -150,7 +150,13 @@ export function getCurrentDatabaseName(): string | null {
 export function selectDatabase(name: string, storagePath?: string): void {
   const path = storagePath ?? state.config.defaultStoragePath;
 
-  // Close existing connection first
+  // Verify database exists BEFORE closing old connection - FAIL FAST
+  // If the new DB doesn't exist, the old connection stays open and usable.
+  if (!DatabaseService.exists(name, path)) {
+    throw databaseNotFoundError(name, path);
+  }
+
+  // Close existing connection (safe: we know new DB exists)
   if (state.currentDatabase) {
     state.currentDatabase.close();
     state.currentDatabase = null;
@@ -158,11 +164,6 @@ export function selectDatabase(name: string, storagePath?: string): void {
     _cachedVectorService = null;
   }
   _dbGeneration++;
-
-  // Verify database exists - FAIL FAST
-  if (!DatabaseService.exists(name, path)) {
-    throw databaseNotFoundError(name, path);
-  }
 
   // Open the database
   state.currentDatabase = DatabaseService.open(name, path);
