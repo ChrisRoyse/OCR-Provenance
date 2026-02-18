@@ -142,11 +142,18 @@ export class DatalabClient {
       const shell = new PythonShell(this.workerPath, options);
       const outputChunks: string[] = [];
       let stderr = '';
+      let sigkillTimer: ReturnType<typeof setTimeout> | null = null;
+
+      const cleanup = () => {
+        if (sigkillTimer) {
+          clearTimeout(sigkillTimer);
+          sigkillTimer = null;
+        }
+      };
 
       const timer = setTimeout(() => {
         if (settled) return;
-        settled = true;
-        // Kill the Python process to prevent orphans
+        // Kill the Python process to prevent orphans (SIGTERM)
         try {
           shell.kill();
         } catch (error) {
@@ -156,7 +163,27 @@ export class DatalabClient {
           );
           /* ignore */
         }
-        reject(new OCRError(`OCR timeout after ${this.timeout}ms`, 'OCR_TIMEOUT'));
+        // M-6: SIGKILL escalation if SIGTERM doesn't exit within 5s
+        sigkillTimer = setTimeout(() => {
+          if (!settled) {
+            console.error(
+              `[DatalabOCR] Process did not exit after SIGTERM, sending SIGKILL (pid: ${shell.childProcess?.pid})`
+            );
+            try {
+              shell.childProcess?.kill('SIGKILL');
+            } catch (error) {
+              console.error(
+                '[DatalabOCR] Failed to SIGKILL process (may already be gone):',
+                error instanceof Error ? error.message : String(error)
+              );
+            }
+          }
+          // Settle the promise if close event hasn't fired yet (zombie prevention)
+          if (!settled) {
+            settled = true;
+            reject(new OCRError(`OCR timeout after ${this.timeout}ms (SIGKILL after 5s grace)`, 'OCR_TIMEOUT'));
+          }
+        }, 5000);
       }, this.timeout);
 
       shell.on('message', (msg: string) => {
@@ -171,6 +198,7 @@ export class DatalabClient {
 
       shell.end((err?: Error) => {
         clearTimeout(timer);
+        cleanup();
         if (settled) return;
         settled = true;
 
@@ -321,10 +349,17 @@ export class DatalabClient {
       const shell = new PythonShell(this.workerPath, options);
       const outputChunks: string[] = [];
       let stderr = '';
+      let sigkillTimer: ReturnType<typeof setTimeout> | null = null;
+
+      const cleanup = () => {
+        if (sigkillTimer) {
+          clearTimeout(sigkillTimer);
+          sigkillTimer = null;
+        }
+      };
 
       const timer = setTimeout(() => {
         if (settled) return;
-        settled = true;
         try {
           shell.kill();
         } catch (error) {
@@ -334,7 +369,26 @@ export class DatalabClient {
           );
           /* ignore */
         }
-        reject(new OCRError(`OCR timeout after ${this.timeout}ms`, 'OCR_TIMEOUT'));
+        // M-6: SIGKILL escalation if SIGTERM doesn't exit within 5s
+        sigkillTimer = setTimeout(() => {
+          if (!settled) {
+            console.error(
+              `[DatalabOCR] processRaw process did not exit after SIGTERM, sending SIGKILL (pid: ${shell.childProcess?.pid})`
+            );
+            try {
+              shell.childProcess?.kill('SIGKILL');
+            } catch (error) {
+              console.error(
+                '[DatalabOCR] Failed to SIGKILL processRaw process (may already be gone):',
+                error instanceof Error ? error.message : String(error)
+              );
+            }
+          }
+          if (!settled) {
+            settled = true;
+            reject(new OCRError(`OCR timeout after ${this.timeout}ms (SIGKILL after 5s grace)`, 'OCR_TIMEOUT'));
+          }
+        }, 5000);
       }, this.timeout);
 
       shell.on('message', (msg: string) => {
@@ -349,6 +403,7 @@ export class DatalabClient {
 
       shell.end((err?: Error) => {
         clearTimeout(timer);
+        cleanup();
         if (settled) return;
         settled = true;
 

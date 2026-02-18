@@ -140,6 +140,7 @@ export interface DocumentRow {
   doc_title: string | null;
   doc_author: string | null;
   doc_subject: string | null;
+  datalab_file_id: string | null;
 }
 
 /**

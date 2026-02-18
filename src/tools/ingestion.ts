@@ -485,6 +485,336 @@ function saveAndStoreImages(
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
+// SINGLE-DOCUMENT PROCESSING
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/**
+ * Parameters for processing a single document through the OCR pipeline.
+ * Extracted from handleProcessPending to allow direct single-document processing
+ * (used by handleReprocess to avoid race conditions with batch claiming).
+ */
+interface ProcessOneDocumentParams {
+  db: DatabaseService;
+  vector: import('../services/storage/vector.js').VectorService;
+  generation: number;
+  ocrMode: 'fast' | 'balanced' | 'accurate' | undefined;
+  ocrOptions: {
+    maxPages?: number;
+    pageRange?: string;
+    skipCache?: boolean;
+    disableImageExtraction?: boolean;
+    extras?: string[];
+    pageSchema?: string;
+    additionalConfig?: Record<string, unknown>;
+  };
+  chunkingStrategy?: string;
+  pageSchema?: string;
+  imagesBaseDir: string;
+}
+
+/**
+ * Process a single document through the full OCR pipeline.
+ *
+ * Pipeline: OCR -> Extract Images -> Chunk -> Embed -> VLM -> Structured Extraction -> Complete
+ *
+ * This function is the core processing unit used by both handleProcessPending (batch)
+ * and handleReprocess (single document). Extracting it prevents the race condition
+ * where handleReprocess calls handleProcessPending and the target document may not
+ * be claimed when other pending documents exist (M-11).
+ *
+ * @param doc - Document record (must already have status='processing')
+ * @param params - Processing parameters
+ * @returns void on success, throws on failure
+ */
+async function processOneDocument(
+  doc: Document,
+  params: ProcessOneDocumentParams
+): Promise<void> {
+  const { db, vector, generation, ocrMode, ocrOptions, chunkingStrategy, pageSchema, imagesBaseDir } = params;
+
+  console.error(`[INFO] Processing document: ${doc.id} (${doc.file_name})`);
+
+  // Step 1: OCR via Datalab
+  // OCRProcessor.processDocument() throws on failure (FAIL-FAST).
+  // It handles status='processing' internally and marks 'failed' before throwing.
+  const ocrProcessor = new OCRProcessor(db);
+  const processResult = await ocrProcessor.processDocument(doc.id, ocrMode, ocrOptions);
+
+  // Get the OCR result
+  const ocrResult = db.getOCRResultByDocumentId(doc.id);
+  if (!ocrResult) {
+    throw new Error('OCR result not found after processing');
+  }
+
+  console.error(
+    `[INFO] OCR complete: ${ocrResult.text_length} chars, ${ocrResult.page_count} pages`
+  );
+
+  // Step 1.5: Extract and store images from OCR result (if any)
+  let imageCount = 0;
+  const imageOutputDir = resolve(imagesBaseDir, doc.id);
+
+  if (processResult.images && Object.keys(processResult.images).length > 0) {
+    const imageRefs = saveAndStoreImages(
+      db,
+      doc,
+      ocrResult,
+      processResult.images,
+      imageOutputDir,
+      processResult.jsonBlocks,
+      processResult.pageOffsets
+    );
+    imageCount = imageRefs.length;
+    console.error(`[INFO] Images from Datalab: ${imageCount}`);
+  }
+
+  // Step 1.6: File-based image extraction fallback
+  // If Datalab didn't return images, extract directly from file (PDF or DOCX)
+  if (
+    imageCount === 0 &&
+    !ocrOptions.disableImageExtraction &&
+    ImageExtractor.isSupported(doc.file_path)
+  ) {
+    console.error(
+      `[INFO] No images from Datalab for ${doc.file_type} file, running file-based extraction`
+    );
+    const extractor = new ImageExtractor();
+    const extractedImages = await extractor.extractImages(doc.file_path, {
+      outputDir: imageOutputDir,
+      minSize: 50,
+      maxImages: 500,
+    });
+
+    if (extractedImages.length > 0) {
+      // Build page classification from JSON blocks for header/footer detection
+      const pageClassification = processResult.jsonBlocks
+        ? buildPageBlockClassification(processResult.jsonBlocks)
+        : new Map<number, PageImageClassification>();
+
+      const imageRefs: CreateImageReference[] = extractedImages.map((img) => {
+        const contentHash = computeFileHashSync(img.path);
+
+        const pageInfo = pageClassification.get(img.page);
+        const isHeaderFooter =
+          pageInfo !== undefined &&
+          !pageInfo.hasFigure &&
+          pageInfo.pictureInHeaderFooter > 0 &&
+          pageInfo.pictureInBody === 0;
+
+        const contextText = extractContextText(
+          ocrResult.extracted_text,
+          ocrResult.page_count ?? 1,
+          img.page
+        );
+        return {
+          document_id: doc.id,
+          ocr_result_id: ocrResult.id,
+          page_number: img.page,
+          bounding_box: img.bbox,
+          image_index: img.index,
+          format: img.format,
+          dimensions: { width: img.width, height: img.height },
+          extracted_path: img.path,
+          file_size: img.size,
+          context_text: contextText || null,
+          provenance_id: null,
+          block_type: null, // File-based extraction has no block type
+          is_header_footer: isHeaderFooter,
+          content_hash: contentHash,
+        };
+      });
+
+      const insertedImages = insertImageBatch(db.getConnection(), imageRefs);
+
+      // Create IMAGE provenance records
+      const tracker = getProvenanceTracker(db);
+      for (const img of insertedImages) {
+        try {
+          const provenanceId = tracker.createProvenance({
+            type: ProvenanceType.IMAGE,
+            source_type: 'IMAGE_EXTRACTION',
+            source_id: ocrResult.provenance_id,
+            root_document_id: doc.provenance_id,
+            content_hash:
+              img.content_hash ??
+              (img.extracted_path && existsSync(img.extracted_path)
+                ? computeFileHashSync(img.extracted_path)
+                : computeHash(img.id)),
+            source_path: img.extracted_path ?? undefined,
+            processor: `${doc.file_type}-image-extraction`,
+            processor_version: '1.0.0',
+            processing_params: {
+              page_number: img.page_number,
+              image_index: img.image_index,
+              format: img.format,
+              extraction_method: 'file-based',
+              is_header_footer: img.is_header_footer,
+            },
+            location: {
+              page_number: img.page_number,
+            },
+          });
+          updateImageProvenance(db.getConnection(), img.id, provenanceId);
+        } catch (provError) {
+          console.error(
+            `[ERROR] Failed to create IMAGE provenance for ${img.id}: ` +
+              `${provError instanceof Error ? provError.message : String(provError)}`
+          );
+          throw provError;
+        }
+      }
+
+      imageCount = insertedImages.length;
+      console.error(`[INFO] File-based extraction: ${imageCount} images`);
+    } else {
+      console.error(`[INFO] File-based extraction: no images found in document`);
+    }
+  }
+
+  // Step 2: Chunk the OCR text using config from state
+  const chunkConfig: ChunkingConfig = {
+    chunkSize: state.config.chunkSize,
+    overlapPercent: state.config.chunkOverlapPercent,
+  };
+  const pageOffsets = processResult.pageOffsets;
+  let chunkResults: ChunkResult[];
+  if (chunkingStrategy === 'page_aware' && pageOffsets && pageOffsets.length > 0) {
+    chunkResults = chunkTextPageAware(ocrResult.extracted_text, pageOffsets, chunkConfig);
+  } else if (pageOffsets && pageOffsets.length > 0) {
+    chunkResults = chunkWithPageTracking(ocrResult.extracted_text, pageOffsets, chunkConfig);
+  } else {
+    chunkResults = chunkText(ocrResult.extracted_text, chunkConfig);
+  }
+
+  console.error(`[INFO] Chunking complete: ${chunkResults.length} chunks`);
+
+  // Step 3: Store chunks in database with provenance
+  const chunks = storeChunks(db, doc, ocrResult, chunkResults, chunkConfig);
+
+  console.error(`[INFO] Chunks stored: ${chunks.length}`);
+
+  // Step 4: Generate embeddings for text chunks
+  const embeddingService = new EmbeddingService();
+  const documentInfo = {
+    documentId: doc.id,
+    filePath: doc.file_path,
+    fileName: doc.file_name,
+    fileHash: doc.file_hash,
+    documentProvenanceId: doc.provenance_id,
+  };
+
+  const embedResult = await embeddingService.embedDocumentChunks(
+    db,
+    vector,
+    chunks,
+    documentInfo
+  );
+
+  if (!embedResult.success) {
+    throw new Error(embedResult.error ?? 'Embedding generation failed');
+  }
+
+  console.error(
+    `[INFO] Embeddings complete: ${embedResult.embeddingIds.length} embeddings in ${embedResult.elapsedMs}ms`
+  );
+
+  // Step 5: VLM process images (generate 3+ paragraph descriptions)
+  // Only run if document had images extracted
+  if (imageCount > 0) {
+    const vlmPipeline = createVLMPipeline(db, vector, {
+      batchSize: 5,
+      concurrency: 3,
+      minConfidence: 0.5,
+    });
+
+    const vlmResult = await vlmPipeline.processDocument(doc.id);
+    console.error(
+      `[INFO] VLM complete: ${vlmResult.successful}/${vlmResult.total} images processed, ` +
+        `${vlmResult.totalTokens} tokens used`
+    );
+
+    if (vlmResult.failed > 0) {
+      const failedDetails = vlmResult.results
+        .filter((r) => !r.success)
+        .map((r) => `${r.imageId}: ${r.error ?? 'unknown error'}`)
+        .join('; ');
+      throw new Error(
+        `VLM processing failed for ${vlmResult.failed}/${vlmResult.total} images in document ${doc.id}: ${failedDetails}`
+      );
+    }
+  }
+
+  // Step 5.5: Store structured extraction if present
+  // Errors propagate to fail the document (no swallowing)
+  if (processResult.extractionJson && pageSchema) {
+    const extractionContent = JSON.stringify(processResult.extractionJson);
+    const extractionHash = computeHash(extractionContent);
+
+    // Create EXTRACTION provenance record
+    const extractionProvId = uuidv4();
+    const ocrProvId = processResult.provenanceId!;
+    const docProvId = doc.provenance_id;
+    const now = new Date().toISOString();
+
+    db.insertProvenance({
+      id: extractionProvId,
+      type: ProvenanceType.EXTRACTION,
+      created_at: now,
+      processed_at: now,
+      source_file_created_at: null,
+      source_file_modified_at: null,
+      source_type: 'EXTRACTION',
+      source_path: doc.file_path,
+      source_id: ocrProvId,
+      root_document_id: docProvId,
+      location: null,
+      content_hash: extractionHash,
+      input_hash: ocrResult.content_hash,
+      file_hash: doc.file_hash,
+      processor: 'datalab-extraction',
+      processor_version: '1.0.0',
+      processing_params: { page_schema: pageSchema },
+      processing_duration_ms: null,
+      processing_quality_score: null,
+      parent_id: ocrProvId,
+      parent_ids: JSON.stringify([docProvId, ocrProvId]),
+      chain_depth: 2,
+      chain_path: JSON.stringify(['DOCUMENT', 'OCR_RESULT', 'EXTRACTION']),
+    });
+
+    db.insertExtraction({
+      id: uuidv4(),
+      document_id: doc.id,
+      ocr_result_id: ocrResult.id,
+      schema_json: pageSchema,
+      extraction_json: extractionContent,
+      content_hash: extractionHash,
+      provenance_id: extractionProvId,
+      created_at: now,
+    });
+
+    console.error(`[INFO] Stored structured extraction for document ${doc.id}`);
+  }
+
+  // Step 5.6: Update document metadata if available
+  if (processResult.docTitle || processResult.docAuthor || processResult.docSubject) {
+    db.updateDocumentMetadata(doc.id, {
+      docTitle: processResult.docTitle ?? null,
+      docAuthor: processResult.docAuthor ?? null,
+      docSubject: processResult.docSubject ?? null,
+    });
+  }
+
+  // Step 6: Validate database wasn't switched during long-running processing
+  validateGeneration(generation);
+
+  // Step 7: Mark document complete (OCR + chunks + embeddings succeeded)
+  db.updateDocumentStatus(doc.id, 'complete');
+
+  console.error(`[INFO] Document ${doc.id} processing complete`);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
 // INGESTION TOOL HANDLERS
 // ═══════════════════════════════════════════════════════════════════════════════
 
@@ -631,6 +961,7 @@ export async function handleIngestDirectory(
           doc_title: null,
           doc_author: null,
           doc_subject: null,
+          datalab_file_id: null,
         });
 
         items.push({
@@ -796,6 +1127,7 @@ export async function handleIngestFiles(
           doc_title: null,
           doc_author: null,
           doc_subject: null,
+          datalab_file_id: null,
         });
 
         items.push({
@@ -897,294 +1229,24 @@ export async function handleProcessPending(
     // FIX-P1-2: Process documents in parallel batches using max_concurrent
     const maxConcurrent = input.max_concurrent ?? 3;
 
-    const processOneDocument = async (doc: (typeof pendingDocs)[0]) => {
+    // Build shared processing params for the module-level processOneDocument function
+    const processingParams: ProcessOneDocumentParams = {
+      db,
+      vector,
+      generation,
+      ocrMode,
+      ocrOptions,
+      chunkingStrategy: input.chunking_strategy,
+      pageSchema: input.page_schema,
+      imagesBaseDir,
+    };
+
+    // Wrapper that handles per-document error tracking and cleanup
+    const processDocWithTracking = async (doc: (typeof pendingDocs)[0]) => {
       try {
-        console.error(`[INFO] Processing document: ${doc.id} (${doc.file_name})`);
-
-        // Step 1: OCR via Datalab
-        // OCRProcessor.processDocument() throws on failure (FAIL-FAST).
-        // It handles status='processing' internally and marks 'failed' before throwing.
-        const ocrProcessor = new OCRProcessor(db);
-        const processResult = await ocrProcessor.processDocument(doc.id, ocrMode, ocrOptions);
-
-        // Get the OCR result
-        const ocrResult = db.getOCRResultByDocumentId(doc.id);
-        if (!ocrResult) {
-          throw new Error('OCR result not found after processing');
-        }
-
-        console.error(
-          `[INFO] OCR complete: ${ocrResult.text_length} chars, ${ocrResult.page_count} pages`
-        );
-
-        // Step 1.5: Extract and store images from OCR result (if any)
-        let imageCount = 0;
-        const imageOutputDir = resolve(imagesBaseDir, doc.id);
-
-        if (processResult.images && Object.keys(processResult.images).length > 0) {
-          const imageRefs = saveAndStoreImages(
-            db,
-            doc,
-            ocrResult,
-            processResult.images,
-            imageOutputDir,
-            processResult.jsonBlocks,
-            processResult.pageOffsets
-          );
-          imageCount = imageRefs.length;
-          console.error(`[INFO] Images from Datalab: ${imageCount}`);
-        }
-
-        // Step 1.6: File-based image extraction fallback
-        // If Datalab didn't return images, extract directly from file (PDF or DOCX)
-        if (
-          imageCount === 0 &&
-          !ocrOptions.disableImageExtraction &&
-          ImageExtractor.isSupported(doc.file_path)
-        ) {
-          console.error(
-            `[INFO] No images from Datalab for ${doc.file_type} file, running file-based extraction`
-          );
-          const extractor = new ImageExtractor();
-          const extractedImages = await extractor.extractImages(doc.file_path, {
-            outputDir: imageOutputDir,
-            minSize: 50,
-            maxImages: 500,
-          });
-
-          if (extractedImages.length > 0) {
-            // Build page classification from JSON blocks for header/footer detection
-            const pageClassification = processResult.jsonBlocks
-              ? buildPageBlockClassification(processResult.jsonBlocks)
-              : new Map<number, PageImageClassification>();
-
-            const imageRefs: CreateImageReference[] = extractedImages.map((img) => {
-              const contentHash = computeFileHashSync(img.path);
-
-              const pageInfo = pageClassification.get(img.page);
-              const isHeaderFooter =
-                pageInfo !== undefined &&
-                !pageInfo.hasFigure &&
-                pageInfo.pictureInHeaderFooter > 0 &&
-                pageInfo.pictureInBody === 0;
-
-              const contextText = extractContextText(
-                ocrResult.extracted_text,
-                ocrResult.page_count ?? 1,
-                img.page
-              );
-              return {
-                document_id: doc.id,
-                ocr_result_id: ocrResult.id,
-                page_number: img.page,
-                bounding_box: img.bbox,
-                image_index: img.index,
-                format: img.format,
-                dimensions: { width: img.width, height: img.height },
-                extracted_path: img.path,
-                file_size: img.size,
-                context_text: contextText || null,
-                provenance_id: null,
-                block_type: null, // File-based extraction has no block type
-                is_header_footer: isHeaderFooter,
-                content_hash: contentHash,
-              };
-            });
-
-            const insertedImages = insertImageBatch(db.getConnection(), imageRefs);
-
-            // Create IMAGE provenance records
-            const tracker = getProvenanceTracker(db);
-            for (const img of insertedImages) {
-              try {
-                const provenanceId = tracker.createProvenance({
-                  type: ProvenanceType.IMAGE,
-                  source_type: 'IMAGE_EXTRACTION',
-                  source_id: ocrResult.provenance_id,
-                  root_document_id: doc.provenance_id,
-                  content_hash:
-                    img.content_hash ??
-                    (img.extracted_path && existsSync(img.extracted_path)
-                      ? computeFileHashSync(img.extracted_path)
-                      : computeHash(img.id)),
-                  source_path: img.extracted_path ?? undefined,
-                  processor: `${doc.file_type}-image-extraction`,
-                  processor_version: '1.0.0',
-                  processing_params: {
-                    page_number: img.page_number,
-                    image_index: img.image_index,
-                    format: img.format,
-                    extraction_method: 'file-based',
-                    is_header_footer: img.is_header_footer,
-                  },
-                  location: {
-                    page_number: img.page_number,
-                  },
-                });
-                updateImageProvenance(db.getConnection(), img.id, provenanceId);
-              } catch (provError) {
-                console.error(
-                  `[ERROR] Failed to create IMAGE provenance for ${img.id}: ` +
-                    `${provError instanceof Error ? provError.message : String(provError)}`
-                );
-                throw provError;
-              }
-            }
-
-            imageCount = insertedImages.length;
-            console.error(`[INFO] File-based extraction: ${imageCount} images`);
-          } else {
-            console.error(`[INFO] File-based extraction: no images found in document`);
-          }
-        }
-
-        // Step 2: Chunk the OCR text using config from state
-        const chunkConfig: ChunkingConfig = {
-          chunkSize: state.config.chunkSize,
-          overlapPercent: state.config.chunkOverlapPercent,
-        };
-        const pageOffsets = processResult.pageOffsets;
-        let chunkResults: ChunkResult[];
-        if (input.chunking_strategy === 'page_aware' && pageOffsets && pageOffsets.length > 0) {
-          chunkResults = chunkTextPageAware(ocrResult.extracted_text, pageOffsets, chunkConfig);
-        } else if (pageOffsets && pageOffsets.length > 0) {
-          chunkResults = chunkWithPageTracking(ocrResult.extracted_text, pageOffsets, chunkConfig);
-        } else {
-          chunkResults = chunkText(ocrResult.extracted_text, chunkConfig);
-        }
-
-        console.error(`[INFO] Chunking complete: ${chunkResults.length} chunks`);
-
-        // Step 3: Store chunks in database with provenance
-        const chunks = storeChunks(db, doc, ocrResult, chunkResults, chunkConfig);
-
-        console.error(`[INFO] Chunks stored: ${chunks.length}`);
-
-        // Step 4: Generate embeddings for text chunks
-        const embeddingService = new EmbeddingService();
-        const documentInfo = {
-          documentId: doc.id,
-          filePath: doc.file_path,
-          fileName: doc.file_name,
-          fileHash: doc.file_hash,
-          documentProvenanceId: doc.provenance_id,
-        };
-
-        const embedResult = await embeddingService.embedDocumentChunks(
-          db,
-          vector,
-          chunks,
-          documentInfo
-        );
-
-        if (!embedResult.success) {
-          throw new Error(embedResult.error ?? 'Embedding generation failed');
-        }
-
-        console.error(
-          `[INFO] Embeddings complete: ${embedResult.embeddingIds.length} embeddings in ${embedResult.elapsedMs}ms`
-        );
-
-        // Step 5: VLM process images (generate 3+ paragraph descriptions)
-        // Only run if document had images extracted
-        if (imageCount > 0) {
-          const vlmPipeline = createVLMPipeline(db, vector, {
-            batchSize: 5,
-            concurrency: 3,
-            minConfidence: 0.5,
-          });
-
-          const vlmResult = await vlmPipeline.processDocument(doc.id);
-          console.error(
-            `[INFO] VLM complete: ${vlmResult.successful}/${vlmResult.total} images processed, ` +
-              `${vlmResult.totalTokens} tokens used`
-          );
-
-          if (vlmResult.failed > 0) {
-            console.error(
-              `[WARN] Document ${doc.id}: ${vlmResult.failed}/${vlmResult.total} VLM image processing failures`
-            );
-          }
-        }
-
-        // Step 5.5: Store structured extraction if present
-        if (processResult.extractionJson && input.page_schema) {
-          try {
-            const extractionContent = JSON.stringify(processResult.extractionJson);
-            const extractionHash = computeHash(extractionContent);
-
-            // Create EXTRACTION provenance record
-            const extractionProvId = uuidv4();
-            const ocrProvId = processResult.provenanceId!;
-            const docProvId = doc.provenance_id;
-            const now = new Date().toISOString();
-
-            db.insertProvenance({
-              id: extractionProvId,
-              type: ProvenanceType.EXTRACTION,
-              created_at: now,
-              processed_at: now,
-              source_file_created_at: null,
-              source_file_modified_at: null,
-              source_type: 'EXTRACTION',
-              source_path: doc.file_path,
-              source_id: ocrProvId,
-              root_document_id: docProvId,
-              location: null,
-              content_hash: extractionHash,
-              input_hash: ocrResult.content_hash,
-              file_hash: doc.file_hash,
-              processor: 'datalab-extraction',
-              processor_version: '1.0.0',
-              processing_params: { page_schema: input.page_schema },
-              processing_duration_ms: null,
-              processing_quality_score: null,
-              parent_id: ocrProvId,
-              parent_ids: JSON.stringify([docProvId, ocrProvId]),
-              chain_depth: 2,
-              chain_path: JSON.stringify(['DOCUMENT', 'OCR_RESULT', 'EXTRACTION']),
-            });
-
-            db.insertExtraction({
-              id: uuidv4(),
-              document_id: doc.id,
-              ocr_result_id: ocrResult.id,
-              schema_json: input.page_schema,
-              extraction_json: extractionContent,
-              content_hash: extractionHash,
-              provenance_id: extractionProvId,
-              created_at: now,
-            });
-
-            console.error(`[INFO] Stored structured extraction for document ${doc.id}`);
-          } catch (extErr) {
-            const extErrMsg = extErr instanceof Error ? extErr.message : String(extErr);
-            console.error(`[ERROR] Failed to store extraction for ${doc.id}: ${extErrMsg}`);
-            results.errors.push({
-              document_id: doc.id,
-              error: `Extraction storage failed: ${extErrMsg}`,
-            });
-          }
-        }
-
-        // Step 5.6: Update document metadata if available
-        if (processResult.docTitle || processResult.docAuthor || processResult.docSubject) {
-          db.updateDocumentMetadata(doc.id, {
-            docTitle: processResult.docTitle ?? null,
-            docAuthor: processResult.docAuthor ?? null,
-            docSubject: processResult.docSubject ?? null,
-          });
-        }
-
-        // Step 6: Validate database wasn't switched during long-running processing
-        validateGeneration(generation);
-
-        // Step 7: Mark document complete (OCR + chunks + embeddings succeeded)
-        db.updateDocumentStatus(doc.id, 'complete');
+        await processOneDocument(doc, processingParams);
         results.processed++;
         successfulDocIds.push(doc.id);
-
-        console.error(`[INFO] Document ${doc.id} processing complete`);
       } catch (error) {
         const errorMsg = error instanceof Error ? error.message : String(error);
         console.error(`[ERROR] Document ${doc.id} failed: ${errorMsg}`);
@@ -1219,7 +1281,7 @@ export async function handleProcessPending(
             `${batch.length} documents (${batchStart + 1}-${batchStart + batch.length} of ${pendingDocs.length})`
         );
       }
-      await Promise.allSettled(batch.map(processOneDocument));
+      await Promise.allSettled(batch.map(processDocWithTracking));
     }
 
     // Get remaining count - CRITICAL: use 'status' not 'statusFilter'
@@ -1354,6 +1416,10 @@ export async function handleOCRStatus(
  * Handle ocr_chunk_complete - Chunk and embed documents that completed OCR but have no chunks
  *
  * Picks up documents with status='complete' that were OCR'd but never chunked/embedded.
+ *
+ * LM-4 FIX: Now reads chunk_size and chunk_overlap_percent from user config
+ * (state.config) instead of always using DEFAULT_CHUNKING_CONFIG. This ensures
+ * consistency with handleProcessPending which already respects user config.
  */
 export async function handleChunkComplete(
   _params: Record<string, unknown>
@@ -1362,6 +1428,12 @@ export async function handleChunkComplete(
     const { db, vector } = requireDatabase();
 
     const completeDocs = db.listDocuments({ status: 'complete', limit: 1000 });
+
+    // LM-4 FIX: Use user-configured chunk settings from state, not DEFAULT_CHUNKING_CONFIG
+    const chunkConfig: ChunkingConfig = {
+      chunkSize: state.config.chunkSize,
+      overlapPercent: state.config.chunkOverlapPercent,
+    };
 
     const results = {
       processed: 0,
@@ -1383,12 +1455,12 @@ export async function handleChunkComplete(
           continue;
         }
 
-        // Chunk the OCR text
-        const chunkResults = chunkText(ocrResult.extracted_text, DEFAULT_CHUNKING_CONFIG);
+        // Chunk the OCR text using user config
+        const chunkResults = chunkText(ocrResult.extracted_text, chunkConfig);
         console.error(`[INFO] Chunking doc ${doc.id}: ${chunkResults.length} chunks`);
 
-        // Store chunks with provenance
-        const chunks = storeChunks(db, doc, ocrResult, chunkResults);
+        // Store chunks with provenance (pass config for provenance metadata)
+        const chunks = storeChunks(db, doc, ocrResult, chunkResults, chunkConfig);
 
         // Generate embeddings
         const embeddingService = new EmbeddingService();
@@ -1551,6 +1623,11 @@ async function handleConvertRaw(
 /**
  * Handle ocr_reprocess - Reprocess a document with different OCR settings
  * Cleans all derived data first, then re-runs the pipeline.
+ *
+ * M-11 FIX: Previously called handleProcessPending() which uses atomic batch
+ * claiming on ALL pending documents. If other documents were already pending,
+ * the target document might not be claimed. Now directly claims and processes
+ * only the target document via the module-level processOneDocument function.
  */
 async function handleReprocess(
   params: Record<string, unknown>
@@ -1564,7 +1641,11 @@ async function handleReprocess(
       }),
       params
     );
-    const { db } = requireDatabase();
+    const { db, vector, generation } = requireDatabase();
+
+    if (!process.env.DATALAB_API_KEY) {
+      throw new Error('DATALAB_API_KEY environment variable is required for OCR processing');
+    }
 
     const doc = db.getDocument(input.document_id);
     if (!doc) throw documentNotFoundError(input.document_id);
@@ -1580,14 +1661,45 @@ async function handleReprocess(
 
     // Clean all derived data (chunks, embeddings, images, ocr_results, extractions)
     db.cleanDocumentDerivedData(doc.id);
-    db.updateDocumentStatus(doc.id, 'pending');
 
-    // Reprocess through pipeline
-    const result = await handleProcessPending({
-      max_concurrent: 1,
-      ocr_mode: input.ocr_mode,
-      skip_cache: input.skip_cache,
-    });
+    // M-11 FIX: Directly claim THIS document by setting status to 'processing'.
+    // Previously set to 'pending' then called handleProcessPending() which batch-claims
+    // from ALL pending documents -- a race condition if other documents are also pending.
+    db.updateDocumentStatus(doc.id, 'processing');
+
+    const ocrMode = input.ocr_mode ?? state.config.defaultOCRMode;
+    const imagesBaseDir = resolve(state.config.defaultStoragePath, 'images');
+    const startTime = Date.now();
+
+    // Process the single document directly -- no batch claiming needed
+    try {
+      await processOneDocument(doc, {
+        db,
+        vector,
+        generation,
+        ocrMode,
+        ocrOptions: {
+          skipCache: input.skip_cache,
+        },
+        imagesBaseDir,
+      });
+    } catch (error) {
+      const errorMsg = error instanceof Error ? error.message : String(error);
+      console.error(`[ERROR] Reprocess failed for document ${doc.id}: ${errorMsg}`);
+
+      // Clean up partial data and mark as failed
+      try {
+        db.cleanDocumentDerivedData(doc.id);
+      } catch (cleanupError) {
+        console.error(
+          `[WARN] Cleanup of partial data failed for ${doc.id}: ` +
+            `${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}`
+        );
+      }
+      db.updateDocumentStatus(doc.id, 'failed', errorMsg);
+
+      throw error;
+    }
 
     // Get new quality score
     const newOCR = db.getOCRResultByDocumentId(doc.id);
@@ -1603,7 +1715,7 @@ async function handleReprocess(
           newOCR?.parse_quality_score !== undefined
             ? (newOCR.parse_quality_score - previousQuality).toFixed(2)
             : null,
-        reprocess_result: result,
+        processing_duration_ms: Date.now() - startTime,
       })
     );
   } catch (error) {

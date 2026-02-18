@@ -212,19 +212,19 @@ describe('selectDatabase', () => {
     expect(getCurrentDatabaseName()).toBe('db-two');
   });
 
-  it('should clear state before throwing on non-existent', () => {
+  it('should preserve existing state when selecting non-existent database', () => {
     // First select a valid database
     const db = DatabaseService.create('valid-db', undefined, tempDir);
     db.close();
     selectDatabase('valid-db', tempDir);
 
-    // Now try to select non-existent - should clear state first
+    // Now try to select non-existent - should preserve old state (L-4 atomic fix)
     try {
       selectDatabase('does-not-exist', tempDir);
     } catch {
-      // State should be cleared
-      expect(hasDatabase()).toBe(false);
-      expect(getCurrentDatabaseName()).toBe(null);
+      // State should be PRESERVED (old connection stays open and usable)
+      expect(hasDatabase()).toBe(true);
+      expect(getCurrentDatabaseName()).toBe('valid-db');
     }
   });
 });

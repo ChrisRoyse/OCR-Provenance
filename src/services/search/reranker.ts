@@ -79,9 +79,20 @@ export async function rerankResults(
   }
   const rankings = (parsed.rankings || []) as RerankResult[];
 
+  // Filter to valid indices only
+  const validRankings = rankings.filter((r) => r.index >= 0 && r.index < toRerank.length);
+
+  // Fail fast: if Gemini returned rankings but none had valid indices, that's a broken response
+  if (validRankings.length === 0 && toRerank.length > 0) {
+    throw new Error(
+      `Reranker returned 0 valid results from ${toRerank.length} inputs - ` +
+        `Gemini response contained invalid or out-of-range indices ` +
+        `(got ${rankings.length} rankings, all with indices outside [0, ${toRerank.length - 1}])`
+    );
+  }
+
   // Sort by relevance score descending, take maxResults
-  return rankings
-    .filter((r) => r.index >= 0 && r.index < toRerank.length)
+  return validRankings
     .sort((a, b) => b.relevance_score - a.relevance_score)
     .slice(0, maxResults)
     .map((r) => ({

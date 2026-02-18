@@ -13,6 +13,10 @@
 
 import { z } from 'zod';
 import * as path from 'path';
+import { homedir } from 'os';
+import { createRequire } from 'module';
+
+const require = createRequire(import.meta.url);
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // CUSTOM ERROR CLASS
@@ -478,14 +482,53 @@ export const ConfigSetInput = z.object({
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /**
+ * Build the default set of allowed base directories.
+ *
+ * SEC-002: Paths MUST always be validated against allowed directories.
+ * The default set covers all directories the system legitimately needs:
+ *   - The storage path (database location) from server config
+ *   - The user's home directory (documents live here)
+ *   - /tmp for temporary files
+ *   - The current working directory (project root)
+ *
+ * This function is called lazily so it picks up the current config at call time.
+ */
+function getDefaultAllowedBaseDirs(): string[] {
+  // Lazy require to avoid circular dependency (validation.ts is imported by tools
+  // which are imported by state.ts consumers). We only need the config value.
+  let storagePath: string;
+  try {
+    // Synchronous require via createRequire (same pattern as vector.ts, schema-helpers.ts).
+    // Reads DEFAULT_STORAGE_PATH from helpers module which has no circular deps.
+    const { DEFAULT_STORAGE_PATH } = require('../services/storage/database/helpers.js');
+    storagePath = DEFAULT_STORAGE_PATH;
+  } catch {
+    // Fallback if helpers not available (e.g., during early init)
+    storagePath = path.join(homedir(), '.ocr-provenance', 'databases');
+  }
+
+  return [
+    path.resolve(storagePath),
+    path.resolve(homedir()),
+    path.resolve('/tmp'),
+    path.resolve(process.cwd()),
+  ];
+}
+
+/**
  * Sanitize a file path to prevent directory traversal attacks.
+ *
+ * SEC-002 ENFORCEMENT: Paths are ALWAYS validated against allowed directories.
+ * When no allowedBaseDirs are provided, a default set is used that covers
+ * the storage path, home directory, /tmp, and the current working directory.
  *
  * - Rejects null bytes
  * - Resolves the path fully via path.resolve() to eliminate '..' segments
- * - Optionally verifies the resolved path starts with one of the allowed base directories
+ * - Verifies the resolved path starts with one of the allowed base directories
  *
  * @param filePath - The file path to sanitize
- * @param allowedBaseDirs - Optional array of allowed base directories
+ * @param allowedBaseDirs - Optional array of allowed base directories. When omitted,
+ *   defaults to [storagePath, homedir, /tmp, cwd] per SEC-002.
  * @returns The resolved, safe path
  * @throws ValidationError if the path contains null bytes or escapes allowed directories
  */
@@ -496,16 +539,19 @@ export function sanitizePath(filePath: string, allowedBaseDirs?: string[]): stri
 
   const resolved = path.resolve(filePath);
 
-  if (allowedBaseDirs && allowedBaseDirs.length > 0) {
-    const resolvedBases = allowedBaseDirs.map((d) => path.resolve(d));
-    const withinAllowed = resolvedBases.some(
-      (base) => resolved === base || resolved.startsWith(base + path.sep)
+  // SEC-002: ALWAYS enforce path restrictions. Use defaults when none provided.
+  const baseDirs = (allowedBaseDirs && allowedBaseDirs.length > 0)
+    ? allowedBaseDirs
+    : getDefaultAllowedBaseDirs();
+
+  const resolvedBases = baseDirs.map((d) => path.resolve(d));
+  const withinAllowed = resolvedBases.some(
+    (base) => resolved === base || resolved.startsWith(base + path.sep)
+  );
+  if (!withinAllowed) {
+    throw new ValidationError(
+      `Path "${resolved}" is outside allowed directories: ${resolvedBases.join(', ')}`
     );
-    if (!withinAllowed) {
-      throw new ValidationError(
-        `Path "${resolved}" is outside allowed directories: ${resolvedBases.join(', ')}`
-      );
-    }
   }
 
   return resolved;

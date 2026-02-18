@@ -21,6 +21,13 @@ export class GeminiRateLimiter {
   private readonly maxTPM: number = GEMINI_RATE_LIMIT.TPM;
 
   /**
+   * Mutex queue to serialize acquire() calls.
+   * Prevents race conditions where multiple concurrent callers
+   * all pass the rate limit check before any increment the count.
+   */
+  private _acquireQueue: Promise<void> = Promise.resolve();
+
+  /**
    * Check if we need to reset the window
    */
   private checkWindow(): void {
@@ -33,10 +40,32 @@ export class GeminiRateLimiter {
   }
 
   /**
-   * Acquire permission to make a request
-   * Returns wait time in ms if rate limited, 0 if ok
+   * Acquire permission to make a request.
+   * Serialized via promise queue to prevent race conditions:
+   * each caller waits for the previous acquire() to complete
+   * before checking and incrementing the counters.
    */
   async acquire(estimatedTokens: number = 1000): Promise<void> {
+    // Chain this acquire onto the queue so callers are serialized.
+    // Each caller awaits the previous one before executing _doAcquire.
+    const prev = this._acquireQueue;
+    let resolve!: () => void;
+    this._acquireQueue = new Promise<void>((r) => {
+      resolve = r;
+    });
+
+    try {
+      await prev;
+      await this._doAcquire(estimatedTokens);
+    } finally {
+      resolve();
+    }
+  }
+
+  /**
+   * Internal acquire logic - must only be called from the serialized queue.
+   */
+  private async _doAcquire(estimatedTokens: number): Promise<void> {
     this.checkWindow();
 
     // Check if we would exceed limits

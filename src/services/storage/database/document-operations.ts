@@ -338,6 +338,24 @@ function deleteDerivedRecords(db: Database.Database, documentId: string, caller:
   // Delete from ocr_results (safe now that extractions are gone)
   db.prepare('DELETE FROM ocr_results WHERE document_id = ?').run(documentId);
 
+  // Delete uploaded_files whose provenance_id references this document's provenance chain.
+  // Must happen before provenance cleanup (callers delete provenance after this function).
+  // uploaded_files has provenance_id NOT NULL REFERENCES provenance(id).
+  try {
+    const docForProv = db.prepare('SELECT provenance_id FROM documents WHERE id = ?').get(documentId) as
+      | { provenance_id: string }
+      | undefined;
+    if (docForProv) {
+      db.prepare(
+        'DELETE FROM uploaded_files WHERE provenance_id IN (SELECT id FROM provenance WHERE root_document_id = ?)'
+      ).run(docForProv.provenance_id);
+    }
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : String(e);
+    if (!msg.includes('no such table')) throw e;
+    console.error('[document-operations] uploaded_files table not found, skipping:', msg);
+  }
+
   // Update FTS metadata counts after chunk/embedding deletion
   try {
     const chunkCount = (db.prepare('SELECT COUNT(*) as cnt FROM chunks').get() as { cnt: number })

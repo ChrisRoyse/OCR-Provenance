@@ -214,13 +214,29 @@ describe('GAP-2: FTS getStatus() drift detection', () => {
     expect(status.index_stale).toBe(false);
   });
 
-  it('should detect staleness when chunks are added without rebuild', () => {
-    // Add a chunk directly (bypassing trigger would require special setup,
-    // but we can test the count comparison by inserting via SQL)
+  it('should detect staleness when FTS triggers are missing', () => {
+    // L-7 fix: Stale detection now checks trigger existence, not count comparison.
+    // FTS triggers auto-sync inserts/deletes, so if triggers exist, index is always fresh.
+    // Drop a trigger to simulate a broken FTS sync mechanism.
+    const conn = db.getConnection();
+
+    // Verify index is NOT stale before dropping trigger
+    let status = bm25.getStatus();
+    expect(status.index_stale).toBe(false);
+
+    // Drop one of the chunks FTS triggers
+    conn.exec('DROP TRIGGER IF EXISTS chunks_fts_ai');
+
+    // Now status should detect staleness (trigger missing = sync broken)
+    status = bm25.getStatus();
+    expect(status.index_stale).toBe(true);
+  });
+
+  it('should NOT be stale when chunks are added with triggers present', () => {
+    // With triggers present, new chunks are auto-synced to FTS
     const conn = db.getConnection();
     const now = new Date().toISOString();
 
-    // We need to add a chunk properly to trigger FTS insert
     const chunkProvId = uuidv4();
     const docRow = conn.prepare('SELECT id FROM documents LIMIT 1').get() as { id: string };
     const ocrRow = conn.prepare('SELECT id FROM ocr_results LIMIT 1').get() as { id: string };
@@ -245,11 +261,10 @@ describe('GAP-2: FTS getStatus() drift detection', () => {
       )
       .run(uuidv4(), docRow.id, ocrRow.id, chunkProvId, now);
 
-    // Status should now detect staleness (3 chunks, but metadata says 2 indexed)
+    // With triggers present, index should NOT be stale (auto-synced)
     const status = bm25.getStatus();
-    expect(status.chunks_indexed).toBe(2); // Last rebuild count
-    expect(status.current_chunk_count).toBe(3); // Actual count
-    expect(status.index_stale).toBe(true);
+    expect(status.current_chunk_count).toBe(3);
+    expect(status.index_stale).toBe(false);
   });
 
   it('should include vlm drift detection fields', () => {

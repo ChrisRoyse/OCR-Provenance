@@ -272,7 +272,7 @@ describe('Search Result Export (ocr_search_export)', () => {
 
     // Header + 2 data rows
     expect(lines.length).toBe(3);
-    expect(lines[0]).toBe('document_id,source_file,page_number,score,result_type,text');
+    expect(lines[0]).toBe('"document_id","source_file","page_number","score","result_type","text"');
   });
 
   it.skipIf(!sqliteVecAvailable)('should export BM25 results to JSON', async () => {
@@ -336,7 +336,7 @@ describe('Search Result Export (ocr_search_export)', () => {
 
       const csvContent = readFileSync(csvPath, 'utf-8');
       const lines = csvContent.split('\n');
-      expect(lines[0]).toBe('document_id,source_file,page_number,score,result_type');
+      expect(lines[0]).toBe('"document_id","source_file","page_number","score","result_type"');
     }
   );
 

@@ -31,6 +31,7 @@ import { formatResponse, handleError, type ToolResponse, type ToolDefinition } f
 import { BM25SearchService } from '../services/search/bm25.js';
 import { RRFFusion, type RankedResult } from '../services/search/fusion.js';
 import { rerankResults } from '../services/search/reranker.js';
+import { expandQuery, getExpandedTerms } from '../services/search/query-expander.js';
 import { getClusterSummariesForDocument } from '../services/storage/database/cluster-operations.js';
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -369,6 +370,14 @@ export async function handleSearchSemantic(params: Record<string, unknown>): Pro
     const { db, vector } = requireDatabase();
     const conn = db.getConnection();
 
+    // Expand query with domain-specific synonyms if requested
+    let searchQuery = input.query;
+    let queryExpansion: { original: string; expanded: string[]; synonyms_found: Record<string, string[]> } | undefined;
+    if (input.expand_query) {
+      searchQuery = expandQuery(input.query);
+      queryExpansion = getExpandedTerms(input.query);
+    }
+
     // Resolve metadata filter to document IDs, then chain through quality + cluster filters
     const documentFilter = resolveClusterFilter(
       conn,
@@ -380,9 +389,9 @@ export async function handleSearchSemantic(params: Record<string, unknown>): Pro
       )
     );
 
-    // Generate query embedding
+    // Generate query embedding (use expanded query for better semantic coverage)
     const embedder = getEmbeddingService();
-    const queryVector = await embedder.embedSearchQuery(input.query);
+    const queryVector = await embedder.embedSearchQuery(searchQuery);
 
     const limit = input.limit ?? 10;
     const searchLimit = input.rerank ? Math.max(limit * 2, 20) : limit;
@@ -487,6 +496,10 @@ export async function handleSearchSemantic(params: Record<string, unknown>): Pro
       threshold: threshold,
     };
 
+    if (queryExpansion) {
+      responseData.query_expansion = queryExpansion;
+    }
+
     if (rerankInfo) {
       responseData.rerank = rerankInfo;
     }
@@ -511,6 +524,14 @@ export async function handleSearch(params: Record<string, unknown>): Promise<Too
     const { db } = requireDatabase();
     const conn = db.getConnection();
 
+    // Expand query with domain-specific synonyms if requested
+    let searchQuery = input.query;
+    let queryExpansion: { original: string; expanded: string[]; synonyms_found: Record<string, string[]> } | undefined;
+    if (input.expand_query) {
+      searchQuery = expandQuery(input.query);
+      queryExpansion = getExpandedTerms(input.query);
+    }
+
     // Resolve metadata filter to document IDs, then chain through quality + cluster filters
     const documentFilter = resolveClusterFilter(
       conn,
@@ -530,7 +551,7 @@ export async function handleSearch(params: Record<string, unknown>): Promise<Too
 
     // Search chunks FTS
     const chunkResults = bm25.search({
-      query: input.query,
+      query: searchQuery,
       limit: fetchLimit,
       phraseSearch: input.phrase_search,
       documentFilter,
@@ -539,7 +560,7 @@ export async function handleSearch(params: Record<string, unknown>): Promise<Too
 
     // Search VLM FTS
     const vlmResults = bm25.searchVLM({
-      query: input.query,
+      query: searchQuery,
       limit: fetchLimit,
       phraseSearch: input.phrase_search,
       documentFilter,
@@ -548,7 +569,7 @@ export async function handleSearch(params: Record<string, unknown>): Promise<Too
 
     // Search extractions FTS
     const extractionResults = bm25.searchExtractions({
-      query: input.query,
+      query: searchQuery,
       limit: fetchLimit,
       phraseSearch: input.phrase_search,
       documentFilter,
@@ -615,6 +636,10 @@ export async function handleSearch(params: Record<string, unknown>): Promise<Too
       },
     };
 
+    if (queryExpansion) {
+      responseData.query_expansion = queryExpansion;
+    }
+
     if (rerankInfo) {
       responseData.rerank = rerankInfo;
     }
@@ -640,6 +665,14 @@ export async function handleSearchHybrid(params: Record<string, unknown>): Promi
     const limit = input.limit ?? 10;
     const conn = db.getConnection();
 
+    // Expand query with domain-specific synonyms if requested
+    let searchQuery = input.query;
+    let queryExpansion: { original: string; expanded: string[]; synonyms_found: Record<string, string[]> } | undefined;
+    if (input.expand_query) {
+      searchQuery = expandQuery(input.query);
+      queryExpansion = getExpandedTerms(input.query);
+    }
+
     // Resolve metadata filter to document IDs, then chain through quality + cluster filters
     const documentFilter = resolveClusterFilter(
       conn,
@@ -655,19 +688,19 @@ export async function handleSearchHybrid(params: Record<string, unknown>): Promi
     const bm25 = new BM25SearchService(db.getConnection());
     // includeHighlight: false -- hybrid discards BM25 highlights (RRF doesn't surface snippets)
     const bm25ChunkResults = bm25.search({
-      query: input.query,
+      query: searchQuery,
       limit: limit * 2,
       documentFilter,
       includeHighlight: false,
     });
     const bm25VlmResults = bm25.searchVLM({
-      query: input.query,
+      query: searchQuery,
       limit: limit * 2,
       documentFilter,
       includeHighlight: false,
     });
     const bm25ExtractionResults = bm25.searchExtractions({
-      query: input.query,
+      query: searchQuery,
       limit: limit * 2,
       documentFilter,
       includeHighlight: false,
@@ -679,9 +712,9 @@ export async function handleSearchHybrid(params: Record<string, unknown>): Promi
       .slice(0, limit * 2)
       .map((r, i) => ({ ...r, rank: i + 1 }));
 
-    // Get semantic results
+    // Get semantic results (use expanded query for better semantic coverage)
     const embedder = getEmbeddingService();
-    const queryVector = await embedder.embedSearchQuery(input.query);
+    const queryVector = await embedder.embedSearchQuery(searchQuery);
     const semanticResults = vector.searchSimilar(queryVector, {
       limit: limit * 2,
       // Lower threshold than standalone (0.7) -- RRF de-ranks low-quality results
@@ -752,6 +785,10 @@ export async function handleSearchHybrid(params: Record<string, unknown>): Promi
         semantic_count: semanticResults.length,
       },
     };
+
+    if (queryExpansion) {
+      responseData.query_expansion = queryExpansion;
+    }
 
     if (rerankInfo) {
       responseData.rerank = rerankInfo;
@@ -1162,24 +1199,21 @@ async function handleSearchExport(params: Record<string, unknown>): Promise<Tool
       };
       fs.writeFileSync(safeOutputPath, JSON.stringify(exportData, null, 2));
     } else {
-      // CSV
+      // CSV - RFC 4180 compliant: all fields double-quoted, internal quotes doubled
+      const csvQuote = (value: string): string => `"${value.replace(/"/g, '""')}"`;
       const headers = ['document_id', 'source_file', 'page_number', 'score', 'result_type'];
       if (input.include_text) headers.push('text');
-      const csvLines = [headers.join(',')];
+      const csvLines = [headers.map(csvQuote).join(',')];
       for (const r of results) {
         const row = [
-          String(r.document_id ?? ''),
-          String(r.source_file_name || r.source_file_path || '').replace(/,/g, ';'),
-          r.page_number !== null && r.page_number !== undefined ? String(r.page_number) : '',
-          String(r.bm25_score ?? r.similarity_score ?? r.rrf_score ?? ''),
-          String(r.result_type || ''),
+          csvQuote(String(r.document_id ?? '')),
+          csvQuote(String(r.source_file_name || r.source_file_path || '')),
+          csvQuote(r.page_number !== null && r.page_number !== undefined ? String(r.page_number) : ''),
+          csvQuote(String(r.bm25_score ?? r.similarity_score ?? r.rrf_score ?? '')),
+          csvQuote(String(r.result_type || '')),
         ];
         if (input.include_text) {
-          row.push(
-            `"${String(r.original_text || '')
-              .replace(/"/g, '""')
-              .replace(/\n/g, ' ')}"`
-          );
+          row.push(csvQuote(String(r.original_text || '')));
         }
         csvLines.push(row.join(','));
       }
@@ -1231,6 +1265,10 @@ export const searchTools: Record<string, ToolDefinition> = {
         .max(5)
         .optional()
         .describe('Minimum OCR quality score (0-5)'),
+      expand_query: z
+        .boolean()
+        .default(false)
+        .describe('Expand query with domain-specific legal/medical synonyms'),
       rerank: z
         .boolean()
         .default(false)
@@ -1273,6 +1311,10 @@ export const searchTools: Record<string, ToolDefinition> = {
         .max(5)
         .optional()
         .describe('Minimum OCR quality score (0-5)'),
+      expand_query: z
+        .boolean()
+        .default(false)
+        .describe('Expand query with domain-specific legal/medical synonyms'),
       rerank: z
         .boolean()
         .default(false)
@@ -1309,6 +1351,10 @@ export const searchTools: Record<string, ToolDefinition> = {
         .max(5)
         .optional()
         .describe('Minimum OCR quality score (0-5)'),
+      expand_query: z
+        .boolean()
+        .default(false)
+        .describe('Expand query with domain-specific legal/medical synonyms'),
       rerank: z
         .boolean()
         .default(false)

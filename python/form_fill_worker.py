@@ -224,7 +224,8 @@ def fill_form(
         duration_ms = int((end_time - start_time) * 1000)
 
         # Check for errors in result
-        if not result.success:
+        # L-11: Explicit True check — treats None (unknown) as failure too
+        if result.success is not True:
             error_msg = result.error or "Unknown form fill error"
             logger.error(f"Form fill failed: {error_msg}")
             return FormFillResult(
@@ -242,9 +243,8 @@ def fill_form(
             )
 
         # Extract results
-        output_base64 = getattr(result, "output_base64", None) or getattr(
-            result, "file_base64", None
-        )
+        # L-12: Removed dead file_base64 fallback (field doesn't exist on FormFillingResult)
+        output_base64 = getattr(result, "output_base64", None)
         fields_filled = getattr(result, "fields_filled", []) or []
         fields_not_found = getattr(result, "fields_not_found", []) or []
         page_count = getattr(result, "page_count", None)

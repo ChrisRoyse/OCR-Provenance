@@ -237,12 +237,13 @@ export async function handleEvaluateDocument(
     let totalTokens = 0;
     const startTime = Date.now();
 
-    // Process in batches with concurrency control
+    // Process images sequentially to avoid thundering herd on Gemini API.
+    // Each image is processed one at a time, matching the VLMPipeline pattern.
     for (let i = 0; i < pendingImages.length; i += batchSize) {
       const batch = pendingImages.slice(i, i + batchSize);
+      let batchSuccessful = 0;
 
-      // Process batch with concurrency
-      const batchPromises = batch.map(async (img) => {
+      for (const img of batch) {
         try {
           const result = await handleEvaluateSingle({
             image_id: img.id,
@@ -255,39 +256,32 @@ export async function handleEvaluateDocument(
           }
           const data = JSON.parse(result.content[0].text);
           if (data.success && data.data) {
-            return {
+            results.push({
               image_id: img.id,
               success: true,
               confidence: data.data.confidence,
               tokens_used: data.data.tokens_used,
-            };
+            });
+            totalTokens += data.data.tokens_used || 0;
+            batchSuccessful++;
           } else {
-            return {
+            results.push({
               image_id: img.id,
               success: false,
               error: data.error?.message || 'Unknown error',
-            };
+            });
           }
         } catch (error) {
-          return {
+          results.push({
             image_id: img.id,
             success: false,
             error: error instanceof Error ? error.message : String(error),
-          };
+          });
         }
-      });
-
-      // Wait for batch to complete
-      const batchResults = await Promise.all(batchPromises);
-      results.push(...batchResults);
-
-      // Sum tokens
-      totalTokens += batchResults
-        .filter((r) => r.success && r.tokens_used)
-        .reduce((sum, r) => sum + (r.tokens_used || 0), 0);
+      }
 
       console.error(
-        `[INFO] Batch ${Math.floor(i / batchSize) + 1} complete: ${batchResults.filter((r) => r.success).length}/${batch.length} successful`
+        `[INFO] Batch ${Math.floor(i / batchSize) + 1} complete: ${batchSuccessful}/${batch.length} successful`
       );
     }
 

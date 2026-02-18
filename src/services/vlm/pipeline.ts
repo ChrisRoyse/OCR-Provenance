@@ -12,7 +12,7 @@
  */
 
 import Database from 'better-sqlite3';
-import { unlinkSync } from 'fs';
+import { existsSync, unlinkSync } from 'fs';
 import { v4 as uuidv4 } from 'uuid';
 
 import {
@@ -404,6 +404,18 @@ export class VLMPipeline {
             processingTimeMs: Date.now() - start,
           };
         }
+      }
+
+      // Verify image file exists on disk before processing
+      if (!existsSync(image.extracted_path)) {
+        const error = `Image file not found on disk: ${image.extracted_path} (image_id: ${image.id}). The database record exists but the file has been deleted.`;
+        setImageVLMFailed(this.db, image.id, error);
+        return {
+          imageId: image.id,
+          success: false,
+          error,
+          processingTimeMs: Date.now() - start,
+        };
       }
 
       // Optionally resize large images for VLM

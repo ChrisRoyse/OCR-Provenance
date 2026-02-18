@@ -245,10 +245,17 @@ async function runClusteringWorker(
 
     const shell = new PythonShell(workerPath, options);
     let stderr = '';
+    let sigkillTimer: ReturnType<typeof setTimeout> | null = null;
+
+    const cleanup = () => {
+      if (sigkillTimer) {
+        clearTimeout(sigkillTimer);
+        sigkillTimer = null;
+      }
+    };
 
     const timer = setTimeout(() => {
       if (settled) return;
-      settled = true;
       try {
         shell.kill();
       } catch (error) {
@@ -258,13 +265,32 @@ async function runClusteringWorker(
         );
         /* ignore */
       }
-      reject(
-        new ClusteringError(
-          `Clustering worker timeout after ${WORKER_TIMEOUT_MS}ms`,
-          'WORKER_TIMEOUT',
-          { stderr: stderr.substring(0, 1000) }
-        )
-      );
+      // M-6: SIGKILL escalation if SIGTERM doesn't exit within 5s
+      sigkillTimer = setTimeout(() => {
+        if (!settled) {
+          console.error(
+            `[ClusteringService] Process did not exit after SIGTERM, sending SIGKILL (pid: ${shell.childProcess?.pid})`
+          );
+          try {
+            shell.childProcess?.kill('SIGKILL');
+          } catch (error) {
+            console.error(
+              '[ClusteringService] Failed to SIGKILL process (may already be gone):',
+              error instanceof Error ? error.message : String(error)
+            );
+          }
+        }
+        if (!settled) {
+          settled = true;
+          reject(
+            new ClusteringError(
+              `Clustering worker timeout after ${WORKER_TIMEOUT_MS}ms (SIGKILL after 5s grace)`,
+              'WORKER_TIMEOUT',
+              { stderr: stderr.substring(0, 1000) }
+            )
+          );
+        }
+      }, 5000);
     }, WORKER_TIMEOUT_MS);
 
     const outputChunks: string[] = [];
@@ -280,6 +306,7 @@ async function runClusteringWorker(
 
     const handleEnd = (err?: Error) => {
       clearTimeout(timer);
+      cleanup();
       if (settled) return;
       settled = true;
 

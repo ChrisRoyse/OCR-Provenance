@@ -58,23 +58,21 @@ export function handleError(error: unknown): ToolResponse {
 
 /**
  * Fetch provenance chain for a given provenance ID and attach to response object.
- * Returns the chain array on success, or undefined on failure (with error logged).
+ * Returns the chain array on success. If provenanceId is null/undefined, returns undefined.
+ *
+ * FAIL FAST: If the provenance query fails, the error propagates up to the
+ * tool handler's catch block where handleError() will produce a proper error
+ * response. We do NOT silently swallow errors -- if include_provenance was
+ * requested and the query fails, the tool should fail.
  *
  * Shared by clustering, comparison, file-management, and form-fill tools.
  */
 export function fetchProvenanceChain(
   db: { getProvenanceChain: (id: string) => unknown[] },
   provenanceId: string | null | undefined,
-  logPrefix: string
+  _logPrefix: string
 ): unknown[] | undefined {
   if (!provenanceId) return undefined;
-  try {
-    return db.getProvenanceChain(provenanceId);
-  } catch (err) {
-    console.error(
-      `[${logPrefix}] Provenance query failed: ${err instanceof Error ? err.message : String(err)}`
-    );
-    return undefined;
-  }
+  return db.getProvenanceChain(provenanceId);
 }
 

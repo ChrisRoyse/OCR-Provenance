@@ -292,7 +292,7 @@ describe('ocr_db_select', () => {
     expect(requireDatabase().db.getName()).toBe(name2);
   });
 
-  it.skipIf(!sqliteVecAvailable)('clears state before throwing on non-existent', () => {
+  it.skipIf(!sqliteVecAvailable)('preserves state when selecting non-existent database', () => {
     const name = createUniqueName('valid');
     const db = DatabaseService.create(name, undefined, tempDir);
     db.close();
@@ -303,8 +303,9 @@ describe('ocr_db_select', () => {
     try {
       selectDatabase('invalid', tempDir);
     } catch {
-      // State should be cleared
-      expect(() => requireDatabase()).toThrow(MCPError);
+      // L-4: State should be PRESERVED (old connection stays open and usable)
+      expect(requireDatabase()).toBeDefined();
+      expect(requireDatabase().db.getName()).toBe(name);
     }
   });
 

@@ -28,6 +28,9 @@ import { CircuitBreaker, CircuitBreakerOpenError } from './circuit-breaker.js';
 // Re-export error type
 export { CircuitBreakerOpenError };
 
+/** Maximum number of entries in the in-memory context cache. */
+const MAX_CACHE_SIZE = 50;
+
 // ---- Shared singletons for rate limiting and circuit breaking ----
 // These MUST be shared across all GeminiClient instances so that
 // rate limits and circuit breaker state accumulate correctly.
@@ -308,11 +311,17 @@ export class GeminiClient {
           `[GeminiClient] Attempt ${attempt + 1}/${maxAttempts} failed: ${errorMessage}${causeMsg}${causeCode}`
         );
 
-        // Check for rate limit error (429)
-        if (errorMessage.includes('429') || errorMessage.toLowerCase().includes('rate limit')) {
-          // Wait longer for rate limit errors
+        // Check for rate limit error (429) or server errors (500/502/503).
+        // These all indicate server-side issues and get extended backoff.
+        const isServerStatus = /\b(429|500|502|503)\b/.test(errorMessage) ||
+          errorMessage.toLowerCase().includes('rate limit') ||
+          /server.?(error|overloaded|unavailable)|service.?unavailable|internal.?server/i.test(errorMessage);
+
+        if (isServerStatus) {
           const delay = Math.min(baseDelayMs * Math.pow(2, attempt + 1), maxDelayMs);
-          console.error(`[GeminiClient] Rate limited, waiting ${delay}ms`);
+          const statusMatch = errorMessage.match(/\b(429|500|502|503)\b/);
+          const label = statusMatch ? `HTTP ${statusMatch[1]}` : 'server error';
+          console.error(`[GeminiClient] ${label}, waiting ${delay}ms`);
           await this.sleep(delay);
           continue;
         }
@@ -465,6 +474,25 @@ export class GeminiClient {
       );
     }
 
+    // Periodic TTL cleanup: evict any expired entries before adding new ones
+    this.cleanExpiredCacheEntries();
+
+    // Evict oldest entry if at capacity
+    if (this._contextCache.size >= MAX_CACHE_SIZE) {
+      let oldestKey: string | null = null;
+      let oldestTime = Infinity;
+      for (const [key, entry] of this._contextCache) {
+        if (entry.createdAt < oldestTime) {
+          oldestTime = entry.createdAt;
+          oldestKey = key;
+        }
+      }
+      if (oldestKey) {
+        this._contextCache.delete(oldestKey);
+        console.error(`[GeminiClient] Cache at capacity (${MAX_CACHE_SIZE}), evicted oldest entry: ${oldestKey}`);
+      }
+    }
+
     const cacheId = `cache_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
     // Store context in memory for this session
     this._contextCache.set(cacheId, {
@@ -474,9 +502,27 @@ export class GeminiClient {
     });
 
     console.error(
-      `[GeminiClient] Created context cache ${cacheId} (${contextText.length} chars, TTL ${ttlSeconds}s)`
+      `[GeminiClient] Created context cache ${cacheId} (${contextText.length} chars, TTL ${ttlSeconds}s, size=${this._contextCache.size}/${MAX_CACHE_SIZE})`
     );
     return cacheId;
+  }
+
+  /**
+   * Remove all expired entries from the context cache.
+   * Called as periodic cleanup when createCachedContent is invoked.
+   */
+  private cleanExpiredCacheEntries(): void {
+    const now = Date.now();
+    let evicted = 0;
+    for (const [key, entry] of this._contextCache) {
+      if (now - entry.createdAt > entry.ttlMs) {
+        this._contextCache.delete(key);
+        evicted++;
+      }
+    }
+    if (evicted > 0) {
+      console.error(`[GeminiClient] TTL cleanup: evicted ${evicted} expired cache entries`);
+    }
   }
 
   /**

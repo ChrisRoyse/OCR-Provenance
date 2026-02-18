@@ -237,19 +237,43 @@ export class VLMService {
 
   /**
    * Parse a VLM JSON response, stripping markdown fences.
-   * Throws with diagnostic info on parse failure (fail-fast).
+   *
+   * When thinking mode is enabled, responseMimeType: 'application/json' is incompatible,
+   * so Gemini may include reasoning preamble before the JSON block. This method handles
+   * that by: (1) stripping code fences, (2) trying full text parse, (3) extracting the
+   * outermost JSON object from mixed text, (4) throwing with diagnostics on failure.
    */
   private parseVLMJson<T>(text: string, label: string): T {
+    // Step 1: Strip markdown code fences
+    const clean = text.replace(/```json\n?|\n?```/g, '').trim();
+
+    // Step 2: Try parsing the full cleaned text
     try {
-      const clean = text.replace(/```json\n?|\n?```/g, '').trim();
       return JSON.parse(clean) as T;
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      console.error(`[VLMService] Failed to parse ${label} JSON: ${msg}`);
-      throw new Error(
-        `VLM ${label} JSON parse failed: ${msg}. Raw response (first 200 chars): ${text.slice(0, 200)}`
-      );
+    } catch {
+      // Not valid JSON as-is, continue to extraction
     }
+
+    // Step 3: Extract JSON object from mixed text (reasoning preamble + JSON)
+    // Find the first '{' and last '}' to isolate the JSON block
+    const firstBrace = clean.indexOf('{');
+    const lastBrace = clean.lastIndexOf('}');
+
+    if (firstBrace !== -1 && lastBrace > firstBrace) {
+      const jsonCandidate = clean.slice(firstBrace, lastBrace + 1);
+      try {
+        return JSON.parse(jsonCandidate) as T;
+      } catch {
+        // Extracted substring is not valid JSON either, fall through to error
+      }
+    }
+
+    // Step 4: All extraction attempts failed - throw with diagnostics
+    console.error(`[VLMService] Failed to parse ${label} JSON from response`);
+    throw new Error(
+      `VLM ${label} JSON parse failed: could not extract valid JSON from response. ` +
+        `Raw response (first 500 chars): ${text.slice(0, 500)}`
+    );
   }
 
   /**

@@ -692,6 +692,7 @@ export class ProvenanceVerifier {
       doc_title: row.doc_title ?? null,
       doc_author: row.doc_author ?? null,
       doc_subject: row.doc_subject ?? null,
+      datalab_file_id: row.datalab_file_id ?? null,
     };
   }
 
