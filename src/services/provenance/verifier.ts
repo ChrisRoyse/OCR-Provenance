@@ -19,6 +19,7 @@ import { Chunk } from '../../models/chunk.js';
 import { Embedding } from '../../models/embedding.js';
 import { computeHash, hashFile, isValidHashFormat } from '../../utils/hash.js';
 import {
+  rowToDocument,
   rowToOCRResult,
   rowToChunk,
   rowToEmbedding,
@@ -27,6 +28,7 @@ import {
 } from '../storage/database/converters.js';
 import type { ImageReference } from '../../models/image.js';
 import {
+  DocumentRow,
   OCRResultRow,
   ChunkRow,
   EmbeddingRow,
@@ -673,27 +675,8 @@ export class ProvenanceVerifier {
   private getDocumentByProvenanceId(provenanceId: string): Document | null {
     const row = this.rawDb
       .prepare('SELECT * FROM documents WHERE provenance_id = ?')
-      .get(provenanceId) as import('../storage/database/types.js').DocumentRow | undefined;
-    if (!row) return null;
-    return {
-      id: row.id,
-      file_path: row.file_path,
-      file_name: row.file_name,
-      file_hash: row.file_hash,
-      file_size: row.file_size,
-      file_type: row.file_type,
-      status: row.status as import('../../models/document.js').DocumentStatus,
-      page_count: row.page_count,
-      provenance_id: row.provenance_id,
-      created_at: row.created_at,
-      modified_at: row.modified_at,
-      ocr_completed_at: row.ocr_completed_at,
-      error_message: row.error_message,
-      doc_title: row.doc_title ?? null,
-      doc_author: row.doc_author ?? null,
-      doc_subject: row.doc_subject ?? null,
-      datalab_file_id: row.datalab_file_id ?? null,
-    };
+      .get(provenanceId) as DocumentRow | undefined;
+    return row ? rowToDocument(row) : null;
   }
 
   /**
