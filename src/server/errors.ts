@@ -133,6 +133,15 @@ const ERROR_NAME_TO_CATEGORY: Record<string, ErrorCategory> = {
   ClusteringError: 'CLUSTERING_ERROR',
 };
 
+/**
+ * OCR error class names that carry their own `.category` field.
+ * Used in fromUnknown() to prefer the error's category over the default mapping.
+ */
+const OCR_ERROR_NAMES = new Set([
+  'OCRError', 'OCRAPIError', 'OCRRateLimitError',
+  'OCRTimeoutError', 'OCRFileError', 'OCRAuthenticationError',
+]);
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // MCP ERROR CLASS
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -176,12 +185,10 @@ export class MCPError extends Error {
 
       // For OCRError subclasses, preserve the more specific category from the error itself
       const ocrCategory = (error as { category?: string }).category;
-      const resolvedCategory = (error.name === 'OCRError' || error.name === 'OCRAPIError'
-        || error.name === 'OCRRateLimitError' || error.name === 'OCRTimeoutError'
-        || error.name === 'OCRFileError' || error.name === 'OCRAuthenticationError')
-        && ocrCategory && isValidCategory(ocrCategory)
-        ? ocrCategory as ErrorCategory
-        : category;
+      const resolvedCategory =
+        OCR_ERROR_NAMES.has(error.name) && ocrCategory && isValidCategory(ocrCategory)
+          ? (ocrCategory as ErrorCategory)
+          : category;
 
       return new MCPError(resolvedCategory, error.message, {
         originalName: error.name,
