@@ -84,6 +84,9 @@ describe('handleConfigGet', () => {
     expect(result.data).toHaveProperty('embedding_batch_size');
     expect(result.data).toHaveProperty('storage_path');
     expect(result.data).toHaveProperty('current_database');
+    expect(result.data).toHaveProperty('chunk_size');
+    expect(result.data).toHaveProperty('chunk_overlap_percent');
+    expect(result.data).toHaveProperty('max_chunk_size');
   });
 
   it('returns specific value when key specified', async () => {
@@ -315,6 +318,9 @@ describe('Edge Cases', () => {
       expect(result.data).toHaveProperty('embedding_dimensions');
       expect(result.data).toHaveProperty('hash_algorithm');
       expect(result.data).toHaveProperty('current_database');
+      expect(result.data).toHaveProperty('chunk_size');
+      expect(result.data).toHaveProperty('chunk_overlap_percent');
+      expect(result.data).toHaveProperty('max_chunk_size');
     });
   });
 

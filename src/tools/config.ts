@@ -29,6 +29,7 @@ const CONFIG_KEY_MAP: Record<string, string> = {
   embedding_device: 'embeddingDevice',
   chunk_size: 'chunkSize',
   chunk_overlap_percent: 'chunkOverlapPercent',
+  max_chunk_size: 'maxChunkSize',
 };
 
 function getConfigValue(key: z.infer<typeof ConfigKey>): unknown {
@@ -72,6 +73,12 @@ const CONFIG_VALIDATORS: Record<string, (value: unknown) => void> = {
   chunk_overlap_percent: (v) => {
     if (typeof v !== 'number' || v < 0 || v > 50)
       throw validationError('chunk_overlap_percent must be a number between 0 and 50', {
+        value: v,
+      });
+  },
+  max_chunk_size: (v) => {
+    if (typeof v !== 'number' || v < 1000 || v > 50000)
+      throw validationError('max_chunk_size must be a number between 1000 and 50000', {
         value: v,
       });
   },
@@ -123,6 +130,7 @@ export async function handleConfigGet(params: Record<string, unknown>): Promise<
         embedding_device: config.embeddingDevice,
         chunk_size: config.chunkSize,
         chunk_overlap_percent: config.chunkOverlapPercent,
+        max_chunk_size: config.maxChunkSize,
       })
     );
   } catch (error) {

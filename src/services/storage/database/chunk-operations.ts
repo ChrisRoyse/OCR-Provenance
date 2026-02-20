@@ -31,8 +31,10 @@ export function insertChunk(
       id, document_id, ocr_result_id, text, text_hash, chunk_index,
       character_start, character_end, page_number, page_range,
       overlap_previous, overlap_next, provenance_id, created_at,
-      embedding_status, embedded_at, ocr_quality_score
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      embedding_status, embedded_at, ocr_quality_score,
+      heading_context, heading_level, section_path,
+      content_types, is_atomic, chunking_strategy
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
 
   runWithForeignKeyCheck(
@@ -55,6 +57,12 @@ export function insertChunk(
       'pending',
       null,
       chunk.ocr_quality_score ?? null,
+      chunk.heading_context ?? null,
+      chunk.heading_level ?? null,
+      chunk.section_path ?? null,
+      chunk.content_types ?? null,
+      chunk.is_atomic ?? 0,
+      chunk.chunking_strategy ?? 'fixed',
     ],
     'inserting chunk: document_id, ocr_result_id, or provenance_id does not exist'
   );
@@ -91,8 +99,10 @@ export function insertChunks(
         id, document_id, ocr_result_id, text, text_hash, chunk_index,
         character_start, character_end, page_number, page_range,
         overlap_previous, overlap_next, provenance_id, created_at,
-        embedding_status, embedded_at, ocr_quality_score
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        embedding_status, embedded_at, ocr_quality_score,
+        heading_context, heading_level, section_path,
+        content_types, is_atomic, chunking_strategy
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
 
     for (const chunk of chunks) {
@@ -116,6 +126,12 @@ export function insertChunks(
           'pending',
           null,
           chunk.ocr_quality_score ?? null,
+          chunk.heading_context ?? null,
+          chunk.heading_level ?? null,
+          chunk.section_path ?? null,
+          chunk.content_types ?? null,
+          chunk.is_atomic ?? 0,
+          chunk.chunking_strategy ?? 'fixed',
         ],
         `inserting chunk "${chunk.id}"`
       );

@@ -84,6 +84,9 @@ export interface ServerConfig {
   /** Chunk overlap percentage (0-50) */
   chunkOverlapPercent: number;
 
+  /** Maximum chunk size for oversized sections (default: 8000) */
+  maxChunkSize: number;
+
   /** Image optimization settings */
   imageOptimization: ImageOptimizationConfig;
 }

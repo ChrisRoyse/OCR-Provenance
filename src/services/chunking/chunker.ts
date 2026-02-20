@@ -1,11 +1,11 @@
 /**
- * Text Chunking Service for OCR Provenance MCP System
+ * Hybrid Section-Aware Chunking Service for OCR Provenance MCP System
  *
- * Splits OCR text into 2000-character chunks with 10% overlap (200 chars),
- * tracks page numbers, and creates CHUNK provenance records (chain_depth=2).
+ * Uses markdown structure (headings, paragraphs, tables), JSON block data
+ * (for atomic region detection), and page offsets (for page tracking) to
+ * produce semantically coherent chunks with provenance records (chain_depth=2).
  *
  * @module services/chunking/chunker
- * @see Task 12: Implement Text Chunking Service
  */
 
 import {
@@ -13,7 +13,6 @@ import {
   ChunkingConfig,
   DEFAULT_CHUNKING_CONFIG,
   getOverlapCharacters,
-  getStepSize,
 } from '../../models/chunk.js';
 import { PageOffset } from '../../models/document.js';
 import {
@@ -22,11 +21,21 @@ import {
   ProvenanceLocation,
   CreateProvenanceParams,
 } from '../../models/provenance.js';
+import {
+  parseMarkdownBlocks,
+  buildSectionHierarchy,
+  getPageNumberForOffset,
+  MarkdownBlock,
+} from './markdown-parser.js';
+import {
+  findAtomicRegions,
+  isOffsetInAtomicRegion,
+} from './json-block-analyzer.js';
 
 /**
  * Parameters for creating chunk provenance record
  */
-interface ChunkProvenanceParams {
+export interface ChunkProvenanceParams {
   /** The chunk result containing text and position info */
   chunk: ChunkResult;
   /** Pre-computed hash of chunk.text (sha256:...) */
@@ -47,170 +56,378 @@ interface ChunkProvenanceParams {
   config?: ChunkingConfig;
 }
 
-/**
- * Chunk text into fixed-size segments with overlap
- *
- * Algorithm:
- * 1. Calculate overlap and step sizes from config
- * 2. Iterate through text, extracting chunks of chunkSize
- * 3. Move forward by stepSize (chunkSize - overlap) each iteration
- * 4. Track overlap values for each chunk
- *
- * @param text - The text to chunk (typically OCR output)
- * @param config - Chunking configuration (default: 2000 chars, 10% overlap)
- * @returns Array of ChunkResult with position and overlap info
- *
- * @example
- * const chunks = chunkText('...4000 char text...', { chunkSize: 2000, overlapPercent: 10 });
- * // Returns 3 chunks with 200-char overlap between adjacent chunks
- */
-export function chunkText(
-  text: string,
-  config: ChunkingConfig = DEFAULT_CHUNKING_CONFIG
-): ChunkResult[] {
-  // Edge case: empty string returns empty array
-  if (text.length === 0) {
-    return [];
-  }
+// ---------------------------------------------------------------------------
+// Accumulator state for building chunks from blocks
+// ---------------------------------------------------------------------------
 
-  const overlapSize = getOverlapCharacters(config);
-  const stepSize = getStepSize(config);
-  const chunks: ChunkResult[] = [];
-  let startOffset = 0;
-  let index = 0;
-
-  // Iterate through text, creating chunks
-  while (startOffset < text.length) {
-    const endOffset = Math.min(startOffset + config.chunkSize, text.length);
-    const chunkText = text.slice(startOffset, endOffset);
-
-    chunks.push({
-      index,
-      text: chunkText,
-      startOffset,
-      endOffset,
-      overlapWithPrevious: index === 0 ? 0 : overlapSize,
-      overlapWithNext: 0, // Set after loop
-      pageNumber: null,
-      pageRange: null,
-    });
-
-    // If this chunk reached the end of the text, we're done
-    // This prevents creating tiny overlap-only chunks at the end
-    if (endOffset >= text.length) {
-      break;
-    }
-
-    startOffset += stepSize;
-    index++;
-  }
-
-  // Set overlapWithNext for all but last chunk
-  for (let i = 0; i < chunks.length - 1; i++) {
-    chunks[i].overlapWithNext = overlapSize;
-  }
-
-  return chunks;
+interface Accumulator {
+  text: string;
+  blocks: MarkdownBlock[];
+  startOffset: number;
+  contentTypes: Set<string>;
 }
 
+function createEmptyAccumulator(startOffset: number): Accumulator {
+  return {
+    text: '',
+    blocks: [],
+    startOffset,
+    contentTypes: new Set(),
+  };
+}
+
+function accumulatorHasContent(acc: Accumulator): boolean {
+  return acc.text.trim().length > 0;
+}
+
+function addBlockToAccumulator(acc: Accumulator, block: MarkdownBlock): void {
+  if (acc.text.length > 0) {
+    acc.text += '\n\n';
+  }
+  acc.text += block.text;
+  acc.blocks.push(block);
+  acc.contentTypes.add(mapBlockTypeToContentType(block.type));
+}
+
+function mapBlockTypeToContentType(blockType: string): string {
+  switch (blockType) {
+    case 'heading': return 'heading';
+    case 'table': return 'table';
+    case 'code': return 'code';
+    case 'list': return 'list';
+    case 'paragraph': return 'text';
+    default: return 'text';
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Sentence boundary detection
+// ---------------------------------------------------------------------------
+
 /**
- * Determine page information for a character range
+ * Find a sentence boundary position for splitting text.
  *
- * @param charStart - Start character offset
- * @param charEnd - End character offset
- * @param pageOffsets - Array of page offset information
- * @returns Object with pageNumber (single page) or pageRange (spans multiple)
+ * Scans backward from `maxPos` looking for sentence-ending punctuation,
+ * paragraph breaks, line breaks, or spaces. Returns the position just
+ * after the boundary character (i.e., the start of the next sentence).
+ *
+ * @param text - The text to scan
+ * @param maxPos - Maximum position (typically chunkSize)
+ * @returns Position to split at
  */
-function determinePageInfo(
-  charStart: number,
-  charEnd: number,
+function findSentenceBoundary(text: string, maxPos: number): number {
+  const searchStart = Math.max(0, maxPos - 500);
+
+  // Priority 1: Sentence endings (. ? !) followed by whitespace
+  for (let i = maxPos; i >= searchStart; i--) {
+    const ch = text[i];
+    if ((ch === '.' || ch === '?' || ch === '!') && i + 1 < text.length) {
+      const next = text[i + 1];
+      if (next === ' ' || next === '\n') {
+        return i + 1; // Split after the punctuation
+      }
+    }
+  }
+
+  // Priority 2: Paragraph break (\n\n)
+  for (let i = maxPos; i >= searchStart + 1; i--) {
+    if (text[i] === '\n' && text[i - 1] === '\n') {
+      return i + 1;
+    }
+  }
+
+  // Priority 3: Line break (\n)
+  for (let i = maxPos; i >= searchStart; i--) {
+    if (text[i] === '\n') {
+      return i + 1;
+    }
+  }
+
+  // Priority 4: Any space
+  for (let i = maxPos; i >= searchStart; i--) {
+    if (text[i] === ' ') {
+      return i + 1;
+    }
+  }
+
+  // Last resort: force split at maxPos
+  return maxPos;
+}
+
+// ---------------------------------------------------------------------------
+// Page info determination
+// ---------------------------------------------------------------------------
+
+/**
+ * Determine page number and page range for a character span.
+ */
+function determinePageInfoForSpan(
+  startOffset: number,
+  endOffset: number,
   pageOffsets: PageOffset[]
 ): { pageNumber: number | null; pageRange: string | null } {
-  // No page info available
   if (pageOffsets.length === 0) {
     return { pageNumber: null, pageRange: null };
   }
 
-  // Find page containing start offset
-  const startPage = pageOffsets.find((p) => charStart >= p.charStart && charStart < p.charEnd);
+  const startPage = getPageNumberForOffset(startOffset, pageOffsets);
+  const endPage = getPageNumberForOffset(
+    Math.max(startOffset, endOffset - 1),
+    pageOffsets
+  );
 
-  // Find page containing end offset (note: endOffset is exclusive, so use >/<= for boundary)
-  const endPage = pageOffsets.find((p) => charEnd > p.charStart && charEnd <= p.charEnd);
-
-  // Start position not found in any page
-  if (!startPage) {
+  if (startPage === null) {
     return { pageNumber: null, pageRange: null };
   }
 
-  // Single page or end page not found/same as start
-  if (!endPage || startPage.page === endPage.page) {
-    return { pageNumber: startPage.page, pageRange: null };
+  if (endPage === null || startPage === endPage) {
+    return { pageNumber: startPage, pageRange: null };
   }
 
-  // Spans multiple pages
   return {
-    pageNumber: startPage.page,
-    pageRange: `${startPage.page}-${endPage.page}`,
+    pageNumber: startPage,
+    pageRange: `${startPage}-${endPage}`,
   };
 }
 
+// ---------------------------------------------------------------------------
+// Main hybrid chunking function
+// ---------------------------------------------------------------------------
+
 /**
- * Chunk text with page number tracking
+ * Hybrid section-aware chunking.
  *
- * Extends basic chunking with page information from pageOffsets.
- * Each chunk will have pageNumber (for single-page chunks) or
- * pageRange (for chunks spanning multiple pages).
+ * Uses markdown structure (headings, paragraphs, tables), JSON block data
+ * (for atomic region detection), and page offsets (for page tracking) to
+ * produce semantically coherent chunks.
  *
- * @param text - The text to chunk
- * @param pageOffsets - Array mapping page numbers to character offsets
- * @param config - Chunking configuration
- * @returns Array of ChunkResult with page tracking
- *
- * @example
- * const pageOffsets = [
- *   { page: 1, charStart: 0, charEnd: 1500 },
- *   { page: 2, charStart: 1500, charEnd: 3000 }
- * ];
- * const chunks = chunkWithPageTracking(text, pageOffsets);
- * // Chunks spanning pages will have pageRange like "1-2"
+ * @param text - Full markdown text from OCR output
+ * @param pageOffsets - Page offset information for page number assignment
+ * @param jsonBlocks - JSON block hierarchy from Datalab OCR (may be null)
+ * @param config - Chunking configuration (default: 2000 chars, 10% overlap)
+ * @returns Array of ChunkResult with section context, content types, and page info
  */
-export function chunkWithPageTracking(
+export function chunkHybridSectionAware(
   text: string,
   pageOffsets: PageOffset[],
+  jsonBlocks: Record<string, unknown> | null,
   config: ChunkingConfig = DEFAULT_CHUNKING_CONFIG
 ): ChunkResult[] {
-  // First, chunk the text normally
-  const chunks = chunkText(text, config);
+  // 1. Empty text returns empty array
+  if (text.length === 0) {
+    return [];
+  }
 
-  // Then add page tracking info to each chunk
-  for (const chunk of chunks) {
-    const pageInfo = determinePageInfo(chunk.startOffset, chunk.endOffset, pageOffsets);
-    chunk.pageNumber = pageInfo.pageNumber;
-    chunk.pageRange = pageInfo.pageRange;
+  // 2. Parse markdown blocks
+  const blocks = parseMarkdownBlocks(text, pageOffsets);
+
+  // 3. If blocks is empty but text is not, something is wrong
+  if (blocks.length === 0) {
+    throw new Error(
+      `Markdown parser returned no blocks for non-empty text (${text.length} chars)`
+    );
+  }
+
+  // 4. Build section hierarchy
+  const sections = buildSectionHierarchy(blocks);
+
+  // 5. Find atomic regions from JSON blocks
+  const atomicRegions = findAtomicRegions(jsonBlocks, text, pageOffsets);
+
+  // 6. Walk blocks, accumulating into chunks
+  const chunks: ChunkResult[] = [];
+  let accumulator = createEmptyAccumulator(0);
+  let currentSectionPath: string | null = null;
+  let currentHeadingText: string | null = null;
+  let currentHeadingLevel: number | null = null;
+  let chunkIndex = 0;
+  const overlapSize = getOverlapCharacters(config);
+
+  /**
+   * Flush the accumulator as a chunk and reset it.
+   */
+  function flushAccumulator(isAtomic: boolean): void {
+    if (!accumulatorHasContent(accumulator)) {
+      return;
+    }
+
+    const chunkText = accumulator.text;
+    const startOff = accumulator.startOffset;
+    const endOff = startOff + chunkText.length;
+
+    const pageInfo = determinePageInfoForSpan(startOff, endOff, pageOffsets);
+
+    chunks.push({
+      index: chunkIndex++,
+      text: chunkText,
+      startOffset: startOff,
+      endOffset: endOff,
+      overlapWithPrevious: 0, // Set in post-processing
+      overlapWithNext: 0,     // Set in post-processing
+      pageNumber: pageInfo.pageNumber,
+      pageRange: pageInfo.pageRange,
+      headingContext: currentHeadingText,
+      headingLevel: currentHeadingLevel,
+      sectionPath: currentSectionPath,
+      contentTypes: Array.from(accumulator.contentTypes),
+      isAtomic,
+    });
+  }
+
+  /**
+   * Emit a single block as an atomic chunk (table, code, or JSON-detected region).
+   */
+  function emitAtomicChunk(block: MarkdownBlock): void {
+    const startOff = block.startOffset;
+    const endOff = block.endOffset;
+    const pageInfo = determinePageInfoForSpan(startOff, endOff, pageOffsets);
+
+    chunks.push({
+      index: chunkIndex++,
+      text: block.text,
+      startOffset: startOff,
+      endOffset: endOff,
+      overlapWithPrevious: 0,
+      overlapWithNext: 0,
+      pageNumber: pageInfo.pageNumber,
+      pageRange: pageInfo.pageRange,
+      headingContext: currentHeadingText,
+      headingLevel: currentHeadingLevel,
+      sectionPath: currentSectionPath,
+      contentTypes: [mapBlockTypeToContentType(block.type)],
+      isAtomic: true,
+    });
+  }
+
+  for (let blockIdx = 0; blockIdx < blocks.length; blockIdx++) {
+    const block = blocks[blockIdx];
+
+    // Skip empty and page_marker blocks
+    if (block.type === 'empty' || block.type === 'page_marker') {
+      continue;
+    }
+
+    // Get section info for this block
+    const sectionNode = sections.get(blockIdx);
+    if (sectionNode) {
+      currentSectionPath = sectionNode.path;
+    }
+
+    if (block.type === 'heading') {
+      // Flush accumulator before starting new section
+      flushAccumulator(false);
+
+      // Update heading context
+      currentHeadingText = block.headingText;
+      currentHeadingLevel = block.headingLevel;
+
+      // Start new accumulator with the heading
+      accumulator = createEmptyAccumulator(block.startOffset);
+      addBlockToAccumulator(accumulator, block);
+
+    } else if (block.type === 'table' || block.type === 'code') {
+      // Atomic block - flush accumulator, then emit block as its own chunk
+      flushAccumulator(false);
+      emitAtomicChunk(block);
+      // Reset accumulator for next content
+      accumulator = createEmptyAccumulator(block.endOffset);
+
+    } else {
+      // Regular content (paragraph, list)
+      // Check if this block overlaps an atomic region from JSON blocks
+      const atomicRegion = isOffsetInAtomicRegion(block.startOffset, atomicRegions);
+      if (atomicRegion) {
+        // This was detected as part of an atomic region by JSON analysis
+        flushAccumulator(false);
+        emitAtomicChunk(block);
+        accumulator = createEmptyAccumulator(block.endOffset);
+      } else {
+        // Add to accumulator
+        addBlockToAccumulator(accumulator, block);
+
+        // Check if accumulator exceeds chunk size
+        if (accumulator.text.length > config.chunkSize) {
+          // Need to split - find sentence boundary
+          const splitPos = findSentenceBoundary(accumulator.text, config.chunkSize);
+
+          // Save state before flush
+          const fullText = accumulator.text;
+          const savedStartOffset = accumulator.startOffset;
+          const savedContentTypes = new Set(accumulator.contentTypes);
+
+          // Truncate accumulator text to split point and flush
+          accumulator.text = fullText.slice(0, splitPos);
+          flushAccumulator(false);
+
+          // Keep the remainder in a new accumulator
+          const remainder = fullText.slice(splitPos);
+          accumulator = createEmptyAccumulator(savedStartOffset + splitPos);
+          accumulator.text = remainder;
+          accumulator.contentTypes = savedContentTypes;
+
+          // If remainder still exceeds maxChunkSize, keep splitting
+          while (accumulator.text.length > config.chunkSize) {
+            const innerSplitPos = findSentenceBoundary(
+              accumulator.text,
+              config.chunkSize
+            );
+            const innerFullText = accumulator.text;
+            const innerStartOffset = accumulator.startOffset;
+            const innerContentTypes = new Set(accumulator.contentTypes);
+
+            accumulator.text = innerFullText.slice(0, innerSplitPos);
+            flushAccumulator(false);
+
+            const innerRemainder = innerFullText.slice(innerSplitPos);
+            accumulator = createEmptyAccumulator(innerStartOffset + innerSplitPos);
+            accumulator.text = innerRemainder;
+            accumulator.contentTypes = innerContentTypes;
+          }
+        }
+      }
+    }
+  }
+
+  // Flush any remaining content
+  flushAccumulator(false);
+
+  // 9. Set overlap values for non-atomic chunks
+  for (let i = 0; i < chunks.length; i++) {
+    const chunk = chunks[i];
+
+    if (chunk.isAtomic) {
+      // Atomic chunks never participate in overlap
+      chunk.overlapWithPrevious = 0;
+      chunk.overlapWithNext = 0;
+      continue;
+    }
+
+    // Set overlapWithPrevious for non-first, non-atomic chunks
+    if (i > 0 && !chunks[i - 1].isAtomic) {
+      chunk.overlapWithPrevious = overlapSize;
+    }
+
+    // Set overlapWithNext for non-last, non-atomic chunks
+    if (i < chunks.length - 1 && !chunks[i + 1].isAtomic) {
+      chunk.overlapWithNext = overlapSize;
+    }
   }
 
   return chunks;
 }
 
+// ---------------------------------------------------------------------------
+// Provenance creation
+// ---------------------------------------------------------------------------
+
 /**
- * Create provenance parameters for a chunk
+ * Create provenance parameters for a chunk.
  *
  * Generates a CreateProvenanceParams object suitable for creating
  * a CHUNK provenance record (chain_depth=2).
  *
  * @param params - Chunk provenance parameters
  * @returns CreateProvenanceParams ready for insertProvenance
- *
- * @example
- * const provParams = createChunkProvenance({
- *   chunk: chunks[0],
- *   chunkTextHash: computeHash(chunks[0].text),
- *   ocrProvenanceId: ocrProv.id,
- *   documentProvenanceId: docProv.id,
- *   ocrContentHash: ocrResult.content_hash,
- *   fileHash: doc.file_hash,
- *   totalChunks: chunks.length
- * });
  */
 export function createChunkProvenance(params: ChunkProvenanceParams): CreateProvenanceParams {
   const {
@@ -249,90 +466,24 @@ export function createChunkProvenance(params: ChunkProvenanceParams): CreateProv
     input_hash: ocrContentHash,
     file_hash: fileHash,
     processor: 'chunker',
-    processor_version: '1.0.0',
+    processor_version: '2.0.0',
     processing_params: {
       chunk_size: config.chunkSize,
       overlap_percent: config.overlapPercent,
-      overlap_characters: getOverlapCharacters(config),
+      max_chunk_size: config.maxChunkSize,
+      strategy: 'hybrid_section',
       chunk_index: chunk.index,
       total_chunks: totalChunks,
       character_start: chunk.startOffset,
       character_end: chunk.endOffset,
+      heading_context: chunk.headingContext ?? null,
+      section_path: chunk.sectionPath ?? null,
+      is_atomic: chunk.isAtomic,
+      content_types: chunk.contentTypes,
     },
     processing_duration_ms: processingDurationMs ?? null,
     location,
   };
-}
-
-/**
- * Chunk text with page-boundary awareness
- *
- * Unlike standard chunking which ignores page boundaries, this mode ensures
- * no chunk spans across pages. Each page is chunked independently, preserving
- * document structure for better search relevance.
- *
- * Falls back to standard chunkText() if pageOffsets is empty.
- *
- * @param text - The full OCR text to chunk
- * @param pageOffsets - Array of page offset information mapping pages to character ranges
- * @param config - Chunking configuration (default: 2000 chars, 10% overlap)
- * @returns Array of ChunkResult with page numbers set from page boundaries
- */
-export function chunkTextPageAware(
-  text: string,
-  pageOffsets: PageOffset[],
-  config: ChunkingConfig = DEFAULT_CHUNKING_CONFIG
-): ChunkResult[] {
-  // Fall back to standard chunking if no page offsets
-  if (pageOffsets.length === 0) {
-    return chunkText(text, config);
-  }
-
-  const chunks: ChunkResult[] = [];
-  const overlapSize = getOverlapCharacters(config);
-
-  for (let pageIdx = 0; pageIdx < pageOffsets.length; pageIdx++) {
-    const pageStart = pageOffsets[pageIdx].charStart;
-    const pageEnd = pageOffsets[pageIdx].charEnd;
-    const pageText = text.slice(pageStart, pageEnd);
-    const pageNumber = pageOffsets[pageIdx].page;
-
-    if (pageText.trim().length === 0) continue;
-
-    // Chunk within the page
-    let pos = 0;
-    while (pos < pageText.length) {
-      const end = Math.min(pos + config.chunkSize, pageText.length);
-      const chunkContent = pageText.slice(pos, end);
-
-      if (chunkContent.trim().length > 0) {
-        const chunkIndex = chunks.length;
-        chunks.push({
-          text: chunkContent,
-          index: chunkIndex,
-          startOffset: pageStart + pos,
-          endOffset: pageStart + end,
-          overlapWithPrevious: chunkIndex === 0 ? 0 : overlapSize,
-          overlapWithNext: 0, // Set after loop
-          pageNumber,
-          pageRange: null,
-        });
-      }
-
-      // Move forward by stepSize, but stop if we reached end of page
-      if (end >= pageText.length) break;
-      const nextPos = end - overlapSize;
-      if (nextPos <= pos) break; // Prevent infinite loop on tiny pages
-      pos = nextPos;
-    }
-  }
-
-  // Set overlapWithNext for all but last chunk
-  for (let i = 0; i < chunks.length - 1; i++) {
-    chunks[i].overlapWithNext = overlapSize;
-  }
-
-  return chunks;
 }
 
 // Re-export types for convenience

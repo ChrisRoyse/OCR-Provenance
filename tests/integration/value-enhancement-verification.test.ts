@@ -486,8 +486,8 @@ describe.skipIf(!sqliteVecAvailable)('VALUE ENHANCEMENT VERIFICATION: Phases 1-5
       expect(result.expanded).toContain('wound');
     });
 
-    it('should chunk text respecting page boundaries', async () => {
-      const { chunkTextPageAware } = await import('../../src/services/chunking/chunker.js');
+    it('should chunk text with page offsets using hybrid chunker', async () => {
+      const { chunkHybridSectionAware, DEFAULT_CHUNKING_CONFIG } = await import('../../src/services/chunking/chunker.js');
 
       // Build text: ~122 chars page 1, ~122 chars page 2
       const page1Text = 'Page one content here. ' + 'x'.repeat(100);
@@ -499,23 +499,15 @@ describe.skipIf(!sqliteVecAvailable)('VALUE ENHANCEMENT VERIFICATION: Phases 1-5
         { page: 2, charStart: page1Text.length, charEnd: text.length },
       ];
 
-      // Use small chunk size to force multiple chunks per page
-      const config = { chunkSize: 80, overlapPercent: 10 };
-      const chunks = chunkTextPageAware(text, pageOffsets, config);
+      const chunks = chunkHybridSectionAware(text, pageOffsets, null, DEFAULT_CHUNKING_CONFIG);
 
       expect(chunks.length).toBeGreaterThan(0);
 
-      // VERIFY: No chunk spans page boundaries
+      // VERIFY: Each chunk has valid page info and section metadata
       for (const chunk of chunks) {
-        expect(chunk.pageNumber).toBeDefined();
-        expect(chunk.pageNumber).not.toBeNull();
-
-        const pageIdx = pageOffsets.findIndex((p) => p.page === chunk.pageNumber);
-        expect(pageIdx).toBeGreaterThanOrEqual(0);
-
-        const page = pageOffsets[pageIdx];
-        expect(chunk.startOffset).toBeGreaterThanOrEqual(page.charStart);
-        expect(chunk.endOffset).toBeLessThanOrEqual(page.charEnd);
+        expect(chunk.pageNumber).not.toBeUndefined();
+        expect(Array.isArray(chunk.contentTypes)).toBe(true);
+        expect(typeof chunk.isAtomic).toBe('boolean');
       }
     });
 
@@ -589,27 +581,24 @@ describe.skipIf(!sqliteVecAvailable)('VALUE ENHANCEMENT VERIFICATION: Phases 1-5
       expect(noFiles.success).toBe(false);
     });
 
-    it('should validate chunking_strategy in ProcessPendingInput', async () => {
+    it('should validate ProcessPendingInput without chunking_strategy', async () => {
       const { ProcessPendingInput } = await import('../../src/utils/validation.js');
 
-      // Valid: page_aware strategy
-      const pageAware = ProcessPendingInput.safeParse({
-        chunking_strategy: 'page_aware',
-      });
-      expect(pageAware.success).toBe(true);
-
-      // Valid: default (fixed)
+      // Valid: default params (chunking_strategy removed -- hybrid_section is always used)
       const defaults = ProcessPendingInput.safeParse({});
       expect(defaults.success).toBe(true);
-      if (defaults.success) {
-        expect(defaults.data.chunking_strategy).toBe('fixed');
-      }
 
-      // Invalid: unknown strategy
-      const invalid = ProcessPendingInput.safeParse({
-        chunking_strategy: 'semantic',
+      // Valid: with OCR mode
+      const withMode = ProcessPendingInput.safeParse({
+        ocr_mode: 'balanced',
       });
-      expect(invalid.success).toBe(false);
+      expect(withMode.success).toBe(true);
+
+      // Unknown keys are stripped by zod, so extra keys should not cause failure
+      const withUnknown = ProcessPendingInput.safeParse({
+        chunking_strategy: 'page_aware',
+      });
+      expect(withUnknown.success).toBe(true);
     });
 
     it('should validate extras parameter in ProcessPendingInput', async () => {
@@ -883,18 +872,18 @@ describe.skipIf(!sqliteVecAvailable)('VALUE ENHANCEMENT VERIFICATION: Phases 1-5
     });
 
     it('should chunk empty text to empty array', async () => {
-      const { chunkTextPageAware } = await import('../../src/services/chunking/chunker.js');
+      const { chunkHybridSectionAware, DEFAULT_CHUNKING_CONFIG } = await import('../../src/services/chunking/chunker.js');
 
-      const chunks = chunkTextPageAware('', []);
+      const chunks = chunkHybridSectionAware('', [], null, DEFAULT_CHUNKING_CONFIG);
       expect(chunks).toHaveLength(0);
     });
 
-    it('should handle page-aware chunking with no page offsets (fallback)', async () => {
-      const { chunkTextPageAware } = await import('../../src/services/chunking/chunker.js');
+    it('should handle chunking with no page offsets', async () => {
+      const { chunkHybridSectionAware, DEFAULT_CHUNKING_CONFIG } = await import('../../src/services/chunking/chunker.js');
 
       const text = 'Hello world this is a test text that needs to be chunked.';
-      const chunks = chunkTextPageAware(text, []);
-      // Falls back to standard chunking
+      const chunks = chunkHybridSectionAware(text, [], null, DEFAULT_CHUNKING_CONFIG);
+      // Should produce at least one chunk
       expect(chunks.length).toBeGreaterThan(0);
       expect(chunks[0].text).toBe(text);
     });

@@ -8,7 +8,7 @@
  */
 
 /** Current schema version */
-export const SCHEMA_VERSION = 26;
+export const SCHEMA_VERSION = 27;
 
 /**
  * Database configuration pragmas for optimal performance and safety
@@ -163,6 +163,12 @@ CREATE TABLE IF NOT EXISTS chunks (
   embedding_status TEXT NOT NULL CHECK (embedding_status IN ('pending', 'complete', 'failed')),
   embedded_at TEXT,
   ocr_quality_score REAL,
+  heading_context TEXT,
+  heading_level INTEGER,
+  section_path TEXT,
+  content_types TEXT,
+  is_atomic INTEGER NOT NULL DEFAULT 0,
+  chunking_strategy TEXT NOT NULL DEFAULT 'hybrid_section',
   FOREIGN KEY (document_id) REFERENCES documents(id),
   FOREIGN KEY (ocr_result_id) REFERENCES ocr_results(id),
   FOREIGN KEY (provenance_id) REFERENCES provenance(id)
