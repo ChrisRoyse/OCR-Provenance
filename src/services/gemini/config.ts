@@ -108,10 +108,12 @@ export function loadGeminiConfig(overrides?: Partial<GeminiConfig>): GeminiConfi
  */
 export const GENERATION_PRESETS = {
   // Fast mode: <2s target, temperature 0.0, JSON output
+  // Gemini 3 Flash defaults to HIGH thinking - must set MINIMAL when using JSON mode
   fast: {
     temperature: 0.0,
     maxOutputTokens: 8192,
     responseMimeType: 'application/json' as const,
+    thinkingConfig: { thinkingLevel: 'MINIMAL' as ThinkingLevel },
   },
 
   // Thinking mode: <8s target, extended reasoning
@@ -122,9 +124,16 @@ export const GENERATION_PRESETS = {
   }),
 
   // Multimodal mode: 5-15s target
+  // Gemini 3 Flash defaults to HIGH thinking which is incompatible with
+  // responseMimeType: 'application/json', causing intermittent empty responses.
+  // Explicitly set MINIMAL thinking to prevent this known API issue.
   multimodal: {
     temperature: 0.3,
     maxOutputTokens: 8192,
     responseMimeType: 'application/json' as const,
+    thinkingConfig: { thinkingLevel: 'MINIMAL' as ThinkingLevel },
   },
+
+  // Fast mode also needs MINIMAL thinking to avoid empty JSON responses
+  // from Gemini 3 Flash's default HIGH thinking conflicting with JSON output.
 } as const;

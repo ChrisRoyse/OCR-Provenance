@@ -234,8 +234,27 @@ export class FileManagerClient {
         if (settled) return;
         settled = true;
 
+        // Capture exit code/signal for diagnostics
+        const exitCode = shell.exitCode ?? null;
+        const exitSignal = shell.exitSignal ?? null;
+
         const output = outputChunks.join('\n');
         outputChunks.length = 0;
+
+        // python-shell bug: when process is killed by signal (SIGTERM/SIGKILL),
+        // exitCode is null and exitSignal is set, but err is NOT provided.
+        if (!err && exitSignal) {
+          const signalDetail = stderr.trim()
+            ? `Process killed by ${exitSignal}. Python stderr:\n${stderr.trim()}`
+            : `Process killed by ${exitSignal} with no stderr output.`;
+          reject(
+            new OCRError(
+              `File manager worker killed by signal ${exitSignal}. ${signalDetail}`,
+              exitSignal === 'SIGTERM' || exitSignal === 'SIGALRM' ? 'OCR_TIMEOUT' : 'FILE_MANAGER_API_ERROR'
+            )
+          );
+          return;
+        }
 
         if (err) {
           const lines = output
@@ -267,7 +286,14 @@ export class FileManagerClient {
           .split('\n')
           .filter((l) => l.trim());
         if (lines.length === 0) {
-          reject(new OCRError('No output from file manager worker', 'OCR_API_ERROR'));
+          const diagnostics = [
+            'No output from file manager worker.',
+            `Exit code: ${exitCode}, signal: ${exitSignal}.`,
+          ];
+          if (stderr.trim()) {
+            diagnostics.push(`Python stderr: ${stderr.trim().substring(0, 500)}`);
+          }
+          reject(new OCRError(diagnostics.join(' '), 'FILE_MANAGER_API_ERROR'));
           return;
         }
 

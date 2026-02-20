@@ -669,7 +669,13 @@ Examples:
             print(result.extracted_text[:500])
 
     except Exception as e:
-        logger.exception(f"Fatal error: {e}")
+        # In --json mode, logging is set to CRITICAL to keep stdout clean.
+        # But fatal errors MUST be logged to stderr for diagnostics, so
+        # temporarily elevate logger level and use logger.critical().
+        if args.json:
+            logger.critical(f"Fatal error: {e}", exc_info=True)
+        else:
+            logger.exception(f"Fatal error: {e}")
         if args.json:
             details = {}
             if hasattr(e, "status_code"):

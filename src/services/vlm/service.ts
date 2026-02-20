@@ -240,10 +240,20 @@ export class VLMService {
    *
    * When thinking mode is enabled, responseMimeType: 'application/json' is incompatible,
    * so Gemini may include reasoning preamble before the JSON block. This method handles
-   * that by: (1) stripping code fences, (2) trying full text parse, (3) extracting the
-   * outermost JSON object from mixed text, (4) throwing with diagnostics on failure.
+   * that by: (0) rejecting empty/blank responses immediately, (1) stripping code fences,
+   * (2) trying full text parse, (3) extracting the outermost JSON object from mixed text,
+   * (4) throwing with diagnostics on failure.
    */
   private parseVLMJson<T>(text: string, label: string): T {
+    // Step 0: Reject empty/blank responses immediately with a clear error
+    if (!text || text.trim().length === 0) {
+      console.error(`[VLMService] Gemini returned empty response for ${label}`);
+      throw new Error(
+        `VLM ${label} failed: Gemini returned an empty response. ` +
+          `The image may be too small, corrupted, or unprocessable by the model.`
+      );
+    }
+
     // Step 1: Strip markdown code fences
     const clean = text.replace(/```json\n?|\n?```/g, '').trim();
 

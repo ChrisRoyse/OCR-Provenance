@@ -202,10 +202,30 @@ export class DatalabClient {
         if (settled) return;
         settled = true;
 
+        // Capture exit code/signal for diagnostics
+        const exitCode = shell.exitCode ?? null;
+        const exitSignal = shell.exitSignal ?? null;
+
         // H-3: Join chunks once instead of repeated string concatenation
         const output = outputChunks.join('\n');
         // M-12: Allow early GC of chunk array
         outputChunks.length = 0;
+
+        // python-shell bug: when process is killed by signal (SIGTERM/SIGKILL),
+        // exitCode is null and exitSignal is set, but err is NOT provided.
+        // Detect this and treat signal-killed processes as errors.
+        if (!err && exitSignal) {
+          const signalDetail = stderr.trim()
+            ? `Process killed by ${exitSignal}. Python stderr:\n${stderr.trim()}`
+            : `Process killed by ${exitSignal} with no stderr output.`;
+          reject(
+            new OCRError(
+              `OCR worker killed by signal ${exitSignal} (file: ${filePath}). ${signalDetail}`,
+              exitSignal === 'SIGTERM' || exitSignal === 'SIGALRM' ? 'OCR_TIMEOUT' : 'OCR_API_ERROR'
+            )
+          );
+          return;
+        }
 
         if (err) {
           // Try to parse JSON from output for structured error
@@ -239,7 +259,17 @@ export class DatalabClient {
           .split('\n')
           .filter((l) => l.trim());
         if (lines.length === 0) {
-          reject(new OCRError('No output from OCR worker', 'OCR_API_ERROR'));
+          const diagnostics = [
+            'No output from OCR worker.',
+            `Exit code: ${exitCode}, signal: ${exitSignal}.`,
+            `File: ${filePath}.`,
+          ];
+          if (stderr.trim()) {
+            diagnostics.push(`Python stderr: ${stderr.trim().substring(0, 500)}`);
+          } else {
+            diagnostics.push('Python stderr was empty (logging suppressed in --json mode).');
+          }
+          reject(new OCRError(diagnostics.join(' '), 'OCR_API_ERROR'));
           return;
         }
 
@@ -407,8 +437,29 @@ export class DatalabClient {
         if (settled) return;
         settled = true;
 
+        // Capture exit code/signal for diagnostics
+        const exitCode = shell.exitCode ?? null;
+        const exitSignal = shell.exitSignal ?? null;
+
         const output = outputChunks.join('\n');
         outputChunks.length = 0;
+
+        // python-shell bug: when process is killed by signal (SIGTERM/SIGKILL),
+        // exitCode is null and exitSignal is set, but err is NOT provided.
+        // Detect this and treat signal-killed processes as errors.
+        const rawFilePath = ocrOptions?.fileUrl || filePath;
+        if (!err && exitSignal) {
+          const signalDetail = stderr.trim()
+            ? `Process killed by ${exitSignal}. Python stderr:\n${stderr.trim()}`
+            : `Process killed by ${exitSignal} with no stderr output.`;
+          reject(
+            new OCRError(
+              `OCR worker killed by signal ${exitSignal} (file: ${rawFilePath}). ${signalDetail}`,
+              exitSignal === 'SIGTERM' || exitSignal === 'SIGALRM' ? 'OCR_TIMEOUT' : 'OCR_API_ERROR'
+            )
+          );
+          return;
+        }
 
         if (err) {
           const lines = output
@@ -440,7 +491,17 @@ export class DatalabClient {
           .split('\n')
           .filter((l) => l.trim());
         if (lines.length === 0) {
-          reject(new OCRError('No output from OCR worker', 'OCR_API_ERROR'));
+          const diagnostics = [
+            'No output from OCR worker.',
+            `Exit code: ${exitCode}, signal: ${exitSignal}.`,
+            `File: ${rawFilePath}.`,
+          ];
+          if (stderr.trim()) {
+            diagnostics.push(`Python stderr: ${stderr.trim().substring(0, 500)}`);
+          } else {
+            diagnostics.push('Python stderr was empty (logging suppressed in --json mode).');
+          }
+          reject(new OCRError(diagnostics.join(' '), 'OCR_API_ERROR'));
           return;
         }
 

@@ -90,8 +90,9 @@ describe('GeminiClient analyzeImage options', () => {
       // Temperature from multimodal preset
       expect(generationConfig.temperature).toBe(GENERATION_PRESETS.multimodal.temperature);
 
-      // thinkingConfig must NOT be present
-      expect(generationConfig.thinkingConfig).toBeUndefined();
+      // thinkingConfig should be MINIMAL to prevent Gemini 3 Flash empty response bug
+      // when using responseMimeType: 'application/json'
+      expect(generationConfig.thinkingConfig).toEqual({ thinkingLevel: 'MINIMAL' });
     });
 
     it('should use MINIMAL thinking level when specified', async () => {
