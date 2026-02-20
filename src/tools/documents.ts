@@ -136,6 +136,12 @@ export async function handleDocumentGet(params: Record<string, unknown>): Promis
         character_start: c.character_start,
         character_end: c.character_end,
         embedding_status: c.embedding_status,
+        heading_context: c.heading_context ?? null,
+        heading_level: c.heading_level ?? null,
+        section_path: c.section_path ?? null,
+        content_types: c.content_types ?? null,
+        is_atomic: c.is_atomic ?? 0,
+        chunking_strategy: c.chunking_strategy ?? null,
       }));
     }
 

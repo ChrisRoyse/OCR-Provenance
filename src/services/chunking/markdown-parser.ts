@@ -39,6 +39,13 @@ export interface SectionNode {
 const PAGE_MARKER_REGEX = /^\s*---\s*\n\s*<!--\s*Page\s+\d+\s*-->\s*$/;
 
 /**
+ * Datalab page separator pattern.
+ * Matches: {0}------------------------------------------------
+ * Format: {digits} followed by 10+ dashes, optionally followed by whitespace.
+ */
+const DATALAB_PAGE_SEPARATOR_REGEX = /^\s*\{\d+\}-{10,}\s*$/;
+
+/**
  * Heading pattern: 1-6 hash marks followed by a space and text
  */
 const HEADING_REGEX = /^(#{1,6})\s+(.+)/;
@@ -341,8 +348,8 @@ function classifySegment(
     };
   }
 
-  // Page marker
-  if (PAGE_MARKER_REGEX.test(segment)) {
+  // Page marker (HTML comment format or Datalab {N}--- format)
+  if (PAGE_MARKER_REGEX.test(segment) || DATALAB_PAGE_SEPARATOR_REGEX.test(segment)) {
     return {
       type: 'page_marker',
       text: segment,
@@ -436,17 +443,36 @@ function classifySegment(
  * @returns Array of PageOffset sorted by page number, or empty array if no markers found
  */
 export function extractPageOffsetsFromText(text: string): PageOffset[] {
-  // Match Datalab page markers: ---\n<!-- Page N -->
-  const markerRegex = /---\n<!--\s*Page\s+(\d+)\s*-->/g;
+  // Match Datalab page markers in both formats:
+  // Format 1 (HTML comment): ---\n<!-- Page N -->
+  // Format 2 (Datalab separator): {N}------------------------------------------------
+  const htmlMarkerRegex = /---\n<!--\s*Page\s+(\d+)\s*-->/g;
+  const datalabMarkerRegex = /\{(\d+)\}-{10,}/g;
   const markers: Array<{ page: number; markerStart: number }> = [];
 
   let match: RegExpExecArray | null;
-  while ((match = markerRegex.exec(text)) !== null) {
+  while ((match = htmlMarkerRegex.exec(text)) !== null) {
     markers.push({
       page: parseInt(match[1], 10),
       markerStart: match.index,
     });
   }
+
+  // Also check Datalab {N}--- format (page numbers are 0-based, convert to 1-based)
+  while ((match = datalabMarkerRegex.exec(text)) !== null) {
+    const pageNum = parseInt(match[1], 10);
+    // Only add if this position wasn't already captured by the HTML format
+    const alreadyCaptured = markers.some(m => Math.abs(m.markerStart - match!.index) < 10);
+    if (!alreadyCaptured) {
+      markers.push({
+        page: pageNum + 1, // Convert 0-based to 1-based
+        markerStart: match.index,
+      });
+    }
+  }
+
+  // Sort by position in text
+  markers.sort((a, b) => a.markerStart - b.markerStart);
 
   if (markers.length === 0) {
     return [];

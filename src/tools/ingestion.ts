@@ -117,6 +117,12 @@ function storeChunks(
         overlap_percent: config.overlapPercent,
         chunk_index: i,
         total_chunks: chunkResults.length,
+        character_start: cr.startOffset,
+        character_end: cr.endOffset,
+        heading_context: cr.headingContext ?? null,
+        section_path: cr.sectionPath ?? null,
+        is_atomic: cr.isAtomic,
+        content_types: cr.contentTypes,
       },
       location: {
         chunk_index: i,
