@@ -31,6 +31,8 @@ import {
   findAtomicRegions,
   isOffsetInAtomicRegion,
 } from './json-block-analyzer.js';
+import { normalizeHeadingLevels } from './heading-normalizer.js';
+import { mergeHeadingOnlyChunks } from './chunk-merger.js';
 
 /**
  * Parameters for creating chunk provenance record
@@ -228,6 +230,11 @@ export function chunkHybridSectionAware(
     );
   }
 
+  // 3.5. Normalize heading levels if configured
+  if (config.headingNormalization) {
+    normalizeHeadingLevels(blocks, config.headingNormalization);
+  }
+
   // 4. Build section hierarchy
   const sections = buildSectionHierarchy(blocks);
 
@@ -390,6 +397,12 @@ export function chunkHybridSectionAware(
 
   // Flush any remaining content
   flushAccumulator(false);
+
+  // 8.5. Merge heading-only tiny chunks with neighbors
+  const mergedChunks = mergeHeadingOnlyChunks(chunks, config.minChunkSize ?? 100);
+  // Replace chunks array contents with merged results
+  chunks.length = 0;
+  chunks.push(...mergedChunks);
 
   // 9. Set overlap values for non-atomic chunks
   for (let i = 0; i < chunks.length; i++) {

@@ -23,6 +23,7 @@ import {
 import { DatabaseService } from '../storage/database/index.js';
 import { VectorService } from '../storage/vector.js';
 import { computeHash } from '../../utils/hash.js';
+import { normalizeForEmbedding } from '../chunking/text-normalizer.js';
 import type { Chunk } from '../../models/chunk.js';
 import type { Embedding } from '../../models/embedding.js';
 import type {
@@ -72,7 +73,7 @@ export class EmbeddingService {
 
     const startMs = Date.now();
     const vectors = await this.client.embedChunks(
-      chunks.map((c) => c.text),
+      chunks.map((c) => normalizeForEmbedding(c.text)),
       this.batchSize
     );
 
