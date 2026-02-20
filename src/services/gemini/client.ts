@@ -296,6 +296,28 @@ export class GeminiClient {
         // Update rate limiter with actual usage
         this.rateLimiter.recordUsage(estimatedTokens, usage.totalTokens);
 
+        // Gemini 3 Flash known issue: returns HTTP 200 with finishReason=STOP
+        // but empty content parts. Retry on empty responses instead of returning
+        // an empty string that will cause downstream JSON parse failures.
+        if (!text || text.trim().length === 0) {
+          const hasJsonMode = options.responseMimeType === 'application/json' || options.responseSchema;
+          if (hasJsonMode && attempt < maxAttempts - 1) {
+            const delay = Math.min(baseDelayMs * Math.pow(2, attempt), maxDelayMs);
+            console.error(
+              `[GeminiClient] Empty response from Gemini (attempt ${attempt + 1}/${maxAttempts}, ` +
+              `inputTokens=${usage.inputTokens}, outputTokens=${usage.outputTokens}). ` +
+              `Known Gemini 3 Flash issue. Retrying in ${delay}ms...`
+            );
+            await this.sleep(delay);
+            continue;
+          }
+          // Last attempt or non-JSON mode: return whatever we got
+          console.error(
+            `[GeminiClient] Empty response on final attempt (${attempt + 1}/${maxAttempts}). ` +
+            `inputTokens=${usage.inputTokens}, outputTokens=${usage.outputTokens}`
+          );
+        }
+
         return { text, usage, model: this.config.model };
       } catch (error) {
         lastError = error as Error;

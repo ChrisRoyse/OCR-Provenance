@@ -155,10 +155,29 @@ export class FormFillClient {
         if (settled) return;
         settled = true;
 
+        // Capture exit code/signal for diagnostics
+        const exitCode = shell.exitCode ?? null;
+        const exitSignal = shell.exitSignal ?? null;
+
         // Join chunks once instead of repeated string concatenation
         const output = outputChunks.join('\n');
         // Allow early GC of chunk array
         outputChunks.length = 0;
+
+        // python-shell bug: when process is killed by signal (SIGTERM/SIGKILL),
+        // exitCode is null and exitSignal is set, but err is NOT provided.
+        if (!err && exitSignal) {
+          const signalDetail = stderr.trim()
+            ? `Process killed by ${exitSignal}. Python stderr:\n${stderr.trim()}`
+            : `Process killed by ${exitSignal} with no stderr output.`;
+          reject(
+            new OCRError(
+              `Form fill worker killed by signal ${exitSignal} (file: ${filePath}). ${signalDetail}`,
+              exitSignal === 'SIGTERM' || exitSignal === 'SIGALRM' ? 'FORM_FILL_TIMEOUT' : 'FORM_FILL_API_ERROR'
+            )
+          );
+          return;
+        }
 
         if (err) {
           // Try to parse JSON from output for structured error
@@ -192,7 +211,15 @@ export class FormFillClient {
           .split('\n')
           .filter((l) => l.trim());
         if (lines.length === 0) {
-          reject(new OCRError('No output from form fill worker', 'FORM_FILL_API_ERROR'));
+          const diagnostics = [
+            'No output from form fill worker.',
+            `Exit code: ${exitCode}, signal: ${exitSignal}.`,
+            `File: ${filePath}.`,
+          ];
+          if (stderr.trim()) {
+            diagnostics.push(`Python stderr: ${stderr.trim().substring(0, 500)}`);
+          }
+          reject(new OCRError(diagnostics.join(' '), 'FORM_FILL_API_ERROR'));
           return;
         }
 

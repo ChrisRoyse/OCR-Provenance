@@ -730,7 +730,10 @@ async function processOneDocument(
   );
 
   // Step 5: VLM process images (generate 3+ paragraph descriptions)
-  // Only run if document had images extracted
+  // Only run if document had images extracted.
+  // VLM failures for individual images are logged as warnings but do NOT fail
+  // the document -- OCR, chunking, and embeddings already succeeded. Each image
+  // has its own vlm_status ('complete'|'failed'|'skipped') tracked independently.
   if (imageCount > 0) {
     const vlmPipeline = createVLMPipeline(db, vector, {
       batchSize: 5,
@@ -741,6 +744,7 @@ async function processOneDocument(
     const vlmResult = await vlmPipeline.processDocument(doc.id);
     console.error(
       `[INFO] VLM complete: ${vlmResult.successful}/${vlmResult.total} images processed, ` +
+        `${vlmResult.skipped} skipped, ${vlmResult.failed} failed, ` +
         `${vlmResult.totalTokens} tokens used`
     );
 
@@ -749,8 +753,10 @@ async function processOneDocument(
         .filter((r) => !r.success)
         .map((r) => `${r.imageId}: ${r.error ?? 'unknown error'}`)
         .join('; ');
-      throw new Error(
-        `VLM processing failed for ${vlmResult.failed}/${vlmResult.total} images in document ${doc.id}: ${failedDetails}`
+      console.error(
+        `[WARN] VLM processing failed for ${vlmResult.failed}/${vlmResult.total} images ` +
+          `in document ${doc.id}. Individual images marked as failed; document will ` +
+          `complete normally. Details: ${failedDetails}`
       );
     }
   }

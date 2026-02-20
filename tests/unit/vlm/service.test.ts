@@ -184,11 +184,29 @@ describe('VLMService', () => {
       );
     });
 
-    it('should throw on empty string response', async () => {
+    it('should throw on empty string response with clear diagnostic message', async () => {
       mockClient.analyzeImage.mockResolvedValue(makeGeminiResponse(''));
 
       await expect(service.describeImage('/path/to/image.png')).rejects.toThrow(
-        'VLM analysis JSON parse failed'
+        'Gemini returned an empty response'
+      );
+    });
+
+    it('should throw on whitespace-only response with clear diagnostic message', async () => {
+      mockClient.analyzeImage.mockResolvedValue(makeGeminiResponse('   \n\t  '));
+
+      await expect(service.describeImage('/path/to/image.png')).rejects.toThrow(
+        'Gemini returned an empty response'
+      );
+    });
+
+    it('should throw on null/undefined text response', async () => {
+      mockClient.analyzeImage.mockResolvedValue(
+        makeGeminiResponse(null as unknown as string)
+      );
+
+      await expect(service.describeImage('/path/to/image.png')).rejects.toThrow(
+        'Gemini returned an empty response'
       );
     });
   });
