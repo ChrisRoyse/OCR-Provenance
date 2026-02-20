@@ -454,3 +454,410 @@ describe('isOffsetInAtomicRegion', () => {
     expect(result!.blockType).toBe('Figure');
   });
 });
+
+// =============================================================================
+// SECTION 3.2 EDGE CASE TESTS
+// =============================================================================
+
+describe('findAtomicRegions - Section 3.2 edge cases', () => {
+  it('empty JSON hierarchy (Document with no children) returns empty array', () => {
+    const emptyDoc: Record<string, unknown> = {
+      block_type: 'Document',
+      children: [],
+    };
+    const regions = findAtomicRegions(emptyDoc, 'Some text.', []);
+    expect(regions).toEqual([]);
+  });
+
+  it('empty JSON hierarchy (Page with empty children) returns empty array', () => {
+    const emptyPage: Record<string, unknown> = {
+      block_type: 'Document',
+      children: [
+        {
+          block_type: 'Page',
+          children: [],
+        },
+      ],
+    };
+    const regions = findAtomicRegions(
+      emptyPage,
+      'A complete document with paragraphs and headings but no atomic blocks.',
+      []
+    );
+    expect(regions).toEqual([]);
+  });
+
+  it('Table block with exact HTML pipe-text matching covers all pipe-delimited rows', () => {
+    // The Table block HTML contains pipe-delimited text identical to what appears in markdown.
+    // findTableExtent should walk forward and backward to cover the full table.
+    const tableBlocks: Record<string, unknown> = {
+      block_type: 'Document',
+      children: [
+        {
+          block_type: 'Page',
+          children: [
+            {
+              block_type: 'Table',
+              html: '<div>| Department | Budget | Spent |</div>',
+            },
+          ],
+        },
+      ],
+    };
+    const markdown = [
+      'Budget summary for fiscal year 2025.',
+      '',
+      '| Department | Budget | Spent |',
+      '|------------|--------|-------|',
+      '| Engineering | $1.2M | $1.1M |',
+      '| Marketing | $800K | $750K |',
+      '| Operations | $500K | $480K |',
+      '',
+      'Total expenditure was within projections.',
+    ].join('\n');
+
+    const regions = findAtomicRegions(tableBlocks, markdown, []);
+    expect(regions.length).toBe(1);
+    expect(regions[0].blockType).toBe('Table');
+
+    // The region text should contain the entire pipe-delimited table
+    const regionText = markdown.slice(regions[0].startOffset, regions[0].endOffset);
+    expect(regionText).toContain('| Department | Budget | Spent |');
+    expect(regionText).toContain('| Engineering | $1.2M | $1.1M |');
+    expect(regionText).toContain('| Operations | $500K | $480K |');
+  });
+
+  it('fuzzy match: whitespace normalization matches text with extra spaces', () => {
+    // The analyzer normalizes whitespace during fuzzy matching.
+    // HTML text with single spaces should match markdown text with irregular spacing.
+    const codeBlocks: Record<string, unknown> = {
+      block_type: 'Document',
+      children: [
+        {
+          block_type: 'Page',
+          children: [
+            {
+              block_type: 'Code',
+              html: '<pre><code>function calculate(a, b) { return a + b; }</code></pre>',
+            },
+          ],
+        },
+      ],
+    };
+    // Markdown has extra whitespace that normalizes to match the search key
+    const markdown = [
+      'Intro paragraph about the function.',
+      '',
+      '```javascript',
+      'function   calculate(a,   b)  {  return  a  +  b;  }',
+      '```',
+      '',
+      'Conclusion paragraph.',
+    ].join('\n');
+
+    const regions = findAtomicRegions(codeBlocks, markdown, []);
+    const codeRegions = regions.filter((r) => r.blockType === 'Code');
+    expect(codeRegions.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('fuzzy match: case normalization matches text with different casing', () => {
+    // The fuzzy match lowercases both sides, so case differences match.
+    const figureBlocks: Record<string, unknown> = {
+      block_type: 'Document',
+      children: [
+        {
+          block_type: 'Page',
+          children: [
+            {
+              block_type: 'Figure',
+              html: '<figure><figcaption>ANNUAL REVENUE GROWTH CHART FOR 2025</figcaption></figure>',
+            },
+          ],
+        },
+      ],
+    };
+    const markdown = [
+      'The data shows growth trends for the fiscal year.',
+      '',
+      'Annual Revenue Growth Chart for 2025',
+      '',
+      'As illustrated above, revenue exceeded expectations.',
+    ].join('\n');
+
+    const regions = findAtomicRegions(figureBlocks, markdown, []);
+    const figureRegions = regions.filter((r) => r.blockType === 'Figure');
+    expect(figureRegions.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('search key shorter than 3 chars is skipped gracefully (Figure block)', () => {
+    // When stripped HTML text is < 3 chars, locateByHtmlContent returns null.
+    const shortBlocks: Record<string, unknown> = {
+      block_type: 'Document',
+      children: [
+        {
+          block_type: 'Page',
+          children: [
+            {
+              block_type: 'Figure',
+              html: '<figure>OK</figure>',
+            },
+          ],
+        },
+      ],
+    };
+    const markdown = 'A document with the text OK appearing briefly. More content follows here.';
+
+    const regions = findAtomicRegions(shortBlocks, markdown, []);
+    // "OK" is only 2 chars, below the 3-char minimum for search key
+    expect(regions).toEqual([]);
+  });
+
+  it('search key shorter than 3 chars is skipped gracefully (Code block)', () => {
+    const blocks: Record<string, unknown> = {
+      block_type: 'Document',
+      children: [
+        {
+          block_type: 'Page',
+          children: [
+            {
+              block_type: 'Code',
+              html: '<pre><code>AB</code></pre>',
+            },
+          ],
+        },
+      ],
+    };
+    const regions = findAtomicRegions(blocks, 'Some text with AB in it. More stuff.', []);
+    expect(regions).toEqual([]);
+  });
+
+  it('overlapping regions from two Code blocks are merged into one', () => {
+    // Two Code blocks whose search keys match the same region of text
+    // should produce a single merged region after mergeOverlappingRegions.
+    const blocks: Record<string, unknown> = {
+      block_type: 'Document',
+      children: [
+        {
+          block_type: 'Page',
+          children: [
+            {
+              block_type: 'Code',
+              html: '<pre><code>SELECT customer_id, name FROM customers WHERE status</code></pre>',
+            },
+            {
+              block_type: 'Code',
+              html: '<pre><code>SELECT customer_id, name FROM customers</code></pre>',
+            },
+          ],
+        },
+      ],
+    };
+    const markdown = [
+      'Database query examples.',
+      '',
+      'SELECT customer_id, name FROM customers WHERE status = active ORDER BY name ASC;',
+      '',
+      'The above query retrieves active customers.',
+    ].join('\n');
+
+    const regions = findAtomicRegions(blocks, markdown, []);
+    // Both Code blocks match overlapping text ranges; merged into 1
+    expect(regions.length).toBe(1);
+    expect(regions[0].blockType).toBe('Code');
+  });
+
+  it('adjacent regions (endOffset == startOffset of next) are merged', () => {
+    // Two blocks that produce regions where one ends exactly where the next starts
+    // should be merged (the condition is current.startOffset <= last.endOffset).
+    const blocks: Record<string, unknown> = {
+      block_type: 'Document',
+      children: [
+        {
+          block_type: 'Page',
+          children: [
+            {
+              block_type: 'Code',
+              html: '<pre><code>const alpha = createAlphaHandler(config);</code></pre>',
+            },
+            {
+              block_type: 'Code',
+              html: '<pre><code>const beta = createBetaHandler(config);</code></pre>',
+            },
+          ],
+        },
+      ],
+    };
+    // Place both lines contiguously so their regions are adjacent
+    const markdown = 'const alpha = createAlphaHandler(config);\nconst beta = createBetaHandler(config);';
+
+    const regions = findAtomicRegions(blocks, markdown, []);
+    // After merging, no two consecutive regions should overlap or be adjacent
+    for (let i = 1; i < regions.length; i++) {
+      expect(regions[i].startOffset).toBeGreaterThan(regions[i - 1].endOffset);
+    }
+  });
+
+  it('table extent detection: table at very start of file produces startOffset=0', () => {
+    // When a table begins at position 0, findTableExtent should scan backward
+    // to lineStart=0 and return a region starting at offset 0.
+    const blocks: Record<string, unknown> = {
+      block_type: 'Document',
+      children: [
+        {
+          block_type: 'Page',
+          children: [
+            {
+              block_type: 'Table',
+              html: '<div>| Name | Value |</div>',
+            },
+          ],
+        },
+      ],
+    };
+    const markdown = '| Name | Value |\n|------|-------|\n| Alpha | 100 |\n| Beta | 200 |\n\nTrailing text about results.';
+
+    const regions = findAtomicRegions(blocks, markdown, []);
+    expect(regions.length).toBe(1);
+    expect(regions[0].startOffset).toBe(0);
+    expect(regions[0].blockType).toBe('Table');
+  });
+
+  it('code block end: no closing fence returns text.length as endOffset', () => {
+    // When findCodeBlockEnd cannot find a closing ```, it returns markdownText.length.
+    const blocks: Record<string, unknown> = {
+      block_type: 'Document',
+      children: [
+        {
+          block_type: 'Page',
+          children: [
+            {
+              block_type: 'Code',
+              html: '<pre><code>def unclosed_function():\n    result = compute(data)\n    return result</code></pre>',
+            },
+          ],
+        },
+      ],
+    };
+    // Markdown has opening ``` but NO closing ``` - the code block never terminates
+    const markdown = [
+      'Introduction to the algorithm.',
+      '',
+      '```python',
+      'def unclosed_function():',
+      '    result = compute(data)',
+      '    return result',
+      '# More code with no closing fence',
+      'final_output = transform(result)',
+    ].join('\n');
+
+    const regions = findAtomicRegions(blocks, markdown, []);
+    const codeRegions = regions.filter((r) => r.blockType === 'Code');
+    expect(codeRegions.length).toBeGreaterThanOrEqual(1);
+    // The endOffset should extend to the end of the markdown since no closing fence exists
+    expect(codeRegions[0].endOffset).toBe(markdown.length);
+  });
+
+  it('block with empty html returns no region', () => {
+    const blocks: Record<string, unknown> = {
+      block_type: 'Document',
+      children: [
+        {
+          block_type: 'Page',
+          children: [
+            {
+              block_type: 'Figure',
+              html: '',
+            },
+          ],
+        },
+      ],
+    };
+    const regions = findAtomicRegions(blocks, 'Document with no figure content.', []);
+    expect(regions).toEqual([]);
+  });
+
+  it('block with html containing only tags (no text) returns no region', () => {
+    const blocks: Record<string, unknown> = {
+      block_type: 'Document',
+      children: [
+        {
+          block_type: 'Page',
+          children: [
+            {
+              block_type: 'Figure',
+              html: '<img src="chart.png" alt="" /><br/><hr/>',
+            },
+          ],
+        },
+      ],
+    };
+    const regions = findAtomicRegions(blocks, 'Some text about the chart figure.', []);
+    expect(regions).toEqual([]);
+  });
+
+  it('Table block with short search key (< 5 chars) falls back to pattern search', () => {
+    // When the stripped Table HTML is < 5 chars, locateTableInMarkdown calls
+    // locateTableByPattern() which returns null (logs a warning).
+    const blocks: Record<string, unknown> = {
+      block_type: 'Document',
+      children: [
+        {
+          block_type: 'Page',
+          children: [
+            {
+              block_type: 'Table',
+              html: '<table><tr><td>XY</td></tr></table>',
+            },
+          ],
+        },
+      ],
+    };
+    const markdown = '| Header |\n|--------|\n| Value |';
+
+    const regions = findAtomicRegions(blocks, markdown, []);
+    // "XY" is < 5 chars, triggers pattern fallback which returns null
+    expect(regions).toEqual([]);
+  });
+});
+
+describe('isOffsetInAtomicRegion - additional edge cases', () => {
+  it('offset at exact start of first region (offset=0) returns that region', () => {
+    const regions: AtomicRegion[] = [
+      { startOffset: 0, endOffset: 100, blockType: 'Table', pageNumber: 1 },
+    ];
+    const result = isOffsetInAtomicRegion(0, regions);
+    expect(result).not.toBeNull();
+    expect(result!.blockType).toBe('Table');
+  });
+
+  it('offset one before region start returns null', () => {
+    const regions: AtomicRegion[] = [
+      { startOffset: 100, endOffset: 200, blockType: 'Code', pageNumber: 1 },
+    ];
+    expect(isOffsetInAtomicRegion(99, regions)).toBeNull();
+  });
+
+  it('single-character region (start=50, end=51) contains offset 50 but not 51', () => {
+    const regions: AtomicRegion[] = [
+      { startOffset: 50, endOffset: 51, blockType: 'Figure', pageNumber: 1 },
+    ];
+    expect(isOffsetInAtomicRegion(50, regions)).not.toBeNull();
+    expect(isOffsetInAtomicRegion(51, regions)).toBeNull();
+  });
+
+  it('offset between two non-adjacent regions returns null', () => {
+    const regions: AtomicRegion[] = [
+      { startOffset: 0, endOffset: 100, blockType: 'Table', pageNumber: 1 },
+      { startOffset: 500, endOffset: 800, blockType: 'Code', pageNumber: 2 },
+    ];
+    // Offset 300 is in the gap between the two regions
+    expect(isOffsetInAtomicRegion(300, regions)).toBeNull();
+  });
+
+  it('offset past all regions returns null', () => {
+    const regions: AtomicRegion[] = [
+      { startOffset: 0, endOffset: 50, blockType: 'Table', pageNumber: 1 },
+    ];
+    expect(isOffsetInAtomicRegion(9999, regions)).toBeNull();
+  });
+});
