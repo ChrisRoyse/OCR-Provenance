@@ -1312,6 +1312,11 @@ export function migrateToLatest(db: Database.Database): void {
     migrateV25ToV26(db);
     bumpVersion(26);
   }
+
+  if (currentVersion < 27) {
+    migrateV26ToV27(db);
+    bumpVersion(27);
+  }
 }
 
 /**
@@ -3061,6 +3066,77 @@ function migrateV25ToV26(db: Database.Database): void {
       `Failed to migrate from v25 to v26 (entity/KG removal): ${cause}`,
       'migrate',
       'entity_kg_removal',
+      error
+    );
+  }
+}
+
+/**
+ * Migrate from schema version 26 to version 27
+ *
+ * Changes in v27 (Hybrid Section-Aware Chunking - Phase 1):
+ * - chunks.heading_context: Heading text providing context for the chunk
+ * - chunks.heading_level: Heading level (1-6) of the section
+ * - chunks.section_path: Full section path (e.g., "Introduction > Background")
+ * - chunks.content_types: JSON array of content types in the chunk
+ * - chunks.is_atomic: Whether chunk should not be split further (default 0)
+ * - chunks.chunking_strategy: Strategy used to create the chunk (default 'hybrid_section')
+ *
+ * Uses ALTER TABLE ADD COLUMN (safe for nullable/defaulted columns, no table recreation needed).
+ *
+ * @param db - Database instance from better-sqlite3
+ * @throws MigrationError if migration fails
+ */
+function migrateV26ToV27(db: Database.Database): void {
+  db.exec('PRAGMA foreign_keys = OFF');
+
+  // Check existing columns for idempotency (safe on retry after partial failure)
+  const columns = db.prepare('PRAGMA table_info(chunks)').all() as { name: string }[];
+  const columnNames = new Set(columns.map((c) => c.name));
+
+  const transaction = db.transaction(() => {
+    if (!columnNames.has('heading_context')) {
+      db.exec('ALTER TABLE chunks ADD COLUMN heading_context TEXT');
+    }
+    if (!columnNames.has('heading_level')) {
+      db.exec('ALTER TABLE chunks ADD COLUMN heading_level INTEGER');
+    }
+    if (!columnNames.has('section_path')) {
+      db.exec('ALTER TABLE chunks ADD COLUMN section_path TEXT');
+    }
+    if (!columnNames.has('content_types')) {
+      db.exec('ALTER TABLE chunks ADD COLUMN content_types TEXT');
+    }
+    if (!columnNames.has('is_atomic')) {
+      db.exec('ALTER TABLE chunks ADD COLUMN is_atomic INTEGER NOT NULL DEFAULT 0');
+    }
+    if (!columnNames.has('chunking_strategy')) {
+      db.exec("ALTER TABLE chunks ADD COLUMN chunking_strategy TEXT NOT NULL DEFAULT 'hybrid_section'");
+    }
+  });
+
+  try {
+    transaction();
+    db.exec('PRAGMA foreign_keys = ON');
+
+    // FK integrity check for pattern consistency with other migrations.
+    // ADD COLUMN can't violate FKs, but this ensures the table isn't corrupt.
+    const fkViolations = db.pragma('foreign_key_check') as unknown[];
+    if (fkViolations.length > 0) {
+      throw new Error(
+        `Foreign key integrity check failed after v26->v27 migration: ${fkViolations.length} violation(s). ` +
+          `First: ${JSON.stringify(fkViolations[0])}`
+      );
+    }
+
+    console.error('[Migration] v26 -> v27: Added hybrid section-aware chunking columns to chunks table');
+  } catch (error) {
+    db.exec('PRAGMA foreign_keys = ON');
+    const cause = error instanceof Error ? error.message : String(error);
+    throw new MigrationError(
+      `Failed to migrate from v26 to v27 (hybrid section-aware chunking columns): ${cause}`,
+      'migrate',
+      'chunks',
       error
     );
   }

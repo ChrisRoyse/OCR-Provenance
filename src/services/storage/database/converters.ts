@@ -143,6 +143,12 @@ export function rowToChunk(row: ChunkRow): Chunk {
     embedding_status: row.embedding_status as 'pending' | 'complete' | 'failed',
     embedded_at: row.embedded_at,
     ocr_quality_score: row.ocr_quality_score ?? null,
+    heading_context: row.heading_context,
+    heading_level: row.heading_level,
+    section_path: row.section_path,
+    content_types: row.content_types,
+    is_atomic: row.is_atomic,
+    chunking_strategy: row.chunking_strategy,
   };
 }
 

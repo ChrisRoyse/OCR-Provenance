@@ -32,6 +32,7 @@ const defaultConfig: ServerConfig = {
   embeddingDevice: 'auto',
   chunkSize: 2000,
   chunkOverlapPercent: 10,
+  maxChunkSize: 8000,
   imageOptimization: {
     enabled: true,
     ocrMaxWidth: 4800,

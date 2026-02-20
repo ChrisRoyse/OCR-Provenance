@@ -128,6 +128,12 @@ describe('Schema State (read-only)', () => {
         'embedding_status',
         'embedded_at',
         'ocr_quality_score',
+        'heading_context',
+        'heading_level',
+        'section_path',
+        'content_types',
+        'is_atomic',
+        'chunking_strategy',
       ];
 
       it.skipIf(!sqliteVecAvailable)('should have all required columns', () => {

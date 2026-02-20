@@ -19,13 +19,12 @@ import { DatabaseService } from '../services/storage/database/index.js';
 import { OCRProcessor } from '../services/ocr/processor.js';
 import { DatalabClient } from '../services/ocr/datalab.js';
 import {
-  chunkText,
-  chunkWithPageTracking,
-  chunkTextPageAware,
+  chunkHybridSectionAware,
   ChunkResult,
   DEFAULT_CHUNKING_CONFIG,
 } from '../services/chunking/chunker.js';
-import type { ChunkingConfig } from '../models/chunk.js';
+import type { ChunkingConfig } from '../services/chunking/chunker.js';
+import { extractPageOffsetsFromText } from '../services/chunking/markdown-parser.js';
 import { EmbeddingService } from '../services/embedding/embedder.js';
 import { ProvenanceTracker } from '../services/provenance/tracker.js';
 import { computeHash, hashFile, computeFileHashSync } from '../utils/hash.js';
@@ -110,8 +109,10 @@ function storeChunks(
       input_hash: ocrResult.content_hash,
       file_hash: doc.file_hash,
       processor: 'chunker',
-      processor_version: '1.0.0',
+      processor_version: '2.0.0',
       processing_params: {
+        strategy: 'hybrid_section',
+        max_chunk_size: config.maxChunkSize,
         chunk_size: config.chunkSize,
         overlap_percent: config.overlapPercent,
         chunk_index: i,
@@ -141,6 +142,12 @@ function storeChunks(
       overlap_next: cr.overlapWithNext,
       provenance_id: chunkProvId,
       ocr_quality_score: ocrResult.parse_quality_score ?? null,
+      heading_context: cr.headingContext ?? null,
+      heading_level: cr.headingLevel ?? null,
+      section_path: cr.sectionPath ?? null,
+      content_types: JSON.stringify(cr.contentTypes),
+      is_atomic: cr.isAtomic ? 1 : 0,
+      chunking_strategy: 'hybrid_section',
     });
 
     // Build Chunk object directly from insert data (avoids re-fetching from DB)
@@ -162,6 +169,12 @@ function storeChunks(
       embedding_status: 'pending',
       embedded_at: null,
       ocr_quality_score: ocrResult.parse_quality_score ?? null,
+      heading_context: cr.headingContext ?? null,
+      heading_level: cr.headingLevel ?? null,
+      section_path: cr.sectionPath ?? null,
+      content_types: JSON.stringify(cr.contentTypes),
+      is_atomic: cr.isAtomic ? 1 : 0,
+      chunking_strategy: 'hybrid_section',
     });
   }
 
@@ -507,7 +520,6 @@ interface ProcessOneDocumentParams {
     pageSchema?: string;
     additionalConfig?: Record<string, unknown>;
   };
-  chunkingStrategy?: string;
   pageSchema?: string;
   imagesBaseDir: string;
 }
@@ -530,7 +542,7 @@ async function processOneDocument(
   doc: Document,
   params: ProcessOneDocumentParams
 ): Promise<void> {
-  const { db, vector, generation, ocrMode, ocrOptions, chunkingStrategy, pageSchema, imagesBaseDir } = params;
+  const { db, vector, generation, ocrMode, ocrOptions, pageSchema, imagesBaseDir } = params;
 
   console.error(`[INFO] Processing document: ${doc.id} (${doc.file_name})`);
 
@@ -671,20 +683,19 @@ async function processOneDocument(
     }
   }
 
-  // Step 2: Chunk the OCR text using config from state
+  // Step 2: Chunk the OCR text using hybrid section-aware chunker
   const chunkConfig: ChunkingConfig = {
     chunkSize: state.config.chunkSize,
     overlapPercent: state.config.chunkOverlapPercent,
+    maxChunkSize: state.config.maxChunkSize,
   };
-  const pageOffsets = processResult.pageOffsets;
-  let chunkResults: ChunkResult[];
-  if (chunkingStrategy === 'page_aware' && pageOffsets && pageOffsets.length > 0) {
-    chunkResults = chunkTextPageAware(ocrResult.extracted_text, pageOffsets, chunkConfig);
-  } else if (pageOffsets && pageOffsets.length > 0) {
-    chunkResults = chunkWithPageTracking(ocrResult.extracted_text, pageOffsets, chunkConfig);
-  } else {
-    chunkResults = chunkText(ocrResult.extracted_text, chunkConfig);
-  }
+  const pageOffsets = processResult.pageOffsets ?? [];
+  const chunkResults = chunkHybridSectionAware(
+    ocrResult.extracted_text,
+    pageOffsets,
+    processResult.jsonBlocks ?? null,
+    chunkConfig
+  );
 
   console.error(`[INFO] Chunking complete: ${chunkResults.length} chunks`);
 
@@ -1236,7 +1247,6 @@ export async function handleProcessPending(
       generation,
       ocrMode,
       ocrOptions,
-      chunkingStrategy: input.chunking_strategy,
       pageSchema: input.page_schema,
       imagesBaseDir,
     };
@@ -1433,6 +1443,7 @@ export async function handleChunkComplete(
     const chunkConfig: ChunkingConfig = {
       chunkSize: state.config.chunkSize,
       overlapPercent: state.config.chunkOverlapPercent,
+      maxChunkSize: state.config.maxChunkSize,
     };
 
     const results = {
@@ -1455,8 +1466,10 @@ export async function handleChunkComplete(
           continue;
         }
 
-        // Chunk the OCR text using user config
-        const chunkResults = chunkText(ocrResult.extracted_text, chunkConfig);
+        // Chunk the OCR text using hybrid section-aware chunker
+        const pageOffsets = extractPageOffsetsFromText(ocrResult.extracted_text);
+        const jsonBlocks = ocrResult.json_blocks ? JSON.parse(ocrResult.json_blocks) as Record<string, unknown> : null;
+        const chunkResults = chunkHybridSectionAware(ocrResult.extracted_text, pageOffsets, jsonBlocks, chunkConfig);
         console.error(`[INFO] Chunking doc ${doc.id}: ${chunkResults.length} chunks`);
 
         // Store chunks with provenance (pass config for provenance metadata)
@@ -1806,10 +1819,6 @@ export const ingestionTools: Record<string, ToolDefinition> = {
         .describe(
           'Additional Datalab config: keep_pageheader_in_output, keep_pagefooter_in_output, keep_spreadsheet_formatting'
         ),
-      chunking_strategy: z
-        .enum(['fixed', 'page_aware'])
-        .default('fixed')
-        .describe('Chunking strategy: fixed-size or page-boundary-aware (no chunks span pages)'),
     },
     handler: handleProcessPending,
   },

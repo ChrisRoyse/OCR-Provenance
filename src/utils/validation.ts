@@ -101,6 +101,7 @@ export const ConfigKey = z.enum([
   'embedding_device',
   'chunk_size',
   'chunk_overlap_percent',
+  'max_chunk_size',
 ]);
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -250,10 +251,6 @@ export const ProcessPendingInput = z.object({
     .describe(
       'Additional Datalab config: keep_pageheader_in_output, keep_pagefooter_in_output, keep_spreadsheet_formatting'
     ),
-  chunking_strategy: z
-    .enum(['fixed', 'page_aware'])
-    .default('fixed')
-    .describe('Chunking strategy: fixed-size or page-boundary-aware'),
 });
 
 /**

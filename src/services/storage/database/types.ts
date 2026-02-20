@@ -186,6 +186,12 @@ export interface ChunkRow {
   embedding_status: string;
   embedded_at: string | null;
   ocr_quality_score: number | null;
+  heading_context: string | null;
+  heading_level: number | null;
+  section_path: string | null;
+  content_types: string | null;
+  is_atomic: number;
+  chunking_strategy: string;
 }
 
 /**
