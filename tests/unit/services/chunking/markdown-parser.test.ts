@@ -16,8 +16,6 @@ import {
   buildSectionHierarchy,
   getPageNumberForOffset,
   extractPageOffsetsFromText,
-  MarkdownBlock,
-  SectionNode,
 } from '../../../../src/services/chunking/markdown-parser.js';
 import type { PageOffset } from '../../../../src/models/document.js';
 

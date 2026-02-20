@@ -18,8 +18,6 @@ import {
   parseMarkdownBlocks,
   extractPageOffsetsFromText,
 } from '../../src/services/chunking/markdown-parser.js';
-import type { PageOffset } from '../../src/models/document.js';
-import type { ChunkingConfig } from '../../src/models/chunk.js';
 
 // =============================================================================
 // SYNTHETIC DOCUMENT GENERATORS
@@ -197,7 +195,6 @@ describe('Chunk Quality Benchmarks', () => {
     const doc = generateDocWithTables(50000);
     const chunks = chunkHybridSectionAware(doc, [], null, DEFAULT_CHUNKING_CONFIG);
 
-    const minAtomicSize = Math.floor(DEFAULT_CHUNKING_CONFIG.chunkSize / 4);
     const atomicChunks = chunks.filter(c => c.isAtomic);
 
     // All atomic chunks should be from originally large blocks

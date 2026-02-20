@@ -9,7 +9,6 @@
 
 import { describe, it, expect } from 'vitest';
 import { chunkHybridSectionAware, DEFAULT_CHUNKING_CONFIG } from '../../../../src/services/chunking/chunker.js';
-import type { ChunkingConfig } from '../../../../src/services/chunking/chunker.js';
 import type { PageOffset } from '../../../../src/models/document.js';
 
 describe('Hybrid Section-Aware Chunking - Page Tracking', () => {

@@ -15,15 +15,10 @@ import {
 } from '../../../src/services/chunking/chunker.js';
 import {
   parseMarkdownBlocks,
-  buildSectionHierarchy,
   extractPageOffsetsFromText,
 } from '../../../src/services/chunking/markdown-parser.js';
-import { findAtomicRegions } from '../../../src/services/chunking/json-block-analyzer.js';
-import { normalizeHeadingLevels } from '../../../src/services/chunking/heading-normalizer.js';
-import { mergeHeadingOnlyChunks } from '../../../src/services/chunking/chunk-merger.js';
 import { normalizeForEmbedding } from '../../../src/services/chunking/text-normalizer.js';
-import type { PageOffset } from '../../../src/models/document.js';
-import type { ChunkResult, ChunkingConfig } from '../../../src/models/chunk.js';
+import type { ChunkingConfig } from '../../../src/models/chunk.js';
 import type { Chunk } from '../../../src/models/chunk.js';
 import { ProvenanceType } from '../../../src/models/provenance.js';
 import {
@@ -611,7 +606,7 @@ describe('Chunker → Storage Integration', () => {
       const nonAtomicProvId = uuidv4();
       const now = new Date().toISOString();
       db.db.prepare(`INSERT INTO provenance (id, type, created_at, processed_at, source_type, root_document_id, content_hash, file_hash, processor, processor_version, processing_params, parent_ids, chain_depth) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
-        nonAtomicProvId, 2, now, now, 'CHUNKING', provDocId,
+        nonAtomicProvId, 'CHUNK', now, now, 'CHUNKING', provDocId,
         computeHash('non-atomic'), computeHash('doc-file'),
         'chunker', '2.0.0', '{}', JSON.stringify([provOcrId]), 2
       );
@@ -756,15 +751,15 @@ describe('Storage → API Integration', () => {
       ocrResultId = uuidv4();
 
       db.db.prepare(`INSERT INTO provenance (id, type, created_at, processed_at, source_type, root_document_id, content_hash, file_hash, processor, processor_version, processing_params, parent_ids, chain_depth) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
-        provDocId, 0, now, now, 'FILE', provDocId,
+        provDocId, 'DOCUMENT', now, now, 'FILE', provDocId,
         computeHash('doc'), computeHash('file'), 'test', '1.0.0', '{}', '[]', 0
       );
       db.db.prepare(`INSERT INTO provenance (id, type, created_at, processed_at, source_type, root_document_id, content_hash, file_hash, processor, processor_version, processing_params, parent_ids, chain_depth) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
-        provOcrId, 1, now, now, 'OCR', provDocId,
+        provOcrId, 'OCR_RESULT', now, now, 'OCR', provDocId,
         computeHash('ocr'), computeHash('file'), 'datalab', '1.0.0', '{}', JSON.stringify([provDocId]), 1
       );
       db.db.prepare(`INSERT INTO provenance (id, type, created_at, processed_at, source_type, root_document_id, content_hash, file_hash, processor, processor_version, processing_params, parent_ids, chain_depth) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
-        provChunkId, 2, now, now, 'CHUNKING', provDocId,
+        provChunkId, 'CHUNK', now, now, 'CHUNKING', provDocId,
         computeHash('chunk'), computeHash('file'), 'chunker', '2.0.0', '{}', JSON.stringify([provOcrId]), 2
       );
       db.db.prepare(`INSERT INTO documents (id, file_path, file_name, file_hash, file_size, file_type, status, provenance_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
@@ -927,25 +922,18 @@ describe('Storage → API Integration', () => {
 // =============================================================================
 
 describe('Config → Chunker Integration (extended)', () => {
-  it('non-default chunkSize (1500) produces different results from default (2000)', () => {
+  it('non-default chunkSize (300) produces different results from default (2000)', () => {
     const defaultChunks = chunkHybridSectionAware(LEGAL_DOCUMENT, [], null, DEFAULT_CHUNKING_CONFIG);
 
     const customConfig: ChunkingConfig = {
-      chunkSize: 1500,
+      chunkSize: 300,
       overlapPercent: 10,
       maxChunkSize: 8000,
     };
     const customChunks = chunkHybridSectionAware(LEGAL_DOCUMENT, [], null, customConfig);
 
-    // Different chunkSize should produce different chunk count or different chunk texts
-    const defaultTexts = defaultChunks.map(c => c.text);
-    const customTexts = customChunks.map(c => c.text);
-
-    // Either different count OR different content
-    const hasDifference =
-      defaultChunks.length !== customChunks.length ||
-      defaultTexts.some((t, i) => customTexts[i] !== t);
-    expect(hasDifference).toBe(true);
+    // A significantly smaller chunkSize should produce more chunks
+    expect(customChunks.length).toBeGreaterThan(defaultChunks.length);
   });
 
   it('maxChunkSize enforcement - no chunk exceeds maxChunkSize', () => {

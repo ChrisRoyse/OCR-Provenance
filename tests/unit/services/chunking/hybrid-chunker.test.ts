@@ -1015,7 +1015,6 @@ describe('chunkHybridSectionAware - page span edge cases', () => {
     const chunks = chunkHybridSectionAware(text, pageOffsets, null, DEFAULT_CHUNKING_CONFIG);
 
     // At least one chunk should span pages
-    const spanningChunks = chunks.filter(c => c.pageRange !== null);
     // Might or might not span depending on split points
     // But page numbers should be assigned
     for (const chunk of chunks) {

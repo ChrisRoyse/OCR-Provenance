@@ -79,7 +79,7 @@ const JSON_BLOCKS_WITH_CODE: Record<string, unknown> = {
  * which often fails to match pipe-delimited markdown. The analyzer logs a warning
  * and returns null in this case. We test both the matching and non-matching paths.
  */
-const MARKDOWN_WITH_MATCHABLE_TABLE = `Introduction text here.
+const _MARKDOWN_WITH_MATCHABLE_TABLE = `Introduction text here.
 
 Metric Q3 2025 Q4 2025 Change Revenue $2.1M $2.4M +15%
 
@@ -89,7 +89,7 @@ Metric Q3 2025 Q4 2025 Change Revenue $2.1M $2.4M +15%
 
 Conclusion text here.`;
 
-const JSON_BLOCKS_WITH_TABLE: Record<string, unknown> = {
+const _JSON_BLOCKS_WITH_TABLE: Record<string, unknown> = {
   block_type: 'Document',
   children: [
     {
@@ -144,7 +144,7 @@ const JSON_BLOCKS_WITH_FIGURE: Record<string, unknown> = {
  * JSON blocks with nested structure: TableGroup containing Table.
  * The TableGroup HTML has text that matches the markdown.
  */
-const JSON_BLOCKS_NESTED_TABLE_GROUP: Record<string, unknown> = {
+const _JSON_BLOCKS_NESTED_TABLE_GROUP: Record<string, unknown> = {
   block_type: 'Document',
   children: [
     {
@@ -175,7 +175,7 @@ Quarterly revenue trends showing upward trajectory
 
 As shown in the figure, revenue has been increasing steadily.`;
 
-const MARKDOWN_WITH_TABLE_GROUP = `Table 1: Inventory Summary
+const _MARKDOWN_WITH_TABLE_GROUP = `Table 1: Inventory Summary
 
 | Item | Count |
 |------|-------|

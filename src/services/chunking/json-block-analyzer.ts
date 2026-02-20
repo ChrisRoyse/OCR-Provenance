@@ -446,7 +446,6 @@ function findTableExtent(
       }
     } else {
       // Non-table line, table ends at start of this line
-      tableEnd = tableEnd;
       break;
     }
   }
@@ -466,7 +465,7 @@ function findTableExtent(
  */
 function findCodeBlockEnd(markdownText: string, startIdx: number): number {
   // Look for the opening ``` line
-  let searchFrom = startIdx;
+  const searchFrom = startIdx;
 
   // First, find the opening fence if we're not exactly at it
   let fenceStart = markdownText.lastIndexOf('```', searchFrom);
