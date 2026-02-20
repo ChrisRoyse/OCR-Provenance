@@ -226,20 +226,24 @@ describe('chunkHybridSectionAware', () => {
       expect(hasPath).toBe(true);
     });
 
-    it('marks tables as atomic chunks', () => {
+    it('small tables are merged into surrounding content (not atomic)', () => {
       const text = 'Some text before.\n\n| Col A | Col B |\n|-------|-------|\n| 1     | 2     |\n\nSome text after.';
       const chunks = chunkHybridSectionAware(text, [], null, DEFAULT_CHUNKING_CONFIG);
 
-      const tableChunk = chunks.find(c => c.isAtomic && c.contentTypes.includes('table'));
-      expect(tableChunk).toBeDefined();
+      // Small table (< chunkSize/4 = 500) merged into content
+      const chunkWithTable = chunks.find(c => c.text.includes('| Col A |'));
+      expect(chunkWithTable).toBeDefined();
+      expect(chunkWithTable!.isAtomic).toBe(false);
     });
 
-    it('marks code blocks as atomic chunks', () => {
+    it('small code blocks are merged into surrounding content (not atomic)', () => {
       const text = 'Some text.\n\n```python\nprint("hello")\n```\n\nMore text.';
       const chunks = chunkHybridSectionAware(text, [], null, DEFAULT_CHUNKING_CONFIG);
 
-      const codeChunk = chunks.find(c => c.isAtomic && c.contentTypes.includes('code'));
-      expect(codeChunk).toBeDefined();
+      // Small code block merged into content
+      const chunkWithCode = chunks.find(c => c.text.includes('print("hello")'));
+      expect(chunkWithCode).toBeDefined();
+      expect(chunkWithCode!.isAtomic).toBe(false);
     });
   });
 

@@ -306,6 +306,64 @@ export function chunkHybridSectionAware(
     });
   }
 
+  /**
+   * Emit an atomic block with size awareness: if the block exceeds
+   * maxChunkSize, split it at line boundaries (row breaks for tables,
+   * line breaks for code). Each sub-chunk inherits atomic status.
+   */
+  function emitSizedAtomicChunk(block: MarkdownBlock): void {
+    if (block.text.length <= config.maxChunkSize) {
+      emitAtomicChunk(block);
+      return;
+    }
+
+    // Split oversized atomic block at line boundaries
+    const blockText = block.text;
+    let pos = 0;
+
+    while (pos < blockText.length) {
+      let endPos: number;
+
+      if (blockText.length - pos <= config.maxChunkSize) {
+        // Remaining text fits in one chunk
+        endPos = blockText.length;
+      } else {
+        // Find last newline before maxChunkSize boundary
+        endPos = blockText.lastIndexOf('\n', pos + config.maxChunkSize);
+        if (endPos <= pos) {
+          // No newline found within range, force split at maxChunkSize
+          endPos = pos + config.maxChunkSize;
+        }
+      }
+
+      const chunkText = blockText.slice(pos, endPos);
+      if (chunkText.trim().length > 0) {
+        const startOff = block.startOffset + pos;
+        const endOff = block.startOffset + endPos;
+        const pageInfo = determinePageInfoForSpan(startOff, endOff, pageOffsets);
+
+        chunks.push({
+          index: chunkIndex++,
+          text: chunkText,
+          startOffset: startOff,
+          endOffset: endOff,
+          overlapWithPrevious: 0,
+          overlapWithNext: 0,
+          pageNumber: pageInfo.pageNumber,
+          pageRange: pageInfo.pageRange,
+          headingContext: currentHeadingText,
+          headingLevel: currentHeadingLevel,
+          sectionPath: currentSectionPath,
+          contentTypes: [mapBlockTypeToContentType(block.type)],
+          isAtomic: true,
+        });
+      }
+
+      // Advance past the split point (skip newline if present)
+      pos = endPos < blockText.length && blockText[endPos] === '\n' ? endPos + 1 : endPos;
+    }
+  }
+
   for (let blockIdx = 0; blockIdx < blocks.length; blockIdx++) {
     const block = blocks[blockIdx];
 
@@ -333,11 +391,36 @@ export function chunkHybridSectionAware(
       addBlockToAccumulator(accumulator, block);
 
     } else if (block.type === 'table' || block.type === 'code') {
-      // Atomic block - flush accumulator, then emit block as its own chunk
-      flushAccumulator(false);
-      emitAtomicChunk(block);
-      // Reset accumulator for next content
-      accumulator = createEmptyAccumulator(block.endOffset);
+      // Size-aware atomic treatment: only emit as atomic if block is large enough
+      // to produce meaningful standalone embeddings. Small tables/code blocks are
+      // merged into surrounding content for better embedding quality.
+      const minAtomicSize = Math.floor(config.chunkSize / 4);
+
+      if (block.text.length >= minAtomicSize) {
+        // Large table/code → atomic chunk (with oversized splitting)
+        flushAccumulator(false);
+        emitSizedAtomicChunk(block);
+        accumulator = createEmptyAccumulator(block.endOffset);
+      } else {
+        // Small table/code → treat as regular content, merge into accumulator
+        addBlockToAccumulator(accumulator, block);
+
+        // Check if accumulator exceeds chunk size (same logic as paragraph branch)
+        if (accumulator.text.length > config.chunkSize) {
+          const splitPos = findSentenceBoundary(accumulator.text, config.chunkSize);
+          const fullText = accumulator.text;
+          const savedStartOffset = accumulator.startOffset;
+          const savedContentTypes = new Set(accumulator.contentTypes);
+
+          accumulator.text = fullText.slice(0, splitPos);
+          flushAccumulator(false);
+
+          const remainder = fullText.slice(splitPos);
+          accumulator = createEmptyAccumulator(savedStartOffset + splitPos);
+          accumulator.text = remainder;
+          accumulator.contentTypes = savedContentTypes;
+        }
+      }
 
     } else {
       // Regular content (paragraph, list)

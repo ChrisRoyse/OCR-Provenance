@@ -695,7 +695,16 @@ async function processOneDocument(
     overlapPercent: state.config.chunkOverlapPercent,
     maxChunkSize: state.config.maxChunkSize,
   };
-  const pageOffsets = processResult.pageOffsets ?? [];
+  let pageOffsets = processResult.pageOffsets ?? [];
+  // Fallback: if Python returned a single page offset covering the entire text,
+  // re-extract using TypeScript's extractPageOffsetsFromText which handles both
+  // HTML comment (<!-- Page N -->) and Datalab ({N}---) separator formats.
+  if (pageOffsets.length <= 1 && ocrResult.extracted_text.length > 0) {
+    const extracted = extractPageOffsetsFromText(ocrResult.extracted_text);
+    if (extracted.length > pageOffsets.length) {
+      pageOffsets = extracted;
+    }
+  }
   const chunkResults = chunkHybridSectionAware(
     ocrResult.extracted_text,
     pageOffsets,
