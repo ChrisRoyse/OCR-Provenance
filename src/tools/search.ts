@@ -2586,6 +2586,8 @@ export const searchTools: Record<string, ToolDefinition> = {
         .describe('Only results from documents with at most this many pages'),
       include_context_chunks: z.number().int().min(0).max(3).default(0)
         .describe('Number of neighboring chunks before/after each result (0=none, max 3)'),
+      table_columns_contain: z.string().optional()
+        .describe('Filter to table chunks whose column headers contain this text (case-insensitive match on stored table_columns in processing_params)'),
     },
     handler: handleSearch,
   },
@@ -2674,6 +2676,8 @@ export const searchTools: Record<string, ToolDefinition> = {
         .describe('Only results from documents with at most this many pages'),
       include_context_chunks: z.number().int().min(0).max(3).default(0)
         .describe('Number of neighboring chunks before/after each result (0=none, max 3)'),
+      table_columns_contain: z.string().optional()
+        .describe('Filter to table chunks whose column headers contain this text (case-insensitive match on stored table_columns in processing_params)'),
     },
     handler: handleSearchSemantic,
   },
@@ -2760,6 +2764,8 @@ export const searchTools: Record<string, ToolDefinition> = {
         .describe('Only results from documents with at most this many pages'),
       include_context_chunks: z.number().int().min(0).max(3).default(0)
         .describe('Number of neighboring chunks before/after each result (0=none, max 3)'),
+      table_columns_contain: z.string().optional()
+        .describe('Filter to table chunks whose column headers contain this text (case-insensitive match on stored table_columns in processing_params)'),
     },
     handler: handleSearchHybrid,
   },
