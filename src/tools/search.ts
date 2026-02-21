@@ -2,7 +2,8 @@
  * Search MCP Tools
  *
  * Tools: ocr_search, ocr_search_semantic, ocr_search_hybrid, ocr_fts_manage,
- *        ocr_search_export, ocr_benchmark_compare, ocr_rag_context
+ *        ocr_search_export, ocr_benchmark_compare, ocr_rag_context,
+ *        ocr_search_save, ocr_search_saved_list, ocr_search_saved_get
  *
  * CRITICAL: NEVER use console.log() - stdout is reserved for JSON-RPC protocol.
  * Use console.error() for all logging.
@@ -12,6 +13,7 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
+import { v4 as uuidv4 } from 'uuid';
 import { z } from 'zod';
 import { getEmbeddingService } from '../services/embedding/embedder.js';
 import { DatabaseService } from '../services/storage/database/index.js';
@@ -1399,6 +1401,149 @@ async function handleSearchExport(params: Record<string, unknown>): Promise<Tool
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
+// SAVED SEARCH HANDLERS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+const SearchSaveInput = z.object({
+  name: z.string().min(1).max(200).describe('Name for the saved search'),
+  query: z.string().min(1).max(1000).describe('The search query'),
+  search_type: z.enum(['bm25', 'semantic', 'hybrid']).describe('Search method used'),
+  search_params: z.record(z.unknown()).optional().describe('All search parameters as JSON'),
+  result_count: z.number().int().min(0).describe('Number of results'),
+  result_ids: z.array(z.string()).optional().describe('Array of chunk/embedding IDs from results'),
+  notes: z.string().optional().describe('Optional notes about this search'),
+});
+
+const SearchSavedListInput = z.object({
+  search_type: z.enum(['bm25', 'semantic', 'hybrid']).optional().describe('Filter by search type'),
+  limit: z.number().int().min(1).max(100).default(50),
+  offset: z.number().int().min(0).default(0),
+});
+
+const SearchSavedGetInput = z.object({
+  saved_search_id: z.string().min(1).describe('ID of the saved search to retrieve'),
+});
+
+/**
+ * Handle ocr_search_save - Save search results with a name for later retrieval
+ */
+async function handleSearchSave(params: Record<string, unknown>): Promise<ToolResponse> {
+  try {
+    const input = validateInput(SearchSaveInput, params);
+    const { db } = requireDatabase();
+    const conn = db.getConnection();
+
+    const id = uuidv4();
+    const now = new Date().toISOString();
+
+    conn.prepare(`
+      INSERT INTO saved_searches (id, name, query, search_type, search_params, result_count, result_ids, created_at, notes)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      id,
+      input.name,
+      input.query,
+      input.search_type,
+      JSON.stringify(input.search_params ?? {}),
+      input.result_count,
+      JSON.stringify(input.result_ids ?? []),
+      now,
+      input.notes ?? null,
+    );
+
+    return formatResponse(successResult({
+      saved_search_id: id,
+      name: input.name,
+      query: input.query,
+      search_type: input.search_type,
+      result_count: input.result_count,
+      created_at: now,
+    }));
+  } catch (error) {
+    return handleError(error);
+  }
+}
+
+/**
+ * Handle ocr_search_saved_list - List saved searches with optional type filtering
+ */
+async function handleSearchSavedList(params: Record<string, unknown>): Promise<ToolResponse> {
+  try {
+    const input = validateInput(SearchSavedListInput, params);
+    const { db } = requireDatabase();
+    const conn = db.getConnection();
+
+    let sql = 'SELECT id, name, query, search_type, result_count, created_at, notes FROM saved_searches';
+    const sqlParams: unknown[] = [];
+
+    if (input.search_type) {
+      sql += ' WHERE search_type = ?';
+      sqlParams.push(input.search_type);
+    }
+
+    sql += ' ORDER BY created_at DESC LIMIT ? OFFSET ?';
+    sqlParams.push(input.limit, input.offset);
+
+    const rows = conn.prepare(sql).all(...sqlParams) as Array<{
+      id: string; name: string; query: string; search_type: string;
+      result_count: number; created_at: string; notes: string | null;
+    }>;
+
+    const totalRow = conn.prepare(
+      input.search_type
+        ? 'SELECT COUNT(*) as count FROM saved_searches WHERE search_type = ?'
+        : 'SELECT COUNT(*) as count FROM saved_searches'
+    ).get(...(input.search_type ? [input.search_type] : [])) as { count: number };
+
+    return formatResponse(successResult({
+      saved_searches: rows,
+      total: totalRow.count,
+      limit: input.limit,
+      offset: input.offset,
+    }));
+  } catch (error) {
+    return handleError(error);
+  }
+}
+
+/**
+ * Handle ocr_search_saved_get - Retrieve a saved search by ID including all parameters and result IDs
+ */
+async function handleSearchSavedGet(params: Record<string, unknown>): Promise<ToolResponse> {
+  try {
+    const input = validateInput(SearchSavedGetInput, params);
+    const { db } = requireDatabase();
+    const conn = db.getConnection();
+
+    const row = conn.prepare(
+      'SELECT * FROM saved_searches WHERE id = ?'
+    ).get(input.saved_search_id) as {
+      id: string; name: string; query: string; search_type: string;
+      search_params: string; result_count: number; result_ids: string;
+      created_at: string; notes: string | null;
+    } | undefined;
+
+    if (!row) {
+      throw new Error(`Saved search not found: ${input.saved_search_id}`);
+    }
+
+    return formatResponse(successResult({
+      id: row.id,
+      name: row.name,
+      query: row.query,
+      search_type: row.search_type,
+      search_params: JSON.parse(row.search_params),
+      result_count: row.result_count,
+      result_ids: JSON.parse(row.result_ids),
+      created_at: row.created_at,
+      notes: row.notes,
+    }));
+  } catch (error) {
+    return handleError(error);
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
 // TOOL DEFINITIONS EXPORT
 // ═══════════════════════════════════════════════════════════════════════════════
 
@@ -1661,5 +1806,20 @@ export const searchTools: Record<string, ToolDefinition> = {
         .describe('Maximum total context length in characters'),
     },
     handler: handleRagContext,
+  },
+  ocr_search_save: {
+    description: 'Save search results with a name for later retrieval',
+    inputSchema: SearchSaveInput.shape,
+    handler: handleSearchSave,
+  },
+  ocr_search_saved_list: {
+    description: 'List saved searches with optional type filtering',
+    inputSchema: SearchSavedListInput.shape,
+    handler: handleSearchSavedList,
+  },
+  ocr_search_saved_get: {
+    description: 'Retrieve a saved search by ID including all parameters and result IDs',
+    inputSchema: SearchSavedGetInput.shape,
+    handler: handleSearchSavedGet,
   },
 };

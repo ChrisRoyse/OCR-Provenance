@@ -63,10 +63,9 @@ const VLMStatusInput = z.object({});
 /**
  * Handle ocr_vlm_describe - Generate detailed description of an image using Gemini 3
  *
- * NOTE: This standalone tool describes arbitrary image files without database context.
- * Embedding generation requires document_id, image_id, and provenance chain which are
- * not available here. For database-tracked images, use ocr_vlm_process_document or
- * ocr_evaluate_single which properly embed descriptions with full provenance.
+ * If the image is a database-tracked image (matched by extracted_path), this tool
+ * will also generate an embedding with full provenance chain for searchability.
+ * For arbitrary images not in the database, only the description is returned.
  */
 export async function handleVLMDescribe(params: Record<string, unknown>): Promise<ToolResponse> {
   try {
@@ -95,6 +94,148 @@ export async function handleVLMDescribe(params: Record<string, unknown>): Promis
       });
     }
 
+    // Try to generate embedding for database-tracked images
+    let embeddingId: string | null = null;
+    let embeddingGenerated = false;
+    try {
+      const { db, vector } = requireDatabase();
+      const conn = db.getConnection();
+
+      // Look up image by extracted_path
+      const dbImage = conn.prepare(
+        'SELECT id, document_id, page_number, image_index, extracted_path, provenance_id FROM images WHERE extracted_path = ?'
+      ).get(imagePath) as { id: string; document_id: string; page_number: number; image_index: number; extracted_path: string | null; provenance_id: string | null } | undefined;
+
+      if (dbImage && dbImage.provenance_id && result.description) {
+        const { getEmbeddingClient, MODEL_NAME: EMBEDDING_MODEL } = await import('../services/embedding/nomic.js');
+        const { v4: uuidv4 } = await import('uuid');
+        const { computeHash } = await import('../utils/hash.js');
+        const { ProvenanceType } = await import('../models/provenance.js');
+
+        const embeddingClient = getEmbeddingClient();
+        const vectors = await embeddingClient.embedChunks([result.description], 1);
+
+        if (vectors.length > 0) {
+          const embId = uuidv4();
+          const now = new Date().toISOString();
+          const descriptionHash = computeHash(result.description);
+
+          // Get IMAGE provenance to build chain
+          const imageProv = db.getProvenance(dbImage.provenance_id);
+          if (imageProv) {
+            // Create VLM_DESCRIPTION provenance (depth 3)
+            const vlmDescProvId = uuidv4();
+            const imageParentIds = JSON.parse(imageProv.parent_ids) as string[];
+            const vlmParentIds = [...imageParentIds, dbImage.provenance_id];
+
+            db.insertProvenance({
+              id: vlmDescProvId,
+              type: ProvenanceType.VLM_DESCRIPTION,
+              created_at: now,
+              processed_at: now,
+              source_file_created_at: null,
+              source_file_modified_at: null,
+              source_type: 'VLM',
+              source_path: dbImage.extracted_path,
+              source_id: dbImage.provenance_id,
+              root_document_id: imageProv.root_document_id,
+              location: {
+                page_number: dbImage.page_number,
+                chunk_index: dbImage.image_index,
+              },
+              content_hash: descriptionHash,
+              input_hash: imageProv.content_hash,
+              file_hash: imageProv.file_hash,
+              processor: 'gemini-vlm:describe',
+              processor_version: '3.0',
+              processing_params: { type: 'vlm_describe', use_thinking: useThinking },
+              processing_duration_ms: result.processingTimeMs ?? null,
+              processing_quality_score: null,
+              parent_id: dbImage.provenance_id,
+              parent_ids: JSON.stringify(vlmParentIds),
+              chain_depth: 3,
+              chain_path: JSON.stringify(['DOCUMENT', 'OCR_RESULT', 'IMAGE', 'VLM_DESCRIPTION']),
+            });
+
+            // Create EMBEDDING provenance (depth 4)
+            const embProvId = uuidv4();
+            const embParentIds = [...vlmParentIds, vlmDescProvId];
+
+            db.insertProvenance({
+              id: embProvId,
+              type: ProvenanceType.EMBEDDING,
+              created_at: now,
+              processed_at: now,
+              source_file_created_at: null,
+              source_file_modified_at: null,
+              source_type: 'EMBEDDING',
+              source_path: null,
+              source_id: vlmDescProvId,
+              root_document_id: imageProv.root_document_id,
+              location: {
+                page_number: dbImage.page_number,
+                chunk_index: dbImage.image_index,
+              },
+              content_hash: descriptionHash,
+              input_hash: descriptionHash,
+              file_hash: imageProv.file_hash,
+              processor: EMBEDDING_MODEL,
+              processor_version: '1.5.0',
+              processing_params: { task_type: 'search_document', dimensions: 768 },
+              processing_duration_ms: null,
+              processing_quality_score: null,
+              parent_id: vlmDescProvId,
+              parent_ids: JSON.stringify(embParentIds),
+              chain_depth: 4,
+              chain_path: JSON.stringify(['DOCUMENT', 'OCR_RESULT', 'IMAGE', 'VLM_DESCRIPTION', 'EMBEDDING']),
+            });
+
+            // Insert embedding record
+            db.insertEmbedding({
+              id: embId,
+              chunk_id: null,
+              image_id: dbImage.id,
+              extraction_id: null,
+              document_id: dbImage.document_id,
+              original_text: result.description,
+              original_text_length: result.description.length,
+              source_file_path: dbImage.extracted_path ?? 'unknown',
+              source_file_name: dbImage.extracted_path?.split('/').pop() ?? 'vlm_description',
+              source_file_hash: 'vlm_generated',
+              page_number: dbImage.page_number,
+              page_range: null,
+              character_start: 0,
+              character_end: result.description.length,
+              chunk_index: dbImage.image_index,
+              total_chunks: 1,
+              model_name: EMBEDDING_MODEL,
+              model_version: '1.5.0',
+              task_type: 'search_document',
+              inference_mode: 'local',
+              gpu_device: 'cuda:0',
+              provenance_id: embProvId,
+              content_hash: descriptionHash,
+              generation_duration_ms: null,
+            });
+
+            // Store vector
+            vector.storeVector(embId, vectors[0]);
+
+            // Update image.vlm_embedding_id
+            conn.prepare('UPDATE images SET vlm_embedding_id = ? WHERE id = ?').run(embId, dbImage.id);
+
+            embeddingId = embId;
+            embeddingGenerated = true;
+            console.error(`[INFO] VLM describe embedding generated for image ${dbImage.id}: ${embId}`);
+          }
+        }
+      }
+    } catch (embError) {
+      // Non-fatal: standalone describe still works without embedding
+      const errMsg = embError instanceof Error ? embError.message : String(embError);
+      console.error(`[WARN] VLM describe embedding generation skipped: ${errMsg}`);
+    }
+
     return formatResponse(
       successResult({
         description: result.description,
@@ -103,7 +244,8 @@ export async function handleVLMDescribe(params: Record<string, unknown>): Promis
         processing_time_ms: result.processingTimeMs,
         tokens_used: result.tokensUsed,
         confidence: result.analysis.confidence,
-        embedding_note: 'Use ocr_vlm_process_document or ocr_evaluate_single for searchable embeddings with provenance tracking',
+        embedding_id: embeddingId,
+        embedding_generated: embeddingGenerated,
       })
     );
   } catch (error) {

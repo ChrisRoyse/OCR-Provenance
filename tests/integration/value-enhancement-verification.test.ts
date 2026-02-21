@@ -105,7 +105,7 @@ describe.skipIf(!sqliteVecAvailable)('VALUE ENHANCEMENT VERIFICATION: Phases 1-5
       for (const required of REQUIRED_TABLES) {
         expect(tableNames).toContain(required);
       }
-      expect(REQUIRED_TABLES.length).toBe(19);
+      expect(REQUIRED_TABLES.length).toBe(20);
     });
 
     it('should have all required indexes', () => {
@@ -117,8 +117,8 @@ describe.skipIf(!sqliteVecAvailable)('VALUE ENHANCEMENT VERIFICATION: Phases 1-5
       for (const required of REQUIRED_INDEXES) {
         expect(indexNames).toContain(required);
       }
-      expect(REQUIRED_INDEXES.length).toBe(39);
-      expect(indexNames.length).toBeGreaterThanOrEqual(39);
+      expect(REQUIRED_INDEXES.length).toBe(42);
+      expect(indexNames.length).toBeGreaterThanOrEqual(42);
     });
 
     it('should filter documents by quality score (QW-2)', () => {

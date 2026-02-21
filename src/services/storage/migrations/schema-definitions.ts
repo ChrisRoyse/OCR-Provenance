@@ -8,7 +8,7 @@
  */
 
 /** Current schema version */
-export const SCHEMA_VERSION = 27;
+export const SCHEMA_VERSION = 28;
 
 /**
  * Database configuration pragmas for optimal performance and safety
@@ -509,6 +509,24 @@ CREATE TABLE IF NOT EXISTS document_clusters (
 )`;
 
 /**
+ * Saved searches table - persisted search results for revisiting
+ * v28 addition
+ */
+export const CREATE_SAVED_SEARCHES_TABLE = `
+CREATE TABLE IF NOT EXISTS saved_searches (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  query TEXT NOT NULL,
+  search_type TEXT NOT NULL CHECK (search_type IN ('bm25', 'semantic', 'hybrid')),
+  search_params TEXT NOT NULL DEFAULT '{}',
+  result_count INTEGER NOT NULL,
+  result_ids TEXT NOT NULL DEFAULT '[]',
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  notes TEXT
+)
+`;
+
+/**
  * All required indexes for query performance
  */
 export const CREATE_INDEXES = [
@@ -574,6 +592,11 @@ export const CREATE_INDEXES = [
   'CREATE INDEX IF NOT EXISTS idx_doc_clusters_document ON document_clusters(document_id)',
   'CREATE INDEX IF NOT EXISTS idx_doc_clusters_cluster ON document_clusters(cluster_id)',
   'CREATE INDEX IF NOT EXISTS idx_doc_clusters_run ON document_clusters(run_id)',
+
+  // Saved searches indexes
+  'CREATE INDEX IF NOT EXISTS idx_saved_searches_name ON saved_searches(name)',
+  'CREATE INDEX IF NOT EXISTS idx_saved_searches_search_type ON saved_searches(search_type)',
+  'CREATE INDEX IF NOT EXISTS idx_saved_searches_created ON saved_searches(created_at DESC)',
 ] as const;
 
 /**
@@ -593,6 +616,7 @@ export const TABLE_DEFINITIONS = [
   { name: 'comparisons', sql: CREATE_COMPARISONS_TABLE },
   { name: 'clusters', sql: CREATE_CLUSTERS_TABLE },
   { name: 'document_clusters', sql: CREATE_DOCUMENT_CLUSTERS_TABLE },
+  { name: 'saved_searches', sql: CREATE_SAVED_SEARCHES_TABLE },
 ] as const;
 
 /**
@@ -618,6 +642,7 @@ export const REQUIRED_TABLES = [
   'comparisons',
   'clusters',
   'document_clusters',
+  'saved_searches',
 ] as const;
 
 /**
@@ -663,4 +688,7 @@ export const REQUIRED_INDEXES = [
   'idx_doc_clusters_document',
   'idx_doc_clusters_cluster',
   'idx_doc_clusters_run',
+  'idx_saved_searches_name',
+  'idx_saved_searches_search_type',
+  'idx_saved_searches_created',
 ] as const;

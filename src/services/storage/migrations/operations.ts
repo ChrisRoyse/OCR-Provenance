@@ -1317,6 +1317,11 @@ export function migrateToLatest(db: Database.Database): void {
     migrateV26ToV27(db);
     bumpVersion(27);
   }
+
+  if (currentVersion < 28) {
+    migrateV27ToV28(db);
+    bumpVersion(28);
+  }
 }
 
 /**
@@ -3137,6 +3142,47 @@ function migrateV26ToV27(db: Database.Database): void {
       `Failed to migrate from v26 to v27 (hybrid section-aware chunking columns): ${cause}`,
       'migrate',
       'chunks',
+      error
+    );
+  }
+}
+
+/**
+ * Migrate from schema version 27 to version 28
+ *
+ * Changes in v28:
+ * - saved_searches: New table for persisting search results
+ * - New indexes: idx_saved_searches_name, idx_saved_searches_search_type, idx_saved_searches_created
+ *
+ * @param db - Database instance from better-sqlite3
+ * @throws MigrationError if migration fails
+ */
+function migrateV27ToV28(db: Database.Database): void {
+  console.error('[MIGRATION] Applying v27 → v28: Add saved_searches table');
+  try {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS saved_searches (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        query TEXT NOT NULL,
+        search_type TEXT NOT NULL CHECK (search_type IN ('bm25', 'semantic', 'hybrid')),
+        search_params TEXT NOT NULL DEFAULT '{}',
+        result_count INTEGER NOT NULL,
+        result_ids TEXT NOT NULL DEFAULT '[]',
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        notes TEXT
+      )
+    `);
+    db.exec('CREATE INDEX IF NOT EXISTS idx_saved_searches_name ON saved_searches(name)');
+    db.exec('CREATE INDEX IF NOT EXISTS idx_saved_searches_search_type ON saved_searches(search_type)');
+    db.exec('CREATE INDEX IF NOT EXISTS idx_saved_searches_created ON saved_searches(created_at DESC)');
+    console.error('[MIGRATION] v28 migration complete: saved_searches table created');
+  } catch (error) {
+    const cause = error instanceof Error ? error.message : String(error);
+    throw new MigrationError(
+      `Failed to migrate from v27 to v28 (saved_searches table): ${cause}`,
+      'migrate',
+      'saved_searches',
       error
     );
   }
