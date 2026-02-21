@@ -15,6 +15,7 @@ import { v4 as uuidv4 } from 'uuid';
 import {
   formatResponse,
   handleError,
+  parseGeminiJson,
   type ToolDefinition,
 } from './shared.js';
 import { successResult } from '../server/types.js';
@@ -295,40 +296,66 @@ async function handleSuggestSchema(params: Record<string, unknown>) {
 
 ${goalClause}
 Based on the document content, determine:
-1. A JSON schema (compatible with Datalab page_schema) that captures the key structured data in this document
+1. A JSON schema (compatible with Datalab page_schema) that captures the key structured data in this document. The schema MUST have a "type" field and "properties" with at least one property. Each property must have a "type" field. Use "type": "object" with nested "properties" for complex structures, and "type": "array" with "items" for lists.
 2. An explanation of what the schema extracts and why
 3. The detected document type
+
+Return the suggested_schema as a JSON string (not an object) in the suggested_schema_json field.
+
+Example suggested_schema_json value: "{\"type\":\"object\",\"properties\":{\"title\":{\"type\":\"string\"},\"items\":{\"type\":\"array\",\"items\":{\"type\":\"object\",\"properties\":{\"name\":{\"type\":\"string\"}}}}}}"
 
 Document text (first 3000 chars):
 ---
 ${sampleText}
 ---
 
-Respond with valid JSON matching the schema.`;
+Respond with valid JSON matching the response schema.`;
 
     const schemaSchema = {
       type: 'object' as const,
       properties: {
-        suggested_schema: { type: 'object' as const },
+        suggested_schema_json: { type: 'string' as const },
         explanation: { type: 'string' as const },
         detected_document_type: { type: 'string' as const },
       },
-      required: ['suggested_schema', 'explanation'] as const,
+      required: ['suggested_schema_json', 'explanation'] as const,
     };
 
     const { getSharedClient } = await import('../services/gemini/index.js');
     const gemini = getSharedClient();
     const result = await gemini.fast(prompt, schemaSchema);
-    const suggestion = JSON.parse(result.text);
+    const suggestion = parseGeminiJson<{
+      suggested_schema_json: string;
+      explanation: string;
+      detected_document_type?: string;
+    }>(result.text, 'suggest_extraction_schema');
+
+    // Parse the schema JSON string back to an object
+    let suggestedSchema: Record<string, unknown>;
+    try {
+      suggestedSchema = JSON.parse(suggestion.suggested_schema_json);
+    } catch {
+      throw new Error(
+        `Gemini returned invalid JSON in suggested_schema_json: ${suggestion.suggested_schema_json.slice(0, 200)}`
+      );
+    }
+
+    // Validate the schema has at minimum a type and properties
+    if (!suggestedSchema.type || !suggestedSchema.properties) {
+      throw new Error(
+        'Gemini returned a schema without required "type" and "properties" fields. ' +
+          `Got: ${JSON.stringify(suggestedSchema).slice(0, 200)}`
+      );
+    }
 
     return formatResponse(
       successResult({
         document_id: doc.id,
         file_name: doc.file_name,
-        suggested_schema: suggestion.suggested_schema,
+        suggested_schema: suggestedSchema,
         explanation: suggestion.explanation,
         detected_document_type: suggestion.detected_document_type ?? null,
-        usage_example: `Use this schema with ocr_extract_structured:\n  document_id: "${doc.id}"\n  page_schema: '${JSON.stringify(suggestion.suggested_schema)}'`,
+        usage_example: `Use this schema with ocr_extract_structured:\n  document_id: "${doc.id}"\n  page_schema: '${JSON.stringify(suggestedSchema)}'`,
       })
     );
   } catch (error) {

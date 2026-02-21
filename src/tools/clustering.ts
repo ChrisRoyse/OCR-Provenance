@@ -15,6 +15,7 @@ import {
   formatResponse,
   handleError,
   fetchProvenanceChain,
+  parseGeminiJson,
   type ToolDefinition,
   type ToolResponse,
 } from './shared.js';
@@ -528,7 +529,11 @@ Respond with valid JSON matching the schema.`;
     const { getSharedClient } = await import('../services/gemini/index.js');
     const gemini = getSharedClient();
     const result = await gemini.fast(prompt, schema);
-    const labeling = JSON.parse(result.text);
+    const labeling = parseGeminiJson<{
+      label: string;
+      description: string;
+      classification_tag: string;
+    }>(result.text, 'cluster_label');
 
     // Update cluster in database
     conn

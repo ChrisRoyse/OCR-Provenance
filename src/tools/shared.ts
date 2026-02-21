@@ -53,6 +53,58 @@ export function handleError(error: unknown): ToolResponse {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
+// GEMINI RESPONSE PARSING
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/**
+ * Robustly parse JSON from Gemini AI responses.
+ *
+ * Gemini sometimes returns JSON wrapped in markdown code fences, with
+ * reasoning preamble, or with trailing garbage. This 4-step parser handles
+ * all common Gemini output formats:
+ *   1. Strip markdown code fences
+ *   2. Try full-text parse
+ *   3. Extract outermost { ... } block
+ *   4. Fail with diagnostics
+ *
+ * Used by all tools that call gemini.fast() and parse the response.
+ */
+export function parseGeminiJson<T = Record<string, unknown>>(text: string, label: string): T {
+  if (!text || text.trim().length === 0) {
+    throw new Error(`Gemini returned empty response for ${label}`);
+  }
+
+  // Step 1: Strip markdown code fences
+  const clean = text.replace(/```json\n?|\n?```/g, '').trim();
+
+  // Step 2: Try parsing the full cleaned text
+  try {
+    return JSON.parse(clean) as T;
+  } catch {
+    // Not valid JSON as-is, continue to extraction
+  }
+
+  // Step 3: Extract JSON object from mixed text (reasoning preamble + JSON)
+  const firstBrace = clean.indexOf('{');
+  const lastBrace = clean.lastIndexOf('}');
+
+  if (firstBrace !== -1 && lastBrace > firstBrace) {
+    const jsonCandidate = clean.slice(firstBrace, lastBrace + 1);
+    try {
+      return JSON.parse(jsonCandidate) as T;
+    } catch {
+      // Extracted substring is not valid JSON either, fall through to error
+    }
+  }
+
+  // Step 4: All extraction attempts failed - throw with diagnostics
+  throw new Error(
+    `Gemini ${label} JSON parse failed: could not extract valid JSON from response. ` +
+      `Raw response (first 500 chars): ${text.slice(0, 500)}`
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
 // SHARED QUERY HELPERS
 // ═══════════════════════════════════════════════════════════════════════════════
 

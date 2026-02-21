@@ -23,7 +23,7 @@ import {
   DocumentDeleteInput,
 } from '../utils/validation.js';
 import { documentNotFoundError, MCPError } from '../server/errors.js';
-import { formatResponse, handleError, type ToolResponse, type ToolDefinition } from './shared.js';
+import { formatResponse, handleError, parseGeminiJson, type ToolResponse, type ToolDefinition } from './shared.js';
 import { getComparisonSummariesByDocument } from '../services/storage/database/comparison-operations.js';
 import { getClusterSummariesForDocument } from '../services/storage/database/cluster-operations.js';
 
@@ -520,7 +520,13 @@ Respond with valid JSON matching the schema.`;
     };
 
     const result = await gemini.fast(prompt, schema);
-    const classification = JSON.parse(result.text);
+    const classification = parseGeminiJson<{
+      document_type: string;
+      confidence: number;
+      reasoning: string;
+      language?: string;
+      key_topics?: string[];
+    }>(result.text, 'document_classify');
 
     // Store classification in doc_subject field
     db.getConnection()

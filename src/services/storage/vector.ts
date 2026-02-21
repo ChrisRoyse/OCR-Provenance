@@ -415,7 +415,7 @@ export class VectorService {
         ch.is_atomic,
         ch.page_range AS chunk_page_range,
         ch.heading_level,
-        ${options.qualityBoost ? '(SELECT o.parse_quality_score FROM ocr_results o WHERE o.document_id = e.document_id ORDER BY o.created_at DESC LIMIT 1) AS ocr_quality_score,' : ''}
+        ${options.qualityBoost ? '(SELECT o.parse_quality_score FROM ocr_results o WHERE o.document_id = e.document_id ORDER BY o.processing_completed_at DESC LIMIT 1) AS ocr_quality_score,' : ''}
         vec_distance_cosine(v.vector, ?) as distance
       FROM vec_embeddings v
       JOIN embeddings e ON e.id = v.embedding_id
@@ -491,7 +491,7 @@ export class VectorService {
           ch.is_atomic,
           ch.page_range AS chunk_page_range,
           ch.heading_level,
-          ${options.qualityBoost ? '(SELECT o.parse_quality_score FROM ocr_results o WHERE o.document_id = e.document_id ORDER BY o.created_at DESC LIMIT 1) AS ocr_quality_score,' : ''}
+          ${options.qualityBoost ? '(SELECT o.parse_quality_score FROM ocr_results o WHERE o.document_id = e.document_id ORDER BY o.processing_completed_at DESC LIMIT 1) AS ocr_quality_score,' : ''}
           vec_distance_cosine(v.vector, ?) as distance
         FROM vec_embeddings v
         JOIN embeddings e ON e.id = v.embedding_id

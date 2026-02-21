@@ -112,7 +112,7 @@ export class BM25SearchService {
         c.is_atomic,
         c.page_range,
         c.heading_level
-        ${qualityBoost ? ', (SELECT o.parse_quality_score FROM ocr_results o WHERE o.document_id = c.document_id ORDER BY o.created_at DESC LIMIT 1) AS ocr_quality_score' : ''}
+        ${qualityBoost ? ', (SELECT o.parse_quality_score FROM ocr_results o WHERE o.document_id = c.document_id ORDER BY o.processing_completed_at DESC LIMIT 1) AS ocr_quality_score' : ''}
         ${includeHighlight ? ", snippet(chunks_fts, 0, '<mark>', '</mark>', '...', 32) AS highlight" : ''}
       FROM chunks_fts
       JOIN chunks c ON chunks_fts.rowid = c.rowid
@@ -232,7 +232,7 @@ export class BM25SearchService {
         e.chunk_index,
         e.provenance_id,
         e.content_hash
-        ${qualityBoost ? ', (SELECT o.parse_quality_score FROM ocr_results o WHERE o.document_id = e.document_id ORDER BY o.created_at DESC LIMIT 1) AS ocr_quality_score' : ''}
+        ${qualityBoost ? ', (SELECT o.parse_quality_score FROM ocr_results o WHERE o.document_id = e.document_id ORDER BY o.processing_completed_at DESC LIMIT 1) AS ocr_quality_score' : ''}
         ${includeHighlight ? ", snippet(vlm_fts, 0, '<mark>', '</mark>', '...', 32) AS highlight" : ''}
       FROM vlm_fts
       JOIN embeddings e ON vlm_fts.rowid = e.rowid
@@ -343,7 +343,7 @@ export class BM25SearchService {
         d.file_hash AS source_file_hash,
         ex.provenance_id,
         ex.content_hash
-        ${qualityBoost ? ', (SELECT o.parse_quality_score FROM ocr_results o WHERE o.document_id = ex.document_id ORDER BY o.created_at DESC LIMIT 1) AS ocr_quality_score' : ''}
+        ${qualityBoost ? ', (SELECT o.parse_quality_score FROM ocr_results o WHERE o.document_id = ex.document_id ORDER BY o.processing_completed_at DESC LIMIT 1) AS ocr_quality_score' : ''}
         ${includeHighlight ? ", snippet(extractions_fts, 0, '<mark>', '</mark>', '...', 32) AS highlight" : ''}
       FROM extractions_fts
       JOIN extractions ex ON extractions_fts.rowid = ex.rowid
