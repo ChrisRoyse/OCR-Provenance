@@ -29,6 +29,7 @@ import {
   SearchHybridInput,
   FTSManageInput,
 } from '../utils/validation.js';
+import { MCPError } from '../server/errors.js';
 import { formatResponse, handleError, type ToolResponse, type ToolDefinition } from './shared.js';
 import { BM25SearchService } from '../services/search/bm25.js';
 import { RRFFusion, type RankedResult } from '../services/search/fusion.js';
@@ -1472,6 +1473,12 @@ const SearchSavedGetInput = z.object({
   saved_search_id: z.string().min(1).describe('ID of the saved search to retrieve'),
 });
 
+const SearchSavedExecuteInput = z.object({
+  saved_search_id: z.string().min(1).describe('ID of the saved search to re-execute'),
+  override_limit: z.number().int().min(1).max(100).optional()
+    .describe('Override the original result limit'),
+});
+
 /**
  * Handle ocr_search_save - Save search results with a name for later retrieval
  */
@@ -1586,6 +1593,207 @@ async function handleSearchSavedGet(params: Record<string, unknown>): Promise<To
       created_at: row.created_at,
       notes: row.notes,
     }));
+  } catch (error) {
+    return handleError(error);
+  }
+}
+
+/**
+ * Handle ocr_search_saved_execute - Re-execute a saved search with current data
+ *
+ * Reads the saved search parameters and dispatches to the appropriate search handler
+ * (handleSearch, handleSearchSemantic, or handleSearchHybrid) based on the saved search_type.
+ */
+async function handleSearchSavedExecute(params: Record<string, unknown>): Promise<ToolResponse> {
+  try {
+    const input = validateInput(SearchSavedExecuteInput, params);
+    const { db } = requireDatabase();
+    const conn = db.getConnection();
+
+    // Retrieve saved search
+    const row = conn.prepare(
+      'SELECT * FROM saved_searches WHERE id = ?'
+    ).get(input.saved_search_id) as {
+      id: string; name: string; query: string; search_type: string;
+      search_params: string; result_count: number; result_ids: string;
+      created_at: string; notes: string | null;
+    } | undefined;
+
+    if (!row) {
+      throw new MCPError('VALIDATION_ERROR', `Saved search not found: ${input.saved_search_id}`);
+    }
+
+    // Parse stored search parameters
+    let searchParams: Record<string, unknown>;
+    try {
+      searchParams = JSON.parse(row.search_params) as Record<string, unknown>;
+    } catch (parseErr) {
+      throw new MCPError('INTERNAL_ERROR', `Failed to parse saved search params: ${String(parseErr)}`);
+    }
+
+    // Override limit if requested
+    if (input.override_limit !== undefined) {
+      searchParams.limit = input.override_limit;
+    }
+
+    // Ensure query is set in params
+    searchParams.query = row.query;
+
+    // Dispatch to appropriate handler based on search_type
+    let searchResult: ToolResponse;
+    switch (row.search_type) {
+      case 'bm25':
+        searchResult = await handleSearch(searchParams as Record<string, unknown>);
+        break;
+      case 'semantic':
+        searchResult = await handleSearchSemantic(searchParams as Record<string, unknown>);
+        break;
+      case 'hybrid':
+        searchResult = await handleSearchHybrid(searchParams as Record<string, unknown>);
+        break;
+      default:
+        throw new MCPError('VALIDATION_ERROR', `Unknown search type: ${row.search_type}`);
+    }
+
+    // Parse the search result to wrap with saved search metadata
+    const searchResultData = JSON.parse(searchResult.content[0].text) as Record<string, unknown>;
+
+    return formatResponse(successResult({
+      saved_search: {
+        id: row.id,
+        name: row.name,
+        query: row.query,
+        search_type: row.search_type,
+        original_result_count: row.result_count,
+        created_at: row.created_at,
+        notes: row.notes,
+      },
+      re_executed_at: new Date().toISOString(),
+      search_results: searchResultData,
+    }));
+  } catch (error) {
+    return handleError(error);
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// CROSS-DATABASE SEARCH HANDLER
+// ═══════════════════════════════════════════════════════════════════════════════
+
+const CrossDbSearchInput = z.object({
+  query: z.string().min(1).describe('Search query'),
+  database_names: z.array(z.string()).optional()
+    .describe('Database names to search (default: all databases)'),
+  limit_per_db: z.number().int().min(1).max(50).default(10)
+    .describe('Maximum results per database'),
+});
+
+/**
+ * Handle ocr_search_cross_db - Search across multiple databases using BM25
+ */
+async function handleCrossDbSearch(params: Record<string, unknown>): Promise<ToolResponse> {
+  try {
+    const input = validateInput(CrossDbSearchInput, params);
+
+    const { listDatabases } = await import('../services/storage/database/static-operations.js');
+    const Database = (await import('better-sqlite3')).default;
+
+    // Get list of databases
+    let databases = listDatabases();
+
+    // Filter to requested database_names if provided
+    if (input.database_names && input.database_names.length > 0) {
+      const nameSet = new Set(input.database_names);
+      databases = databases.filter((db) => nameSet.has(db.name));
+    }
+
+    const allResults: Array<{
+      database_name: string;
+      document_id: string;
+      file_name: string | null;
+      chunk_id: string;
+      chunk_index: number;
+      text_preview: string;
+      bm25_score: number;
+    }> = [];
+    const skippedDbs: Array<{ name: string; reason: string }> = [];
+
+    for (const dbInfo of databases) {
+      let conn: import('better-sqlite3').Database | null = null;
+      try {
+        conn = new Database(dbInfo.path, { readonly: true });
+
+        // Check if FTS table exists
+        const ftsCheck = conn
+          .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='chunks_fts'")
+          .get() as { name: string } | undefined;
+
+        if (!ftsCheck) {
+          skippedDbs.push({ name: dbInfo.name, reason: 'No FTS index (chunks_fts table not found)' });
+          continue;
+        }
+
+        // Run BM25 search
+        const rows = conn
+          .prepare(
+            `SELECT c.id, c.document_id, c.text, c.chunk_index, rank
+             FROM chunks_fts
+             JOIN chunks c ON c.rowid = chunks_fts.rowid
+             WHERE chunks_fts MATCH ?
+             ORDER BY rank
+             LIMIT ?`
+          )
+          .all(input.query, input.limit_per_db) as Array<{
+          id: string;
+          document_id: string;
+          text: string;
+          chunk_index: number;
+          rank: number;
+        }>;
+
+        for (const row of rows) {
+          // Get document info
+          const docInfo = conn
+            .prepare('SELECT file_name, file_path FROM documents WHERE id = ?')
+            .get(row.document_id) as { file_name: string; file_path: string } | undefined;
+
+          allResults.push({
+            database_name: dbInfo.name,
+            document_id: row.document_id,
+            file_name: docInfo?.file_name ?? null,
+            chunk_id: row.id,
+            chunk_index: row.chunk_index,
+            text_preview: row.text.substring(0, 300),
+            bm25_score: row.rank,
+          });
+        }
+      } catch (dbError) {
+        const errMsg = dbError instanceof Error ? dbError.message : String(dbError);
+        console.error(`[CrossDbSearch] Failed to search database ${dbInfo.name}: ${errMsg}`);
+        skippedDbs.push({ name: dbInfo.name, reason: errMsg });
+      } finally {
+        if (conn) {
+          try {
+            conn.close();
+          } catch (closeErr) {
+            console.error(`[CrossDbSearch] Failed to close connection to ${dbInfo.name}: ${String(closeErr)}`);
+          }
+        }
+      }
+    }
+
+    // Sort by absolute BM25 rank (BM25 scores are negative, lower=better)
+    allResults.sort((a, b) => a.bm25_score - b.bm25_score);
+
+    return formatResponse(
+      successResult({
+        query: input.query,
+        databases_searched: databases.length - skippedDbs.length,
+        total_results: allResults.length,
+        results: allResults,
+        databases_skipped: skippedDbs.length > 0 ? skippedDbs : undefined,
+      })
+    );
   } catch (error) {
     return handleError(error);
   }
@@ -1869,5 +2077,16 @@ export const searchTools: Record<string, ToolDefinition> = {
     description: 'Retrieve a saved search by ID including all parameters and result IDs',
     inputSchema: SearchSavedGetInput.shape,
     handler: handleSearchSavedGet,
+  },
+  ocr_search_saved_execute: {
+    description: 'Re-execute a saved search with current data. Reads saved parameters and dispatches to the original search handler (BM25, semantic, or hybrid).',
+    inputSchema: SearchSavedExecuteInput.shape,
+    handler: handleSearchSavedExecute,
+  },
+  ocr_search_cross_db: {
+    description:
+      'Search across multiple databases using BM25 full-text search. Opens each database independently as read-only. Returns merged results sorted by BM25 rank.',
+    inputSchema: CrossDbSearchInput.shape,
+    handler: handleCrossDbSearch,
   },
 };

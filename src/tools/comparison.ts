@@ -650,6 +650,102 @@ async function handleComparisonBatch(params: Record<string, unknown>): Promise<T
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
+// COMPARISON MATRIX HANDLER
+// ═══════════════════════════════════════════════════════════════════════════════
+
+const ComparisonMatrixInput = z.object({
+  document_ids: z.array(z.string()).optional()
+    .describe('Document IDs to include (default: all documents with embeddings)'),
+  max_documents: z.number().int().min(2).max(100).default(50)
+    .describe('Maximum documents in matrix'),
+});
+
+/**
+ * Handle ocr_comparison_matrix - Compute pairwise similarity matrix for documents
+ */
+async function handleComparisonMatrix(params: Record<string, unknown>): Promise<ToolResponse> {
+  try {
+    const input = validateInput(ComparisonMatrixInput, params);
+    const { db } = requireDatabase();
+    const conn = db.getConnection();
+
+    // Compute document centroid embeddings
+    const docEmbeddings = computeDocumentEmbeddings(conn, input.document_ids);
+
+    if (docEmbeddings.length < 2) {
+      throw new MCPError(
+        'VALIDATION_ERROR',
+        `Need at least 2 documents with embeddings for a similarity matrix. Found: ${docEmbeddings.length}`
+      );
+    }
+
+    // Limit to max_documents (default 50 from schema)
+    const limited = docEmbeddings.slice(0, input.max_documents);
+
+    // Get file names for all documents
+    const documentIds: string[] = [];
+    const fileNames: string[] = [];
+    for (const de of limited) {
+      documentIds.push(de.document_id);
+      const doc = db.getDocument(de.document_id);
+      fileNames.push(doc?.file_name ?? 'unknown');
+    }
+
+    // Compute NxN similarity matrix
+    const n = limited.length;
+    const matrix: number[][] = [];
+    let mostSimilarPair = { doc1_index: 0, doc2_index: 1, similarity: -1 };
+    let leastSimilarPair = { doc1_index: 0, doc2_index: 1, similarity: 2 };
+    let totalSimilarity = 0;
+    let pairCount = 0;
+
+    for (let i = 0; i < n; i++) {
+      const row: number[] = [];
+      for (let j = 0; j < n; j++) {
+        if (i === j) {
+          row.push(1.0);
+        } else {
+          const sim = cosineSimilarity(limited[i].embedding, Array.from(limited[j].embedding));
+          const rounded = Math.round(sim * 10000) / 10000;
+          row.push(rounded);
+
+          // Only track for upper triangle to avoid double-counting
+          if (j > i) {
+            totalSimilarity += rounded;
+            pairCount++;
+            if (rounded > mostSimilarPair.similarity) {
+              mostSimilarPair = { doc1_index: i, doc2_index: j, similarity: rounded };
+            }
+            if (rounded < leastSimilarPair.similarity) {
+              leastSimilarPair = { doc1_index: i, doc2_index: j, similarity: rounded };
+            }
+          }
+        }
+      }
+      matrix.push(row);
+    }
+
+    const averageSimilarity = pairCount > 0
+      ? Math.round((totalSimilarity / pairCount) * 10000) / 10000
+      : 0;
+
+    return formatResponse(
+      successResult({
+        document_ids: documentIds,
+        file_names: fileNames,
+        matrix,
+        most_similar_pair: mostSimilarPair,
+        least_similar_pair: leastSimilarPair,
+        average_similarity: averageSimilarity,
+        documents_analyzed: n,
+      })
+    );
+  } catch (error) {
+    return handleError(error);
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
 // TOOL EXPORTS
 // ═══════════════════════════════════════════════════════════════════════════════
 
@@ -683,5 +779,11 @@ export const comparisonTools: Record<string, ToolDefinition> = {
       'Compare multiple document pairs in one operation. Provide explicit pairs or a cluster_id to compare all documents within a cluster.',
     inputSchema: ComparisonBatchInput.shape,
     handler: handleComparisonBatch,
+  },
+  ocr_comparison_matrix: {
+    description:
+      'Compute an NxN pairwise cosine similarity matrix for documents using document centroid embeddings. Identifies most/least similar pairs and average similarity.',
+    inputSchema: ComparisonMatrixInput.shape,
+    handler: handleComparisonMatrix,
   },
 };

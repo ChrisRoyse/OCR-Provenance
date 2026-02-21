@@ -1384,6 +1384,214 @@ export async function handleCorpusExport(params: Record<string, unknown>): Promi
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
+// DOCUMENT VERSIONS HANDLER
+// ═══════════════════════════════════════════════════════════════════════════════
+
+const DocumentVersionsInput = z.object({
+  document_id: z.string().min(1).describe('Document ID to find versions of'),
+});
+
+/**
+ * Handle ocr_document_versions - Find all versions of a document by file_path
+ */
+async function handleDocumentVersions(params: Record<string, unknown>): Promise<ToolResponse> {
+  try {
+    const input = validateInput(DocumentVersionsInput, params);
+    const { db } = requireDatabase();
+    const conn = db.getConnection();
+
+    const doc = db.getDocument(input.document_id);
+    if (!doc) {
+      throw documentNotFoundError(input.document_id);
+    }
+
+    // Query ALL documents with the same file_path, ordered by created_at DESC
+    const versions = conn
+      .prepare(
+        `SELECT id, file_hash, file_size, status, created_at, ocr_completed_at
+         FROM documents
+         WHERE file_path = ?
+         ORDER BY created_at DESC`
+      )
+      .all(doc.file_path) as Array<{
+      id: string;
+      file_hash: string;
+      file_size: number;
+      status: string;
+      created_at: string;
+      ocr_completed_at: string | null;
+    }>;
+
+    return formatResponse(
+      successResult({
+        document_id: input.document_id,
+        file_path: doc.file_path,
+        versions: versions.map((v) => ({
+          id: v.id,
+          file_hash: v.file_hash,
+          file_size: v.file_size,
+          status: v.status,
+          created_at: v.created_at,
+          ocr_completed_at: v.ocr_completed_at,
+        })),
+        total_versions: versions.length,
+      })
+    );
+  } catch (error) {
+    return handleError(error);
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// DOCUMENT WORKFLOW HANDLER
+// ═══════════════════════════════════════════════════════════════════════════════
+
+const WORKFLOW_PREFIX = 'workflow:';
+const WORKFLOW_COLORS: Record<string, string> = {
+  draft: '#6B7280',
+  review: '#F59E0B',
+  approved: '#10B981',
+  rejected: '#EF4444',
+  archived: '#6366F1',
+};
+
+const DocumentWorkflowInput = z.object({
+  document_id: z.string().min(1).describe('Document ID'),
+  action: z.enum(['get', 'set', 'history']).describe('Action: get current state, set new state, or view history'),
+  state: z.enum(['draft', 'review', 'approved', 'rejected', 'archived']).optional()
+    .describe('New workflow state (required for action=set)'),
+  note: z.string().max(500).optional().describe('Optional note for state transition'),
+});
+
+/**
+ * Get the current workflow state for a document from its most recent workflow tag.
+ */
+function getCurrentWorkflowState(
+  conn: import('better-sqlite3').Database,
+  documentId: string
+): string {
+  const tag = conn
+    .prepare(
+      `SELECT t.name FROM tags t
+       JOIN entity_tags et ON et.tag_id = t.id
+       WHERE et.entity_type = 'document' AND et.entity_id = ?
+         AND t.name LIKE 'workflow:%'
+       ORDER BY et.created_at DESC LIMIT 1`
+    )
+    .get(documentId) as { name: string } | undefined;
+
+  return tag ? tag.name.replace(WORKFLOW_PREFIX, '') : 'none';
+}
+
+/**
+ * Handle ocr_document_workflow - Manage document workflow states via tags
+ */
+async function handleDocumentWorkflow(params: Record<string, unknown>): Promise<ToolResponse> {
+  try {
+    const input = validateInput(DocumentWorkflowInput, params);
+    const { db } = requireDatabase();
+    const conn = db.getConnection();
+
+    // Verify document exists
+    const doc = db.getDocument(input.document_id);
+    if (!doc) {
+      throw documentNotFoundError(input.document_id);
+    }
+
+    if (input.action === 'get') {
+      return formatResponse(
+        successResult({
+          document_id: input.document_id,
+          current_state: getCurrentWorkflowState(conn, input.document_id),
+        })
+      );
+    }
+
+    if (input.action === 'set') {
+      if (!input.state) {
+        throw new MCPError('VALIDATION_ERROR', 'state is required when action is "set"');
+      }
+
+      const previousState = getCurrentWorkflowState(conn, input.document_id);
+
+      // Don't delete old workflow tags - preserve history for the 'history' action.
+      // The 'get' action uses ORDER BY created_at DESC LIMIT 1 to get current state.
+
+      // Create tag if it doesn't exist
+      const tagName = WORKFLOW_PREFIX + input.state;
+      const now = new Date().toISOString();
+      const { v4: uuidv4 } = await import('uuid');
+
+      conn
+        .prepare(
+          `INSERT OR IGNORE INTO tags (id, name, description, color, created_at)
+           VALUES (?, ?, ?, ?, ?)`
+        )
+        .run(
+          uuidv4(),
+          tagName,
+          `Workflow state: ${input.state}${input.note ? ' - ' + input.note : ''}`,
+          WORKFLOW_COLORS[input.state] ?? '#6B7280',
+          now
+        );
+
+      // Get the tag ID (may have been pre-existing)
+      const tag = conn
+        .prepare('SELECT id FROM tags WHERE name = ?')
+        .get(tagName) as { id: string };
+
+      // Apply tag to document
+      conn
+        .prepare(
+          `INSERT INTO entity_tags (id, entity_type, entity_id, tag_id, created_at)
+           VALUES (?, 'document', ?, ?, ?)`
+        )
+        .run(uuidv4(), input.document_id, tag.id, now);
+
+      return formatResponse(
+        successResult({
+          document_id: input.document_id,
+          previous_state: previousState,
+          new_state: input.state,
+          transitioned_at: now,
+          note: input.note ?? null,
+        })
+      );
+    }
+
+    // action === 'history'
+    const historyRows = conn
+      .prepare(
+        `SELECT t.name, et.created_at
+         FROM entity_tags et
+         JOIN tags t ON t.id = et.tag_id
+         WHERE et.entity_type = 'document' AND et.entity_id = ?
+           AND t.name LIKE 'workflow:%'
+         ORDER BY et.created_at ASC`
+      )
+      .all(input.document_id) as Array<{ name: string; created_at: string }>;
+
+    // Get current state (last entry)
+    const currentState = historyRows.length > 0
+      ? historyRows[historyRows.length - 1].name.replace(WORKFLOW_PREFIX, '')
+      : 'none';
+
+    return formatResponse(
+      successResult({
+        document_id: input.document_id,
+        current_state: currentState,
+        history: historyRows.map((r) => ({
+          state: r.name.replace(WORKFLOW_PREFIX, ''),
+          applied_at: r.created_at,
+        })),
+      })
+    );
+  } catch (error) {
+    return handleError(error);
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
 // TOOL DEFINITIONS FOR MCP REGISTRATION
 // ═══════════════════════════════════════════════════════════════════════════════
 
@@ -1481,5 +1689,17 @@ export const documentTools: Record<string, ToolDefinition> = {
       'Export entire corpus metadata and statistics. JSON format includes document objects with nested data. CSV format has one row per document.',
     inputSchema: CorpusExportInput.shape,
     handler: handleCorpusExport,
+  },
+  ocr_document_versions: {
+    description:
+      'Find all versions of a document by file_path. Returns all documents sharing the same file path, ordered by creation date (newest first).',
+    inputSchema: DocumentVersionsInput.shape,
+    handler: handleDocumentVersions,
+  },
+  ocr_document_workflow: {
+    description:
+      'Manage document workflow states (draft, review, approved, rejected, archived) using the tags system. Supports get, set, and history actions.',
+    inputSchema: DocumentWorkflowInput.shape,
+    handler: handleDocumentWorkflow,
   },
 };

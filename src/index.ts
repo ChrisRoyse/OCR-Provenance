@@ -58,6 +58,8 @@ import { chunkTools } from './tools/chunks.js';
 import { embeddingTools } from './tools/embeddings.js';
 import { timelineTools } from './tools/timeline.js';
 import { tagTools } from './tools/tags.js';
+import { intelligenceTools } from './tools/intelligence.js';
+import { healthTools } from './tools/health.js';
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // SERVER INITIALIZATION
@@ -94,6 +96,8 @@ const allToolModules: Record<string, ToolDefinition>[] = [
   embeddingTools,
   timelineTools,
   tagTools,
+  intelligenceTools,
+  healthTools,
 ];
 
 // Register tools with duplicate detection

@@ -89,6 +89,15 @@ export interface ServerConfig {
 
   /** Image optimization settings */
   imageOptimization: ImageOptimizationConfig;
+
+  /** Enable auto-clustering after processing */
+  autoClusterEnabled?: boolean;
+
+  /** Minimum documents before auto-clustering triggers */
+  autoClusterThreshold?: number;
+
+  /** Algorithm for auto-clustering */
+  autoClusterAlgorithm?: 'hdbscan' | 'agglomerative' | 'kmeans';
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════

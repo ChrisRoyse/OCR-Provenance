@@ -15,17 +15,19 @@ Point this at a folder of PDFs, Word docs, spreadsheets, images, or presentation
 
 AI assistants can't read your files natively. They can't search across 500 PDFs, compare contract versions, or find the one email buried in a discovery dump. This server bridges that gap.
 
-It's a [Model Context Protocol](https://modelcontextprotocol.io/) server that gives Claude (or any MCP client) the ability to **ingest, OCR, search, compare, cluster, and reason over** your documents -- with a cryptographic audit trail proving exactly where every answer came from.
+It's a [Model Context Protocol](https://modelcontextprotocol.io/) server that gives Claude (or any MCP client) the ability to **ingest, OCR, search, compare, cluster, tag, and reason over** your documents -- with a cryptographic audit trail proving exactly where every answer came from.
 
 ### What Happens When You Ingest Documents
 
 ```
 Your files (PDF, DOCX, XLSX, images, presentations...)
     -> OCR text extraction via Datalab API
-    -> Text chunking + GPU vector embeddings
-    -> Image extraction + AI vision analysis
+    -> Hybrid section-aware chunking with markdown parsing
+    -> GPU vector embeddings (nomic-embed-text-v1.5)
+    -> Image extraction + AI vision analysis (Gemini 3 Flash)
     -> Full-text + semantic + hybrid search indexes
     -> Document clustering by similarity
+    -> Cross-entity tagging system
     -> SHA-256 provenance chain on every artifact
 ```
 
@@ -141,34 +143,68 @@ Each database is fully isolated. Create one per case, project, or client.
 ## Architecture
 
 ```
-                    +-----------------------+
-                    |   MCP Client (Claude) |
-                    +-----------+-----------+
-                                | JSON-RPC over stdio
-                    +-----------v-----------+
-                    |   MCP Server (Node)   |
-                    |   69 registered tools |
-                    +-----------+-----------+
-                       |        |        |
-          +------------+   +----+----+   +----------+
-          |                |         |              |
-+---------v---+   +-------v--+  +---v--------+  +-v----------+
-|   SQLite    |   |  Python  |  |   Gemini   |  |  Datalab   |
-| + sqlite-vec|   |  Workers |  |    API     |  |    API     |
-+-------------+   +----------+  +------------+  +------------+
-| 15 tables   |   | 8 workers|  | VLM vision |  | OCR engine |
-| FTS5 search |   | GPU embed|  | re-ranking |  | form fill  |
-| vec search  |   | clustering  | PDF analyze|  | file mgmt  |
-+-------------+   | img extract +------------+  +------------+
-                  +----------+
+┌─────────────────────────────────────────────────────────────┐
+│                    MCP Server (stdio)                        │
+│  TypeScript + @modelcontextprotocol/sdk                     │
+│  116 tools across 20 tool modules                           │
+├─────────────────────────────────────────────────────────────┤
+│                                                              │
+│  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐   │
+│  │ Ingestion│  │  Search  │  │ Analysis │  │ Reports  │   │
+│  │ 9 tools  │  │ 10 tools │  │ 29 tools │  │ 9 tools  │   │
+│  └────┬─────┘  └────┬─────┘  └────┬─────┘  └────┬─────┘   │
+│       │              │              │              │          │
+│  ┌────┴──────────────┴──────────────┴──────────────┴────┐   │
+│  │              Service Layer (9 domains)                │   │
+│  │  OCR · Chunking · Embedding · Search · VLM          │   │
+│  │  Provenance · Comparison · Clustering · Gemini      │   │
+│  └────┬──────────────┬──────────────┬───────────────────┘   │
+│       │              │              │                         │
+│  ┌────┴────┐   ┌────┴────┐   ┌────┴─────┐                  │
+│  │ SQLite  │   │sqlite-vec│   │ FTS5     │                  │
+│  │ 18 tbls │   │ vectors  │   │ indexes  │                  │
+│  └─────────┘   └─────────┘   └──────────┘                  │
+│                                                              │
+│  ┌──────────────────────────────────────────────────────┐   │
+│  │            Python Workers (8 processes)               │   │
+│  │  OCR · Embedding · Clustering · Image Extraction    │   │
+│  │  DOCX Extraction · Image Optimizer · Form Fill      │   │
+│  │  File Manager                                        │   │
+│  └──────────────────────────────────────────────────────┘   │
+│                                                              │
+│  ┌──────────────────────────────────────────────────────┐   │
+│  │            External APIs                              │   │
+│  │  Datalab (OCR/Forms) · Gemini 3 Flash (VLM/AI)     │   │
+│  │  Nomic embed v1.5 (local GPU, 768-dim)              │   │
+│  └──────────────────────────────────────────────────────┘   │
+└─────────────────────────────────────────────────────────────┘
 ```
 
-- **TypeScript MCP Server** -- 69 tools, Zod validation, provenance tracking
-- **Python Workers** (8) -- OCR, GPU embedding, image extraction, clustering, form fill
-- **SQLite + sqlite-vec** -- 15 tables, FTS5 full-text search, vector similarity search, WAL mode
-- **Gemini 3 Flash** -- vision analysis, search re-ranking, query expansion, PDF analysis
-- **Datalab API** -- document OCR, form filling, cloud storage
+- **TypeScript MCP Server** -- 116 tools across 20 modules, Zod validation, provenance tracking
+- **Python Workers** (8) -- OCR, GPU embedding, image extraction, clustering, form fill, file management
+- **SQLite + sqlite-vec** -- 18 tables, FTS5 full-text search, vector similarity search, WAL mode
+- **Gemini 3 Flash** -- vision analysis, search re-ranking, query expansion, document classification, cluster labeling, schema suggestion
+- **Datalab API** -- document OCR, form filling, structured extraction, cloud storage
 - **nomic-embed-text-v1.5** -- 768-dim local embeddings (CUDA / MPS / CPU)
+
+### Hybrid Section-Aware Chunking
+
+The chunking pipeline was rebuilt to produce semantically coherent chunks that respect document structure:
+
+```
+OCR text (markdown)
+  │
+  ├─ Text Normalization ──── Clean whitespace, normalize line breaks
+  ├─ Heading Normalization ─ Fix skipped heading levels (h1→h3 becomes h1→h2)
+  ├─ Markdown Parsing ────── Parse into heading/paragraph/table/code/list blocks
+  ├─ JSON Block Analysis ──── Detect atomic regions (tables, figures) from OCR blocks
+  ├─ Section-Aware Splitting ─ Chunk at heading boundaries, respect atomic regions
+  ├─ Page Tracking ────────── Assign page numbers via Datalab page separators
+  ├─ Chunk Merging ────────── Merge heading-only chunks into their content
+  └─ Metadata Enrichment ──── section_path, heading_context, content_types per chunk
+```
+
+Each chunk carries: `section_path` (e.g., "Introduction > Background"), `heading_context`, `content_types` (table/code/text/list), and `page_number` -- all searchable as filters.
 
 ### How Search Works
 
@@ -180,7 +216,19 @@ Three search modes, combinable via Reciprocal Rank Fusion:
 | **Semantic** | Conceptual queries, paraphrases | Vector similarity via nomic-embed-text-v1.5 |
 | **Hybrid** (recommended) | General questions | BM25 + semantic fused, optional Gemini re-ranking |
 
-All search modes support filtering by document cluster, quality score, metadata, and specific document IDs.
+#### Search Enhancement Stack
+
+All three search modes support a shared enhancement stack:
+
+- **Query classification** -- heuristic analysis auto-routes queries between exact/semantic/mixed modes (`auto_route` on hybrid)
+- **Query expansion** -- legal/medical synonym injection for broader recall (`expand_query`)
+- **Gemini AI re-ranking** -- re-scores results using Gemini 3 Flash for relevance (`rerank`)
+- **Chunk-level filters** -- `content_type_filter`, `section_path_filter` (prefix match), `heading_filter` (LIKE), `page_range_filter`, `quality_boost`
+- **Metadata filters** -- title/author/subject LIKE matching, document ID filtering, cluster filtering, quality score threshold
+- **VLM image enrichment** -- search results from VLM descriptions include image metadata (path, dimensions, type)
+- **Cluster context** -- optionally attach cluster labels and membership info to results
+- **Provenance inclusion** -- attach full provenance chain to each search result
+- **Search persistence** -- save searches by name and retrieve them later
 
 ### Provenance Chain
 
@@ -191,13 +239,13 @@ DOCUMENT (depth 0)
   +-- OCR_RESULT (depth 1)
   |     +-- CHUNK (depth 2) -> EMBEDDING (depth 3)
   |     +-- IMAGE (depth 2) -> VLM_DESCRIPTION (depth 3) -> EMBEDDING (depth 4)
-  |     +-- EXTRACTION (depth 2)
+  |     +-- EXTRACTION (depth 2) -> EMBEDDING (depth 3)
   +-- FORM_FILL (depth 0)
   +-- COMPARISON (depth 2)
   +-- CLUSTERING (depth 2)
 ```
 
-Export in JSON or W3C PROV-JSON for regulatory compliance.
+Export in JSON, W3C PROV-JSON, or CSV for regulatory compliance. Query provenance with 12+ filters, view processing timelines, and analyze per-processor statistics.
 
 ---
 
@@ -214,8 +262,8 @@ Export in JSON or W3C PROV-JSON for regulatory compliance.
 
 | Key | Get From | Used For |
 |-----|----------|----------|
-| `DATALAB_API_KEY` | [datalab.to](https://www.datalab.to) | OCR, form fill, file upload |
-| `GEMINI_API_KEY` | [Google AI Studio](https://aistudio.google.com/) | Vision analysis, re-ranking |
+| `DATALAB_API_KEY` | [datalab.to](https://www.datalab.to) | OCR, form fill, file upload, structured extraction |
+| `GEMINI_API_KEY` | [Google AI Studio](https://aistudio.google.com/) | Vision analysis, re-ranking, classification, labeling |
 
 ---
 
@@ -242,7 +290,7 @@ cp .env.example .env
 # Edit .env with your DATALAB_API_KEY and GEMINI_API_KEY
 
 # Verify
-ocr-provenance-mcp  # Should print "Tools registered: 69" on stderr
+ocr-provenance-mcp  # Should print "Tools registered: 116" on stderr
 ```
 
 > **PyTorch GPU note:** If `pip install torch` gives you CPU-only, install the CUDA version explicitly:
@@ -345,7 +393,7 @@ STORAGE_DATABASES_PATH=~/.ocr-provenance/databases/
 
 ---
 
-## Tool Reference (69 Tools)
+## Tool Reference (116 Tools)
 
 <details>
 <summary><strong>Database Management (5)</strong></summary>
@@ -361,25 +409,26 @@ STORAGE_DATABASES_PATH=~/.ocr-provenance/databases/
 </details>
 
 <details>
-<summary><strong>Ingestion & Processing (8)</strong></summary>
+<summary><strong>Ingestion & Processing (9)</strong></summary>
 
 | Tool | Description |
 |------|-------------|
 | `ocr_ingest_directory` | Scan directory and register documents (18 file types, recursive) |
 | `ocr_ingest_files` | Ingest specific files by path |
-| `ocr_process_pending` | Full pipeline: OCR -> Chunk -> Embed -> Vector Index |
+| `ocr_process_pending` | Full pipeline: OCR -> Chunk -> Embed -> Vector -> VLM |
 | `ocr_status` | Check processing status |
 | `ocr_retry_failed` | Reset failed documents for reprocessing |
 | `ocr_reprocess` | Reprocess with different OCR settings |
 | `ocr_chunk_complete` | Repair documents missing chunks/embeddings |
 | `ocr_convert_raw` | One-off OCR conversion without storing |
+| `ocr_reembed_document` | Re-generate embeddings for a document without re-OCRing |
 
-**Processing options:** `ocr_mode` (fast/balanced/accurate), `chunking_strategy` (fixed/page_aware), `page_range`, `max_pages`, `extras` (track_changes, chart_understanding, extract_links, table_row_bboxes, infographic, new_block_types)
+**Processing options:** `ocr_mode` (fast/balanced/accurate), `chunking_strategy` (hybrid section-aware), `page_range`, `max_pages`, `extras` (track_changes, chart_understanding, extract_links, table_row_bboxes, infographic, new_block_types)
 
 </details>
 
 <details>
-<summary><strong>Search & Retrieval (7)</strong></summary>
+<summary><strong>Search & Retrieval (10)</strong></summary>
 
 | Tool | Description |
 |------|-------------|
@@ -390,35 +439,62 @@ STORAGE_DATABASES_PATH=~/.ocr-provenance/databases/
 | `ocr_search_export` | Export results to CSV or JSON |
 | `ocr_benchmark_compare` | Compare search results across databases |
 | `ocr_fts_manage` | Rebuild or check FTS5 index status |
+| `ocr_search_save` | Save a search by name for later retrieval |
+| `ocr_search_saved_list` | List all saved searches |
+| `ocr_search_saved_get` | Retrieve a saved search and its parameters |
 
-**Enhancement options:** Gemini re-ranking, cluster filtering, quality score filtering, metadata filtering, provenance inclusion.
+**Enhancement options:** Gemini re-ranking (`rerank`), query expansion (`expand_query`), auto-routing (`auto_route`), chunk-level filters (content type, section path, heading, page range), metadata filters, cluster filtering, quality score filtering, VLM image enrichment, provenance inclusion.
 
 </details>
 
 <details>
-<summary><strong>Document Management (3)</strong></summary>
+<summary><strong>Document Management (11)</strong></summary>
 
 | Tool | Description |
 |------|-------------|
 | `ocr_document_list` | List documents with status filtering |
 | `ocr_document_get` | Full document details (text, chunks, blocks, provenance) |
 | `ocr_document_delete` | Delete document and all derived data (cascade) |
+| `ocr_document_find_similar` | Find similar documents via embedding centroid similarity |
+| `ocr_document_classify` | AI classification using Gemini (type, domain, topics) |
+| `ocr_document_structure` | Analyze document structure (headings, tables, figures, code blocks) |
+| `ocr_document_sections` | Get section hierarchy tree from chunk section paths |
+| `ocr_document_update_metadata` | Batch update document metadata fields |
+| `ocr_document_duplicates` | Detect exact (hash) and near (similarity) duplicates |
+| `ocr_document_export` | Export document to JSON or markdown |
+| `ocr_corpus_export` | Export entire corpus to JSON or markdown archive |
 
 </details>
 
 <details>
-<summary><strong>Document Comparison (3)</strong></summary>
+<summary><strong>Provenance (6)</strong></summary>
+
+| Tool | Description |
+|------|-------------|
+| `ocr_provenance_get` | Get the complete provenance chain for any item |
+| `ocr_provenance_verify` | Verify integrity through SHA-256 hash chain |
+| `ocr_provenance_export` | Export provenance (JSON, W3C PROV-JSON, CSV) |
+| `ocr_provenance_query` | Query provenance records with 12+ filters |
+| `ocr_provenance_timeline` | View document processing timeline |
+| `ocr_provenance_processor_stats` | Aggregate statistics per processor type |
+
+</details>
+
+<details>
+<summary><strong>Document Comparison (5)</strong></summary>
 
 | Tool | Description |
 |------|-------------|
 | `ocr_document_compare` | Text diff + structural metadata diff + similarity ratio |
 | `ocr_comparison_list` | List comparisons with optional filtering |
 | `ocr_comparison_get` | Full comparison details with diff operations |
+| `ocr_comparison_discover` | Auto-discover similar document pairs for comparison |
+| `ocr_comparison_batch` | Batch compare multiple document pairs |
 
 </details>
 
 <details>
-<summary><strong>Document Clustering (5)</strong></summary>
+<summary><strong>Document Clustering (8)</strong></summary>
 
 | Tool | Description |
 |------|-------------|
@@ -426,6 +502,9 @@ STORAGE_DATABASES_PATH=~/.ocr-provenance/databases/
 | `ocr_cluster_list` | List clusters with filtering by run ID or tag |
 | `ocr_cluster_get` | Cluster details with member documents |
 | `ocr_cluster_assign` | Auto-assign a document to the nearest cluster |
+| `ocr_cluster_label` | Auto-label cluster using Gemini AI |
+| `ocr_cluster_reassign` | Move a document to a different cluster |
+| `ocr_cluster_merge` | Merge two clusters into one |
 | `ocr_cluster_delete` | Delete a clustering run |
 
 </details>
@@ -445,7 +524,7 @@ STORAGE_DATABASES_PATH=~/.ocr-provenance/databases/
 </details>
 
 <details>
-<summary><strong>Image Management (8) & Image Extraction (3)</strong></summary>
+<summary><strong>Image Operations (11)</strong></summary>
 
 | Tool | Description |
 |------|-------------|
@@ -457,6 +536,17 @@ STORAGE_DATABASES_PATH=~/.ocr-provenance/databases/
 | `ocr_image_delete_by_document` | Delete all images for a document |
 | `ocr_image_reset_failed` | Reset failed images for reprocessing |
 | `ocr_image_pending` | List images pending VLM processing |
+| `ocr_image_search` | Search images with 7 filters (type, size, status, confidence, etc.) |
+| `ocr_image_semantic_search` | Semantic search over VLM image descriptions |
+| `ocr_image_reanalyze` | Re-run VLM analysis with a custom prompt |
+
+</details>
+
+<details>
+<summary><strong>Image Extraction (3)</strong></summary>
+
+| Tool | Description |
+|------|-------------|
 | `ocr_extract_images` | Extract images locally (PyMuPDF for PDF, zipfile for DOCX) |
 | `ocr_extract_images_batch` | Batch extract from all processed documents |
 | `ocr_extraction_check` | Verify Python environment has required packages |
@@ -464,19 +554,53 @@ STORAGE_DATABASES_PATH=~/.ocr-provenance/databases/
 </details>
 
 <details>
-<summary><strong>Form Fill (2) & Structured Extraction (2)</strong></summary>
+<summary><strong>Chunks (3)</strong></summary>
+
+| Tool | Description |
+|------|-------------|
+| `ocr_chunk_get` | Get a chunk by ID with full metadata |
+| `ocr_chunk_list` | List chunks with filtering (content type, section path, page, heading) |
+| `ocr_chunk_context` | Get a chunk with N neighboring chunks for context |
+
+</details>
+
+<details>
+<summary><strong>Embeddings (4)</strong></summary>
+
+| Tool | Description |
+|------|-------------|
+| `ocr_embedding_list` | List embeddings with filtering |
+| `ocr_embedding_stats` | Embedding statistics (counts, models, coverage) |
+| `ocr_embedding_get` | Get embedding details by ID |
+| `ocr_embedding_rebuild` | Re-generate embeddings for specific targets |
+
+</details>
+
+<details>
+<summary><strong>Structured Extraction (5)</strong></summary>
+
+| Tool | Description |
+|------|-------------|
+| `ocr_extract_structured` | Extract structured data from OCR'd documents using a JSON schema |
+| `ocr_extraction_list` | List structured extractions for a document |
+| `ocr_extraction_get` | Get a structured extraction by ID |
+| `ocr_extraction_search` | Search across extraction content |
+| `ocr_suggest_extraction_schema` | AI-suggested extraction schema based on document content (Gemini) |
+
+</details>
+
+<details>
+<summary><strong>Form Fill (2)</strong></summary>
 
 | Tool | Description |
 |------|-------------|
 | `ocr_form_fill` | Fill PDF/image forms via Datalab with field name-value mapping |
 | `ocr_form_fill_status` | Form fill operation status and results |
-| `ocr_extract_structured` | Extract structured data from OCR'd documents using a JSON schema |
-| `ocr_extraction_list` | List structured extractions for a document |
 
 </details>
 
 <details>
-<summary><strong>File Management (5)</strong></summary>
+<summary><strong>File Management (6)</strong></summary>
 
 | Tool | Description |
 |------|-------------|
@@ -485,32 +609,67 @@ STORAGE_DATABASES_PATH=~/.ocr-provenance/databases/
 | `ocr_file_get` | File metadata |
 | `ocr_file_download` | Get download URL |
 | `ocr_file_delete` | Delete file record |
+| `ocr_file_ingest_uploaded` | Bridge uploaded files into the document pipeline |
 
 </details>
 
 <details>
-<summary><strong>Evaluation & Reports (7)</strong></summary>
+<summary><strong>Tags (6)</strong></summary>
+
+| Tool | Description |
+|------|-------------|
+| `ocr_tag_create` | Create a tag with optional color and description |
+| `ocr_tag_list` | List tags with usage counts |
+| `ocr_tag_apply` | Apply a tag to any entity (document, chunk, image, cluster, etc.) |
+| `ocr_tag_remove` | Remove a tag from an entity |
+| `ocr_tag_search` | Find entities by tag name |
+| `ocr_tag_delete` | Delete a tag and all associations |
+
+</details>
+
+<details>
+<summary><strong>Evaluation (3)</strong></summary>
 
 | Tool | Description |
 |------|-------------|
 | `ocr_evaluate_single` | Evaluate a single image with VLM |
 | `ocr_evaluate_document` | Evaluate all images in a document |
-| `ocr_evaluate_pending` | Evaluate all pending images |
-| `ocr_evaluation_report` | Comprehensive OCR + VLM metrics report (markdown) |
-| `ocr_document_report` | Single document report (images, extractions, comparisons, clusters) |
-| `ocr_quality_summary` | Quality summary across all documents |
-| `ocr_cost_summary` | Cost analytics by document, mode, month, or total |
+| `ocr_evaluate_pending` | Evaluate all pending images system-wide |
 
 </details>
 
 <details>
-<summary><strong>Provenance (3) & Configuration (2)</strong></summary>
+<summary><strong>Reports & Analytics (9)</strong></summary>
 
 | Tool | Description |
 |------|-------------|
-| `ocr_provenance_get` | Get the complete provenance chain for any item |
-| `ocr_provenance_verify` | Verify integrity through SHA-256 hash chain |
-| `ocr_provenance_export` | Export provenance (JSON, W3C PROV-JSON, CSV) |
+| `ocr_evaluation_report` | Comprehensive OCR + VLM metrics report (markdown) |
+| `ocr_document_report` | Single document report (images, extractions, comparisons, clusters) |
+| `ocr_quality_summary` | Quality summary across all documents |
+| `ocr_cost_summary` | Cost analytics by document, mode, month, or total |
+| `ocr_pipeline_analytics` | Pipeline throughput, duration, per-mode/type breakdown |
+| `ocr_corpus_profile` | Corpus content profile (doc sizes, content types, section frequency) |
+| `ocr_error_analytics` | Error/recovery analytics and failure rates |
+| `ocr_provenance_bottlenecks` | Processing bottleneck analysis by processor |
+| `ocr_quality_trends` | Quality trends over time (hourly/daily/weekly/monthly) |
+
+</details>
+
+<details>
+<summary><strong>Timeline & Analytics (2)</strong></summary>
+
+| Tool | Description |
+|------|-------------|
+| `ocr_timeline_analytics` | Volume metrics over time |
+| `ocr_throughput_analytics` | Processing throughput per time bucket |
+
+</details>
+
+<details>
+<summary><strong>Configuration (2)</strong></summary>
+
+| Tool | Description |
+|------|-------------|
 | `ocr_config_get` | Get current system configuration |
 | `ocr_config_set` | Update configuration at runtime |
 
@@ -518,11 +677,115 @@ STORAGE_DATABASES_PATH=~/.ocr-provenance/databases/
 
 ---
 
+## Processing Pipeline
+
+```
+File on disk
+  │
+  ├─ 1. REGISTER ──► documents table (status: pending)
+  │                  ├─ file_hash computed (SHA-256)
+  │                  └─ provenance record (type: DOCUMENT, depth: 0)
+  │
+  ├─ 2. OCR ──────► ocr_results table
+  │                  ├─ Datalab API call (fast/balanced/accurate)
+  │                  ├─ extracted_text (markdown)
+  │                  ├─ json_blocks (structural hierarchy)
+  │                  ├─ extras_json (charts, links, track changes)
+  │                  ├─ page_offsets (page boundaries)
+  │                  └─ provenance record (type: OCR_RESULT, depth: 1)
+  │
+  ├─ 3. CHUNK ────► chunks table
+  │                  ├─ Hybrid section-aware chunking
+  │                  │   ├─ Text + heading normalization
+  │                  │   ├─ Markdown structure parsing
+  │                  │   ├─ Atomic region detection (tables, figures)
+  │                  │   └─ Heading-only chunk merging
+  │                  ├─ 2000 chars with 10% overlap
+  │                  ├─ section_path, heading_context, content_types
+  │                  ├─ page_number assignment via page separators
+  │                  └─ provenance records (type: CHUNK, depth: 2)
+  │
+  ├─ 4. EMBED ────► embeddings + vec_embeddings tables
+  │                  ├─ Nomic embed v1.5 (768-dim, local GPU)
+  │                  ├─ "search_document: " prefix
+  │                  └─ provenance records (type: EMBEDDING, depth: 3)
+  │
+  ├─ 5. FTS ──────► fts_index (FTS5 virtual table)
+  │                  └─ External content index on chunk text
+  │
+  ├─ 6. IMAGES ───► images table
+  │   │              ├─ PyMuPDF extraction (PDF) / zip extraction (DOCX)
+  │   │              ├─ Image optimization (resize, format)
+  │   │              └─ provenance records (type: IMAGE, depth: 2)
+  │   │
+  │   └─ 7. VLM ──► images updated + embeddings table
+  │                  ├─ Gemini 3 Flash multimodal analysis
+  │                  ├─ Description, structured data, confidence
+  │                  ├─ VLM description embedding generated
+  │                  └─ provenance records (type: VLM_DESCRIPTION, depth: 3→4)
+  │
+  └─ documents.status = 'complete'
+```
+
+---
+
+## Data Architecture (Schema v29)
+
+18 core tables + FTS5 virtual tables + vec_embeddings:
+
+| Table | Purpose | Key Fields |
+|-------|---------|------------|
+| `documents` | Source files | file_hash, status, page_count, metadata |
+| `ocr_results` | Extracted text | extracted_text, json_blocks, quality_score, cost |
+| `chunks` | Text segments | text (2000 chars), section_path, heading_context, content_types |
+| `embeddings` | 768-dim vectors | original_text, model_name, source metadata |
+| `images` | Extracted images | extracted_path, bbox, VLM description, confidence |
+| `extractions` | Structured data | schema_json, extraction_json |
+| `form_fills` | Form filling results | field mapping, output path |
+| `comparisons` | Document pair diffs | similarity_ratio, diff_operations |
+| `clusters` | Document groupings | label, classification_tag, coherence_score |
+| `document_clusters` | Cluster membership | document_id, cluster_id |
+| `provenance` | Full audit trail | type, processor, chain_depth, content_hash |
+| `tags` | Cross-entity labels | name, color, description |
+| `entity_tags` | Tag associations | tag_id, entity_type, entity_id |
+| `saved_searches` | Search persistence | name, search_type, parameters |
+| `uploaded_files` | Cloud file tracking | datalab_id, file_hash, upload status |
+| `database_metadata` | DB-level settings | key-value pairs |
+| `schema_version` | Migration tracking | version, applied_at |
+| `fts_index_metadata` | FTS index state | last_rebuild, chunk count |
+
+---
+
+## AI/ML Capabilities
+
+| Capability | Technology | Tool(s) |
+|-----------|-----------|---------|
+| Document OCR | Datalab API (3 modes) | `ocr_process_pending`, `ocr_convert_raw` |
+| Text Embeddings | Nomic embed v1.5 (local GPU) | Auto during ingestion, `ocr_reembed_document` |
+| Image Description | Gemini 3 Flash | `ocr_vlm_describe`, `ocr_vlm_process_*` |
+| Image Classification | Gemini 3 Flash | `ocr_vlm_classify` |
+| Document Classification | Gemini 3 Flash | `ocr_document_classify` |
+| Search Reranking | Gemini 3 Flash | `rerank` parameter on all search tools |
+| Query Expansion | Heuristic synonyms | `expand_query` parameter |
+| Query Classification | Heuristic patterns | `auto_route` parameter (hybrid search) |
+| Cluster Auto-Labeling | Gemini 3 Flash | `ocr_cluster_label` |
+| Schema Suggestion | Gemini 3 Flash | `ocr_suggest_extraction_schema` |
+| Document Clustering | scikit-learn | `ocr_cluster_documents` (HDBSCAN/agglomerative/k-means) |
+| Similarity Detection | Embedding centroids | `ocr_document_find_similar` |
+| Duplicate Detection | File hash + embedding similarity | `ocr_document_duplicates` |
+| Comparison Discovery | Embedding similarity | `ocr_comparison_discover` |
+| Text Comparison | npm diff (Sorensen-Dice) | `ocr_document_compare` |
+| RAG Context Assembly | Hybrid search + markdown | `ocr_rag_context` |
+| Semantic Image Search | VLM description embeddings | `ocr_image_semantic_search` |
+| PDF Direct Analysis | Gemini 3 Flash multimodal | `ocr_vlm_analyze_pdf` |
+
+---
+
 ## Development
 
 ```bash
 npm run build             # Build TypeScript
-npm test                  # All tests (1500+ across 79 files)
+npm test                  # All tests (2,348 across 106 files)
 npm run test:unit         # Unit tests only
 npm run test:integration  # Integration tests only
 npm run lint:all          # TypeScript + Python linting
@@ -534,17 +797,49 @@ npm run check             # typecheck + lint + test
 ```
 src/
   index.ts              # MCP server entry point
-  tools/                # 16 tool files + shared.ts
-  services/             # Core services (OCR, embedding, search, VLM, clustering, etc.)
+  bin.ts                # CLI entry point
+  tools/                # 20 tool files + shared.ts
+  services/             # Core services
+    chunking/           # Hybrid section-aware chunking pipeline
+      chunker.ts        # Main chunking orchestrator
+      markdown-parser.ts
+      heading-normalizer.ts
+      text-normalizer.ts
+      chunk-merger.ts
+      json-block-analyzer.ts
+    search/             # Search services (BM25, semantic, hybrid, reranker, query expansion)
+    gemini/             # Gemini client with caching and circuit breaker
+    ...                 # OCR, embedding, VLM, provenance, comparison, clustering
   models/               # Zod schemas and TypeScript types
+  database/             # Database operations (12 operation files)
   utils/                # Hash, validation helpers
   server/               # Server state, types, errors
 python/                 # 8 Python workers + GPU utils
 tests/
-  unit/                 # Unit tests
-  integration/          # Integration tests
+  unit/                 # Unit tests (~99 files)
+  integration/          # Integration tests (~7 files)
+  manual/               # Verification tests
+  benchmark/            # Chunking benchmark
   fixtures/             # Test fixtures and sample documents
+docs/                   # System documentation and reports
 ```
+
+### Key Metrics
+
+| Metric | Value |
+|--------|-------|
+| MCP tools | 116 |
+| Tool modules | 20 |
+| Database tables | 18 core + FTS + vec |
+| Schema version | v29 (29 migrations) |
+| Test files | 106 |
+| Tests passing | 2,348 |
+| TypeScript source | ~23,000 lines |
+| Python source | ~4,600 lines |
+| Test code | ~60,000 lines |
+| Production deps | 9 packages |
+| Python workers | 8 |
+| External APIs | 3 (Datalab, Gemini, Nomic local) |
 
 ---
 

@@ -102,6 +102,9 @@ export const ConfigKey = z.enum([
   'chunk_size',
   'chunk_overlap_percent',
   'max_chunk_size',
+  'auto_cluster_enabled',
+  'auto_cluster_threshold',
+  'auto_cluster_algorithm',
 ]);
 
 // ═══════════════════════════════════════════════════════════════════════════════

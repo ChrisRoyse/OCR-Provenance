@@ -28,7 +28,7 @@ import { extractPageOffsetsFromText } from '../services/chunking/markdown-parser
 import { EmbeddingService } from '../services/embedding/embedder.js';
 import { ProvenanceTracker } from '../services/provenance/tracker.js';
 import { computeHash, hashFile, computeFileHashSync } from '../utils/hash.js';
-import { state, requireDatabase, validateGeneration } from '../server/state.js';
+import { state, requireDatabase, validateGeneration, getConfig } from '../server/state.js';
 import { successResult } from '../server/types.js';
 import {
   validateInput,
@@ -71,6 +71,7 @@ interface IngestionItem {
   document_id: string;
   status: string;
   error_message?: string;
+  previous_version_id?: string;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -916,32 +917,39 @@ export async function handleIngestDirectory(
         // Check if already ingested by path
         const existingByPath = db.getDocumentByPath(filePath);
 
-        if (existingByPath) {
-          items.push({
-            file_path: filePath,
-            file_name: basename(filePath),
-            document_id: existingByPath.id,
-            status: 'skipped',
-            error_message: 'Already ingested',
-          });
-          continue;
-        }
-
         const stats = statSync(filePath);
         const fileHash = await hashFile(filePath);
 
-        // Check for duplicate by file hash (same content, different path)
-        const existingByHash = db.getDocumentByHash(fileHash);
-        if (existingByHash) {
-          items.push({
-            file_path: filePath,
-            file_name: basename(filePath),
-            document_id: existingByHash.id,
-            status: 'skipped',
-            error_message: `Duplicate file (same hash as ${existingByHash.file_path})`,
-          });
-          continue;
+        if (existingByPath) {
+          if (fileHash === existingByPath.file_hash) {
+            items.push({
+              file_path: filePath,
+              file_name: basename(filePath),
+              document_id: existingByPath.id,
+              status: 'skipped',
+              error_message: 'Already ingested, content unchanged',
+            });
+            continue;
+          }
+          // Version change detected - continue with normal ingestion flow below
+          console.error(`[Ingestion] Version update detected for ${filePath}: ${existingByPath.file_hash} -> ${fileHash}`);
+        } else {
+          // Check for duplicate by file hash (same content, different path)
+          const existingByHash = db.getDocumentByHash(fileHash);
+          if (existingByHash) {
+            items.push({
+              file_path: filePath,
+              file_name: basename(filePath),
+              document_id: existingByHash.id,
+              status: 'skipped',
+              error_message: `Duplicate file (same hash as ${existingByHash.file_path})`,
+            });
+            continue;
+          }
         }
+
+        // Determine if this is a version update
+        const isVersionUpdate = !!existingByPath;
 
         // Create document record
         const documentId = uuidv4();
@@ -967,7 +975,11 @@ export async function handleIngestDirectory(
           file_hash: fileHash,
           processor: 'file-scanner',
           processor_version: '1.0.0',
-          processing_params: { directory_path: safeDirPath, recursive: input.recursive },
+          processing_params: {
+            directory_path: safeDirPath,
+            recursive: input.recursive,
+            ...(isVersionUpdate ? { previous_version_id: existingByPath.id } : {}),
+          },
           processing_duration_ms: null,
           processing_quality_score: null,
           parent_id: null,
@@ -1000,7 +1012,8 @@ export async function handleIngestDirectory(
           file_path: filePath,
           file_name: basename(filePath),
           document_id: documentId,
-          status: 'pending',
+          status: isVersionUpdate ? 'version_updated' : 'pending',
+          ...(isVersionUpdate ? { previous_version_id: existingByPath.id } : {}),
         });
       } catch (error) {
         const errorMsg = error instanceof Error ? error.message : String(error);
@@ -1019,6 +1032,7 @@ export async function handleIngestDirectory(
       directory_path: safeDirPath,
       files_found: files.length,
       files_ingested: items.filter((i) => i.status === 'pending').length,
+      files_version_updated: items.filter((i) => i.status === 'version_updated').length,
       files_skipped: items.filter((i) => i.status === 'skipped').length,
       files_errored: items.filter((i) => i.status === 'error').length,
       items,
@@ -1071,16 +1085,6 @@ export async function handleIngestFiles(
 
         // Check if already ingested
         const existingByPath = db.getDocumentByPath(filePath);
-        if (existingByPath) {
-          items.push({
-            file_path: filePath,
-            file_name: basename(filePath),
-            document_id: existingByPath.id,
-            status: 'skipped',
-            error_message: 'Already ingested',
-          });
-          continue;
-        }
 
         // Create document record
         const documentId = uuidv4();
@@ -1102,18 +1106,36 @@ export async function handleIngestFiles(
 
         const fileHash = await hashFile(filePath);
 
-        // Check for duplicate by file hash (same content, different path)
-        const existingByHash = db.getDocumentByHash(fileHash);
-        if (existingByHash) {
-          items.push({
-            file_path: filePath,
-            file_name: basename(filePath),
-            document_id: existingByHash.id,
-            status: 'skipped',
-            error_message: `Duplicate file (same hash as ${existingByHash.file_path})`,
-          });
-          continue;
+        if (existingByPath) {
+          if (fileHash === existingByPath.file_hash) {
+            items.push({
+              file_path: filePath,
+              file_name: basename(filePath),
+              document_id: existingByPath.id,
+              status: 'skipped',
+              error_message: 'Already ingested, content unchanged',
+            });
+            continue;
+          }
+          // Version change detected - continue with normal ingestion flow below
+          console.error(`[Ingestion] Version update detected for ${filePath}: ${existingByPath.file_hash} -> ${fileHash}`);
+        } else {
+          // Check for duplicate by file hash (same content, different path)
+          const existingByHash = db.getDocumentByHash(fileHash);
+          if (existingByHash) {
+            items.push({
+              file_path: filePath,
+              file_name: basename(filePath),
+              document_id: existingByHash.id,
+              status: 'skipped',
+              error_message: `Duplicate file (same hash as ${existingByHash.file_path})`,
+            });
+            continue;
+          }
         }
+
+        // Determine if this is a version update
+        const isVersionUpdate = !!existingByPath;
 
         // Create document provenance
         db.insertProvenance({
@@ -1133,7 +1155,7 @@ export async function handleIngestFiles(
           file_hash: fileHash,
           processor: 'file-scanner',
           processor_version: '1.0.0',
-          processing_params: {},
+          processing_params: isVersionUpdate ? { previous_version_id: existingByPath.id } : {},
           processing_duration_ms: null,
           processing_quality_score: null,
           parent_id: null,
@@ -1166,7 +1188,8 @@ export async function handleIngestFiles(
           file_path: filePath,
           file_name: basename(filePath),
           document_id: documentId,
-          status: 'pending',
+          status: isVersionUpdate ? 'version_updated' : 'pending',
+          ...(isVersionUpdate ? { previous_version_id: existingByPath.id } : {}),
         });
       } catch (error) {
         const errorMsg = error instanceof Error ? error.message : String(error);
@@ -1184,6 +1207,7 @@ export async function handleIngestFiles(
     return formatResponse(
       successResult({
         files_ingested: items.filter((i) => i.status === 'pending').length,
+        files_version_updated: items.filter((i) => i.status === 'version_updated').length,
         files_skipped: items.filter((i) => i.status === 'skipped').length,
         files_errored: items.filter((i) => i.status === 'error').length,
         items,
@@ -1318,6 +1342,32 @@ export async function handleProcessPending(
     // Get remaining count - CRITICAL: use 'status' not 'statusFilter'
     const remaining = db.listDocuments({ status: 'pending' }).length;
 
+    // Auto-clustering check
+    let autoClusterResult: Record<string, unknown> | undefined;
+    const config = getConfig();
+    if (config.autoClusterEnabled && results.processed > 0) {
+      const totalDocs = (conn.prepare('SELECT COUNT(*) as cnt FROM documents WHERE status = ?').get('complete') as { cnt: number }).cnt;
+      const threshold = config.autoClusterThreshold ?? 10;
+
+      // Check if we have enough docs and no recent clustering run
+      const lastCluster = conn.prepare('SELECT MAX(created_at) as latest FROM clusters').get() as { latest: string | null };
+      const lastClusterDate = lastCluster?.latest ? new Date(lastCluster.latest) : null;
+      const hoursSinceLastCluster = lastClusterDate ? (Date.now() - lastClusterDate.getTime()) / 3600000 : Infinity;
+
+      if (totalDocs >= threshold && hoursSinceLastCluster > 1) {
+        try {
+          const { runClustering } = await import('../services/clustering/clustering-service.js');
+          const algorithm = config.autoClusterAlgorithm ?? 'hdbscan';
+          const clusterResult = await runClustering(db, vector, { algorithm, n_clusters: null, min_cluster_size: 3, distance_threshold: null, linkage: 'average' });
+          autoClusterResult = { triggered: true, run_id: clusterResult.run_id, clusters: clusterResult.n_clusters, algorithm };
+          console.error(`[Ingestion] Auto-clustering triggered: ${clusterResult.n_clusters} clusters via ${algorithm}`);
+        } catch (e) {
+          console.error(`[Ingestion] Auto-clustering failed: ${e instanceof Error ? e.message : String(e)}`);
+          autoClusterResult = { triggered: true, error: e instanceof Error ? e.message : String(e) };
+        }
+      }
+    }
+
     // Build response
     const response: Record<string, unknown> = {
       batch_id: batchId,
@@ -1346,6 +1396,10 @@ export async function handleProcessPending(
       console.error(
         `[Ingestion] Failed to query document count for auto-compare hint: ${String(error)}`
       );
+    }
+
+    if (autoClusterResult) {
+      response.auto_clustering = autoClusterResult;
     }
 
     return formatResponse(successResult(response));

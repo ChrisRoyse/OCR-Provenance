@@ -33,6 +33,9 @@ const defaultConfig: ServerConfig = {
   chunkSize: 2000,
   chunkOverlapPercent: 10,
   maxChunkSize: 8000,
+  autoClusterEnabled: false,
+  autoClusterThreshold: 10,
+  autoClusterAlgorithm: 'hdbscan',
   imageOptimization: {
     enabled: true,
     ocrMaxWidth: 4800,

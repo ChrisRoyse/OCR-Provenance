@@ -30,6 +30,9 @@ const CONFIG_KEY_MAP: Record<string, string> = {
   chunk_size: 'chunkSize',
   chunk_overlap_percent: 'chunkOverlapPercent',
   max_chunk_size: 'maxChunkSize',
+  auto_cluster_enabled: 'autoClusterEnabled',
+  auto_cluster_threshold: 'autoClusterThreshold',
+  auto_cluster_algorithm: 'autoClusterAlgorithm',
 };
 
 function getConfigValue(key: z.infer<typeof ConfigKey>): unknown {
@@ -82,6 +85,22 @@ const CONFIG_VALIDATORS: Record<string, (value: unknown) => void> = {
         value: v,
       });
   },
+  auto_cluster_enabled: (v) => {
+    if (typeof v !== 'boolean')
+      throw validationError('auto_cluster_enabled must be a boolean', { value: v });
+  },
+  auto_cluster_threshold: (v) => {
+    if (typeof v !== 'number' || v < 2 || v > 10000)
+      throw validationError('auto_cluster_threshold must be a number between 2 and 10000', {
+        value: v,
+      });
+  },
+  auto_cluster_algorithm: (v) => {
+    if (typeof v !== 'string' || !['hdbscan', 'agglomerative', 'kmeans'].includes(v))
+      throw validationError('auto_cluster_algorithm must be "hdbscan", "agglomerative", or "kmeans"', {
+        value: v,
+      });
+  },
 };
 
 function setConfigValue(key: z.infer<typeof ConfigKey>, value: string | number | boolean): void {
@@ -131,6 +150,11 @@ export async function handleConfigGet(params: Record<string, unknown>): Promise<
         chunk_size: config.chunkSize,
         chunk_overlap_percent: config.chunkOverlapPercent,
         max_chunk_size: config.maxChunkSize,
+
+        // Auto-clustering config
+        auto_cluster_enabled: config.autoClusterEnabled ?? false,
+        auto_cluster_threshold: config.autoClusterThreshold ?? 10,
+        auto_cluster_algorithm: config.autoClusterAlgorithm ?? 'hdbscan',
       })
     );
   } catch (error) {

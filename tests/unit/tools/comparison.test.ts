@@ -273,13 +273,14 @@ function insertTestChunk(
 // ═══════════════════════════════════════════════════════════════════════════════
 
 describe('comparisonTools exports', () => {
-  it('exports all 5 comparison tools', () => {
-    expect(Object.keys(comparisonTools)).toHaveLength(5);
+  it('exports all 6 comparison tools', () => {
+    expect(Object.keys(comparisonTools)).toHaveLength(6);
     expect(comparisonTools).toHaveProperty('ocr_document_compare');
     expect(comparisonTools).toHaveProperty('ocr_comparison_list');
     expect(comparisonTools).toHaveProperty('ocr_comparison_get');
     expect(comparisonTools).toHaveProperty('ocr_comparison_discover');
     expect(comparisonTools).toHaveProperty('ocr_comparison_batch');
+    expect(comparisonTools).toHaveProperty('ocr_comparison_matrix');
   });
 
   it('each tool has description, inputSchema, and handler', () => {
