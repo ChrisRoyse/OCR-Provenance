@@ -1,46 +1,27 @@
 /**
- * Gemini-based Search Re-ranker
+ * Local Cross-Encoder Search Re-ranker
  *
- * Re-ranks search results using Gemini for contextual relevance scoring.
- * Uses GeminiClient.fast() for low-latency JSON output.
+ * Re-ranks search results using a local cross-encoder model (ms-marco-MiniLM-L-12-v2)
+ * via the Python reranker worker. NO Gemini/cloud dependency.
+ *
+ * If the local model is not available (sentence-transformers not installed, model not
+ * downloaded, Python error), returns results as-is with a console.error() warning.
  *
  * CRITICAL: NEVER use console.log() - stdout is reserved for JSON-RPC protocol.
  *
  * @module services/search/reranker
  */
 
-import { getSharedClient } from '../gemini/client.js';
-
-interface RerankResult {
-  index: number;
-  relevance_score: number;
-  reasoning: string;
-}
-
-const RERANK_SCHEMA = {
-  type: 'object' as const,
-  properties: {
-    rankings: {
-      type: 'array' as const,
-      items: {
-        type: 'object' as const,
-        properties: {
-          index: { type: 'number' as const },
-          relevance_score: { type: 'number' as const },
-          reasoning: { type: 'string' as const },
-        },
-        required: ['index', 'relevance_score', 'reasoning'],
-      },
-    },
-  },
-  required: ['rankings'],
-};
+import { localRerank } from './local-reranker.js';
 
 /**
- * Re-rank search results using Gemini AI for contextual relevance scoring.
+ * Re-rank search results using a local cross-encoder model.
  *
- * Takes the top results (max 20 to stay within token limits), sends them
- * to Gemini for relevance scoring, and returns sorted results.
+ * Takes the top results (max 20), sends them to the local Python cross-encoder
+ * for relevance scoring, and returns sorted results.
+ *
+ * If the local model is unavailable, returns the original results in their existing
+ * order with reasoning indicating no reranking was performed.
  *
  * @param query - The original search query
  * @param results - Search results with original_text field
@@ -57,53 +38,66 @@ export async function rerankResults(
   // Take top results to re-rank (max 20 to stay within token limits)
   const toRerank = results.slice(0, Math.min(results.length, 20));
 
-  const excerpts = toRerank.map((r) => String(r.original_text));
-  const prompt = buildRerankPrompt(query, excerpts);
+  // Build passages for the local reranker
+  const passages = toRerank.map((r, i) => {
+    let originalScore = 0;
+    if (typeof r.bm25_score === 'number') {
+      originalScore = r.bm25_score;
+    } else if (typeof r.score === 'number') {
+      originalScore = r.score;
+    }
+    return { index: i, text: String(r.original_text), original_score: originalScore };
+  });
 
-  const client = getSharedClient();
-  const response = await client.fast(prompt, RERANK_SCHEMA);
+  const localResults = await localRerank(query, passages);
 
-  let parsed: { rankings?: RerankResult[] };
-  try {
-    parsed = JSON.parse(response.text);
-  } catch (error) {
-    const rawPreview = response.text.slice(0, 500);
+  if (localResults === null) {
+    // Local model not available - return results as-is in original order
     console.error(
-      `[reranker] JSON parse failed:`,
-      error instanceof Error ? error.message : String(error),
-      `Raw response (first 500 chars): ${rawPreview}`
+      '[reranker] Local cross-encoder unavailable. Returning results without reranking. ' +
+      'Install sentence-transformers for local reranking: pip install sentence-transformers'
     );
-    throw new Error(
-      `Reranker failed: Gemini returned unparseable response. Raw text (first 200 chars): ${response.text.slice(0, 200)}`
-    );
+    return toRerank
+      .slice(0, maxResults)
+      .map((_, i) => ({
+        original_index: i,
+        relevance_score: 0,
+        reasoning: 'local cross-encoder unavailable, original order preserved',
+      }));
   }
-  const rankings = (parsed.rankings || []) as RerankResult[];
 
   // Filter to valid indices only
-  const validRankings = rankings.filter((r) => r.index >= 0 && r.index < toRerank.length);
+  const validResults = localResults.filter(
+    (r) => r.index >= 0 && r.index < toRerank.length
+  );
 
-  // Fail fast: if Gemini returned rankings but none had valid indices, that's a broken response
-  if (validRankings.length === 0 && toRerank.length > 0) {
-    throw new Error(
-      `Reranker returned 0 valid results from ${toRerank.length} inputs - ` +
-        `Gemini response contained invalid or out-of-range indices ` +
-        `(got ${rankings.length} rankings, all with indices outside [0, ${toRerank.length - 1}])`
+  if (validResults.length === 0 && toRerank.length > 0) {
+    console.error(
+      `[reranker] Cross-encoder returned 0 valid results from ${toRerank.length} inputs. ` +
+      'Returning results without reranking.'
     );
+    return toRerank
+      .slice(0, maxResults)
+      .map((_, i) => ({
+        original_index: i,
+        relevance_score: 0,
+        reasoning: 'cross-encoder returned no valid results, original order preserved',
+      }));
   }
 
   // Sort by relevance score descending, take maxResults
-  return validRankings
+  return validResults
     .sort((a, b) => b.relevance_score - a.relevance_score)
     .slice(0, maxResults)
     .map((r) => ({
       original_index: r.index,
       relevance_score: r.relevance_score,
-      reasoning: r.reasoning,
+      reasoning: `cross-encoder score: ${r.relevance_score.toFixed(4)}`,
     }));
 }
 
 /**
- * Build the re-rank prompt (exported for testing without API calls).
+ * Build the re-rank prompt (kept for backward compatibility with tests).
  *
  * @param query - Search query
  * @param excerpts - Array of text excerpts

@@ -38,6 +38,7 @@ import { expandQuery, getExpandedTerms } from '../services/search/query-expander
 import { classifyQuery } from '../services/search/query-classifier.js';
 import { getClusterSummariesForDocument } from '../services/storage/database/cluster-operations.js';
 import { getImage } from '../services/storage/database/image-operations.js';
+import { computeBlockConfidence, isRepeatedHeaderFooter } from '../services/chunking/json-block-analyzer.js';
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // TYPE DEFINITIONS
@@ -50,6 +51,14 @@ interface ProvenanceSummary {
   chain_depth: number;
   processor: string;
   content_hash: string;
+}
+
+/** Query expansion details returned by getExpandedTerms */
+interface QueryExpansionInfo {
+  original: string;
+  expanded: string[];
+  synonyms_found: Record<string, string[]>;
+  corpus_terms?: Record<string, string[]>;
 }
 
 /**
@@ -294,6 +303,158 @@ function enrichVLMResultsWithImageMetadata(
 }
 
 /**
+ * Apply post-retrieval score boosting based on chunk metadata.
+ *
+ * Tasks 2.1-2.3 + 4.3 integration:
+ * - Heading level boost: H1=1.3x, H2=1.2x, H3=1.1x, body=1.0x
+ * - Atomic chunk boost: complete semantic units get 1.1x
+ * - Content-type preference: query keyword matching boosts table/code/list results
+ * - Block confidence: computed from content types via computeBlockConfidence (0.8x-1.16x)
+ *
+ * Mutates score fields (bm25_score, similarity_score, rrf_score) in place.
+ */
+function applyMetadataBoosts(
+  results: Array<Record<string, unknown>>,
+  options: {
+    headingBoost?: boolean;
+    atomicBoost?: boolean;
+    contentTypeQuery?: string;
+    repeatedHeaderFooterTexts?: string[];
+  }
+): void {
+  for (const r of results) {
+    let boost = 1.0;
+
+    // Task 2.1: Heading level boost: H1=1.3x, H2=1.2x, H3=1.1x, body=1.0x
+    if (options.headingBoost !== false) {
+      const level = (r.heading_level as number) ?? 5;
+      const clampedLevel = Math.min(Math.max(level, 1), 4);
+      boost *= 1 + (0.1 * (4 - clampedLevel));
+    }
+
+    // Task 2.2: Atomic chunk boost: complete semantic units get 1.1x
+    if (options.atomicBoost !== false && r.is_atomic) {
+      boost *= 1.1;
+    }
+
+    // Task 2.3: Content-type preference based on query keywords
+    if (options.contentTypeQuery) {
+      const q = options.contentTypeQuery.toLowerCase();
+      const contentTypes = r.content_types as string | null;
+      if (contentTypes) {
+        if (/\b(table|data|statistic|row|column|figure|chart)\b/.test(q) && contentTypes.includes('"table"')) {
+          boost *= 1.2;
+        }
+        if (/\b(code|function|class|method|import|variable|api)\b/.test(q) && contentTypes.includes('"code"')) {
+          boost *= 1.2;
+        }
+        if (/\b(list|items|steps|requirements|criteria)\b/.test(q) && contentTypes.includes('"list"')) {
+          boost *= 1.15;
+        }
+      }
+    }
+
+    // Task 4.3 integration: Block confidence from content types (computed on-the-fly)
+    try {
+      const contentTypesRaw = r.content_types as string | null;
+      if (contentTypesRaw) {
+        const parsed = JSON.parse(contentTypesRaw);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          const blockConf = computeBlockConfidence(parsed);
+          boost *= 0.8 + (0.4 * blockConf); // range: 0.8x to 1.16x
+        }
+      }
+    } catch { /* ignore parse errors */ }
+
+    // Task 7.1: Header/footer penalty - demote chunks matching repeated headers/footers
+    // Two-tier detection:
+    // 1. Explicit: caller provides known repeated texts from detectRepeatedHeadersFooters()
+    // 2. Heuristic: short chunks with typical header/footer patterns get penalized
+    const chunkText = (r.original_text as string) ?? '';
+    if (options.repeatedHeaderFooterTexts && options.repeatedHeaderFooterTexts.length > 0) {
+      if (chunkText.length > 0 && isRepeatedHeaderFooter(chunkText, options.repeatedHeaderFooterTexts)) {
+        boost *= 0.5;
+      }
+    }
+
+    // Heuristic header/footer detection for short, boilerplate-like chunks
+    const trimmed = chunkText.trim();
+    if (trimmed.length > 0 && trimmed.length < 80) {
+      const lowerText = trimmed.toLowerCase();
+      const isLikelyBoilerplate =
+        /^page\s+\d+(\s+of\s+\d+)?$/i.test(trimmed) ||
+        /^\d+$/.test(trimmed) ||
+        /^-\s*\d+\s*-$/.test(trimmed) ||
+        lowerText.includes('confidential') ||
+        lowerText.includes('all rights reserved') ||
+        /^copyright\s/i.test(trimmed) ||
+        /^\u00a9\s/.test(trimmed);
+      if (isLikelyBoilerplate) {
+        boost *= 0.5;
+      }
+    }
+
+    // Apply boost to whichever score field exists
+    if (r.bm25_score != null) r.bm25_score = (r.bm25_score as number) * boost;
+    if (r.similarity_score != null) r.similarity_score = (r.similarity_score as number) * boost;
+    if (r.rrf_score != null) r.rrf_score = (r.rrf_score as number) * boost;
+  }
+}
+
+/**
+ * Apply document length normalization to gently penalize results from very long documents.
+ * Uses sqrt(median/docChunks) clamped to [0.7, 1.0] so short documents are unaffected
+ * and very long documents get a modest penalty.
+ *
+ * Mutates score fields (bm25_score, similarity_score, rrf_score) in place.
+ * Skips normalization when all results come from a single document.
+ */
+function applyLengthNormalization(
+  results: Array<Record<string, unknown>>,
+  db: DatabaseService
+): void {
+  const docIds = [...new Set(results.map(r => r.document_id as string).filter(Boolean))];
+  if (docIds.length <= 1) return; // No normalization needed for single-document results
+
+  const placeholders = docIds.map(() => '?').join(',');
+  const rows = db.getConnection()
+    .prepare(`SELECT document_id, COUNT(*) as chunk_count FROM chunks WHERE document_id IN (${placeholders}) GROUP BY document_id`)
+    .all(...docIds) as Array<{ document_id: string; chunk_count: number }>;
+
+  const chunkCounts = new Map(rows.map(r => [r.document_id, r.chunk_count]));
+  const counts = [...chunkCounts.values()].sort((a, b) => a - b);
+  const median = counts[Math.floor(counts.length / 2)] || 1;
+
+  for (const r of results) {
+    const docChunks = chunkCounts.get(r.document_id as string) ?? median;
+    const factor = Math.sqrt(median / Math.max(docChunks, 1));
+    const clampedFactor = Math.max(0.7, Math.min(1.0, factor));
+
+    if (r.bm25_score != null) r.bm25_score = (r.bm25_score as number) * clampedFactor;
+    if (r.similarity_score != null) r.similarity_score = (r.similarity_score as number) * clampedFactor;
+    if (r.rrf_score != null) r.rrf_score = (r.rrf_score as number) * clampedFactor;
+  }
+}
+
+/**
+ * Remove duplicate chunks from search results by content_hash (Task 7.3).
+ * Keeps only the first occurrence of each hash value. Results without a hash
+ * are always kept. Returns a new array (does not mutate the input).
+ */
+function deduplicateByContentHash(
+  results: Array<Record<string, unknown>>
+): Array<Record<string, unknown>> {
+  const seen = new Set<string>();
+  return results.filter(r => {
+    const hash = (r.content_hash as string) ?? null;
+    if (!hash) return true;
+    if (seen.has(hash)) return false;
+    seen.add(hash);
+    return true;
+  });
+}
+
+/**
  * Attach optional provenance chain to a search result object.
  * Shared by BM25, semantic, and hybrid handlers (both reranked and non-reranked paths).
  *
@@ -379,6 +540,9 @@ function toBm25Ranked(
     page_range?: string | null;
     heading_level?: number | null;
     ocr_quality_score?: number | null;
+    doc_title?: string | null;
+    doc_author?: string | null;
+    doc_subject?: string | null;
   }>
 ): RankedResult[] {
   return results.map((r) => ({
@@ -407,6 +571,9 @@ function toBm25Ranked(
     page_range: r.page_range ?? null,
     heading_level: r.heading_level ?? null,
     ocr_quality_score: r.ocr_quality_score ?? null,
+    doc_title: r.doc_title ?? null,
+    doc_author: r.doc_author ?? null,
+    doc_subject: r.doc_subject ?? null,
   }));
 }
 
@@ -439,6 +606,9 @@ function toSemanticRanked(
     chunk_page_range?: string | null;
     heading_level?: number | null;
     ocr_quality_score?: number | null;
+    doc_title?: string | null;
+    doc_author?: string | null;
+    doc_subject?: string | null;
   }>
 ): RankedResult[] {
   return results.map((r, i) => ({
@@ -467,6 +637,9 @@ function toSemanticRanked(
     page_range: r.chunk_page_range ?? null,
     heading_level: r.heading_level ?? null,
     ocr_quality_score: r.ocr_quality_score ?? null,
+    doc_title: r.doc_title ?? null,
+    doc_author: r.doc_author ?? null,
+    doc_subject: r.doc_subject ?? null,
   }));
 }
 
@@ -483,12 +656,12 @@ export async function handleSearchSemantic(params: Record<string, unknown>): Pro
     const { db, vector } = requireDatabase();
     const conn = db.getConnection();
 
-    // Expand query with domain-specific synonyms if requested
+    // Expand query with domain-specific synonyms + corpus cluster terms if requested
     let searchQuery = input.query;
-    let queryExpansion: { original: string; expanded: string[]; synonyms_found: Record<string, string[]> } | undefined;
+    let queryExpansion: QueryExpansionInfo | undefined;
     if (input.expand_query) {
-      searchQuery = expandQuery(input.query);
-      queryExpansion = getExpandedTerms(input.query);
+      searchQuery = expandQuery(input.query, db);
+      queryExpansion = getExpandedTerms(input.query, db);
     }
 
     // Resolve metadata filter to document IDs, then chain through quality + cluster filters
@@ -511,28 +684,85 @@ export async function handleSearchSemantic(params: Record<string, unknown>): Pro
     });
 
     // Generate query embedding (use expanded query for better semantic coverage)
+    // Prepend section prefix to query when section_path_filter is set for section-aware matching
     const embedder = getEmbeddingService();
-    const queryVector = await embedder.embedSearchQuery(searchQuery);
+    let embeddingQuery = searchQuery;
+    if (input.section_path_filter) {
+      embeddingQuery = `[Section: ${input.section_path_filter}] ${embeddingQuery}`;
+    }
+    const queryVector = await embedder.embedSearchQuery(embeddingQuery);
 
     const limit = input.limit ?? 10;
     const searchLimit = input.rerank ? Math.max(limit * 2, 20) : limit;
-    const threshold = input.similarity_threshold ?? 0.7;
+    const requestedThreshold = input.similarity_threshold ?? 0.7;
+
+    // Task 3.5: Adaptive similarity threshold
+    // When user does NOT explicitly provide a threshold, use adaptive mode:
+    // fetch extra candidates with low floor, then compute threshold from distribution
+    const userExplicitlySetThreshold = params.similarity_threshold !== undefined;
+    const useAdaptiveThreshold = !userExplicitlySetThreshold;
+
+    const searchThreshold = useAdaptiveThreshold ? 0.1 : requestedThreshold;
+    const adaptiveFetchLimit = useAdaptiveThreshold ? Math.max(searchLimit * 3, 30) : searchLimit;
 
     // Search for similar vectors
     const results = vector.searchSimilar(queryVector, {
-      limit: searchLimit,
-      threshold,
+      limit: adaptiveFetchLimit,
+      threshold: searchThreshold,
       documentFilter,
       chunkFilter: chunkFilter.conditions.length > 0 ? chunkFilter : undefined,
       qualityBoost: input.quality_boost,
       pageRangeFilter: input.page_range_filter,
     });
 
+    // Task 3.5: Compute adaptive threshold from result distribution
+    let effectiveThreshold = requestedThreshold;
+    let thresholdInfo: Record<string, unknown> | undefined;
+    if (useAdaptiveThreshold && results.length > 1) {
+      const scores = results.map(r => r.similarity_score);
+      const mean = scores.reduce((a, b) => a + b, 0) / scores.length;
+      const variance = scores.reduce((a, b) => a + (b - mean) ** 2, 0) / scores.length;
+      const stddev = Math.sqrt(variance);
+      const adaptiveRaw = mean - stddev;
+      effectiveThreshold = Math.max(0.15, Math.min(0.5, adaptiveRaw));
+      thresholdInfo = {
+        mode: 'adaptive',
+        requested: requestedThreshold,
+        effective: Math.round(effectiveThreshold * 1000) / 1000,
+        adaptive_raw: Math.round(adaptiveRaw * 1000) / 1000,
+        distribution: {
+          mean: Math.round(mean * 1000) / 1000,
+          stddev: Math.round(stddev * 1000) / 1000,
+          candidates_evaluated: results.length,
+        },
+      };
+    } else if (useAdaptiveThreshold) {
+      // Too few results for stats, fall back to default
+      effectiveThreshold = requestedThreshold;
+      thresholdInfo = {
+        mode: 'adaptive_fallback',
+        requested: requestedThreshold,
+        effective: requestedThreshold,
+        reason: 'too_few_results_for_adaptive',
+      };
+    } else {
+      thresholdInfo = {
+        mode: 'explicit',
+        requested: requestedThreshold,
+        effective: requestedThreshold,
+      };
+    }
+
+    // Filter results by effective threshold and apply final limit
+    const thresholdFiltered = results
+      .filter(r => r.similarity_score >= effectiveThreshold)
+      .slice(0, searchLimit);
+
     let finalResults: Array<Record<string, unknown>>;
     let rerankInfo: Record<string, unknown> | undefined;
 
-    if (input.rerank && results.length > 0) {
-      const rerankInput = results.map((r) => ({
+    if (input.rerank && thresholdFiltered.length > 0) {
+      const rerankInput = thresholdFiltered.map((r) => ({
         chunk_id: r.chunk_id,
         image_id: r.image_id,
         extraction_id: r.extraction_id,
@@ -555,7 +785,7 @@ export async function handleSearchSemantic(params: Record<string, unknown>): Pro
 
       const reranked = await rerankResults(input.query, rerankInput, limit);
       finalResults = reranked.map((r) => {
-        const original = results[r.original_index];
+        const original = thresholdFiltered[r.original_index];
         const result: Record<string, unknown> = {
           embedding_id: original.embedding_id,
           chunk_id: original.chunk_id,
@@ -581,6 +811,10 @@ export async function handleSearchSemantic(params: Record<string, unknown>): Pro
           is_atomic: original.is_atomic ?? false,
           chunk_page_range: original.chunk_page_range ?? null,
           heading_level: original.heading_level ?? null,
+          ocr_quality_score: original.ocr_quality_score ?? null,
+          doc_title: original.doc_title ?? null,
+          doc_author: original.doc_author ?? null,
+          doc_subject: original.doc_subject ?? null,
           rerank_score: r.relevance_score,
           rerank_reasoning: r.reasoning,
         };
@@ -589,11 +823,11 @@ export async function handleSearchSemantic(params: Record<string, unknown>): Pro
       });
       rerankInfo = {
         reranked: true,
-        candidates_evaluated: Math.min(results.length, 20),
+        candidates_evaluated: Math.min(thresholdFiltered.length, 20),
         results_returned: finalResults.length,
       };
     } else {
-      finalResults = results.map((r) => {
+      finalResults = thresholdFiltered.map((r) => {
         const result: Record<string, unknown> = {
           embedding_id: r.embedding_id,
           chunk_id: r.chunk_id,
@@ -619,32 +853,60 @@ export async function handleSearchSemantic(params: Record<string, unknown>): Pro
           is_atomic: r.is_atomic ?? false,
           chunk_page_range: r.chunk_page_range ?? null,
           heading_level: r.heading_level ?? null,
+          ocr_quality_score: r.ocr_quality_score ?? null,
+          doc_title: r.doc_title ?? null,
+          doc_author: r.doc_author ?? null,
+          doc_subject: r.doc_subject ?? null,
         };
         attachProvenance(result, db, r.provenance_id, !!input.include_provenance);
         return result;
       });
     }
 
+    // Apply metadata-based score boosts and length normalization
+    applyMetadataBoosts(finalResults, { contentTypeQuery: input.query });
+    applyLengthNormalization(finalResults, db);
+
+    // Re-sort by similarity_score after boosts
+    finalResults.sort((a, b) => (b.similarity_score as number) - (a.similarity_score as number));
+
     // Enrich VLM results with image metadata
     enrichVLMResultsWithImageMetadata(conn, finalResults);
+
+    // Task 7.3: Deduplicate by content_hash if requested
+    if (input.exclude_duplicate_chunks) {
+      finalResults = deduplicateByContentHash(finalResults);
+    }
+
+    // Task 3.1: Cluster context included by default (unless explicitly false)
+    const clusterContextIncluded = input.include_cluster_context && finalResults.length > 0;
+    if (clusterContextIncluded) {
+      attachClusterContext(conn, finalResults);
+    }
 
     const responseData: Record<string, unknown> = {
       query: input.query,
       results: finalResults,
       total: finalResults.length,
-      threshold: threshold,
+      threshold: effectiveThreshold,
+      threshold_info: thresholdInfo,
+      metadata_boosts_applied: true,
+      cluster_context_included: clusterContextIncluded,
     };
 
+    // Task 3.2: Standardized query expansion details
     if (queryExpansion) {
-      responseData.query_expansion = queryExpansion;
+      responseData.query_expansion = {
+        original_query: queryExpansion.original,
+        expanded_query: searchQuery,
+        synonyms_found: queryExpansion.synonyms_found,
+        terms_added: queryExpansion.expanded.length,
+        corpus_terms: queryExpansion.corpus_terms,
+      };
     }
 
     if (rerankInfo) {
       responseData.rerank = rerankInfo;
-    }
-
-    if (input.include_cluster_context && finalResults.length > 0) {
-      attachClusterContext(conn, finalResults);
     }
 
     return formatResponse(successResult(responseData));
@@ -663,12 +925,12 @@ export async function handleSearch(params: Record<string, unknown>): Promise<Too
     const { db } = requireDatabase();
     const conn = db.getConnection();
 
-    // Expand query with domain-specific synonyms if requested
+    // Expand query with domain-specific synonyms + corpus cluster terms if requested
     let searchQuery = input.query;
-    let queryExpansion: { original: string; expanded: string[]; synonyms_found: Record<string, string[]> } | undefined;
+    let queryExpansion: QueryExpansionInfo | undefined;
     if (input.expand_query) {
-      searchQuery = expandQuery(input.query);
-      queryExpansion = getExpandedTerms(input.query);
+      searchQuery = expandQuery(input.query, db);
+      queryExpansion = getExpandedTerms(input.query, db);
     }
 
     // Resolve metadata filter to document IDs, then chain through quality + cluster filters
@@ -766,8 +1028,20 @@ export async function handleSearch(params: Record<string, unknown>): Promise<Too
       });
     }
 
+    // Apply metadata-based score boosts and length normalization
+    applyMetadataBoosts(finalResults, { contentTypeQuery: input.query });
+    applyLengthNormalization(finalResults, db);
+
+    // Re-sort by bm25_score after boosts
+    finalResults.sort((a, b) => (b.bm25_score as number) - (a.bm25_score as number));
+
     // Enrich VLM results with image metadata
     enrichVLMResultsWithImageMetadata(conn, finalResults);
+
+    // Task 7.3: Deduplicate by content_hash if requested
+    if (input.exclude_duplicate_chunks) {
+      finalResults = deduplicateByContentHash(finalResults);
+    }
 
     // Compute source counts from final merged results (not pre-merge candidates)
     let finalChunkCount = 0;
@@ -777,6 +1051,27 @@ export async function handleSearch(params: Record<string, unknown>): Promise<Too
       if (r.result_type === 'chunk') finalChunkCount++;
       else if (r.result_type === 'vlm') finalVlmCount++;
       else finalExtractionCount++;
+    }
+
+    // Task 3.1: Cluster context included by default (unless explicitly false)
+    const clusterContextIncluded = input.include_cluster_context && finalResults.length > 0;
+    if (clusterContextIncluded) {
+      attachClusterContext(conn, finalResults);
+    }
+
+    // Document metadata matches (v30 FTS5 on doc_title/author/subject)
+    let documentMetadataMatches: Array<Record<string, unknown>> | undefined;
+    try {
+      const metadataResults = bm25.searchDocumentMetadata({
+        query: input.query,
+        limit: 5,
+        phraseSearch: input.phrase_search,
+      });
+      if (metadataResults.length > 0) {
+        documentMetadataMatches = metadataResults;
+      }
+    } catch {
+      // documents_fts may not exist on older schema versions - silently skip
     }
 
     const responseData: Record<string, unknown> = {
@@ -789,18 +1084,27 @@ export async function handleSearch(params: Record<string, unknown>): Promise<Too
         vlm_count: finalVlmCount,
         extraction_count: finalExtractionCount,
       },
+      metadata_boosts_applied: true,
+      cluster_context_included: clusterContextIncluded,
     };
 
+    if (documentMetadataMatches) {
+      responseData.document_metadata_matches = documentMetadataMatches;
+    }
+
+    // Task 3.2: Standardized query expansion details
     if (queryExpansion) {
-      responseData.query_expansion = queryExpansion;
+      responseData.query_expansion = {
+        original_query: queryExpansion.original,
+        expanded_query: searchQuery,
+        synonyms_found: queryExpansion.synonyms_found,
+        terms_added: queryExpansion.expanded.length,
+        corpus_terms: queryExpansion.corpus_terms,
+      };
     }
 
     if (rerankInfo) {
       responseData.rerank = rerankInfo;
-    }
-
-    if (input.include_cluster_context && finalResults.length > 0) {
-      attachClusterContext(conn, finalResults);
     }
 
     return formatResponse(successResult(responseData));
@@ -834,12 +1138,12 @@ export async function handleSearchHybrid(params: Record<string, unknown>): Promi
       // 'mixed' keeps defaults (1.0/1.0)
     }
 
-    // Expand query with domain-specific synonyms if requested
+    // Expand query with domain-specific synonyms + corpus cluster terms if requested
     let searchQuery = input.query;
-    let queryExpansion: { original: string; expanded: string[]; synonyms_found: Record<string, string[]> } | undefined;
+    let queryExpansion: QueryExpansionInfo | undefined;
     if (input.expand_query) {
-      searchQuery = expandQuery(input.query);
-      queryExpansion = getExpandedTerms(input.query);
+      searchQuery = expandQuery(input.query, db);
+      queryExpansion = getExpandedTerms(input.query, db);
     }
 
     // Resolve metadata filter to document IDs, then chain through quality + cluster filters
@@ -895,8 +1199,13 @@ export async function handleSearchHybrid(params: Record<string, unknown>): Promi
       .map((r, i) => ({ ...r, rank: i + 1 }));
 
     // Get semantic results (use expanded query for better semantic coverage)
+    // Prepend section prefix to query when section_path_filter is set for section-aware matching
     const embedder = getEmbeddingService();
-    const queryVector = await embedder.embedSearchQuery(searchQuery);
+    let hybridEmbeddingQuery = searchQuery;
+    if (input.section_path_filter) {
+      hybridEmbeddingQuery = `[Section: ${input.section_path_filter}] ${hybridEmbeddingQuery}`;
+    }
+    const queryVector = await embedder.embedSearchQuery(hybridEmbeddingQuery);
     const semanticResults = vector.searchSimilar(queryVector, {
       limit: limit * 2,
       // Lower threshold than standalone (0.7) -- RRF de-ranks low-quality results
@@ -955,8 +1264,26 @@ export async function handleSearchHybrid(params: Record<string, unknown>): Promi
     const chunkProximityInfo =
       finalResults.length > 0 ? applyChunkProximityBoost(finalResults) : undefined;
 
+    // Apply metadata-based score boosts and length normalization
+    applyMetadataBoosts(finalResults, { contentTypeQuery: input.query });
+    applyLengthNormalization(finalResults, db);
+
     // Enrich VLM results with image metadata
     enrichVLMResultsWithImageMetadata(conn, finalResults);
+
+    // Re-sort by rrf_score after proximity boost and metadata boosts may have changed scores
+    finalResults.sort((a, b) => (b.rrf_score as number) - (a.rrf_score as number));
+
+    // Task 7.3: Deduplicate by content_hash if requested
+    if (input.exclude_duplicate_chunks) {
+      finalResults = deduplicateByContentHash(finalResults);
+    }
+
+    // Task 3.1: Cluster context included by default (unless explicitly false)
+    const clusterContextIncluded = input.include_cluster_context && finalResults.length > 0;
+    if (clusterContextIncluded) {
+      attachClusterContext(conn, finalResults);
+    }
 
     const responseData: Record<string, unknown> = {
       query: input.query,
@@ -974,10 +1301,19 @@ export async function handleSearchHybrid(params: Record<string, unknown>): Promi
         bm25_extraction_count: bm25ExtractionResults.length,
         semantic_count: semanticResults.length,
       },
+      metadata_boosts_applied: true,
+      cluster_context_included: clusterContextIncluded,
     };
 
+    // Task 3.2: Standardized query expansion details
     if (queryExpansion) {
-      responseData.query_expansion = queryExpansion;
+      responseData.query_expansion = {
+        original_query: queryExpansion.original,
+        expanded_query: searchQuery,
+        synonyms_found: queryExpansion.synonyms_found,
+        terms_added: queryExpansion.expanded.length,
+        corpus_terms: queryExpansion.corpus_terms,
+      };
     }
 
     if (rerankInfo) {
@@ -990,13 +1326,6 @@ export async function handleSearchHybrid(params: Record<string, unknown>): Promi
 
     if (queryClassification) {
       responseData.query_classification = queryClassification;
-    }
-
-    // Re-sort by rrf_score after proximity boost may have changed scores
-    finalResults.sort((a, b) => (b.rrf_score as number) - (a.rrf_score as number));
-
-    if (input.include_cluster_context && finalResults.length > 0) {
-      attachClusterContext(conn, finalResults);
     }
 
     return formatResponse(successResult(responseData));
@@ -1048,6 +1377,64 @@ export async function handleFTSManage(params: Record<string, unknown>): Promise<
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /**
+ * Task 3.3: Deduplicate overlapping chunks in RAG context.
+ * Two chunks from the same document overlap if their character ranges
+ * overlap by >50%. The higher-scored chunk is kept.
+ * Results must be pre-sorted by score (descending) before calling.
+ */
+function deduplicateOverlappingResults(
+  results: Array<Record<string, unknown>>
+): Array<Record<string, unknown>> {
+  if (results.length <= 1) return results;
+  const deduplicated: Array<Record<string, unknown>> = [];
+  for (const result of results) {
+    const docId = result.document_id as string;
+    const charStart = (result.character_start ?? result.char_start) as number | undefined;
+    const charEnd = (result.character_end ?? result.char_end) as number | undefined;
+    if (charStart == null || charEnd == null) { deduplicated.push(result); continue; }
+
+    let isDuplicate = false;
+    for (const prev of deduplicated) {
+      if (prev.document_id !== docId) continue;
+      const prevStart = (prev.character_start ?? prev.char_start) as number | undefined;
+      const prevEnd = (prev.character_end ?? prev.char_end) as number | undefined;
+      if (prevStart == null || prevEnd == null) continue;
+      const overlapStart = Math.max(charStart, prevStart);
+      const overlapEnd = Math.min(charEnd, prevEnd);
+      if (overlapEnd > overlapStart) {
+        const overlapLen = overlapEnd - overlapStart;
+        const thisLen = charEnd - charStart;
+        if (thisLen > 0 && overlapLen / thisLen > 0.5) { isDuplicate = true; break; }
+      }
+    }
+    if (!isDuplicate) deduplicated.push(result);
+  }
+  return deduplicated;
+}
+
+/**
+ * Task 3.4: Enforce source diversity in RAG context.
+ * Limits the maximum number of chunks per document to prevent
+ * a single long document from dominating context.
+ */
+function enforceSourceDiversity(
+  results: Array<Record<string, unknown>>,
+  maxPerDocument: number = 3
+): Array<Record<string, unknown>> {
+  const docCounts = new Map<string, number>();
+  const diversified: Array<Record<string, unknown>> = [];
+  for (const result of results) {
+    const docId = result.document_id as string;
+    const count = docCounts.get(docId) ?? 0;
+    if (count < maxPerDocument) {
+      diversified.push(result);
+      docCounts.set(docId, count + 1);
+    }
+  }
+  return diversified;
+}
+
+/**
  * RAG Context Input schema - validated inline (not exported to validation.ts
  * since this is a self-contained tool with a unique schema).
  */
@@ -1068,6 +1455,13 @@ const RagContextInput = z.object({
     .max(50000)
     .default(8000)
     .describe('Maximum total context length in characters'),
+  max_results_per_document: z
+    .number()
+    .int()
+    .min(1)
+    .max(20)
+    .default(3)
+    .describe('Maximum chunks per document for source diversity (default: 3)'),
 });
 
 /**
@@ -1127,11 +1521,12 @@ async function handleRagContext(params: Record<string, unknown>): Promise<ToolRe
     });
 
     // Convert to ranked format and fuse with RRF (default weights)
+    // Over-fetch to allow room for dedup + diversity filtering
     const bm25Ranked = toBm25Ranked(allBm25);
     const semanticRanked = toSemanticRanked(semanticResults);
 
     const fusion = new RRFFusion({ k: 60, bm25Weight: 1.0, semanticWeight: 1.0 });
-    const fusedResults = fusion.fuse(bm25Ranked, semanticRanked, limit);
+    const fusedResults = fusion.fuse(bm25Ranked, semanticRanked, limit * 3);
 
     // Handle empty results
     if (fusedResults.length === 0) {
@@ -1144,13 +1539,35 @@ async function handleRagContext(params: Record<string, unknown>): Promise<ToolRe
           context_length: emptyContext.length,
           search_results_used: 0,
           sources: [],
+          deduplication: { before: 0, after: 0, removed: 0 },
+          source_diversity: { max_per_document: input.max_results_per_document ?? 3, before: 0, after: 0 },
         })
       );
     }
 
+    // ── Step 1b: Deduplicate overlapping chunks (Task 3.3) ──────────────
+    const preDedupResults = fusedResults as unknown as Array<Record<string, unknown>>;
+    const deduplicated = deduplicateOverlappingResults(preDedupResults);
+    const dedupStats = {
+      before: preDedupResults.length,
+      after: deduplicated.length,
+      removed: preDedupResults.length - deduplicated.length,
+    };
+
+    // ── Step 1c: Enforce source diversity (Task 3.4) ────────────────────
+    const maxPerDoc = input.max_results_per_document ?? 3;
+    const diversified = enforceSourceDiversity(deduplicated, maxPerDoc);
+    const diversityStats = {
+      max_per_document: maxPerDoc,
+      before: deduplicated.length,
+      after: diversified.length,
+    };
+
+    // Apply final limit after dedup + diversity
+    const finalFused = diversified.slice(0, limit);
+
     // Enrich VLM results with image metadata
-    const enrichedFused = fusedResults as unknown as Array<Record<string, unknown>>;
-    enrichVLMResultsWithImageMetadata(conn, enrichedFused);
+    enrichVLMResultsWithImageMetadata(conn, finalFused);
 
     // ── Step 2: Assemble markdown context ──────────────────────────────────
     const contextParts: string[] = [];
@@ -1160,11 +1577,10 @@ async function handleRagContext(params: Record<string, unknown>): Promise<ToolRe
     const sources: Array<{ file_name: string; page_number: number | null; document_id: string }> =
       [];
 
-    for (let i = 0; i < fusedResults.length; i++) {
-      const r = fusedResults[i];
-      const enriched = enrichedFused[i];
-      const score = Math.round(r.rrf_score * 1000) / 1000;
-      const fileName = r.source_file_name || path.basename(r.source_file_path || 'unknown');
+    for (let i = 0; i < finalFused.length; i++) {
+      const r = finalFused[i];
+      const score = Math.round((r.rrf_score as number) * 1000) / 1000;
+      const fileName = (r.source_file_name as string) || path.basename((r.source_file_path as string) || 'unknown');
       const pageInfo =
         r.page_number !== null && r.page_number !== undefined ? `, Page ${r.page_number}` : '';
 
@@ -1178,20 +1594,20 @@ async function handleRagContext(params: Record<string, unknown>): Promise<ToolRe
       }
 
       // For VLM results with image metadata, include image context
-      if (enriched.image_extracted_path) {
-        const blockType = enriched.image_block_type || 'Image';
-        const imgPage = enriched.image_page_number ?? r.page_number ?? 'unknown';
+      if (r.image_extracted_path) {
+        const blockType = r.image_block_type || 'Image';
+        const imgPage = r.image_page_number ?? r.page_number ?? 'unknown';
         contextParts.push(`> **[Image: ${blockType} on page ${imgPage}]**`);
-        contextParts.push(`> File: ${enriched.image_extracted_path}`);
-        contextParts.push(`> Description: ${r.original_text.replace(/\n/g, '\n> ')}\n`);
+        contextParts.push(`> File: ${r.image_extracted_path}`);
+        contextParts.push(`> Description: ${(r.original_text as string).replace(/\n/g, '\n> ')}\n`);
       } else {
-        contextParts.push(`> ${r.original_text.replace(/\n/g, '\n> ')}\n`);
+        contextParts.push(`> ${(r.original_text as string).replace(/\n/g, '\n> ')}\n`);
       }
 
       sources.push({
         file_name: fileName,
-        page_number: r.page_number,
-        document_id: r.document_id,
+        page_number: r.page_number as number | null,
+        document_id: r.document_id as string,
       });
     }
 
@@ -1206,8 +1622,10 @@ async function handleRagContext(params: Record<string, unknown>): Promise<ToolRe
       question: input.question,
       context: assembledMarkdown,
       context_length: assembledMarkdown.length,
-      search_results_used: fusedResults.length,
+      search_results_used: finalFused.length,
       sources,
+      deduplication: dedupStats,
+      source_diversity: diversityStats,
     };
     return formatResponse(successResult(ragResponse));
   } catch (error) {
@@ -1528,7 +1946,7 @@ async function handleSearchSavedList(params: Record<string, unknown>): Promise<T
     const { db } = requireDatabase();
     const conn = db.getConnection();
 
-    let sql = 'SELECT id, name, query, search_type, result_count, created_at, notes FROM saved_searches';
+    let sql = 'SELECT id, name, query, search_type, result_count, created_at, notes, last_executed_at, execution_count FROM saved_searches';
     const sqlParams: unknown[] = [];
 
     if (input.search_type) {
@@ -1542,6 +1960,7 @@ async function handleSearchSavedList(params: Record<string, unknown>): Promise<T
     const rows = conn.prepare(sql).all(...sqlParams) as Array<{
       id: string; name: string; query: string; search_type: string;
       result_count: number; created_at: string; notes: string | null;
+      last_executed_at: string | null; execution_count: number | null;
     }>;
 
     const totalRow = conn.prepare(
@@ -1657,6 +2076,19 @@ async function handleSearchSavedExecute(params: Record<string, unknown>): Promis
 
     // Parse the search result to wrap with saved search metadata
     const searchResultData = JSON.parse(searchResult.content[0].text) as Record<string, unknown>;
+
+    // Task 6.4: Update saved search analytics (execution tracking)
+    try {
+      conn.prepare(
+        'UPDATE saved_searches SET last_executed_at = ?, execution_count = COALESCE(execution_count, 0) + 1 WHERE id = ?'
+      ).run(new Date().toISOString(), row.id);
+    } catch (analyticsErr) {
+      // Non-fatal: schema v29 databases may not have these columns yet
+      console.error(
+        '[search] Failed to update saved search analytics:',
+        analyticsErr instanceof Error ? analyticsErr.message : String(analyticsErr)
+      );
+    }
 
     return formatResponse(successResult({
       saved_search: {
@@ -1841,8 +2273,8 @@ export const searchTools: Record<string, ToolDefinition> = {
       cluster_id: z.string().optional().describe('Filter results to documents in this cluster'),
       include_cluster_context: z
         .boolean()
-        .default(false)
-        .describe('Include cluster membership info for each result'),
+        .default(true)
+        .describe('Include cluster membership info for each result (default: true)'),
       content_type_filter: z
         .array(z.string())
         .optional()
@@ -1866,6 +2298,10 @@ export const searchTools: Record<string, ToolDefinition> = {
         .boolean()
         .default(false)
         .describe('Boost results from higher-quality OCR pages in ranking'),
+      exclude_duplicate_chunks: z
+        .boolean()
+        .default(false)
+        .describe('Remove duplicate chunks (same text_hash) from results'),
     },
     handler: handleSearch,
   },
@@ -1910,8 +2346,8 @@ export const searchTools: Record<string, ToolDefinition> = {
       cluster_id: z.string().optional().describe('Filter results to documents in this cluster'),
       include_cluster_context: z
         .boolean()
-        .default(false)
-        .describe('Include cluster membership info for each result'),
+        .default(true)
+        .describe('Include cluster membership info for each result (default: true)'),
       content_type_filter: z
         .array(z.string())
         .optional()
@@ -1935,6 +2371,10 @@ export const searchTools: Record<string, ToolDefinition> = {
         .boolean()
         .default(false)
         .describe('Boost results from higher-quality OCR pages in ranking'),
+      exclude_duplicate_chunks: z
+        .boolean()
+        .default(false)
+        .describe('Remove duplicate chunks (same text_hash) from results'),
     },
     handler: handleSearchSemantic,
   },
@@ -1973,8 +2413,8 @@ export const searchTools: Record<string, ToolDefinition> = {
       cluster_id: z.string().optional().describe('Filter results to documents in this cluster'),
       include_cluster_context: z
         .boolean()
-        .default(false)
-        .describe('Include cluster membership info for each result'),
+        .default(true)
+        .describe('Include cluster membership info for each result (default: true)'),
       content_type_filter: z
         .array(z.string())
         .optional()
@@ -2002,6 +2442,10 @@ export const searchTools: Record<string, ToolDefinition> = {
         .boolean()
         .default(false)
         .describe('Auto-adjust BM25/semantic weights based on query classification'),
+      exclude_duplicate_chunks: z
+        .boolean()
+        .default(false)
+        .describe('Remove duplicate chunks (same text_hash) from results'),
     },
     handler: handleSearchHybrid,
   },
@@ -2060,6 +2504,13 @@ export const searchTools: Record<string, ToolDefinition> = {
         .max(50000)
         .default(8000)
         .describe('Maximum total context length in characters'),
+      max_results_per_document: z
+        .number()
+        .int()
+        .min(1)
+        .max(20)
+        .default(3)
+        .describe('Maximum chunks per document for source diversity (default: 3)'),
     },
     handler: handleRagContext,
   },

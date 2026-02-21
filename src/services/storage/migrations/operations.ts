@@ -26,6 +26,8 @@ import {
   CREATE_DOCUMENT_CLUSTERS_TABLE,
   CREATE_TAGS_TABLE,
   CREATE_ENTITY_TAGS_TABLE,
+  CREATE_DOCUMENTS_FTS_TABLE,
+  CREATE_DOCUMENTS_FTS_TRIGGERS,
 } from './schema-definitions.js';
 
 // ─── Legacy entity/KG table definitions (inlined for migration chain v12→v25) ───
@@ -1328,6 +1330,11 @@ export function migrateToLatest(db: Database.Database): void {
   if (currentVersion < 29) {
     migrateV28ToV29(db);
     bumpVersion(29);
+  }
+
+  if (currentVersion < 30) {
+    migrateV29ToV30(db);
+    bumpVersion(30);
   }
 }
 
@@ -3220,6 +3227,56 @@ function migrateV28ToV29(db: Database.Database): void {
       `Failed to migrate from v28 to v29 (tags tables): ${cause}`,
       'migrate',
       'tags',
+      error
+    );
+  }
+}
+
+/**
+ * Migrate from schema version 29 to version 30
+ *
+ * Changes in v30:
+ * - documents_fts: FTS5 virtual table on doc_title, doc_author, doc_subject
+ * - documents_fts triggers: insert, delete, update sync
+ * - saved_searches: Add last_executed_at TEXT and execution_count INTEGER columns
+ * - New indexes: idx_chunks_section_path, idx_chunks_heading_level
+ *
+ * @param db - Database instance from better-sqlite3
+ * @throws MigrationError if migration fails
+ */
+function migrateV29ToV30(db: Database.Database): void {
+  console.error('[MIGRATION] Applying v29 → v30: Documents FTS5, saved search analytics, chunk indexes');
+  try {
+    // 1. Create documents_fts FTS5 virtual table
+    db.exec(CREATE_DOCUMENTS_FTS_TABLE);
+
+    // 2. Create sync triggers
+    for (const trigger of CREATE_DOCUMENTS_FTS_TRIGGERS) {
+      db.exec(trigger);
+    }
+
+    // 3. Populate from existing data
+    db.exec(`
+      INSERT INTO documents_fts(rowid, doc_title, doc_author, doc_subject)
+      SELECT rowid, COALESCE(doc_title, ''), COALESCE(doc_author, ''), COALESCE(doc_subject, '')
+      FROM documents
+    `);
+
+    // 4. Add saved search analytics columns
+    db.exec('ALTER TABLE saved_searches ADD COLUMN last_executed_at TEXT');
+    db.exec('ALTER TABLE saved_searches ADD COLUMN execution_count INTEGER DEFAULT 0');
+
+    // 5. Create chunk performance indexes
+    db.exec('CREATE INDEX IF NOT EXISTS idx_chunks_section_path ON chunks(section_path)');
+    db.exec('CREATE INDEX IF NOT EXISTS idx_chunks_heading_level ON chunks(heading_level)');
+
+    console.error('[MIGRATION] v30 migration complete: documents_fts, saved search analytics, chunk indexes');
+  } catch (error) {
+    const cause = error instanceof Error ? error.message : String(error);
+    throw new MigrationError(
+      `Failed to migrate from v29 to v30 (documents FTS, saved search analytics): ${cause}`,
+      'migrate',
+      'documents_fts',
       error
     );
   }

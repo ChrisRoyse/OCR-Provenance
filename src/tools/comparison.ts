@@ -180,6 +180,114 @@ function fetchCompleteDocument(
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
+// MULTI-SIGNAL SIMILARITY HELPERS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/**
+ * Compute embedding centroid similarity between two documents.
+ * Fetches all chunk embedding vectors for each document, computes centroids,
+ * and returns cosine similarity between them.
+ *
+ * @returns Cosine similarity (0-1) or null if either document has no embeddings
+ */
+function computeEmbeddingCentroidSimilarity(
+  conn: import('better-sqlite3').Database,
+  docId1: string,
+  docId2: string
+): number | null {
+  try {
+    const docEmbeddings = computeDocumentEmbeddings(conn, [docId1, docId2]);
+    const emb1 = docEmbeddings.find((d) => d.document_id === docId1);
+    const emb2 = docEmbeddings.find((d) => d.document_id === docId2);
+
+    if (!emb1 || !emb2) return null;
+
+    return cosineSimilarity(emb1.embedding, Array.from(emb2.embedding));
+  } catch (error) {
+    console.error(
+      '[comparison] Failed to compute embedding centroid similarity:',
+      error instanceof Error ? error.message : String(error)
+    );
+    return null;
+  }
+}
+
+/**
+ * Compute structural similarity between two documents based on block type distributions.
+ * Uses block_type_stats from extras_json of OCR results (added in Phase 4).
+ * Computes cosine similarity of block type distribution vectors.
+ *
+ * @returns Similarity score (0-1), or 0 if stats unavailable
+ */
+function computeStructuralSimilarity(
+  conn: import('better-sqlite3').Database,
+  docId1: string,
+  docId2: string
+): number {
+  try {
+    const stats1 = getBlockTypeStats(conn, docId1);
+    const stats2 = getBlockTypeStats(conn, docId2);
+
+    if (!stats1 || !stats2) return 0;
+
+    // Build unified set of block types
+    const allTypes = new Set([...Object.keys(stats1), ...Object.keys(stats2)]);
+    if (allTypes.size === 0) return 0;
+
+    // Build distribution vectors
+    const vec1: number[] = [];
+    const vec2: number[] = [];
+    for (const type of allTypes) {
+      vec1.push(stats1[type] ?? 0);
+      vec2.push(stats2[type] ?? 0);
+    }
+
+    // Compute cosine similarity
+    let dotProduct = 0;
+    let norm1 = 0;
+    let norm2 = 0;
+    for (let i = 0; i < vec1.length; i++) {
+      dotProduct += vec1[i] * vec2[i];
+      norm1 += vec1[i] * vec1[i];
+      norm2 += vec2[i] * vec2[i];
+    }
+
+    if (norm1 === 0 || norm2 === 0) return 0;
+    return dotProduct / (Math.sqrt(norm1) * Math.sqrt(norm2));
+  } catch (error) {
+    console.error(
+      '[comparison] Failed to compute structural similarity:',
+      error instanceof Error ? error.message : String(error)
+    );
+    return 0;
+  }
+}
+
+/**
+ * Extract block_type_stats from extras_json of a document's OCR result.
+ * Returns a map of block_type -> count, or null if not available.
+ */
+function getBlockTypeStats(
+  conn: import('better-sqlite3').Database,
+  docId: string
+): Record<string, number> | null {
+  const row = conn
+    .prepare('SELECT extras_json FROM ocr_results WHERE document_id = ? ORDER BY processing_completed_at DESC LIMIT 1')
+    .get(docId) as { extras_json: string | null } | undefined;
+
+  if (!row?.extras_json) return null;
+
+  try {
+    const extras = JSON.parse(row.extras_json) as Record<string, unknown>;
+    const blockTypeStats = extras.block_type_stats as Record<string, number> | undefined;
+    if (!blockTypeStats || typeof blockTypeStats !== 'object') return null;
+    return blockTypeStats;
+  } catch {
+    return null;
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
 // TOOL HANDLERS
 // ═══════════════════════════════════════════════════════════════════════════════
 
@@ -276,6 +384,32 @@ async function handleDocumentCompare(params: Record<string, unknown>): Promise<T
     // Compute similarity from text diff or default to structural comparison
     const similarityRatio = textDiff ? textDiff.similarity_ratio : 0;
 
+    // Multi-signal similarity computation (ME-6)
+    const embeddingSimilarity = computeEmbeddingCentroidSimilarity(
+      conn,
+      input.document_id_1,
+      input.document_id_2
+    );
+    const structSimilarity = computeStructuralSimilarity(
+      conn,
+      input.document_id_1,
+      input.document_id_2
+    );
+
+    // Quality alignment: how close are the OCR quality scores
+    const q1 = (ocr1.parse_quality_score as number | null) ?? 0;
+    const q2 = (ocr2.parse_quality_score as number | null) ?? 0;
+    const qualityAlignment = q1 > 0 && q2 > 0
+      ? 1 - Math.abs(q1 - q2) / Math.max(q1, q2)
+      : 0;
+
+    // Composite similarity: weighted blend of all signals
+    const compositeSimilarity =
+      0.4 * similarityRatio +
+      0.3 * (embeddingSimilarity ?? similarityRatio) +
+      0.2 * structSimilarity +
+      0.1 * qualityAlignment;
+
     // Compute content hash
     const diffContent = JSON.stringify({
       text_diff: textDiff,
@@ -342,6 +476,16 @@ async function handleDocumentCompare(params: Record<string, unknown>): Promise<T
       document_1: { id: input.document_id_1, file_name: doc1.file_name },
       document_2: { id: input.document_id_2, file_name: doc2.file_name },
       similarity_ratio: similarityRatio,
+      composite_similarity: Math.round(compositeSimilarity * 10000) / 10000,
+      similarity_signals: {
+        text_similarity: similarityRatio,
+        embedding_centroid_similarity: embeddingSimilarity !== null
+          ? Math.round(embeddingSimilarity * 10000) / 10000
+          : null,
+        structural_similarity: Math.round(structSimilarity * 10000) / 10000,
+        quality_alignment: Math.round(qualityAlignment * 10000) / 10000,
+        weights: { text: 0.4, embedding: 0.3, structural: 0.2, quality: 0.1 },
+      },
       summary,
       text_diff: textDiff,
       structural_diff: structuralDiff,

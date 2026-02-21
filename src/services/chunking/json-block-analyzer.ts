@@ -139,31 +139,14 @@ function walkBlocks(
   callback: (block: Record<string, unknown>, pageNum: number) => void,
   pageNum: number
 ): void {
-  const blockType = block.block_type as string | undefined;
+  callback(block, pageNum);
 
-  // Track page numbers from Page blocks
-  let currentPageNum = pageNum;
-  if (blockType === 'Page') {
-    // Page blocks increment the page counter
-    // The page number is tracked by order of appearance
-    currentPageNum = pageNum;
-  }
-
-  // Call the callback for this block
-  callback(block, currentPageNum);
-
-  // Walk children
   const children = (block.children ?? block.blocks) as unknown[] | undefined;
   if (Array.isArray(children)) {
-    let childPageNum = currentPageNum;
+    let childPageNum = pageNum;
     for (const child of children) {
       const childBlock = child as Record<string, unknown>;
       const childType = childBlock.block_type as string | undefined;
-
-      // If this child is a Page block, increment the page counter
-      if (childType === 'Page' || (!childType && block === block)) {
-        // For top-level iteration, count pages
-      }
 
       walkBlocks(childBlock, callback, childPageNum);
 
@@ -579,4 +562,491 @@ function validateRegionOffsets(start: number, end: number): void {
   if (end < start) {
     throw new Error(`endOffset (${end}) is less than startOffset (${start}) in atomic region`);
   }
+}
+
+// ---------------------------------------------------------------------------
+// Block-Type Statistics (ME-1 / Task 4.1)
+// ---------------------------------------------------------------------------
+
+/** Statistics about block types found in the JSON block hierarchy */
+export interface BlockTypeStats {
+  total_blocks: number;
+  text_blocks: number;
+  table_blocks: number;
+  figure_blocks: number;
+  code_blocks: number;
+  list_blocks: number;
+  header_blocks: number;
+  footer_blocks: number;
+  heading_blocks: number;
+  page_count: number;
+  tables_per_page: number;
+  figures_per_page: number;
+  text_density: number;
+}
+
+/**
+ * Walk the JSON block tree and count block types to produce statistics.
+ *
+ * Recognizes: Text, Table, TableGroup, Figure, FigureGroup, Code,
+ * ListItem, List, PageHeader, PageFooter, SectionHeader, Title, Page.
+ *
+ * @param jsonBlocks - The JSON block hierarchy from Datalab OCR (may be null)
+ * @returns BlockTypeStats with counts and derived ratios
+ */
+export function computeBlockTypeStats(
+  jsonBlocks: Record<string, unknown> | null
+): BlockTypeStats | null {
+  if (!jsonBlocks) {
+    return null;
+  }
+
+  const counts = {
+    total: 0,
+    text: 0,
+    table: 0,
+    figure: 0,
+    code: 0,
+    list: 0,
+    header: 0,
+    footer: 0,
+    heading: 0,
+    page: 0,
+  };
+
+  const countBlocks = (block: Record<string, unknown>): void => {
+    const blockType = block.block_type as string | undefined;
+    if (blockType) {
+      counts.total++;
+      switch (blockType) {
+        case 'Text':
+          counts.text++;
+          break;
+        case 'Table':
+        case 'TableGroup':
+          counts.table++;
+          break;
+        case 'Figure':
+        case 'FigureGroup':
+          counts.figure++;
+          break;
+        case 'Code':
+          counts.code++;
+          break;
+        case 'ListItem':
+        case 'List':
+          counts.list++;
+          break;
+        case 'PageHeader':
+          counts.header++;
+          break;
+        case 'PageFooter':
+          counts.footer++;
+          break;
+        case 'SectionHeader':
+        case 'Title':
+          counts.heading++;
+          break;
+        case 'Page':
+          counts.page++;
+          break;
+        // Other block types still count toward total_blocks
+      }
+    }
+
+    const children = (block.children ?? block.blocks) as unknown[] | undefined;
+    if (Array.isArray(children)) {
+      for (const child of children) {
+        countBlocks(child as Record<string, unknown>);
+      }
+    }
+  };
+
+  countBlocks(jsonBlocks);
+
+  const pageCount = Math.max(counts.page, 1);
+  // Content blocks = non-structural blocks (exclude Page, PageHeader, PageFooter)
+  const contentBlocks = counts.total - counts.page - counts.header - counts.footer;
+
+  return {
+    total_blocks: counts.total,
+    text_blocks: counts.text,
+    table_blocks: counts.table,
+    figure_blocks: counts.figure,
+    code_blocks: counts.code,
+    list_blocks: counts.list,
+    header_blocks: counts.header,
+    footer_blocks: counts.footer,
+    heading_blocks: counts.heading,
+    page_count: counts.page,
+    tables_per_page: Math.round((counts.table / pageCount) * 100) / 100,
+    figures_per_page: Math.round((counts.figure / pageCount) * 100) / 100,
+    text_density: contentBlocks > 0
+      ? Math.round((counts.text / contentBlocks) * 100) / 100
+      : 0,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Block-Type Confidence Scoring (ME-8 / Task 4.3)
+// ---------------------------------------------------------------------------
+
+/**
+ * Confidence scores for block types, used to compute chunk quality from
+ * the block types present in a chunk. Higher values indicate more structured
+ * and typically more reliable content.
+ */
+export const BLOCK_TYPE_CONFIDENCE: Record<string, number> = {
+  Table: 0.9,
+  TableGroup: 0.9,
+  Code: 0.9,
+  SectionHeader: 0.85,
+  Title: 0.85,
+  ListItem: 0.8,
+  List: 0.8,
+  Text: 0.7,
+  Figure: 0.6,
+  PageHeader: 0.5,
+  PageFooter: 0.5,
+};
+
+/**
+ * Compute a confidence score for a chunk based on the block types it contains.
+ *
+ * Returns the average confidence across all content types in the chunk.
+ * Unknown block types default to 0.7. An empty content types array also
+ * defaults to 0.7.
+ *
+ * @param contentTypes - Array of block type strings from the chunk
+ * @returns Confidence score between 0 and 1
+ */
+export function computeBlockConfidence(contentTypes: string[]): number {
+  if (contentTypes.length === 0) return 0.7;
+  const scores = contentTypes.map((t) => BLOCK_TYPE_CONFIDENCE[t] ?? 0.7);
+  return scores.reduce((a, b) => a + b, 0) / scores.length;
+}
+
+// ---------------------------------------------------------------------------
+// Header/Footer Detection (HE-2 / Task 7.1)
+// ---------------------------------------------------------------------------
+
+/** Information about headers and footers detected in the JSON block tree */
+export interface HeaderFooterInfo {
+  headerTexts: string[];
+  footerTexts: string[];
+  repeatedHeaders: string[];   // appearing on >50% of pages (min 2 pages)
+  repeatedFooters: string[];   // appearing on >50% of pages (min 2 pages)
+}
+
+/**
+ * Extract text content from a block by walking its HTML or children.
+ * Returns the concatenated text content, stripped of HTML tags.
+ */
+function extractBlockText(block: Record<string, unknown>): string {
+  // Try HTML content first
+  const html = (block.html as string) ?? '';
+  if (html.length > 0) {
+    return stripHtmlTags(html).trim();
+  }
+
+  // Try direct text content
+  const text = (block.text as string) ?? '';
+  if (text.length > 0) {
+    return text.trim();
+  }
+
+  // Walk children to collect text
+  const children = (block.children ?? block.blocks) as unknown[] | undefined;
+  if (Array.isArray(children)) {
+    const parts: string[] = [];
+    for (const child of children) {
+      const childText = extractBlockText(child as Record<string, unknown>);
+      if (childText.length > 0) {
+        parts.push(childText);
+      }
+    }
+    return parts.join(' ').trim();
+  }
+
+  return '';
+}
+
+/**
+ * Detect repeated headers and footers from the JSON block tree.
+ *
+ * Walks the block tree for each page, collecting PageHeader and PageFooter
+ * block texts. A text is considered "repeated" if it appears on >50% of pages
+ * with at least 2 occurrences.
+ *
+ * @param jsonBlocks - The JSON block hierarchy from Datalab OCR (may be null)
+ * @returns HeaderFooterInfo with all and repeated header/footer texts
+ */
+export function detectRepeatedHeadersFooters(
+  jsonBlocks: Record<string, unknown> | null
+): HeaderFooterInfo {
+  const result: HeaderFooterInfo = {
+    headerTexts: [],
+    footerTexts: [],
+    repeatedHeaders: [],
+    repeatedFooters: [],
+  };
+
+  if (!jsonBlocks) {
+    return result;
+  }
+
+  // Collect header/footer texts per page
+  const headerCounts = new Map<string, number>();
+  const footerCounts = new Map<string, number>();
+  let pageCount = 0;
+
+  // Walk the tree collecting PageHeader and PageFooter blocks
+  walkBlocks(jsonBlocks, (block, _pageNum) => {
+    const blockType = block.block_type as string | undefined;
+    if (!blockType) return;
+
+    if (blockType === 'Page') {
+      pageCount++;
+      return;
+    }
+
+    if (blockType === 'PageHeader') {
+      const text = extractBlockText(block);
+      if (text.length > 0) {
+        result.headerTexts.push(text);
+        headerCounts.set(text, (headerCounts.get(text) ?? 0) + 1);
+      }
+    } else if (blockType === 'PageFooter') {
+      const text = extractBlockText(block);
+      if (text.length > 0) {
+        result.footerTexts.push(text);
+        footerCounts.set(text, (footerCounts.get(text) ?? 0) + 1);
+      }
+    }
+  }, 0);
+
+  // Ensure at least 1 page for percentage calculation
+  const effectivePageCount = Math.max(pageCount, 1);
+  const threshold = effectivePageCount / 2;
+
+  // Repeated = appears on >50% of pages, with at least 2 occurrences
+  for (const [text, count] of headerCounts) {
+    if (count >= 2 && count > threshold) {
+      result.repeatedHeaders.push(text);
+    }
+  }
+
+  for (const [text, count] of footerCounts) {
+    if (count >= 2 && count > threshold) {
+      result.repeatedFooters.push(text);
+    }
+  }
+
+  return result;
+}
+
+/**
+ * Check if a chunk's text closely matches any of the repeated header/footer texts.
+ * Uses normalized comparison (lowercased, whitespace-collapsed).
+ *
+ * @param chunkText - The chunk text to check
+ * @param repeatedTexts - Array of repeated header/footer texts
+ * @returns true if the chunk text matches a repeated header/footer
+ */
+export function isRepeatedHeaderFooter(
+  chunkText: string,
+  repeatedTexts: string[]
+): boolean {
+  if (repeatedTexts.length === 0) return false;
+
+  const normalizedChunk = chunkText.toLowerCase().replace(/\s+/g, ' ').trim();
+  if (normalizedChunk.length === 0) return false;
+
+  for (const repeated of repeatedTexts) {
+    const normalizedRepeated = repeated.toLowerCase().replace(/\s+/g, ' ').trim();
+    // Exact match or chunk contains the repeated text
+    if (normalizedChunk === normalizedRepeated) return true;
+    // Check if the chunk is very short and is a substring of the repeated text
+    if (normalizedChunk.length <= normalizedRepeated.length * 1.2 &&
+        normalizedRepeated.includes(normalizedChunk)) return true;
+    // Check if the repeated text is contained in a short chunk
+    if (normalizedChunk.length <= normalizedRepeated.length * 1.5 &&
+        normalizedChunk.includes(normalizedRepeated)) return true;
+  }
+
+  return false;
+}
+
+// ---------------------------------------------------------------------------
+// Table Structure Extraction (HE-3 / Task 7.2)
+// ---------------------------------------------------------------------------
+
+/** Extracted structure information for a table block */
+export interface TableStructure {
+  startOffset: number;
+  endOffset: number;
+  columnHeaders: string[];
+  rowCount: number;
+  columnCount: number;
+  pageNumber: number | null;
+}
+
+/**
+ * Extract table structures from the JSON block tree.
+ *
+ * Walks json_blocks for Table/TableGroup blocks, extracts column headers
+ * from the first row, and maps to markdown text offsets.
+ *
+ * @param jsonBlocks - The JSON block hierarchy from Datalab OCR (may be null)
+ * @param markdownText - The full markdown text to search within
+ * @param pageOffsets - Page offset information for page number assignment
+ * @returns Array of TableStructure with column headers and position info
+ */
+export function extractTableStructures(
+  jsonBlocks: Record<string, unknown> | null,
+  markdownText: string,
+  pageOffsets: PageOffset[]
+): TableStructure[] {
+  if (!jsonBlocks || markdownText.length === 0) {
+    return [];
+  }
+
+  const structures: TableStructure[] = [];
+
+  walkBlocks(jsonBlocks, (block, _pageNum) => {
+    const blockType = block.block_type as string | undefined;
+    if (blockType !== 'Table' && blockType !== 'TableGroup') {
+      return;
+    }
+
+    // Extract column headers from the block's children
+    const columnHeaders = extractTableColumnHeaders(block);
+    if (columnHeaders.length === 0) {
+      return;
+    }
+
+    // Count rows from block children
+    const { rowCount, columnCount } = countTableDimensions(block, columnHeaders.length);
+
+    // Locate the table in markdown text
+    const region = locateBlockInMarkdown(block, blockType, _pageNum, markdownText, pageOffsets);
+    if (!region) {
+      return;
+    }
+
+    structures.push({
+      startOffset: region.startOffset,
+      endOffset: region.endOffset,
+      columnHeaders,
+      rowCount,
+      columnCount,
+      pageNumber: region.pageNumber,
+    });
+  }, 0);
+
+  return structures;
+}
+
+/**
+ * Extract column headers from the first row of a table block.
+ * Looks for the first TableRow/Row child and extracts cell texts.
+ */
+function extractTableColumnHeaders(block: Record<string, unknown>): string[] {
+  const children = (block.children ?? block.blocks) as unknown[] | undefined;
+  if (!Array.isArray(children) || children.length === 0) {
+    // Try extracting from HTML content as fallback
+    return extractHeadersFromHtml(block);
+  }
+
+  // Look for the first row-like child
+  for (const child of children) {
+    const childBlock = child as Record<string, unknown>;
+    const childType = childBlock.block_type as string | undefined;
+
+    if (childType === 'TableRow' || childType === 'Row' || childType === 'TableHeader') {
+      const cells = (childBlock.children ?? childBlock.blocks) as unknown[] | undefined;
+      if (Array.isArray(cells) && cells.length > 0) {
+        const headers: string[] = [];
+        for (const cell of cells) {
+          const cellBlock = cell as Record<string, unknown>;
+          const cellText = extractBlockText(cellBlock);
+          if (cellText.length > 0) {
+            headers.push(cellText);
+          }
+        }
+        if (headers.length > 0) return headers;
+      }
+    }
+
+    // For TableGroup, check nested Table children
+    if (childType === 'Table') {
+      const tableHeaders = extractTableColumnHeaders(childBlock);
+      if (tableHeaders.length > 0) return tableHeaders;
+    }
+  }
+
+  // Fallback: try HTML parsing
+  return extractHeadersFromHtml(block);
+}
+
+/**
+ * Extract table headers from block HTML content (fallback).
+ * Looks for the first row in an HTML table.
+ */
+function extractHeadersFromHtml(block: Record<string, unknown>): string[] {
+  const html = (block.html as string) ?? '';
+  if (html.length === 0) return [];
+
+  // Try to find <th> elements first
+  const thMatches = html.match(/<th[^>]*>(.*?)<\/th>/gi);
+  if (thMatches && thMatches.length > 0) {
+    return thMatches.map(th => stripHtmlTags(th).trim()).filter(t => t.length > 0);
+  }
+
+  // Try first <tr> and extract <td> elements
+  const firstRowMatch = html.match(/<tr[^>]*>(.*?)<\/tr>/i);
+  if (firstRowMatch) {
+    const tdMatches = firstRowMatch[1].match(/<td[^>]*>(.*?)<\/td>/gi);
+    if (tdMatches && tdMatches.length > 0) {
+      return tdMatches.map(td => stripHtmlTags(td).trim()).filter(t => t.length > 0);
+    }
+  }
+
+  return [];
+}
+
+/**
+ * Count table dimensions from block children.
+ */
+function countTableDimensions(
+  block: Record<string, unknown>,
+  headerColumnCount: number
+): { rowCount: number; columnCount: number } {
+  const children = (block.children ?? block.blocks) as unknown[] | undefined;
+  if (!Array.isArray(children)) {
+    return { rowCount: 0, columnCount: headerColumnCount };
+  }
+
+  let rowCount = 0;
+  let maxColumns = headerColumnCount;
+
+  for (const child of children) {
+    const childBlock = child as Record<string, unknown>;
+    const childType = childBlock.block_type as string | undefined;
+
+    if (childType === 'TableRow' || childType === 'Row' || childType === 'TableHeader') {
+      rowCount++;
+      const cells = (childBlock.children ?? childBlock.blocks) as unknown[] | undefined;
+      if (Array.isArray(cells) && cells.length > maxColumns) {
+        maxColumns = cells.length;
+      }
+    } else if (childType === 'Table') {
+      // Nested table in TableGroup
+      const nested = countTableDimensions(childBlock, headerColumnCount);
+      rowCount += nested.rowCount;
+      if (nested.columnCount > maxColumns) maxColumns = nested.columnCount;
+    }
+  }
+
+  return { rowCount, columnCount: maxColumns };
 }

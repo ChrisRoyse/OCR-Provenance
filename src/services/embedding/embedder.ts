@@ -52,6 +52,39 @@ interface EmbedResult {
 
 const CHAIN_PATH = JSON.stringify(['DOCUMENT', 'OCR_RESULT', 'CHUNK', 'EMBEDDING']);
 
+/** Section-aware embedding processor version */
+const SECTION_AWARE_VERSION = '1.5.0-section';
+
+/**
+ * Build a section-aware context prefix from chunk metadata.
+ * This prefix is prepended to the chunk text before embedding to make
+ * embeddings section-aware WITHOUT changing stored text.
+ *
+ * @param chunk - Chunk with section/heading/content_types metadata
+ * @returns Prefix string (may be empty if no relevant metadata)
+ */
+export function buildSectionPrefix(chunk: Chunk): string {
+  const parts: string[] = [];
+
+  if (chunk.section_path) {
+    parts.push(`[Section: ${chunk.section_path}]`);
+  } else if (chunk.heading_context) {
+    parts.push(`[Heading: ${chunk.heading_context}]`);
+  }
+
+  if (chunk.content_types) {
+    try {
+      const types = JSON.parse(chunk.content_types) as string[];
+      if (types.includes('table')) parts.push('[Table]');
+      if (types.includes('code')) parts.push('[Code]');
+    } catch {
+      // Skip malformed content_types JSON
+    }
+  }
+
+  return parts.length > 0 ? parts.join(' ') + ' ' : '';
+}
+
 export class EmbeddingService {
   private readonly client: NomicEmbeddingClient;
   private readonly batchSize: number;
@@ -73,7 +106,7 @@ export class EmbeddingService {
 
     const startMs = Date.now();
     const vectors = await this.client.embedChunks(
-      chunks.map((c) => normalizeForEmbedding(c.text)),
+      chunks.map((c) => buildSectionPrefix(c) + normalizeForEmbedding(c.text)),
       this.batchSize
     );
 
@@ -207,7 +240,7 @@ export class EmbeddingService {
       input_hash: chunk.text_hash,
       file_hash: documentInfo.fileHash,
       processor: MODEL_NAME,
-      processor_version: MODEL_VERSION,
+      processor_version: SECTION_AWARE_VERSION,
       processing_params: {
         dimensions: EMBEDDING_DIM,
         task_type: 'search_document',
@@ -215,6 +248,7 @@ export class EmbeddingService {
         device: 'cuda:0',
         dtype: 'float16',
         batch_size: this.batchSize,
+        section_aware: true,
       },
       processing_duration_ms: null,
       processing_quality_score: null,

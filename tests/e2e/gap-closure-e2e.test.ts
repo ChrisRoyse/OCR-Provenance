@@ -435,9 +435,9 @@ describe('Gap Closure E2E', () => {
       }
     });
 
-    it('Schema version is 29', () => {
+    it('Schema version is 30', () => {
       const v = (conn.prepare('SELECT version FROM schema_version ORDER BY version DESC LIMIT 1').get() as { version: number }).version;
-      expect(v).toBe(29);
+      expect(v).toBe(30);
     });
 
     it('No orphaned embeddings', () => {
@@ -446,7 +446,7 @@ describe('Gap Closure E2E', () => {
     });
 
     it('All provenance types valid', () => {
-      const cnt = (conn.prepare(`SELECT COUNT(*) as cnt FROM provenance WHERE type NOT IN ('DOCUMENT', 'OCR_RESULT', 'CHUNK', 'EMBEDDING', 'IMAGE', 'EXTRACTION', 'COMPARISON', 'CLUSTERING', 'FORM_FILL', 'VLM_DESC')`).get() as { cnt: number }).cnt;
+      const cnt = (conn.prepare(`SELECT COUNT(*) as cnt FROM provenance WHERE type NOT IN ('DOCUMENT', 'OCR_RESULT', 'CHUNK', 'EMBEDDING', 'IMAGE', 'EXTRACTION', 'COMPARISON', 'CLUSTERING', 'FORM_FILL', 'VLM_DESCRIPTION')`).get() as { cnt: number }).cnt;
       expect(cnt).toBe(0);
     });
   });

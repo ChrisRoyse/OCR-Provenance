@@ -42,6 +42,9 @@ interface RRFSearchResult {
   page_range?: string | null;
   heading_level?: number | null;
   ocr_quality_score?: number | null;
+  doc_title?: string | null;
+  doc_author?: string | null;
+  doc_subject?: string | null;
 }
 
 export interface RankedResult {
@@ -70,6 +73,9 @@ export interface RankedResult {
   page_range?: string | null;
   heading_level?: number | null;
   ocr_quality_score?: number | null;
+  doc_title?: string | null;
+  doc_author?: string | null;
+  doc_subject?: string | null;
 }
 
 const DEFAULT_CONFIG: RRFConfig = {
@@ -117,6 +123,9 @@ function buildFusedResult(
     page_range: result.page_range ?? null,
     heading_level: result.heading_level ?? null,
     ocr_quality_score: result.ocr_quality_score ?? null,
+    doc_title: result.doc_title ?? null,
+    doc_author: result.doc_author ?? null,
+    doc_subject: result.doc_subject ?? null,
   };
 }
 
