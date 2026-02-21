@@ -57,6 +57,7 @@ import {
 import { getProvenanceTracker } from '../services/provenance/index.js';
 import { createVLMPipeline } from '../services/vlm/pipeline.js';
 import { ImageExtractor } from '../services/images/extractor.js';
+import { computeBlockTypeStats } from '../services/chunking/json-block-analyzer.js';
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // TYPE DEFINITIONS
@@ -719,6 +720,106 @@ async function processOneDocument(
   const chunks = storeChunks(db, doc, ocrResult, chunkResults, chunkConfig);
 
   console.error(`[INFO] Chunks stored: ${chunks.length}`);
+
+  // Step 3.5: Enrich extras_json with block stats, links, and structural fingerprint
+  // (Tasks 4.1, 4.2, 4.4 - Ingestion Pipeline Enrichment)
+  try {
+    const existingExtras: Record<string, unknown> = ocrResult.extras_json
+      ? (JSON.parse(ocrResult.extras_json) as Record<string, unknown>)
+      : {};
+
+    // Task 4.1: Block-type statistics from json_blocks
+    const blockStats = computeBlockTypeStats(processResult.jsonBlocks ?? null);
+    if (blockStats) {
+      existingExtras.block_type_stats = blockStats;
+    }
+
+    // Task 4.2: Extract structured hyperlinks from Datalab metadata
+    const metadataObj = (existingExtras.metadata ?? processResult.metadata ?? null) as Record<string, unknown> | null;
+    if (metadataObj) {
+      // Datalab stores links under metadata.extras_features.links or metadata.links
+      const extrasFeatures = metadataObj.extras_features as Record<string, unknown> | undefined;
+      const rawLinks = (extrasFeatures?.links ?? metadataObj.links ?? null) as
+        | Array<Record<string, unknown>>
+        | null;
+
+      if (Array.isArray(rawLinks) && rawLinks.length > 0) {
+        const structuredLinks = rawLinks
+          .filter((link) => {
+            const url = (link.url ?? link.href ?? '') as string;
+            return url.length > 0;
+          })
+          .map((link) => ({
+            url: ((link.url ?? link.href) as string),
+            anchor_text: ((link.anchor_text ?? link.text ?? link.title ?? '') as string),
+            page_number: ((link.page_number ?? link.page ?? null) as number | null),
+          }));
+
+        existingExtras.structured_links = structuredLinks;
+        existingExtras.link_count = structuredLinks.length;
+      } else {
+        existingExtras.link_count = 0;
+      }
+    }
+
+    // Task 4.4: Structural fingerprint from chunks
+    const headingDepths: Record<string, number> = {};
+    let totalChunkSize = 0;
+    let atomicChunkCount = 0;
+    let tableCount = 0;
+    let figureCount = 0;
+    const contentTypeDist: Record<string, number> = {};
+
+    for (const cr of chunkResults) {
+      totalChunkSize += cr.text.length;
+      if (cr.isAtomic) atomicChunkCount++;
+
+      // Count heading depths from heading level
+      if (cr.headingLevel !== null && cr.headingLevel !== undefined) {
+        const key = `h${cr.headingLevel}`;
+        headingDepths[key] = (headingDepths[key] ?? 0) + 1;
+      }
+
+      // Count content types
+      for (const ct of cr.contentTypes) {
+        contentTypeDist[ct] = (contentTypeDist[ct] ?? 0) + 1;
+        if (ct === 'Table' || ct === 'TableGroup') tableCount++;
+        if (ct === 'Figure' || ct === 'FigureGroup') figureCount++;
+      }
+    }
+
+    existingExtras.structural_fingerprint = {
+      page_count: ocrResult.page_count ?? 0,
+      chunk_count: chunkResults.length,
+      table_count: tableCount,
+      figure_count: figureCount,
+      heading_depths: headingDepths,
+      avg_chunk_size: chunkResults.length > 0
+        ? Math.round(totalChunkSize / chunkResults.length)
+        : 0,
+      atomic_chunk_ratio: chunkResults.length > 0
+        ? Math.round((atomicChunkCount / chunkResults.length) * 100) / 100
+        : 0,
+      content_type_distribution: contentTypeDist,
+    };
+
+    // Persist enriched extras_json back to ocr_results
+    const updatedExtrasJson = JSON.stringify(existingExtras);
+    db.getConnection()
+      .prepare('UPDATE ocr_results SET extras_json = ? WHERE id = ?')
+      .run(updatedExtrasJson, ocrResult.id);
+
+    console.error(
+      `[INFO] Extras enriched: block_stats=${blockStats ? 'yes' : 'no'}, ` +
+      `links=${existingExtras.link_count ?? 0}, fingerprint=yes`
+    );
+  } catch (enrichError) {
+    // Non-fatal: enrichment failure should not block document processing
+    console.error(
+      `[WARN] Extras enrichment failed for ${doc.id}: ` +
+      `${enrichError instanceof Error ? enrichError.message : String(enrichError)}`
+    );
+  }
 
   // Step 4: Generate embeddings for text chunks
   const embeddingService = new EmbeddingService();

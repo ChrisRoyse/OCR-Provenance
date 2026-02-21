@@ -105,8 +105,13 @@ export interface VectorSearchResult {
   chunk_page_range?: string | null;
   heading_level?: number | null;
 
-  // Quality score (populated when qualityBoost is enabled)
+  // Quality score
   ocr_quality_score?: number | null;
+
+  // Document metadata
+  doc_title?: string | null;
+  doc_author?: string | null;
+  doc_subject?: string | null;
 }
 
 /**
@@ -163,6 +168,9 @@ interface SearchRow {
   chunk_page_range: string | null;
   heading_level: number | null;
   ocr_quality_score?: number | null;
+  doc_title: string | null;
+  doc_author: string | null;
+  doc_subject: string | null;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -415,11 +423,15 @@ export class VectorService {
         ch.is_atomic,
         ch.page_range AS chunk_page_range,
         ch.heading_level,
-        ${options.qualityBoost ? '(SELECT o.parse_quality_score FROM ocr_results o WHERE o.document_id = e.document_id ORDER BY o.processing_completed_at DESC LIMIT 1) AS ocr_quality_score,' : ''}
+        doc.doc_title,
+        doc.doc_author,
+        doc.doc_subject,
+        (SELECT o.parse_quality_score FROM ocr_results o WHERE o.document_id = e.document_id ORDER BY o.processing_completed_at DESC LIMIT 1) AS ocr_quality_score,
         vec_distance_cosine(v.vector, ?) as distance
       FROM vec_embeddings v
       JOIN embeddings e ON e.id = v.embedding_id
       LEFT JOIN chunks ch ON e.chunk_id = ch.id
+      LEFT JOIN documents doc ON e.document_id = doc.id
       WHERE e.document_id IN (${placeholders})
     `;
 
@@ -491,11 +503,15 @@ export class VectorService {
           ch.is_atomic,
           ch.page_range AS chunk_page_range,
           ch.heading_level,
-          ${options.qualityBoost ? '(SELECT o.parse_quality_score FROM ocr_results o WHERE o.document_id = e.document_id ORDER BY o.processing_completed_at DESC LIMIT 1) AS ocr_quality_score,' : ''}
+          doc.doc_title,
+          doc.doc_author,
+          doc.doc_subject,
+          (SELECT o.parse_quality_score FROM ocr_results o WHERE o.document_id = e.document_id ORDER BY o.processing_completed_at DESC LIMIT 1) AS ocr_quality_score,
           vec_distance_cosine(v.vector, ?) as distance
         FROM vec_embeddings v
         JOIN embeddings e ON e.id = v.embedding_id
         LEFT JOIN chunks ch ON e.chunk_id = ch.id
+        LEFT JOIN documents doc ON e.document_id = doc.id
       `;
 
       const params: unknown[] = [queryBuffer];
@@ -523,6 +539,15 @@ export class VectorService {
   }
 
   /**
+   * Determine result type from row identity fields.
+   */
+  private static getResultType(row: SearchRow): 'chunk' | 'vlm' | 'extraction' {
+    if (row.chunk_id !== null) return 'chunk';
+    if (row.extraction_id !== null) return 'extraction';
+    return 'vlm';
+  }
+
+  /**
    * Map database rows to VectorSearchResult and filter by threshold.
    * Applies quality boost post-query when enabled.
    */
@@ -541,11 +566,7 @@ export class VectorService {
         image_id: row.image_id,
         extraction_id: row.extraction_id,
         document_id: row.document_id,
-        result_type: (row.chunk_id !== null
-          ? 'chunk'
-          : row.extraction_id !== null
-            ? 'extraction'
-            : 'vlm') as 'chunk' | 'vlm' | 'extraction',
+        result_type: VectorService.getResultType(row),
         similarity_score: 1 - row.distance, // Convert distance to similarity
         distance: row.distance,
         original_text: row.original_text,
@@ -566,16 +587,19 @@ export class VectorService {
         heading_context: row.heading_context ?? null,
         section_path: row.section_path ?? null,
         content_types: row.content_types ?? null,
-        is_atomic: !!(row.is_atomic),
+        is_atomic: !!row.is_atomic,
         chunk_page_range: row.chunk_page_range ?? null,
         heading_level: row.heading_level ?? null,
-        ocr_quality_score: options.qualityBoost ? ((row.ocr_quality_score ?? null) as number | null) : undefined,
+        ocr_quality_score: row.ocr_quality_score ?? null,
+        doc_title: row.doc_title ?? null,
+        doc_author: row.doc_author ?? null,
+        doc_subject: row.doc_subject ?? null,
       }));
 
     // Apply quality boost: multiply similarity_score by quality factor, then re-sort
     if (options.qualityBoost) {
       for (const r of results) {
-        const qualityFactor = 1 + ((r as Record<string, unknown>).ocr_quality_score as number ?? 3) / 10.0;
+        const qualityFactor = 1 + (r.ocr_quality_score ?? 3) / 10.0;
         r.similarity_score = r.similarity_score * qualityFactor;
       }
       results.sort((a, b) => b.similarity_score - a.similarity_score);

@@ -53,6 +53,9 @@ interface BM25SearchResult {
   page_range?: string | null;
   heading_level?: number | null;
   ocr_quality_score?: number | null;
+  doc_title?: string | null;
+  doc_author?: string | null;
+  doc_subject?: string | null;
 }
 
 export class BM25SearchService {
@@ -111,8 +114,11 @@ export class BM25SearchService {
         c.content_types,
         c.is_atomic,
         c.page_range,
-        c.heading_level
-        ${qualityBoost ? ', (SELECT o.parse_quality_score FROM ocr_results o WHERE o.document_id = c.document_id ORDER BY o.processing_completed_at DESC LIMIT 1) AS ocr_quality_score' : ''}
+        c.heading_level,
+        d.doc_title,
+        d.doc_author,
+        d.doc_subject,
+        (SELECT o.parse_quality_score FROM ocr_results o WHERE o.document_id = c.document_id ORDER BY o.processing_completed_at DESC LIMIT 1) AS ocr_quality_score
         ${includeHighlight ? ", snippet(chunks_fts, 0, '<mark>', '</mark>', '...', 32) AS highlight" : ''}
       FROM chunks_fts
       JOIN chunks c ON chunks_fts.rowid = c.rowid
@@ -167,7 +173,10 @@ export class BM25SearchService {
       is_atomic: !!(row.is_atomic as number),
       page_range: (row.page_range as string | null) ?? null,
       heading_level: (row.heading_level as number | null) ?? null,
-      ocr_quality_score: qualityBoost ? ((row.ocr_quality_score as number | null) ?? null) : undefined,
+      ocr_quality_score: (row.ocr_quality_score as number | null) ?? null,
+      doc_title: (row.doc_title as string | null) ?? null,
+      doc_author: (row.doc_author as string | null) ?? null,
+      doc_subject: (row.doc_subject as string | null) ?? null,
     }));
 
     // Apply quality boost post-query: multiply bm25_score by quality factor
@@ -231,8 +240,11 @@ export class BM25SearchService {
         e.character_end,
         e.chunk_index,
         e.provenance_id,
-        e.content_hash
-        ${qualityBoost ? ', (SELECT o.parse_quality_score FROM ocr_results o WHERE o.document_id = e.document_id ORDER BY o.processing_completed_at DESC LIMIT 1) AS ocr_quality_score' : ''}
+        e.content_hash,
+        d.doc_title,
+        d.doc_author,
+        d.doc_subject,
+        (SELECT o.parse_quality_score FROM ocr_results o WHERE o.document_id = e.document_id ORDER BY o.processing_completed_at DESC LIMIT 1) AS ocr_quality_score
         ${includeHighlight ? ", snippet(vlm_fts, 0, '<mark>', '</mark>', '...', 32) AS highlight" : ''}
       FROM vlm_fts
       JOIN embeddings e ON vlm_fts.rowid = e.rowid
@@ -284,7 +296,10 @@ export class BM25SearchService {
       provenance_id: row.provenance_id as string,
       content_hash: row.content_hash as string,
       highlight: row.highlight as string | undefined,
-      ocr_quality_score: qualityBoost ? ((row.ocr_quality_score as number | null) ?? null) : undefined,
+      ocr_quality_score: (row.ocr_quality_score as number | null) ?? null,
+      doc_title: (row.doc_title as string | null) ?? null,
+      doc_author: (row.doc_author as string | null) ?? null,
+      doc_subject: (row.doc_subject as string | null) ?? null,
     }));
 
     // Apply quality boost post-query
@@ -342,8 +357,11 @@ export class BM25SearchService {
         d.file_name AS source_file_name,
         d.file_hash AS source_file_hash,
         ex.provenance_id,
-        ex.content_hash
-        ${qualityBoost ? ', (SELECT o.parse_quality_score FROM ocr_results o WHERE o.document_id = ex.document_id ORDER BY o.processing_completed_at DESC LIMIT 1) AS ocr_quality_score' : ''}
+        ex.content_hash,
+        d.doc_title,
+        d.doc_author,
+        d.doc_subject,
+        (SELECT o.parse_quality_score FROM ocr_results o WHERE o.document_id = ex.document_id ORDER BY o.processing_completed_at DESC LIMIT 1) AS ocr_quality_score
         ${includeHighlight ? ", snippet(extractions_fts, 0, '<mark>', '</mark>', '...', 32) AS highlight" : ''}
       FROM extractions_fts
       JOIN extractions ex ON extractions_fts.rowid = ex.rowid
@@ -383,7 +401,10 @@ export class BM25SearchService {
       provenance_id: row.provenance_id as string,
       content_hash: row.content_hash as string,
       highlight: row.highlight as string | undefined,
-      ocr_quality_score: qualityBoost ? ((row.ocr_quality_score as number | null) ?? null) : undefined,
+      ocr_quality_score: (row.ocr_quality_score as number | null) ?? null,
+      doc_title: (row.doc_title as string | null) ?? null,
+      doc_author: (row.doc_author as string | null) ?? null,
+      doc_subject: (row.doc_subject as string | null) ?? null,
     }));
 
     // Apply quality boost post-query
@@ -523,6 +544,70 @@ export class BM25SearchService {
       extractions_indexed: count.cnt,
       duration_ms: Date.now() - start,
     };
+  }
+
+  /**
+   * Search document metadata (title, author, subject) using FTS5.
+   * Queries documents_fts table (v30+).
+   *
+   * Returns document IDs and metadata fields matching the query.
+   * Used to find documents by metadata rather than content.
+   */
+  searchDocumentMetadata(options: {
+    query: string;
+    limit?: number;
+    phraseSearch?: boolean;
+  }): Array<{
+    document_id: string;
+    file_name: string;
+    doc_title: string | null;
+    doc_author: string | null;
+    doc_subject: string | null;
+    bm25_score: number;
+    rank: number;
+    result_type: 'document_metadata';
+  }> {
+    const { query, limit = 10, phraseSearch = false } = options;
+
+    if (!query || query.trim().length === 0) {
+      throw new Error('Document metadata search query cannot be empty');
+    }
+
+    // Check if documents_fts table exists (v30+ only)
+    const ftsExists = this.db
+      .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='documents_fts'")
+      .get();
+    if (!ftsExists) return [];
+
+    const ftsQuery = phraseSearch ? `"${query.replace(/"/g, '""')}"` : sanitizeFTS5Query(query);
+
+    const sql = `
+      SELECT
+        d.id AS document_id,
+        d.file_name,
+        d.doc_title,
+        d.doc_author,
+        d.doc_subject,
+        bm25(documents_fts) AS bm25_score
+      FROM documents_fts
+      JOIN documents d ON documents_fts.rowid = d.rowid
+      WHERE documents_fts MATCH ?
+      ORDER BY bm25(documents_fts)
+      LIMIT ?
+    `;
+
+    const rows = this.db.prepare(sql).all(ftsQuery, limit) as Array<Record<string, unknown>>;
+
+    return rows.map((row, index) => ({
+      document_id: row.document_id as string,
+      file_name: row.file_name as string,
+      doc_title: (row.doc_title as string | null) ?? null,
+      doc_author: (row.doc_author as string | null) ?? null,
+      doc_subject: (row.doc_subject as string | null) ?? null,
+      bm25_score: Math.abs(row.bm25_score as number),
+      rank: index + 1,
+      result_type: 'document_metadata' as const,
+    }));
   }
 
   /**

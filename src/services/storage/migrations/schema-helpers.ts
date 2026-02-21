@@ -21,6 +21,8 @@ import {
   CREATE_VLM_FTS_TRIGGERS,
   CREATE_EXTRACTIONS_FTS_TABLE,
   CREATE_EXTRACTIONS_FTS_TRIGGERS,
+  CREATE_DOCUMENTS_FTS_TABLE,
+  CREATE_DOCUMENTS_FTS_TRIGGERS,
   CREATE_INDEXES,
   TABLE_DEFINITIONS,
   SCHEMA_VERSION,
@@ -175,6 +177,12 @@ export function createFTSTables(db: Database.Database): void {
       VALUES (3, ?, 0, 'porter unicode61', ${SCHEMA_VERSION}, NULL)
     `
     ).run(now);
+
+    // Documents FTS5 (v30)
+    db.exec(CREATE_DOCUMENTS_FTS_TABLE);
+    for (const trigger of CREATE_DOCUMENTS_FTS_TRIGGERS) {
+      db.exec(trigger);
+    }
 
   } catch (error) {
     throw new MigrationError('Failed to create FTS5 tables', 'create_table', 'chunks_fts', error);

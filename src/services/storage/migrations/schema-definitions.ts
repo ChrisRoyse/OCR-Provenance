@@ -8,7 +8,7 @@
  */
 
 /** Current schema version */
-export const SCHEMA_VERSION = 29;
+export const SCHEMA_VERSION = 30;
 
 /**
  * Database configuration pragmas for optimal performance and safety
@@ -510,7 +510,7 @@ CREATE TABLE IF NOT EXISTS document_clusters (
 
 /**
  * Saved searches table - persisted search results for revisiting
- * v28 addition
+ * v28 addition, v30 adds last_executed_at and execution_count
  */
 export const CREATE_SAVED_SEARCHES_TABLE = `
 CREATE TABLE IF NOT EXISTS saved_searches (
@@ -522,9 +522,49 @@ CREATE TABLE IF NOT EXISTS saved_searches (
   result_count INTEGER NOT NULL,
   result_ids TEXT NOT NULL DEFAULT '[]',
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
-  notes TEXT
+  notes TEXT,
+  last_executed_at TEXT,
+  execution_count INTEGER DEFAULT 0
 )
 `;
+
+/**
+ * FTS5 full-text search index over document metadata
+ * Indexes doc_title, doc_author, doc_subject for metadata search
+ * Uses external content mode - reads from documents table
+ * v30 addition
+ */
+export const CREATE_DOCUMENTS_FTS_TABLE = `
+CREATE VIRTUAL TABLE IF NOT EXISTS documents_fts USING fts5(
+  doc_title,
+  doc_author,
+  doc_subject,
+  content='documents',
+  content_rowid='rowid',
+  tokenize='porter unicode61'
+)
+`;
+
+/**
+ * Triggers to keep documents FTS5 in sync with documents table
+ * v30 addition
+ */
+export const CREATE_DOCUMENTS_FTS_TRIGGERS = [
+  `CREATE TRIGGER IF NOT EXISTS documents_fts_ai AFTER INSERT ON documents BEGIN
+    INSERT INTO documents_fts(rowid, doc_title, doc_author, doc_subject)
+    VALUES (new.rowid, COALESCE(new.doc_title, ''), COALESCE(new.doc_author, ''), COALESCE(new.doc_subject, ''));
+  END`,
+  `CREATE TRIGGER IF NOT EXISTS documents_fts_ad AFTER DELETE ON documents BEGIN
+    INSERT INTO documents_fts(documents_fts, rowid, doc_title, doc_author, doc_subject)
+    VALUES('delete', old.rowid, COALESCE(old.doc_title, ''), COALESCE(old.doc_author, ''), COALESCE(old.doc_subject, ''));
+  END`,
+  `CREATE TRIGGER IF NOT EXISTS documents_fts_au AFTER UPDATE OF doc_title, doc_author, doc_subject ON documents BEGIN
+    INSERT INTO documents_fts(documents_fts, rowid, doc_title, doc_author, doc_subject)
+    VALUES('delete', old.rowid, COALESCE(old.doc_title, ''), COALESCE(old.doc_author, ''), COALESCE(old.doc_subject, ''));
+    INSERT INTO documents_fts(rowid, doc_title, doc_author, doc_subject)
+    VALUES (new.rowid, COALESCE(new.doc_title, ''), COALESCE(new.doc_author, ''), COALESCE(new.doc_subject, ''));
+  END`,
+] as const;
 
 /**
  * Tags table - user-defined annotations for cross-entity tagging
@@ -628,6 +668,10 @@ export const CREATE_INDEXES = [
   // Tags indexes
   'CREATE INDEX IF NOT EXISTS idx_entity_tags_entity ON entity_tags(entity_id, entity_type)',
   'CREATE INDEX IF NOT EXISTS idx_entity_tags_tag ON entity_tags(tag_id)',
+
+  // Chunk performance indexes (v30)
+  'CREATE INDEX IF NOT EXISTS idx_chunks_section_path ON chunks(section_path)',
+  'CREATE INDEX IF NOT EXISTS idx_chunks_heading_level ON chunks(heading_level)',
 ] as const;
 
 /**
@@ -678,6 +722,7 @@ export const REQUIRED_TABLES = [
   'saved_searches',
   'tags',
   'entity_tags',
+  'documents_fts',
 ] as const;
 
 /**
@@ -728,4 +773,6 @@ export const REQUIRED_INDEXES = [
   'idx_saved_searches_created',
   'idx_entity_tags_entity',
   'idx_entity_tags_tag',
+  'idx_chunks_section_path',
+  'idx_chunks_heading_level',
 ] as const;

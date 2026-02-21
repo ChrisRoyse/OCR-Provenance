@@ -30,6 +30,8 @@ import {
 import {
   findAtomicRegions,
   isOffsetInAtomicRegion,
+  extractTableStructures,
+  type TableStructure,
 } from './json-block-analyzer.js';
 import { normalizeHeadingLevels } from './heading-normalizer.js';
 import { mergeHeadingOnlyChunks } from './chunk-merger.js';
@@ -241,6 +243,31 @@ export function chunkHybridSectionAware(
   // 5. Find atomic regions from JSON blocks
   const atomicRegions = findAtomicRegions(jsonBlocks, text, pageOffsets);
 
+  // 5.5. Extract table structures for column header context (Task 7.2)
+  const tableStructures = extractTableStructures(jsonBlocks, text, pageOffsets);
+
+  /**
+   * Find a table structure whose offset range overlaps a given block.
+   */
+  function findTableStructureForBlock(block: MarkdownBlock): TableStructure | null {
+    for (const ts of tableStructures) {
+      // Check if block overlaps this table structure
+      if (block.startOffset < ts.endOffset && block.endOffset > ts.startOffset) {
+        return ts;
+      }
+    }
+    return null;
+  }
+
+  /**
+   * Build a column header prefix string for a table chunk.
+   * Format: "[Table: col1 | col2 | col3] "
+   */
+  function buildTableHeaderPrefix(ts: TableStructure): string {
+    if (ts.columnHeaders.length === 0) return '';
+    return `[Table: ${ts.columnHeaders.join(' | ')}] `;
+  }
+
   // 6. Walk blocks, accumulating into chunks
   const chunks: ChunkResult[] = [];
   let accumulator = createEmptyAccumulator(0);
@@ -283,15 +310,28 @@ export function chunkHybridSectionAware(
 
   /**
    * Emit a single block as an atomic chunk (table, code, or JSON-detected region).
+   * For table blocks, prepends column header context if available (Task 7.2).
    */
   function emitAtomicChunk(block: MarkdownBlock): void {
     const startOff = block.startOffset;
     const endOff = block.endOffset;
     const pageInfo = determinePageInfoForSpan(startOff, endOff, pageOffsets);
 
+    // Task 7.2: Prepend column header context for table chunks
+    let chunkText = block.text;
+    if (block.type === 'table') {
+      const ts = findTableStructureForBlock(block);
+      if (ts) {
+        const prefix = buildTableHeaderPrefix(ts);
+        if (prefix.length > 0) {
+          chunkText = prefix + chunkText;
+        }
+      }
+    }
+
     chunks.push({
       index: chunkIndex++,
-      text: block.text,
+      text: chunkText,
       startOffset: startOff,
       endOffset: endOff,
       overlapWithPrevious: 0,
@@ -310,11 +350,21 @@ export function chunkHybridSectionAware(
    * Emit an atomic block with size awareness: if the block exceeds
    * maxChunkSize, split it at line boundaries (row breaks for tables,
    * line breaks for code). Each sub-chunk inherits atomic status.
+   * For table blocks, prepends column header context to each sub-chunk (Task 7.2).
    */
   function emitSizedAtomicChunk(block: MarkdownBlock): void {
     if (block.text.length <= config.maxChunkSize) {
       emitAtomicChunk(block);
       return;
+    }
+
+    // Task 7.2: Get table header prefix for table blocks
+    let tablePrefix = '';
+    if (block.type === 'table') {
+      const ts = findTableStructureForBlock(block);
+      if (ts) {
+        tablePrefix = buildTableHeaderPrefix(ts);
+      }
     }
 
     // Split oversized atomic block at line boundaries
@@ -336,8 +386,13 @@ export function chunkHybridSectionAware(
         }
       }
 
-      const chunkText = blockText.slice(pos, endPos);
+      let chunkText = blockText.slice(pos, endPos);
       if (chunkText.trim().length > 0) {
+        // Task 7.2: Prepend column header context to each table sub-chunk
+        if (tablePrefix.length > 0) {
+          chunkText = tablePrefix + chunkText;
+        }
+
         const startOff = block.startOffset + pos;
         const endOff = block.startOffset + endPos;
         const pageInfo = determinePageInfoForSpan(startOff, endOff, pageOffsets);

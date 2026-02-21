@@ -171,6 +171,27 @@ export async function handleDocumentGet(params: Record<string, unknown>): Promis
         : null,
     };
 
+    // Surface enrichment data from extras_json (Tasks 4.1, 4.2, 4.4)
+    if (ocrResult?.extras_json) {
+      try {
+        const extras = JSON.parse(ocrResult.extras_json) as Record<string, unknown>;
+        if (extras.block_type_stats) {
+          result.block_type_stats = extras.block_type_stats;
+        }
+        if (extras.link_count !== undefined) {
+          result.link_count = extras.link_count;
+          result.structured_links = extras.structured_links ?? [];
+        }
+        if (extras.structural_fingerprint) {
+          result.structural_fingerprint = extras.structural_fingerprint;
+        }
+      } catch (parseErr) {
+        console.error(
+          `[DocumentGet] Failed to parse extras_json for enrichment fields: ${String(parseErr)}`
+        );
+      }
+    }
+
     if (input.include_text) {
       result.ocr_text = ocrResult?.extracted_text ?? null;
     }
@@ -434,9 +455,27 @@ export async function handleFindSimilar(params: Record<string, unknown>): Promis
       .sort((a, b) => b.avg_similarity - a.avg_similarity)
       .slice(0, resultLimit);
 
-    // Enrich with document metadata
+    // Enrich with document metadata and structural fingerprint
+    const conn = db.getConnection();
     const similarDocuments = ranked.map((r) => {
       const simDoc = db.getDocument(r.document_id);
+
+      // Try to include structural fingerprint from extras_json
+      let structuralFingerprint: unknown = null;
+      try {
+        const ocrRow = conn
+          .prepare('SELECT extras_json FROM ocr_results WHERE document_id = ?')
+          .get(r.document_id) as { extras_json: string | null } | undefined;
+        if (ocrRow?.extras_json) {
+          const extras = JSON.parse(ocrRow.extras_json) as Record<string, unknown>;
+          if (extras.structural_fingerprint) {
+            structuralFingerprint = extras.structural_fingerprint;
+          }
+        }
+      } catch {
+        // Non-fatal: skip fingerprint enrichment
+      }
+
       return {
         document_id: r.document_id,
         file_name: simDoc?.file_name ?? null,
@@ -444,6 +483,7 @@ export async function handleFindSimilar(params: Record<string, unknown>): Promis
         status: simDoc?.status ?? null,
         avg_similarity: r.avg_similarity,
         matching_chunks: r.matching_chunks,
+        structural_fingerprint: structuralFingerprint,
       };
     });
 

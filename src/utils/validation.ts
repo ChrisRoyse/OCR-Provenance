@@ -316,8 +316,8 @@ export const SearchSemanticInput = z.object({
   cluster_id: z.string().optional().describe('Filter results to documents in this cluster'),
   include_cluster_context: z
     .boolean()
-    .default(false)
-    .describe('Include cluster membership info for each result'),
+    .default(true)
+    .describe('Include cluster membership info for each result (default: true)'),
   content_type_filter: z
     .array(z.string())
     .optional()
@@ -335,6 +335,10 @@ export const SearchSemanticInput = z.object({
     .boolean()
     .default(false)
     .describe('Boost results from higher-quality OCR pages in ranking'),
+  exclude_duplicate_chunks: z
+    .boolean()
+    .default(false)
+    .describe('Remove duplicate chunks (same text_hash) from results, keeping only the first occurrence'),
 });
 
 /**
@@ -365,8 +369,8 @@ export const SearchInput = z.object({
   cluster_id: z.string().optional().describe('Filter results to documents in this cluster'),
   include_cluster_context: z
     .boolean()
-    .default(false)
-    .describe('Include cluster membership info for each result'),
+    .default(true)
+    .describe('Include cluster membership info for each result (default: true)'),
   content_type_filter: z
     .array(z.string())
     .optional()
@@ -384,6 +388,10 @@ export const SearchInput = z.object({
     .boolean()
     .default(false)
     .describe('Boost results from higher-quality OCR pages in ranking'),
+  exclude_duplicate_chunks: z
+    .boolean()
+    .default(false)
+    .describe('Remove duplicate chunks (same text_hash) from results, keeping only the first occurrence'),
 });
 
 /**
@@ -415,8 +423,8 @@ export const SearchHybridInput = z.object({
   cluster_id: z.string().optional().describe('Filter results to documents in this cluster'),
   include_cluster_context: z
     .boolean()
-    .default(false)
-    .describe('Include cluster membership info for each result'),
+    .default(true)
+    .describe('Include cluster membership info for each result (default: true)'),
   content_type_filter: z
     .array(z.string())
     .optional()
@@ -438,6 +446,10 @@ export const SearchHybridInput = z.object({
     .boolean()
     .default(false)
     .describe('Auto-adjust BM25/semantic weights based on query classification'),
+  exclude_duplicate_chunks: z
+    .boolean()
+    .default(false)
+    .describe('Remove duplicate chunks (same text_hash) from results, keeping only the first occurrence'),
 });
 
 /**
