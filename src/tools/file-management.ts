@@ -10,8 +10,8 @@
  * @module tools/file-management
  */
 
-import { statSync } from 'fs';
-import { basename } from 'path';
+import { existsSync, statSync } from 'fs';
+import { basename, extname } from 'path';
 import { z } from 'zod';
 import { v4 as uuidv4 } from 'uuid';
 import {
@@ -389,6 +389,199 @@ async function handleFileDelete(params: Record<string, unknown>) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
+// FILE INGEST UPLOADED HANDLER
+// ═══════════════════════════════════════════════════════════════════════════════
+
+const FileIngestUploadedInput = z.object({
+  file_ids: z
+    .array(z.string().min(1))
+    .optional()
+    .describe('Specific uploaded file IDs to ingest'),
+  ingest_all_pending: z
+    .boolean()
+    .default(false)
+    .describe(
+      'Ingest all completed uploads that do not yet have matching document records'
+    ),
+});
+
+/**
+ * Handle ocr_file_ingest_uploaded - Bridge file uploads and document ingestion.
+ *
+ * Takes uploaded files (from ocr_file_upload) and creates document records
+ * for them so they can be processed through the OCR pipeline.
+ */
+async function handleFileIngestUploaded(params: Record<string, unknown>) {
+  try {
+    const input = validateInput(FileIngestUploadedInput, params);
+    const { db } = requireDatabase();
+    const conn = db.getConnection();
+
+    // Collect uploaded files to process
+    type UploadedFileRecord = {
+      id: string;
+      local_path: string;
+      file_name: string;
+      file_hash: string;
+      file_size: number;
+      upload_status: string;
+      provenance_id: string;
+    };
+
+    let uploadedFiles: UploadedFileRecord[] = [];
+
+    if (input.file_ids && input.file_ids.length > 0) {
+      // Specific file IDs
+      for (const fileId of input.file_ids) {
+        const file = getUploadedFile(conn, fileId);
+        if (!file) {
+          throw new Error(`Uploaded file not found: ${fileId}`);
+        }
+        if (file.upload_status !== 'complete') {
+          throw new Error(
+            `Uploaded file ${fileId} is not complete (status: ${file.upload_status})`
+          );
+        }
+        uploadedFiles.push(file);
+      }
+    } else if (input.ingest_all_pending) {
+      // All completed uploads that don't have matching documents
+      const allComplete = listUploadedFiles(conn, { status: 'complete', limit: 1000 });
+      // Filter out those that already have a document with the same file_hash
+      uploadedFiles = allComplete.filter((f) => {
+        const existingDoc = db.getDocumentByHash(f.file_hash);
+        return !existingDoc;
+      });
+    } else {
+      // Neither file_ids nor ingest_all_pending - return empty result
+      return formatResponse(
+        successResult({
+          ingested_count: 0,
+          skipped_count: 0,
+          files: [],
+          message:
+            'No action taken. Provide file_ids or set ingest_all_pending=true.',
+        })
+      );
+    }
+
+    let ingestedCount = 0;
+    let skippedCount = 0;
+    const fileDetails: Array<{
+      uploaded_file_id: string;
+      file_name: string;
+      document_id: string | null;
+      status: string;
+      message?: string;
+    }> = [];
+
+    for (const uploadedFile of uploadedFiles) {
+      // Dedup check: file_hash already in documents?
+      const existingDoc = db.getDocumentByHash(uploadedFile.file_hash);
+      if (existingDoc) {
+        skippedCount++;
+        fileDetails.push({
+          uploaded_file_id: uploadedFile.id,
+          file_name: uploadedFile.file_name,
+          document_id: existingDoc.id,
+          status: 'skipped',
+          message: `Document already exists with same file hash (${existingDoc.file_path})`,
+        });
+        continue;
+      }
+
+      // Check the local file still exists
+      if (!existsSync(uploadedFile.local_path)) {
+        skippedCount++;
+        fileDetails.push({
+          uploaded_file_id: uploadedFile.id,
+          file_name: uploadedFile.file_name,
+          document_id: null,
+          status: 'skipped',
+          message: `Local file not found: ${uploadedFile.local_path}`,
+        });
+        continue;
+      }
+
+      // Create document record
+      const documentId = uuidv4();
+      const provenanceId = uuidv4();
+      const now = new Date().toISOString();
+      const ext = extname(uploadedFile.file_name).slice(1).toLowerCase();
+
+      // Create DOCUMENT provenance
+      db.insertProvenance({
+        id: provenanceId,
+        type: ProvenanceType.DOCUMENT,
+        created_at: now,
+        processed_at: now,
+        source_file_created_at: null,
+        source_file_modified_at: null,
+        source_type: 'FILE',
+        source_path: uploadedFile.local_path,
+        source_id: null,
+        root_document_id: provenanceId,
+        location: null,
+        content_hash: uploadedFile.file_hash,
+        input_hash: null,
+        file_hash: uploadedFile.file_hash,
+        processor: 'file-ingest-uploaded',
+        processor_version: '1.0.0',
+        processing_params: { uploaded_file_id: uploadedFile.id },
+        processing_duration_ms: null,
+        processing_quality_score: null,
+        parent_id: null,
+        parent_ids: '[]',
+        chain_depth: 0,
+        chain_path: '["DOCUMENT"]',
+      });
+
+      // Insert document with status 'pending' (ready for OCR)
+      db.insertDocument({
+        id: documentId,
+        file_path: uploadedFile.local_path,
+        file_name: uploadedFile.file_name,
+        file_hash: uploadedFile.file_hash,
+        file_size: uploadedFile.file_size,
+        file_type: ext || 'pdf',
+        status: 'pending',
+        page_count: null,
+        provenance_id: provenanceId,
+        error_message: null,
+        modified_at: null,
+        ocr_completed_at: null,
+        doc_title: null,
+        doc_author: null,
+        doc_subject: null,
+        datalab_file_id: null,
+      });
+
+      ingestedCount++;
+      fileDetails.push({
+        uploaded_file_id: uploadedFile.id,
+        file_name: uploadedFile.file_name,
+        document_id: documentId,
+        status: 'ingested',
+      });
+    }
+
+    return formatResponse(
+      successResult({
+        ingested_count: ingestedCount,
+        skipped_count: skippedCount,
+        files: fileDetails,
+        next_steps:
+          ingestedCount > 0
+            ? ['Use ocr_process_pending to OCR process the ingested documents']
+            : undefined,
+      })
+    );
+  } catch (error) {
+    return handleError(error);
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
 // TOOL DEFINITIONS
 // ═══════════════════════════════════════════════════════════════════════════════
 
@@ -419,5 +612,11 @@ export const fileManagementTools: Record<string, ToolDefinition> = {
     description: 'Delete an uploaded file record. Optionally also delete from Datalab cloud.',
     inputSchema: FileDeleteInput.shape,
     handler: handleFileDelete,
+  },
+  ocr_file_ingest_uploaded: {
+    description:
+      'Bridge file uploads and document ingestion. Takes uploaded files and creates document records ready for OCR processing. Deduplicates by file hash.',
+    inputSchema: FileIngestUploadedInput.shape,
+    handler: handleFileIngestUploaded,
   },
 };

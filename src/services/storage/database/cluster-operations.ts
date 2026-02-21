@@ -5,6 +5,7 @@
  */
 
 import Database from 'better-sqlite3';
+import { v4 as uuidv4 } from 'uuid';
 import type { Cluster, DocumentCluster } from '../../../models/cluster.js';
 import { runWithForeignKeyCheck } from './helpers.js';
 
@@ -224,6 +225,131 @@ export function getClusterSummariesForDocument(
      ORDER BY c.created_at DESC`
     )
     .all(documentId) as ClusterSummary[];
+}
+
+// --- Reassign & Merge ---
+
+/**
+ * Reassign a document from its current cluster to a different target cluster.
+ * Deletes existing document_clusters entries for this document within the same run,
+ * inserts a new assignment, and updates member_count on both old and new clusters.
+ *
+ * @returns Object with old_cluster_id (null if not previously assigned) and run_id
+ */
+export function reassignDocument(
+  db: Database.Database,
+  documentId: string,
+  targetClusterId: string
+): { old_cluster_id: string | null; run_id: string } {
+  // Get the target cluster to know the run_id
+  const targetCluster = getCluster(db, targetClusterId);
+  if (!targetCluster) {
+    throw new Error(`Target cluster "${targetClusterId}" not found`);
+  }
+
+  const runId = targetCluster.run_id;
+
+  // Find existing assignment for this document in this run
+  const existing = db
+    .prepare(
+      'SELECT id, cluster_id FROM document_clusters WHERE document_id = ? AND run_id = ?'
+    )
+    .get(documentId, runId) as { id: string; cluster_id: string | null } | undefined;
+
+  const oldClusterId = existing?.cluster_id ?? null;
+
+  if (oldClusterId === targetClusterId) {
+    // Already in the target cluster, no-op
+    return { old_cluster_id: oldClusterId, run_id: runId };
+  }
+
+  // Delete existing assignment for this document in this run
+  if (existing) {
+    db.prepare('DELETE FROM document_clusters WHERE id = ?').run(existing.id);
+
+    // Decrement old cluster's document_count (if it was in a cluster, not noise)
+    if (oldClusterId) {
+      db.prepare(
+        'UPDATE clusters SET document_count = MAX(0, document_count - 1) WHERE id = ?'
+      ).run(oldClusterId);
+    }
+  }
+
+  // Insert new assignment
+  const now = new Date().toISOString();
+  const dcId = uuidv4();
+  db.prepare(`
+    INSERT INTO document_clusters (id, document_id, cluster_id, run_id,
+      similarity_to_centroid, membership_probability, is_noise, assigned_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(dcId, documentId, targetClusterId, runId, 0, 1.0, 0, now);
+
+  // Increment target cluster's document_count
+  db.prepare(
+    'UPDATE clusters SET document_count = document_count + 1 WHERE id = ?'
+  ).run(targetClusterId);
+
+  return { old_cluster_id: oldClusterId, run_id: runId };
+}
+
+/**
+ * Merge two clusters into one. All documents from cluster2 are moved to cluster1.
+ * cluster2 is deleted after the merge.
+ *
+ * Both clusters must belong to the same run_id.
+ *
+ * @returns Object with merged_cluster_id and documents_moved count
+ */
+export function mergeClusters(
+  db: Database.Database,
+  clusterId1: string,
+  clusterId2: string
+): { merged_cluster_id: string; documents_moved: number } {
+  const cluster1 = getCluster(db, clusterId1);
+  if (!cluster1) {
+    throw new Error(`Cluster "${clusterId1}" not found`);
+  }
+
+  const cluster2 = getCluster(db, clusterId2);
+  if (!cluster2) {
+    throw new Error(`Cluster "${clusterId2}" not found`);
+  }
+
+  if (cluster1.run_id !== cluster2.run_id) {
+    throw new Error(
+      `Cannot merge clusters from different runs: "${cluster1.run_id}" vs "${cluster2.run_id}"`
+    );
+  }
+
+  // Move all document_clusters from cluster2 to cluster1
+  const moveResult = db
+    .prepare('UPDATE document_clusters SET cluster_id = ? WHERE cluster_id = ?')
+    .run(clusterId1, clusterId2);
+
+  const documentsMoved = moveResult.changes;
+
+  // Update cluster1's document_count
+  db.prepare(
+    'UPDATE clusters SET document_count = document_count + ? WHERE id = ?'
+  ).run(documentsMoved, clusterId1);
+
+  // Delete cluster2's provenance record reference before deleting the cluster
+  const cluster2ProvId = cluster2.provenance_id;
+
+  // Delete cluster2 record
+  db.prepare('DELETE FROM clusters WHERE id = ?').run(clusterId2);
+
+  // Clean up cluster2's provenance record
+  try {
+    db.prepare('DELETE FROM provenance WHERE id = ?').run(cluster2ProvId);
+  } catch (e: unknown) {
+    console.error(
+      `[cluster-operations] Failed to delete provenance ${cluster2ProvId}:`,
+      e instanceof Error ? e.message : String(e)
+    );
+  }
+
+  return { merged_cluster_id: clusterId1, documents_moved: documentsMoved };
 }
 
 // --- Stats ---

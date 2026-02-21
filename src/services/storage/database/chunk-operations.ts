@@ -2,7 +2,8 @@
  * Chunk operations for DatabaseService
  *
  * Handles all CRUD operations for text chunks including
- * batch inserts and embedding status updates.
+ * batch inserts, embedding status updates, filtered queries,
+ * and neighbor lookups.
  */
 
 import Database from 'better-sqlite3';
@@ -10,6 +11,22 @@ import { Chunk } from '../../../models/chunk.js';
 import { DatabaseError, DatabaseErrorCode, ChunkRow } from './types.js';
 import { runWithForeignKeyCheck } from './helpers.js';
 import { rowToChunk } from './converters.js';
+
+/**
+ * Filter options for getChunksFiltered
+ */
+export interface ChunkFilterOptions {
+  section_path_filter?: string;
+  heading_filter?: string;
+  content_type_filter?: string[];
+  min_quality_score?: number;
+  embedding_status?: 'pending' | 'complete' | 'failed';
+  is_atomic?: boolean;
+  page_range?: { min_page?: number; max_page?: number };
+  limit?: number;
+  offset?: number;
+  include_text?: boolean;
+}
 
 /**
  * Insert a chunk
@@ -240,4 +257,115 @@ export function updateChunkEmbeddingStatus(
   }
 
   updateMetadataModified();
+}
+
+/**
+ * Get chunks for a document with dynamic filtering.
+ *
+ * Builds a parameterized WHERE clause from the provided filters.
+ * For content_type_filter, uses LIKE matching against the JSON-encoded
+ * content_types column (e.g., content_types LIKE '%table%').
+ *
+ * @param db - Database connection
+ * @param documentId - Document ID to filter by
+ * @param filters - Filter options
+ * @returns Object with chunks array and total count
+ */
+export function getChunksFiltered(
+  db: Database.Database,
+  documentId: string,
+  filters: ChunkFilterOptions
+): { chunks: Chunk[]; total: number } {
+  const conditions: string[] = ['document_id = ?'];
+  const params: (string | number)[] = [documentId];
+
+  if (filters.section_path_filter) {
+    conditions.push("section_path LIKE ? || '%'");
+    params.push(filters.section_path_filter);
+  }
+
+  if (filters.heading_filter) {
+    conditions.push("heading_context LIKE '%' || ? || '%'");
+    params.push(filters.heading_filter);
+  }
+
+  if (filters.content_type_filter && filters.content_type_filter.length > 0) {
+    // Each content type must be present in the JSON array string
+    for (const ct of filters.content_type_filter) {
+      conditions.push("content_types LIKE '%' || ? || '%'");
+      params.push(ct);
+    }
+  }
+
+  if (filters.min_quality_score !== undefined) {
+    conditions.push('ocr_quality_score >= ?');
+    params.push(filters.min_quality_score);
+  }
+
+  if (filters.embedding_status) {
+    conditions.push('embedding_status = ?');
+    params.push(filters.embedding_status);
+  }
+
+  if (filters.is_atomic !== undefined) {
+    conditions.push('is_atomic = ?');
+    params.push(filters.is_atomic ? 1 : 0);
+  }
+
+  if (filters.page_range) {
+    if (filters.page_range.min_page !== undefined) {
+      conditions.push('page_number >= ?');
+      params.push(filters.page_range.min_page);
+    }
+    if (filters.page_range.max_page !== undefined) {
+      conditions.push('page_number <= ?');
+      params.push(filters.page_range.max_page);
+    }
+  }
+
+  const whereClause = ' WHERE ' + conditions.join(' AND ');
+
+  // Get total count with same filters
+  const countRow = db
+    .prepare(`SELECT COUNT(*) as total FROM chunks${whereClause}`)
+    .get(...params) as { total: number };
+
+  // Get paginated results
+  const limit = filters.limit ?? 50;
+  const offset = filters.offset ?? 0;
+  const dataQuery = `SELECT * FROM chunks${whereClause} ORDER BY chunk_index LIMIT ? OFFSET ?`;
+  const rows = db.prepare(dataQuery).all(...params, limit, offset) as ChunkRow[];
+
+  return {
+    chunks: rows.map(rowToChunk),
+    total: countRow.total,
+  };
+}
+
+/**
+ * Get neighboring chunks around a given chunk index for context building.
+ *
+ * Returns chunks with chunk_index in range [chunkIndex - count, chunkIndex + count],
+ * ordered by chunk_index.
+ *
+ * @param db - Database connection
+ * @param documentId - Document ID
+ * @param chunkIndex - Center chunk index
+ * @param count - Number of neighbors on each side
+ * @returns Chunk[] - Array of neighboring chunks (including center)
+ */
+export function getChunkNeighbors(
+  db: Database.Database,
+  documentId: string,
+  chunkIndex: number,
+  count: number
+): Chunk[] {
+  const minIndex = Math.max(0, chunkIndex - count);
+  const maxIndex = chunkIndex + count;
+
+  const stmt = db.prepare(
+    'SELECT * FROM chunks WHERE document_id = ? AND chunk_index BETWEEN ? AND ? ORDER BY chunk_index'
+  );
+  const rows = stmt.all(documentId, minIndex, maxIndex) as ChunkRow[];
+  return rows.map(rowToChunk);
 }

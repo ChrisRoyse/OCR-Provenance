@@ -59,6 +59,13 @@ const ErrorAnalyticsInput = z.object({
   limit: z.number().int().min(1).max(50).default(10),
 });
 
+const QualityTrendsInput = z.object({
+  bucket: z.enum(['hourly', 'daily', 'weekly', 'monthly']).default('daily'),
+  group_by: z.enum(['none', 'ocr_mode', 'processor']).default('none'),
+  created_after: z.string().optional(),
+  created_before: z.string().optional(),
+});
+
 const ProvenanceBottlenecksInput = z.object({});
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -1432,6 +1439,45 @@ export async function handleProvenanceBottlenecks(
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
+// QUALITY TRENDS HANDLER
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/**
+ * Handle ocr_quality_trends - Quality score trends over time
+ */
+async function handleQualityTrends(params: Record<string, unknown>): Promise<ToolResponse> {
+  try {
+    const input = validateInput(QualityTrendsInput, params);
+    const { db } = requireDatabase();
+
+    const bucket = input.bucket ?? 'daily';
+    const groupBy = input.group_by ?? 'none';
+
+    const data = db.getQualityTrends({
+      bucket,
+      group_by: groupBy,
+      created_after: input.created_after,
+      created_before: input.created_before,
+    });
+
+    return formatResponse(
+      successResult({
+        bucket,
+        group_by: groupBy,
+        total_periods: data.length,
+        filters: {
+          created_after: input.created_after || null,
+          created_before: input.created_before || null,
+        },
+        data,
+      })
+    );
+  } catch (error) {
+    return handleError(error);
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
 // HELPER FUNCTIONS
 // ═══════════════════════════════════════════════════════════════════════════════
 
@@ -1663,5 +1709,29 @@ export const reportTools: Record<string, ToolDefinition> = {
       'Analyze provenance processing durations to find bottlenecks. Shows per-processor-type duration breakdown, per-chain-depth analysis, and top 10 slowest operations.',
     inputSchema: {},
     handler: handleProvenanceBottlenecks,
+  },
+
+  ocr_quality_trends: {
+    description:
+      'Quality score trends over time, optionally grouped by OCR mode or processor. Shows avg/min/max quality per time bucket.',
+    inputSchema: {
+      bucket: z
+        .enum(['hourly', 'daily', 'weekly', 'monthly'])
+        .default('daily')
+        .describe('Time bucket granularity'),
+      group_by: z
+        .enum(['none', 'ocr_mode', 'processor'])
+        .default('none')
+        .describe('Group quality data by OCR mode or processor'),
+      created_after: z
+        .string()
+        .optional()
+        .describe('Filter data created after this ISO 8601 timestamp'),
+      created_before: z
+        .string()
+        .optional()
+        .describe('Filter data created before this ISO 8601 timestamp'),
+    },
+    handler: handleQualityTrends,
   },
 };

@@ -15,7 +15,9 @@ import { v4 as uuidv4 } from 'uuid';
 import {
   formatResponse,
   handleError,
+  fetchProvenanceChain,
   parseGeminiJson,
+  type ToolResponse,
   type ToolDefinition,
 } from './shared.js';
 import { successResult } from '../server/types.js';
@@ -44,6 +46,18 @@ const ExtractStructuredInput = z.object({
 
 const ExtractionListInput = z.object({
   document_id: z.string().min(1).describe('Document ID to list extractions for'),
+});
+
+const ExtractionGetInput = z.object({
+  extraction_id: z.string().min(1).describe('Extraction ID to retrieve'),
+  include_provenance: z.boolean().default(false).describe('Include provenance chain'),
+});
+
+const ExtractionSearchInput = z.object({
+  query: z.string().min(1).describe('Search query to match within extraction JSON content'),
+  document_filter: z.array(z.string()).optional().describe('Filter by document IDs'),
+  limit: z.number().min(1).max(100).default(10).describe('Maximum results'),
+  include_provenance: z.boolean().default(false).describe('Include provenance chain for each result'),
 });
 
 async function handleExtractStructured(params: Record<string, unknown>) {
@@ -263,6 +277,124 @@ async function handleExtractionList(params: Record<string, unknown>) {
   }
 }
 
+async function handleExtractionGet(params: Record<string, unknown>): Promise<ToolResponse> {
+  try {
+    const input = validateInput(ExtractionGetInput, params);
+    const { db } = requireDatabase();
+
+    const extraction = db.getExtraction(input.extraction_id);
+    if (!extraction) {
+      throw new Error(`Extraction not found: ${input.extraction_id}`);
+    }
+
+    // Get document for context
+    const doc = db.getDocument(extraction.document_id);
+
+    // Check if an embedding exists for this extraction
+    const embedding = db.getEmbeddingByExtractionId(extraction.id);
+    const hasEmbedding = embedding !== null;
+
+    // Parse the stored JSON string back to object
+    let parsedExtractionJson: unknown;
+    try {
+      parsedExtractionJson = JSON.parse(extraction.extraction_json);
+    } catch {
+      parsedExtractionJson = extraction.extraction_json;
+    }
+
+    // Parse schema_json
+    let parsedSchemaJson: unknown;
+    try {
+      parsedSchemaJson = JSON.parse(extraction.schema_json);
+    } catch {
+      parsedSchemaJson = extraction.schema_json;
+    }
+
+    // Optionally fetch provenance chain
+    const provenanceChain = input.include_provenance
+      ? fetchProvenanceChain(db, extraction.provenance_id, '[extraction-get]')
+      : undefined;
+
+    return formatResponse(
+      successResult({
+        id: extraction.id,
+        document_id: extraction.document_id,
+        document_file_path: doc?.file_path ?? null,
+        document_file_name: doc?.file_name ?? null,
+        ocr_result_id: extraction.ocr_result_id,
+        schema_json: parsedSchemaJson,
+        extraction_json: parsedExtractionJson,
+        content_hash: extraction.content_hash,
+        provenance_id: extraction.provenance_id,
+        created_at: extraction.created_at,
+        has_embedding: hasEmbedding,
+        embedding_id: embedding?.id ?? null,
+        provenance_chain: provenanceChain,
+      })
+    );
+  } catch (error) {
+    return handleError(error);
+  }
+}
+
+async function handleExtractionSearch(params: Record<string, unknown>): Promise<ToolResponse> {
+  try {
+    const input = validateInput(ExtractionSearchInput, params);
+    const { db } = requireDatabase();
+
+    const results = db.searchExtractions(input.query, {
+      document_filter: input.document_filter,
+      limit: input.limit,
+    });
+
+    // Enrich each result with document context and parsed JSON
+    const enrichedResults = results.map((ext) => {
+      const doc = db.getDocument(ext.document_id);
+
+      let parsedExtractionJson: unknown;
+      try {
+        parsedExtractionJson = JSON.parse(ext.extraction_json);
+      } catch {
+        parsedExtractionJson = ext.extraction_json;
+      }
+
+      let parsedSchemaJson: unknown;
+      try {
+        parsedSchemaJson = JSON.parse(ext.schema_json);
+      } catch {
+        parsedSchemaJson = ext.schema_json;
+      }
+
+      const provenanceChain = input.include_provenance
+        ? fetchProvenanceChain(db, ext.provenance_id, '[extraction-search]')
+        : undefined;
+
+      return {
+        id: ext.id,
+        document_id: ext.document_id,
+        document_file_path: doc?.file_path ?? null,
+        document_file_name: doc?.file_name ?? null,
+        schema_json: parsedSchemaJson,
+        extraction_json: parsedExtractionJson,
+        content_hash: ext.content_hash,
+        provenance_id: ext.provenance_id,
+        created_at: ext.created_at,
+        provenance_chain: provenanceChain,
+      };
+    });
+
+    return formatResponse(
+      successResult({
+        query: input.query,
+        total: enrichedResults.length,
+        results: enrichedResults,
+      })
+    );
+  } catch (error) {
+    return handleError(error);
+  }
+}
+
 async function handleSuggestSchema(params: Record<string, unknown>) {
   try {
     const input = validateInput(SuggestSchemaInput, params);
@@ -379,5 +511,17 @@ export const structuredExtractionTools: Record<string, ToolDefinition> = {
       'Analyze a document and suggest a JSON schema for structured data extraction using Gemini AI. Useful for discovering what structured data can be extracted from a document.',
     inputSchema: SuggestSchemaInput.shape,
     handler: handleSuggestSchema,
+  },
+  ocr_extraction_get: {
+    description:
+      'Retrieve full structured extraction results by ID with document context, parsed JSON, embedding status, and optional provenance chain',
+    inputSchema: ExtractionGetInput.shape,
+    handler: handleExtractionGet,
+  },
+  ocr_extraction_search: {
+    description:
+      'Search within structured extraction JSON content using text matching. Returns matching extractions with document context and optional provenance',
+    inputSchema: ExtractionSearchInput.shape,
+    handler: handleExtractionSearch,
   },
 };

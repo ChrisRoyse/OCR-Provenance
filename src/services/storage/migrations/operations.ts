@@ -24,6 +24,8 @@ import {
   CREATE_COMPARISONS_TABLE,
   CREATE_CLUSTERS_TABLE,
   CREATE_DOCUMENT_CLUSTERS_TABLE,
+  CREATE_TAGS_TABLE,
+  CREATE_ENTITY_TAGS_TABLE,
 } from './schema-definitions.js';
 
 // ─── Legacy entity/KG table definitions (inlined for migration chain v12→v25) ───
@@ -1321,6 +1323,11 @@ export function migrateToLatest(db: Database.Database): void {
   if (currentVersion < 28) {
     migrateV27ToV28(db);
     bumpVersion(28);
+  }
+
+  if (currentVersion < 29) {
+    migrateV28ToV29(db);
+    bumpVersion(29);
   }
 }
 
@@ -3183,6 +3190,36 @@ function migrateV27ToV28(db: Database.Database): void {
       `Failed to migrate from v27 to v28 (saved_searches table): ${cause}`,
       'migrate',
       'saved_searches',
+      error
+    );
+  }
+}
+
+/**
+ * Migrate from schema version 28 to version 29
+ *
+ * Changes in v29:
+ * - tags: New table for user-defined tag labels
+ * - entity_tags: New table for cross-entity tag assignments (document, chunk, image, extraction, cluster)
+ * - New indexes: idx_entity_tags_entity, idx_entity_tags_tag
+ *
+ * @param db - Database instance from better-sqlite3
+ * @throws MigrationError if migration fails
+ */
+function migrateV28ToV29(db: Database.Database): void {
+  console.error('[MIGRATION] Applying v28 → v29: Add tags and entity_tags tables');
+  try {
+    db.exec(CREATE_TAGS_TABLE);
+    db.exec(CREATE_ENTITY_TAGS_TABLE);
+    db.exec('CREATE INDEX IF NOT EXISTS idx_entity_tags_entity ON entity_tags(entity_id, entity_type)');
+    db.exec('CREATE INDEX IF NOT EXISTS idx_entity_tags_tag ON entity_tags(tag_id)');
+    console.error('[MIGRATION] v29 migration complete: tags and entity_tags tables created');
+  } catch (error) {
+    const cause = error instanceof Error ? error.message : String(error);
+    throw new MigrationError(
+      `Failed to migrate from v28 to v29 (tags tables): ${cause}`,
+      'migrate',
+      'tags',
       error
     );
   }

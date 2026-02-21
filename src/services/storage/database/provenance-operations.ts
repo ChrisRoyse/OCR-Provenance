@@ -137,3 +137,204 @@ export function getProvenanceChildren(db: Database.Database, parentId: string): 
   const rows = stmt.all(parentId) as ProvenanceRow[];
   return rows.map(rowToProvenance);
 }
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// QUERY & ANALYTICS OPERATIONS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/**
+ * Filter options for querying provenance records
+ */
+export interface ProvenanceQueryFilters {
+  processor?: string;
+  type?: string;
+  chain_depth?: number;
+  created_after?: string;
+  created_before?: string;
+  min_quality_score?: number;
+  min_duration_ms?: number;
+  root_document_id?: string;
+  limit?: number;
+  offset?: number;
+  order_by?: 'created_at' | 'processing_duration_ms' | 'processing_quality_score';
+  order_dir?: 'asc' | 'desc';
+}
+
+/**
+ * Query provenance records with dynamic filters
+ *
+ * Builds a parameterized SQL WHERE clause from provided filters.
+ * All filters are optional. Default order: created_at DESC. Default limit: 50.
+ *
+ * @param db - Database connection
+ * @param filters - Query filter options
+ * @returns { records: ProvenanceRecord[], total: number }
+ */
+export function queryProvenance(
+  db: Database.Database,
+  filters: ProvenanceQueryFilters
+): { records: ProvenanceRecord[]; total: number } {
+  const conditions: string[] = [];
+  const params: unknown[] = [];
+
+  if (filters.processor !== undefined) {
+    conditions.push('processor = ?');
+    params.push(filters.processor);
+  }
+
+  if (filters.type !== undefined) {
+    conditions.push('type = ?');
+    params.push(filters.type);
+  }
+
+  if (filters.chain_depth !== undefined) {
+    conditions.push('chain_depth = ?');
+    params.push(filters.chain_depth);
+  }
+
+  if (filters.created_after !== undefined) {
+    conditions.push('created_at >= ?');
+    params.push(filters.created_after);
+  }
+
+  if (filters.created_before !== undefined) {
+    conditions.push('created_at <= ?');
+    params.push(filters.created_before);
+  }
+
+  if (filters.min_quality_score !== undefined) {
+    conditions.push('processing_quality_score >= ?');
+    params.push(filters.min_quality_score);
+  }
+
+  if (filters.min_duration_ms !== undefined) {
+    conditions.push('processing_duration_ms >= ?');
+    params.push(filters.min_duration_ms);
+  }
+
+  if (filters.root_document_id !== undefined) {
+    conditions.push('root_document_id = ?');
+    params.push(filters.root_document_id);
+  }
+
+  const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
+
+  // Get total count
+  const countStmt = db.prepare(`SELECT COUNT(*) as count FROM provenance ${whereClause}`);
+  const countRow = countStmt.get(...params) as { count: number };
+  const total = countRow.count;
+
+  // Validate and apply ordering
+  const validOrderColumns = ['created_at', 'processing_duration_ms', 'processing_quality_score'];
+  const orderBy = validOrderColumns.includes(filters.order_by ?? '')
+    ? filters.order_by!
+    : 'created_at';
+  const orderDir = filters.order_dir === 'asc' ? 'ASC' : 'DESC';
+
+  const limit = filters.limit ?? 50;
+  const offset = filters.offset ?? 0;
+
+  const queryStmt = db.prepare(
+    `SELECT * FROM provenance ${whereClause} ORDER BY ${orderBy} ${orderDir} LIMIT ? OFFSET ?`
+  );
+  const rows = queryStmt.all(...params, limit, offset) as ProvenanceRow[];
+
+  return {
+    records: rows.map(rowToProvenance),
+    total,
+  };
+}
+
+/**
+ * Processor statistics result
+ */
+export interface ProvenanceProcessorStat {
+  processor: string;
+  processor_version: string;
+  total_operations: number;
+  avg_duration_ms: number;
+  min_duration_ms: number;
+  max_duration_ms: number;
+  avg_quality_score: number | null;
+  total_processing_time_ms: number;
+}
+
+/**
+ * Get aggregate statistics per processor/version
+ *
+ * Groups by processor and processor_version with AVG, MIN, MAX, SUM, COUNT
+ * aggregations on processing_duration_ms and processing_quality_score.
+ *
+ * @param db - Database connection
+ * @param filters - Optional filters for processor, created_after, created_before
+ * @returns Array of per-processor stats
+ */
+export function getProvenanceProcessorStats(
+  db: Database.Database,
+  filters?: {
+    processor?: string;
+    created_after?: string;
+    created_before?: string;
+  }
+): ProvenanceProcessorStat[] {
+  const conditions: string[] = [];
+  const params: unknown[] = [];
+
+  if (filters?.processor !== undefined) {
+    conditions.push('processor = ?');
+    params.push(filters.processor);
+  }
+
+  if (filters?.created_after !== undefined) {
+    conditions.push('created_at >= ?');
+    params.push(filters.created_after);
+  }
+
+  if (filters?.created_before !== undefined) {
+    conditions.push('created_at <= ?');
+    params.push(filters.created_before);
+  }
+
+  const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
+
+  const stmt = db.prepare(`
+    SELECT
+      processor,
+      processor_version,
+      COUNT(*) as total_operations,
+      COALESCE(AVG(processing_duration_ms), 0) as avg_duration_ms,
+      COALESCE(MIN(processing_duration_ms), 0) as min_duration_ms,
+      COALESCE(MAX(processing_duration_ms), 0) as max_duration_ms,
+      AVG(processing_quality_score) as avg_quality_score,
+      COALESCE(SUM(processing_duration_ms), 0) as total_processing_time_ms
+    FROM provenance
+    ${whereClause}
+    GROUP BY processor, processor_version
+    ORDER BY total_operations DESC
+  `);
+
+  const rows = stmt.all(...params) as Array<{
+    processor: string;
+    processor_version: string;
+    total_operations: number;
+    avg_duration_ms: number;
+    min_duration_ms: number;
+    max_duration_ms: number;
+    avg_quality_score: number | null;
+    total_processing_time_ms: number;
+  }>;
+
+  return rows.map((row) => ({
+    processor: row.processor,
+    processor_version: row.processor_version,
+    total_operations: row.total_operations,
+    avg_duration_ms: Math.round(row.avg_duration_ms * 100) / 100,
+    min_duration_ms: row.min_duration_ms,
+    max_duration_ms: row.max_duration_ms,
+    avg_quality_score:
+      row.avg_quality_score !== null
+        ? Math.round(row.avg_quality_score * 100) / 100
+        : null,
+    total_processing_time_ms: row.total_processing_time_ms,
+  }));
+}

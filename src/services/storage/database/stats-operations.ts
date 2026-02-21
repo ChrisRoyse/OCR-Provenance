@@ -191,3 +191,360 @@ export function updateMetadataModified(db: Database.Database): void {
   `);
   stmt.run(now);
 }
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// TIMELINE STATS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+export type TimelineBucket = 'hourly' | 'daily' | 'weekly' | 'monthly';
+export type TimelineMetric = 'documents' | 'pages' | 'chunks' | 'embeddings' | 'images' | 'cost';
+
+export interface TimelineStatsOptions {
+  bucket: TimelineBucket;
+  metric: TimelineMetric;
+  created_after?: string;
+  created_before?: string;
+}
+
+export interface TimelineDataPoint {
+  period: string;
+  count: number;
+  total?: number;
+}
+
+/**
+ * Get strftime format string for the given bucket type
+ */
+function getBucketFormat(bucket: TimelineBucket): string {
+  switch (bucket) {
+    case 'hourly':
+      return '%Y-%m-%d %H:00';
+    case 'daily':
+      return '%Y-%m-%d';
+    case 'weekly':
+      return '%Y-W%W';
+    case 'monthly':
+      return '%Y-%m';
+  }
+}
+
+/**
+ * Get processing volume over time buckets for various metrics.
+ *
+ * @param db - Database connection
+ * @param options - Bucket type, metric, optional date range
+ * @returns Array of { period, count, total? } data points
+ */
+export function getTimelineStats(
+  db: Database.Database,
+  options: TimelineStatsOptions
+): TimelineDataPoint[] {
+  const format = getBucketFormat(options.bucket);
+  const conditions: string[] = [];
+  const params: unknown[] = [];
+
+  // Build metric-specific query
+  let table: string;
+  let dateColumn: string;
+  let selectExpr: string;
+
+  switch (options.metric) {
+    case 'documents':
+      table = 'documents';
+      dateColumn = 'created_at';
+      selectExpr = 'COUNT(*) as count';
+      break;
+    case 'pages':
+      table = 'documents';
+      dateColumn = 'created_at';
+      selectExpr = 'COALESCE(SUM(page_count), 0) as count';
+      break;
+    case 'chunks':
+      table = 'chunks';
+      dateColumn = 'created_at';
+      selectExpr = 'COUNT(*) as count';
+      break;
+    case 'embeddings':
+      table = 'embeddings';
+      dateColumn = 'created_at';
+      selectExpr = 'COUNT(*) as count';
+      break;
+    case 'images':
+      table = 'images';
+      dateColumn = 'created_at';
+      selectExpr = 'COUNT(*) as count';
+      break;
+    case 'cost':
+      table = 'ocr_results';
+      dateColumn = 'processing_completed_at';
+      selectExpr = 'COALESCE(SUM(cost_cents), 0) as count';
+      break;
+  }
+
+  if (options.created_after) {
+    conditions.push(`${dateColumn} >= ?`);
+    params.push(options.created_after);
+  }
+  if (options.created_before) {
+    conditions.push(`${dateColumn} <= ?`);
+    params.push(options.created_before);
+  }
+
+  const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
+
+  const sql = `
+    SELECT
+      strftime('${format}', ${dateColumn}) as period,
+      ${selectExpr}
+    FROM ${table}
+    ${whereClause}
+    GROUP BY period
+    ORDER BY period ASC
+  `;
+
+  const rows = db.prepare(sql).all(...params) as Array<{ period: string | null; count: number }>;
+
+  // Filter out null periods (rows with null dateColumn values)
+  return rows
+    .filter((r) => r.period !== null)
+    .map((r) => ({
+      period: r.period as string,
+      count: r.count,
+    }));
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// QUALITY TRENDS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+export interface QualityTrendOptions {
+  bucket: TimelineBucket;
+  group_by?: 'none' | 'ocr_mode' | 'processor';
+  created_after?: string;
+  created_before?: string;
+}
+
+export interface QualityTrendDataPoint {
+  period: string;
+  avg_quality: number;
+  min_quality: number;
+  max_quality: number;
+  sample_count: number;
+  group?: string;
+}
+
+/**
+ * Get quality score trends over time, optionally grouped by OCR mode or processor.
+ *
+ * Uses ocr_results.parse_quality_score for ocr_mode grouping,
+ * and provenance.processing_quality_score for processor grouping.
+ *
+ * @param db - Database connection
+ * @param options - Bucket type, group_by, optional date range
+ * @returns Array of quality trend data points
+ */
+export function getQualityTrends(
+  db: Database.Database,
+  options: QualityTrendOptions
+): QualityTrendDataPoint[] {
+  const format = getBucketFormat(options.bucket);
+  const groupBy = options.group_by || 'none';
+  const conditions: string[] = [];
+  const params: unknown[] = [];
+
+  if (groupBy === 'processor') {
+    // Use provenance table for processor grouping
+    conditions.push('processing_quality_score IS NOT NULL');
+
+    if (options.created_after) {
+      conditions.push('created_at >= ?');
+      params.push(options.created_after);
+    }
+    if (options.created_before) {
+      conditions.push('created_at <= ?');
+      params.push(options.created_before);
+    }
+
+    const whereClause = `WHERE ${conditions.join(' AND ')}`;
+
+    const sql = `
+      SELECT
+        strftime('${format}', created_at) as period,
+        processor as grp,
+        AVG(processing_quality_score) as avg_quality,
+        MIN(processing_quality_score) as min_quality,
+        MAX(processing_quality_score) as max_quality,
+        COUNT(*) as sample_count
+      FROM provenance
+      ${whereClause}
+      GROUP BY period, grp
+      ORDER BY period ASC, grp ASC
+    `;
+
+    const rows = db.prepare(sql).all(...params) as Array<{
+      period: string | null;
+      grp: string;
+      avg_quality: number;
+      min_quality: number;
+      max_quality: number;
+      sample_count: number;
+    }>;
+
+    return rows
+      .filter((r) => r.period !== null)
+      .map((r) => ({
+        period: r.period as string,
+        avg_quality: Math.round(r.avg_quality * 100) / 100,
+        min_quality: Math.round(r.min_quality * 100) / 100,
+        max_quality: Math.round(r.max_quality * 100) / 100,
+        sample_count: r.sample_count,
+        group: r.grp,
+      }));
+  } else {
+    // Use ocr_results table for no grouping or ocr_mode grouping
+    conditions.push('parse_quality_score IS NOT NULL');
+
+    if (options.created_after) {
+      conditions.push('processing_completed_at >= ?');
+      params.push(options.created_after);
+    }
+    if (options.created_before) {
+      conditions.push('processing_completed_at <= ?');
+      params.push(options.created_before);
+    }
+
+    const whereClause = `WHERE ${conditions.join(' AND ')}`;
+    const groupByColumn = groupBy === 'ocr_mode' ? ', datalab_mode' : '';
+    const selectGroup = groupBy === 'ocr_mode' ? ', datalab_mode as grp' : '';
+
+    const sql = `
+      SELECT
+        strftime('${format}', processing_completed_at) as period
+        ${selectGroup},
+        AVG(parse_quality_score) as avg_quality,
+        MIN(parse_quality_score) as min_quality,
+        MAX(parse_quality_score) as max_quality,
+        COUNT(*) as sample_count
+      FROM ocr_results
+      ${whereClause}
+      GROUP BY period${groupByColumn}
+      ORDER BY period ASC${groupBy === 'ocr_mode' ? ', grp ASC' : ''}
+    `;
+
+    const rows = db.prepare(sql).all(...params) as Array<{
+      period: string | null;
+      grp?: string;
+      avg_quality: number;
+      min_quality: number;
+      max_quality: number;
+      sample_count: number;
+    }>;
+
+    return rows
+      .filter((r) => r.period !== null)
+      .map((r) => ({
+        period: r.period as string,
+        avg_quality: Math.round(r.avg_quality * 100) / 100,
+        min_quality: Math.round(r.min_quality * 100) / 100,
+        max_quality: Math.round(r.max_quality * 100) / 100,
+        sample_count: r.sample_count,
+        ...(groupBy === 'ocr_mode' && r.grp !== undefined ? { group: r.grp } : {}),
+      }));
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// THROUGHPUT ANALYTICS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+export interface ThroughputOptions {
+  bucket: TimelineBucket;
+  created_after?: string;
+  created_before?: string;
+}
+
+export interface ThroughputDataPoint {
+  period: string;
+  pages_processed: number;
+  embeddings_generated: number;
+  images_processed: number;
+  total_ocr_duration_ms: number;
+  total_embedding_duration_ms: number;
+  avg_ms_per_page: number;
+  avg_ms_per_embedding: number;
+}
+
+/**
+ * Get processing throughput metrics per time bucket.
+ *
+ * Queries provenance table for OCR_RESULT, EMBEDDING, and IMAGE types
+ * to compute per-bucket throughput rates.
+ *
+ * @param db - Database connection
+ * @param options - Bucket type, optional date range
+ * @returns Array of throughput data points per bucket
+ */
+export function getThroughputAnalytics(
+  db: Database.Database,
+  options: ThroughputOptions
+): ThroughputDataPoint[] {
+  const format = getBucketFormat(options.bucket);
+  const conditions: string[] = [];
+  const params: unknown[] = [];
+
+  if (options.created_after) {
+    conditions.push('p.created_at >= ?');
+    params.push(options.created_after);
+  }
+  if (options.created_before) {
+    conditions.push('p.created_at <= ?');
+    params.push(options.created_before);
+  }
+
+  const extraWhere = conditions.length > 0 ? `AND ${conditions.join(' AND ')}` : '';
+
+  // Use a single query with conditional aggregation across types
+  const sql = `
+    SELECT
+      strftime('${format}', p.created_at) as period,
+      COALESCE(SUM(CASE WHEN p.type = 'OCR_RESULT' THEN 1 ELSE 0 END), 0) as pages_processed,
+      COALESCE(SUM(CASE WHEN p.type = 'EMBEDDING' THEN 1 ELSE 0 END), 0) as embeddings_generated,
+      COALESCE(SUM(CASE WHEN p.type = 'IMAGE' THEN 1 ELSE 0 END), 0) as images_processed,
+      COALESCE(SUM(CASE WHEN p.type = 'OCR_RESULT' THEN p.processing_duration_ms ELSE 0 END), 0) as total_ocr_duration_ms,
+      COALESCE(SUM(CASE WHEN p.type = 'EMBEDDING' THEN p.processing_duration_ms ELSE 0 END), 0) as total_embedding_duration_ms
+    FROM provenance p
+    WHERE p.type IN ('OCR_RESULT', 'EMBEDDING', 'IMAGE')
+      ${extraWhere}
+    GROUP BY period
+    ORDER BY period ASC
+  `;
+
+  // Duplicate params for each condition usage (they apply once)
+  const rows = db.prepare(sql).all(...params) as Array<{
+    period: string | null;
+    pages_processed: number;
+    embeddings_generated: number;
+    images_processed: number;
+    total_ocr_duration_ms: number;
+    total_embedding_duration_ms: number;
+  }>;
+
+  return rows
+    .filter((r) => r.period !== null)
+    .map((r) => ({
+      period: r.period as string,
+      pages_processed: r.pages_processed,
+      embeddings_generated: r.embeddings_generated,
+      images_processed: r.images_processed,
+      total_ocr_duration_ms: r.total_ocr_duration_ms,
+      total_embedding_duration_ms: r.total_embedding_duration_ms,
+      avg_ms_per_page:
+        r.pages_processed > 0
+          ? Math.round((r.total_ocr_duration_ms / r.pages_processed) * 100) / 100
+          : 0,
+      avg_ms_per_embedding:
+        r.embeddings_generated > 0
+          ? Math.round((r.total_embedding_duration_ms / r.embeddings_generated) * 100) / 100
+          : 0,
+    }));
+}

@@ -51,8 +51,8 @@ function parseResponse(response: { content: Array<{ type: string; text: string }
 // ===============================================================================
 
 describe('reportTools exports', () => {
-  it('exports all 8 report tools', () => {
-    expect(Object.keys(reportTools)).toHaveLength(8);
+  it('exports all 9 report tools', () => {
+    expect(Object.keys(reportTools)).toHaveLength(9);
     expect(reportTools).toHaveProperty('ocr_evaluation_report');
     expect(reportTools).toHaveProperty('ocr_document_report');
     expect(reportTools).toHaveProperty('ocr_quality_summary');
@@ -61,6 +61,7 @@ describe('reportTools exports', () => {
     expect(reportTools).toHaveProperty('ocr_corpus_profile');
     expect(reportTools).toHaveProperty('ocr_error_analytics');
     expect(reportTools).toHaveProperty('ocr_provenance_bottlenecks');
+    expect(reportTools).toHaveProperty('ocr_quality_trends');
   });
 
   it('each tool has description, inputSchema, and handler', () => {

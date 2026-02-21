@@ -12,20 +12,22 @@
  */
 
 import { z } from 'zod';
-import { existsSync, rmSync } from 'fs';
-import { resolve } from 'path';
+import { existsSync, rmSync, writeFileSync, mkdirSync } from 'fs';
+import { resolve, dirname } from 'path';
 import { requireDatabase, getDefaultStoragePath } from '../server/state.js';
 import { successResult } from '../server/types.js';
 import {
   validateInput,
+  sanitizePath,
   DocumentListInput,
   DocumentGetInput,
   DocumentDeleteInput,
 } from '../utils/validation.js';
 import { documentNotFoundError, MCPError } from '../server/errors.js';
-import { formatResponse, handleError, parseGeminiJson, type ToolResponse, type ToolDefinition } from './shared.js';
+import { formatResponse, handleError, fetchProvenanceChain, parseGeminiJson, type ToolResponse, type ToolDefinition } from './shared.js';
 import { getComparisonSummariesByDocument } from '../services/storage/database/comparison-operations.js';
 import { getClusterSummariesForDocument } from '../services/storage/database/cluster-operations.js';
+import { getImagesByDocument } from '../services/storage/database/image-operations.js';
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // DOCUMENT STRUCTURE TYPES
@@ -296,6 +298,14 @@ export async function handleDocumentDelete(params: Record<string, unknown>): Pro
 
 const DocumentStructureInput = z.object({
   document_id: z.string().min(1).describe('Document ID'),
+});
+
+const DocumentSectionsInput = z.object({
+  document_id: z.string().min(1).describe('Document ID'),
+  include_chunk_ids: z.boolean().default(true)
+    .describe('Include chunk IDs in each section node'),
+  include_page_numbers: z.boolean().default(true)
+    .describe('Include page numbers in each section node'),
 });
 
 const FindSimilarInput = z.object({
@@ -851,6 +861,529 @@ export async function handleDocumentStructure(params: Record<string, unknown>): 
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
+// DOCUMENT SECTIONS TREE HANDLER
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/** Section tree node */
+interface SectionNode {
+  name: string;
+  chunk_count: number;
+  chunk_ids?: string[];
+  page_numbers?: number[];
+  page_range?: string | null;
+  children: SectionNode[];
+}
+
+/**
+ * Handle ocr_document_sections - Get tree-view of document section hierarchy
+ */
+export async function handleDocumentSections(params: Record<string, unknown>): Promise<ToolResponse> {
+  try {
+    const input = validateInput(DocumentSectionsInput, params);
+    const { db } = requireDatabase();
+
+    const doc = db.getDocument(input.document_id);
+    if (!doc) {
+      throw documentNotFoundError(input.document_id);
+    }
+
+    const chunks = db.getChunksByDocumentId(input.document_id);
+
+    // Build tree from section_path strings
+    const root: SectionNode = {
+      name: '(root)',
+      chunk_count: 0,
+      chunk_ids: input.include_chunk_ids ? [] : undefined,
+      page_numbers: input.include_page_numbers ? [] : undefined,
+      children: [],
+    };
+
+    let chunksWithSections = 0;
+    let chunksWithoutSections = 0;
+
+    for (const chunk of chunks) {
+      if (!chunk.section_path) {
+        // Chunks without section_path go to root
+        chunksWithoutSections++;
+        root.chunk_count++;
+        if (input.include_chunk_ids && root.chunk_ids) {
+          root.chunk_ids.push(chunk.id);
+        }
+        if (input.include_page_numbers && root.page_numbers && chunk.page_number !== null) {
+          if (!root.page_numbers.includes(chunk.page_number)) {
+            root.page_numbers.push(chunk.page_number);
+          }
+        }
+        continue;
+      }
+
+      chunksWithSections++;
+
+      // Parse section_path: "Heading 1 > Heading 2 > Heading 3"
+      const parts = chunk.section_path.split(' > ').map((s) => s.trim()).filter((s) => s.length > 0);
+
+      let current = root;
+      for (let i = 0; i < parts.length; i++) {
+        const partName = parts[i];
+        let child = current.children.find((c) => c.name === partName);
+        if (!child) {
+          child = {
+            name: partName,
+            chunk_count: 0,
+            chunk_ids: input.include_chunk_ids ? [] : undefined,
+            page_numbers: input.include_page_numbers ? [] : undefined,
+            children: [],
+          };
+          current.children.push(child);
+        }
+
+        // Only add chunk to the deepest (leaf) level
+        if (i === parts.length - 1) {
+          child.chunk_count++;
+          if (input.include_chunk_ids && child.chunk_ids) {
+            child.chunk_ids.push(chunk.id);
+          }
+          if (input.include_page_numbers && child.page_numbers && chunk.page_number !== null) {
+            if (!child.page_numbers.includes(chunk.page_number)) {
+              child.page_numbers.push(chunk.page_number);
+            }
+          }
+        }
+
+        current = child;
+      }
+    }
+
+    // Post-process: compute page_range for nodes with page_numbers
+    const computePageRange = (node: SectionNode): void => {
+      if (node.page_numbers && node.page_numbers.length > 0) {
+        node.page_numbers.sort((a, b) => a - b);
+        const min = node.page_numbers[0];
+        const max = node.page_numbers[node.page_numbers.length - 1];
+        node.page_range = min === max ? String(min) : `${min}-${max}`;
+      } else {
+        node.page_range = null;
+      }
+      for (const child of node.children) {
+        computePageRange(child);
+      }
+    };
+
+    if (input.include_page_numbers) {
+      computePageRange(root);
+    }
+
+    return formatResponse(
+      successResult({
+        document_id: doc.id,
+        file_name: doc.file_name,
+        total_chunks: chunks.length,
+        chunks_with_sections: chunksWithSections,
+        chunks_without_sections: chunksWithoutSections,
+        sections: root.children,
+        root_chunks: root.chunk_count,
+      })
+    );
+  } catch (error) {
+    return handleError(error);
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// BULK EXPORT INPUT SCHEMAS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+const DocumentExportInput = z.object({
+  document_id: z.string().min(1).describe('Document ID'),
+  format: z.enum(['json', 'markdown']).default('json')
+    .describe('Export format: json or markdown'),
+  output_path: z.string().min(1).describe('Path to save exported file'),
+  include_images: z.boolean().default(true)
+    .describe('Include image data in export'),
+  include_extractions: z.boolean().default(true)
+    .describe('Include structured extractions in export'),
+  include_provenance: z.boolean().default(false)
+    .describe('Include provenance chain in export'),
+});
+
+const CorpusExportInput = z.object({
+  output_path: z.string().min(1).describe('Path to save exported file'),
+  format: z.enum(['json', 'csv']).default('json')
+    .describe('Export format: json or csv'),
+  include_chunks: z.boolean().default(false)
+    .describe('Include chunk list per document'),
+  include_images: z.boolean().default(false)
+    .describe('Include image list per document'),
+});
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// DOCUMENT EXPORT HANDLER
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/**
+ * Handle ocr_document_export - Export all data for a document to JSON or markdown
+ */
+export async function handleDocumentExport(params: Record<string, unknown>): Promise<ToolResponse> {
+  try {
+    const input = validateInput(DocumentExportInput, params);
+    const { db } = requireDatabase();
+
+    // Get document record
+    const doc = db.getDocument(input.document_id);
+    if (!doc) {
+      throw documentNotFoundError(input.document_id);
+    }
+
+    // Get OCR results
+    const ocrResult = db.getOCRResultByDocumentId(doc.id);
+
+    // Get all chunks
+    const chunks = db.getChunksByDocumentId(doc.id);
+
+    // Get images if requested
+    let images: Array<Record<string, unknown>> = [];
+    if (input.include_images) {
+      const conn = db.getConnection();
+      const imgRows = getImagesByDocument(conn, doc.id);
+      images = imgRows.map((img) => ({
+        id: img.id,
+        page_number: img.page_number,
+        image_index: img.image_index,
+        block_type: img.block_type,
+        extracted_path: img.extracted_path,
+        width: img.dimensions?.width ?? null,
+        height: img.dimensions?.height ?? null,
+        vlm_status: img.vlm_status,
+        vlm_description: img.vlm_description ?? null,
+        vlm_image_type: img.vlm_structured_data?.imageType ?? null,
+        created_at: img.created_at,
+      }));
+    }
+
+    // Get extractions if requested
+    let extractions: Array<Record<string, unknown>> = [];
+    if (input.include_extractions) {
+      const extRows = db.getExtractionsByDocument(doc.id);
+      extractions = extRows.map((ext) => ({
+        id: ext.id,
+        schema_json: ext.schema_json,
+        extraction_json: ext.extraction_json,
+        content_hash: ext.content_hash,
+        created_at: ext.created_at,
+      }));
+    }
+
+    // Get provenance if requested
+    let provenance: unknown[] | undefined;
+    if (input.include_provenance) {
+      provenance = fetchProvenanceChain(db, doc.provenance_id, 'DocumentExport');
+    }
+
+    // Sanitize output path
+    const safePath = sanitizePath(input.output_path);
+
+    // Create output directory if needed
+    const dir = dirname(safePath);
+    if (!existsSync(dir)) {
+      mkdirSync(dir, { recursive: true });
+    }
+
+    if (input.format === 'json') {
+      // Build JSON export
+      const exportData: Record<string, unknown> = {
+        document: {
+          id: doc.id,
+          file_name: doc.file_name,
+          file_path: doc.file_path,
+          file_hash: doc.file_hash,
+          file_size: doc.file_size,
+          file_type: doc.file_type,
+          status: doc.status,
+          page_count: doc.page_count,
+          doc_title: doc.doc_title ?? null,
+          doc_author: doc.doc_author ?? null,
+          doc_subject: doc.doc_subject ?? null,
+          created_at: doc.created_at,
+        },
+        ocr_results: ocrResult
+          ? {
+              id: ocrResult.id,
+              datalab_mode: ocrResult.datalab_mode,
+              parse_quality_score: ocrResult.parse_quality_score,
+              page_count: ocrResult.page_count,
+              text_length: ocrResult.text_length,
+              extracted_text: ocrResult.extracted_text,
+              cost_cents: ocrResult.cost_cents,
+              processing_duration_ms: ocrResult.processing_duration_ms,
+            }
+          : null,
+        chunks: chunks.map((c) => ({
+          id: c.id,
+          chunk_index: c.chunk_index,
+          text: c.text,
+          page_number: c.page_number,
+          character_start: c.character_start,
+          character_end: c.character_end,
+          heading_context: c.heading_context ?? null,
+          section_path: c.section_path ?? null,
+          content_types: c.content_types ?? null,
+        })),
+      };
+
+      if (input.include_images) {
+        exportData.images = images;
+      }
+      if (input.include_extractions) {
+        exportData.extractions = extractions;
+      }
+      if (input.include_provenance && provenance) {
+        exportData.provenance = provenance;
+      }
+
+      writeFileSync(safePath, JSON.stringify(exportData, null, 2), 'utf-8');
+    } else {
+      // Build Markdown export
+      const lines: string[] = [];
+
+      lines.push(`# Document Export: ${doc.file_name}`);
+      lines.push('');
+      lines.push('## Metadata');
+      lines.push(`- **File:** ${doc.file_path}`);
+      lines.push(`- **Status:** ${doc.status}`);
+      lines.push(`- **Pages:** ${doc.page_count ?? 'N/A'}`);
+      lines.push(`- **Created:** ${doc.created_at}`);
+      lines.push(`- **File Type:** ${doc.file_type}`);
+      lines.push(`- **File Size:** ${doc.file_size} bytes`);
+      if (doc.doc_title) lines.push(`- **Title:** ${doc.doc_title}`);
+      if (doc.doc_author) lines.push(`- **Author:** ${doc.doc_author}`);
+      lines.push('');
+
+      if (ocrResult) {
+        lines.push('## OCR Info');
+        lines.push(`- **Mode:** ${ocrResult.datalab_mode}`);
+        lines.push(`- **Quality Score:** ${ocrResult.parse_quality_score}`);
+        lines.push(`- **Text Length:** ${ocrResult.text_length}`);
+        lines.push(`- **Processing Time:** ${ocrResult.processing_duration_ms}ms`);
+        lines.push('');
+      }
+
+      if (chunks.length > 0) {
+        lines.push('## Content');
+        lines.push('');
+        for (const chunk of chunks) {
+          const pageInfo = chunk.page_number !== null ? ` (Page ${chunk.page_number})` : '';
+          const heading = chunk.heading_context ? ` - ${chunk.heading_context}` : '';
+          lines.push(`### Chunk ${chunk.chunk_index}${pageInfo}${heading}`);
+          lines.push('');
+          lines.push(chunk.text);
+          lines.push('');
+        }
+      }
+
+      if (input.include_images && images.length > 0) {
+        lines.push('## Images');
+        lines.push('');
+        for (let i = 0; i < images.length; i++) {
+          const img = images[i];
+          const pageInfo = img.page_number !== null ? ` (Page ${img.page_number})` : '';
+          lines.push(`### Image ${i + 1}${pageInfo}`);
+          lines.push(`- **Path:** ${img.extracted_path ?? 'N/A'}`);
+          lines.push(`- **Type:** ${img.block_type ?? 'unknown'}`);
+          lines.push(`- **Size:** ${img.width ?? '?'}x${img.height ?? '?'}`);
+          if (img.vlm_description) {
+            lines.push(`- **Description:** ${img.vlm_description}`);
+          }
+          lines.push('');
+        }
+      }
+
+      if (input.include_extractions && extractions.length > 0) {
+        lines.push('## Extractions');
+        lines.push('');
+        for (let i = 0; i < extractions.length; i++) {
+          const ext = extractions[i];
+          lines.push(`### Extraction ${i + 1}`);
+          lines.push('');
+          lines.push('**Schema:**');
+          lines.push('```json');
+          lines.push(String(ext.schema_json));
+          lines.push('```');
+          lines.push('');
+          lines.push('**Data:**');
+          lines.push('```json');
+          lines.push(String(ext.extraction_json));
+          lines.push('```');
+          lines.push('');
+        }
+      }
+
+      if (input.include_provenance && provenance && provenance.length > 0) {
+        lines.push('## Provenance');
+        lines.push('');
+        lines.push('```json');
+        lines.push(JSON.stringify(provenance, null, 2));
+        lines.push('```');
+        lines.push('');
+      }
+
+      writeFileSync(safePath, lines.join('\n'), 'utf-8');
+    }
+
+    return formatResponse(
+      successResult({
+        output_path: safePath,
+        format: input.format,
+        document_id: doc.id,
+        stats: {
+          chunk_count: chunks.length,
+          image_count: images.length,
+          extraction_count: extractions.length,
+        },
+      })
+    );
+  } catch (error) {
+    return handleError(error);
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// CORPUS EXPORT HANDLER
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/**
+ * Handle ocr_corpus_export - Export entire corpus metadata and statistics
+ */
+export async function handleCorpusExport(params: Record<string, unknown>): Promise<ToolResponse> {
+  try {
+    const input = validateInput(CorpusExportInput, params);
+    const { db } = requireDatabase();
+    const conn = db.getConnection();
+
+    // Get all documents
+    const documents = db.listDocuments();
+
+    // Sanitize output path
+    const safePath = sanitizePath(input.output_path);
+
+    // Create output directory if needed
+    const dir = dirname(safePath);
+    if (!existsSync(dir)) {
+      mkdirSync(dir, { recursive: true });
+    }
+
+    let totalChunks = 0;
+    let totalImages = 0;
+
+    if (input.format === 'json') {
+      // Build JSON export: array of document objects
+      const exportDocs: Array<Record<string, unknown>> = [];
+
+      for (const doc of documents) {
+        const chunkRows = db.getChunksByDocumentId(doc.id);
+        const chunkCount = chunkRows.length;
+        totalChunks += chunkCount;
+
+        const imageCountRow = conn
+          .prepare('SELECT COUNT(*) as count FROM images WHERE document_id = ?')
+          .get(doc.id) as { count: number } | undefined;
+        const imageCount = imageCountRow?.count ?? 0;
+        totalImages += imageCount;
+
+        const docEntry: Record<string, unknown> = {
+          id: doc.id,
+          file_path: doc.file_path,
+          file_name: doc.file_name,
+          file_type: doc.file_type,
+          file_size: doc.file_size,
+          status: doc.status,
+          page_count: doc.page_count,
+          doc_title: doc.doc_title ?? null,
+          doc_author: doc.doc_author ?? null,
+          doc_subject: doc.doc_subject ?? null,
+          chunk_count: chunkCount,
+          image_count: imageCount,
+          created_at: doc.created_at,
+        };
+
+        if (input.include_chunks) {
+          docEntry.chunks = chunkRows.map((c) => ({
+            id: c.id,
+            chunk_index: c.chunk_index,
+            text: c.text,
+            page_number: c.page_number,
+            heading_context: c.heading_context ?? null,
+            section_path: c.section_path ?? null,
+            content_types: c.content_types ?? null,
+          }));
+        }
+
+        if (input.include_images) {
+          const imgRows = getImagesByDocument(conn, doc.id);
+          totalImages = totalImages - imageCount + imgRows.length; // Correct count
+          docEntry.images = imgRows.map((img) => ({
+            id: img.id,
+            page_number: img.page_number,
+            block_type: img.block_type,
+            extracted_path: img.extracted_path,
+            width: img.dimensions?.width ?? null,
+            height: img.dimensions?.height ?? null,
+            vlm_status: img.vlm_status,
+            vlm_description: img.vlm_description ?? null,
+          }));
+        }
+
+        exportDocs.push(docEntry);
+      }
+
+      writeFileSync(safePath, JSON.stringify(exportDocs, null, 2), 'utf-8');
+    } else {
+      // CSV format: one row per document
+      const csvQuote = (value: string): string => `"${value.replace(/"/g, '""')}"`;
+
+      const headers = ['id', 'file_path', 'file_name', 'file_type', 'status', 'page_count', 'chunk_count', 'image_count', 'created_at'];
+      const csvLines: string[] = [headers.map(csvQuote).join(',')];
+
+      for (const doc of documents) {
+        const chunkCount = db.getChunksByDocumentId(doc.id).length;
+        totalChunks += chunkCount;
+
+        const imageCountRow = conn
+          .prepare('SELECT COUNT(*) as count FROM images WHERE document_id = ?')
+          .get(doc.id) as { count: number } | undefined;
+        const imageCount = imageCountRow?.count ?? 0;
+        totalImages += imageCount;
+
+        csvLines.push([
+          csvQuote(doc.id),
+          csvQuote(doc.file_path),
+          csvQuote(doc.file_name),
+          csvQuote(doc.file_type),
+          csvQuote(doc.status),
+          csvQuote(String(doc.page_count ?? '')),
+          csvQuote(String(chunkCount)),
+          csvQuote(String(imageCount)),
+          csvQuote(doc.created_at),
+        ].join(','));
+      }
+
+      writeFileSync(safePath, csvLines.join('\n'), 'utf-8');
+    }
+
+    return formatResponse(
+      successResult({
+        output_path: safePath,
+        format: input.format,
+        document_count: documents.length,
+        total_chunks: totalChunks,
+        total_images: totalImages,
+      })
+    );
+  } catch (error) {
+    return handleError(error);
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
 // TOOL DEFINITIONS FOR MCP REGISTRATION
 // ═══════════════════════════════════════════════════════════════════════════════
 
@@ -930,5 +1463,23 @@ export const documentTools: Record<string, ToolDefinition> = {
       'Detect duplicate documents. Exact mode finds documents with identical file hashes. Near mode finds high-similarity document pairs from the comparisons table.',
     inputSchema: DuplicateDetectionInput.shape,
     handler: handleDuplicateDetection,
+  },
+  ocr_document_sections: {
+    description:
+      'Get a tree-view of the document section hierarchy from chunk section_path data. Shows nested headings with chunk counts and page ranges.',
+    inputSchema: DocumentSectionsInput.shape,
+    handler: handleDocumentSections,
+  },
+  ocr_document_export: {
+    description:
+      'Export all data for a document to JSON or markdown format. Includes document metadata, OCR results, chunks, images, extractions, and optionally provenance.',
+    inputSchema: DocumentExportInput.shape,
+    handler: handleDocumentExport,
+  },
+  ocr_corpus_export: {
+    description:
+      'Export entire corpus metadata and statistics. JSON format includes document objects with nested data. CSV format has one row per document.',
+    inputSchema: CorpusExportInput.shape,
+    handler: handleCorpusExport,
   },
 };

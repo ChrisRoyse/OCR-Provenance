@@ -12,10 +12,11 @@
 
 import { z } from 'zod';
 import * as fs from 'fs';
+import { v4 as uuidv4 } from 'uuid';
 import { requireDatabase } from '../server/state.js';
 import { successResult } from '../server/types.js';
 import { MCPError } from '../server/errors.js';
-import { formatResponse, handleError, type ToolResponse, type ToolDefinition } from './shared.js';
+import { formatResponse, handleError, fetchProvenanceChain, type ToolResponse, type ToolDefinition } from './shared.js';
 import { validateInput } from '../utils/validation.js';
 import { ImageExtractor } from '../services/images/extractor.js';
 import {
@@ -29,10 +30,13 @@ import {
   resetProcessingImages,
   insertImageBatch,
   updateImageProvenance,
+  updateImageVLMResult,
 } from '../services/storage/database/image-operations.js';
 import { getProvenanceTracker } from '../services/provenance/index.js';
 import { ProvenanceType } from '../models/provenance.js';
 import { computeHash, computeFileHashSync } from '../utils/hash.js';
+import { getEmbeddingService } from '../services/embedding/embedder.js';
+import { getVLMService } from '../services/vlm/service.js';
 import type { CreateImageReference } from '../models/image.js';
 
 // ===============================================================================
@@ -85,7 +89,22 @@ const ImageSearchInput = z.object({
   document_id: z.string().optional(),
   exclude_headers_footers: z.boolean().default(false),
   page_number: z.number().int().min(1).optional(),
+  vlm_description_query: z.string().optional(),
   limit: z.number().int().min(1).max(100).default(50),
+});
+
+const ImageSemanticSearchInput = z.object({
+  query: z.string().min(1),
+  document_filter: z.array(z.string().min(1)).optional(),
+  similarity_threshold: z.number().min(0).max(1).default(0.5),
+  limit: z.number().int().min(1).max(100).default(10),
+  include_provenance: z.boolean().default(false),
+});
+
+const ImageReanalyzeInput = z.object({
+  image_id: z.string().min(1),
+  custom_prompt: z.string().optional(),
+  use_thinking: z.boolean().default(false),
 });
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -488,6 +507,10 @@ export async function handleImageSearch(params: Record<string, unknown>): Promis
       sql += ` AND page_number = ?`;
       sqlParams.push(input.page_number);
     }
+    if (input.vlm_description_query) {
+      sql += ` AND vlm_description LIKE '%' || ? || '%'`;
+      sqlParams.push(input.vlm_description_query);
+    }
 
     sql += ` ORDER BY document_id, page_number, image_index LIMIT ?`;
     sqlParams.push(input.limit);
@@ -556,6 +579,279 @@ export async function handleImagePending(params: Record<string, unknown>): Promi
         })),
       })
     );
+  } catch (error) {
+    return handleError(error);
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// IMAGE SEMANTIC SEARCH & REANALYSIS HANDLERS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/**
+ * Handle ocr_image_semantic_search - Search images by semantic similarity of VLM descriptions
+ */
+export async function handleImageSemanticSearch(params: Record<string, unknown>): Promise<ToolResponse> {
+  try {
+    const input = validateInput(ImageSemanticSearchInput, params);
+    const { db, vector } = requireDatabase();
+
+    // Generate query embedding
+    const embeddingService = getEmbeddingService();
+    const queryVector = await embeddingService.embedSearchQuery(input.query);
+
+    // Search for similar vectors
+    const limit = input.limit ?? 10;
+    const searchResults = vector.searchSimilar(queryVector, {
+      limit: limit * 3, // Overfetch since we filter to image_id only
+      threshold: input.similarity_threshold,
+      documentFilter: input.document_filter,
+    });
+
+    // Filter to VLM embeddings only (image_id IS NOT NULL)
+    const vlmResults = searchResults.filter(r => r.image_id !== null);
+
+    // Enrich with image metadata and cap at requested limit
+    const results = [];
+    for (const r of vlmResults) {
+      if (results.length >= limit) break;
+
+      const img = getImage(db.getConnection(), r.image_id as string);
+      if (!img) continue;
+
+      // Get document context
+      const doc = db.getDocument(r.document_id);
+
+      const result: Record<string, unknown> = {
+        image_id: img.id,
+        document_id: img.document_id,
+        document_file_path: doc?.file_path ?? null,
+        document_file_name: doc?.file_name ?? null,
+        extracted_path: img.extracted_path,
+        page_number: img.page_number,
+        image_index: img.image_index,
+        format: img.format,
+        dimensions: img.dimensions,
+        block_type: img.block_type,
+        vlm_description: img.vlm_description,
+        vlm_confidence: img.vlm_confidence,
+        similarity_score: r.similarity_score,
+        embedding_id: r.embedding_id,
+      };
+
+      if (input.include_provenance && img.provenance_id) {
+        result.provenance_chain = fetchProvenanceChain(db, img.provenance_id, '[image_semantic_search]');
+      }
+
+      results.push(result);
+    }
+
+    return formatResponse(successResult({
+      query: input.query,
+      total: results.length,
+      similarity_threshold: input.similarity_threshold,
+      results,
+    }));
+  } catch (error) {
+    return handleError(error);
+  }
+}
+
+/**
+ * Handle ocr_image_reanalyze - Re-run VLM analysis on a specific image with optional custom prompt
+ */
+export async function handleImageReanalyze(params: Record<string, unknown>): Promise<ToolResponse> {
+  try {
+    const input = validateInput(ImageReanalyzeInput, params);
+    const { db, vector } = requireDatabase();
+    const conn = db.getConnection();
+
+    // Get image record
+    const img = getImage(conn, input.image_id);
+    if (!img) {
+      throw new MCPError('VALIDATION_ERROR', `Image not found: ${input.image_id}`, { image_id: input.image_id });
+    }
+
+    // Verify extracted_path exists on disk
+    if (!img.extracted_path || !fs.existsSync(img.extracted_path)) {
+      throw new MCPError('PATH_NOT_FOUND', `Image file not found on disk: ${img.extracted_path ?? '(no path)'}`, {
+        image_id: input.image_id,
+        extracted_path: img.extracted_path,
+      });
+    }
+
+    // Store previous description
+    const previousDescription = img.vlm_description;
+
+    // Run VLM analysis
+    const vlm = getVLMService();
+    const startMs = Date.now();
+
+    let vlmResult;
+    if (input.use_thinking) {
+      vlmResult = await vlm.analyzeDeep(img.extracted_path);
+    } else if (input.custom_prompt) {
+      // Use describeImage with context as a way to inject custom prompt context
+      vlmResult = await vlm.describeImage(img.extracted_path, {
+        contextText: input.custom_prompt,
+        highResolution: true,
+      });
+    } else {
+      vlmResult = await vlm.describeImage(img.extracted_path, {
+        highResolution: true,
+      });
+    }
+
+    const processingDurationMs = Date.now() - startMs;
+
+    // Generate new embedding for the VLM description
+    const { getEmbeddingClient, MODEL_NAME: EMBEDDING_MODEL } = await import('../services/embedding/nomic.js');
+    const embeddingClient = getEmbeddingClient();
+    const vectors = await embeddingClient.embedChunks([vlmResult.description], 1);
+
+    if (vectors.length === 0) {
+      throw new MCPError('EMBEDDING_FAILED', 'Failed to generate embedding for VLM description', {
+        image_id: input.image_id,
+      });
+    }
+
+    const embId = uuidv4();
+    const now = new Date().toISOString();
+    const descriptionHash = computeHash(vlmResult.description);
+
+    // Build provenance chain
+    let vlmDescProvId: string | null = null;
+    let embProvId: string | null = null;
+
+    if (img.provenance_id) {
+      const imageProv = db.getProvenance(img.provenance_id);
+      if (imageProv) {
+        const imageParentIds = JSON.parse(imageProv.parent_ids) as string[];
+
+        // Create VLM_DESCRIPTION provenance (depth 3)
+        vlmDescProvId = uuidv4();
+        const vlmParentIds = [...imageParentIds, img.provenance_id];
+
+        db.insertProvenance({
+          id: vlmDescProvId,
+          type: ProvenanceType.VLM_DESCRIPTION,
+          created_at: now,
+          processed_at: now,
+          source_file_created_at: null,
+          source_file_modified_at: null,
+          source_type: 'VLM',
+          source_path: img.extracted_path,
+          source_id: img.provenance_id,
+          root_document_id: imageProv.root_document_id,
+          location: {
+            page_number: img.page_number,
+            chunk_index: img.image_index,
+          },
+          content_hash: descriptionHash,
+          input_hash: imageProv.content_hash,
+          file_hash: imageProv.file_hash,
+          processor: 'gemini-vlm:reanalyze',
+          processor_version: '3.0',
+          processing_params: {
+            type: 'vlm_reanalyze',
+            use_thinking: input.use_thinking,
+            custom_prompt: !!input.custom_prompt,
+          },
+          processing_duration_ms: processingDurationMs,
+          processing_quality_score: vlmResult.analysis?.confidence ?? null,
+          parent_id: img.provenance_id,
+          parent_ids: JSON.stringify(vlmParentIds),
+          chain_depth: 3,
+          chain_path: JSON.stringify(['DOCUMENT', 'OCR_RESULT', 'IMAGE', 'VLM_DESCRIPTION']),
+        });
+
+        // Create EMBEDDING provenance (depth 4)
+        embProvId = uuidv4();
+        const embParentIds = [...vlmParentIds, vlmDescProvId];
+
+        db.insertProvenance({
+          id: embProvId,
+          type: ProvenanceType.EMBEDDING,
+          created_at: now,
+          processed_at: now,
+          source_file_created_at: null,
+          source_file_modified_at: null,
+          source_type: 'EMBEDDING',
+          source_path: null,
+          source_id: vlmDescProvId,
+          root_document_id: imageProv.root_document_id,
+          location: {
+            page_number: img.page_number,
+            chunk_index: img.image_index,
+          },
+          content_hash: descriptionHash,
+          input_hash: descriptionHash,
+          file_hash: imageProv.file_hash,
+          processor: EMBEDDING_MODEL,
+          processor_version: '1.5.0',
+          processing_params: { task_type: 'search_document', dimensions: 768 },
+          processing_duration_ms: null,
+          processing_quality_score: null,
+          parent_id: vlmDescProvId,
+          parent_ids: JSON.stringify(embParentIds),
+          chain_depth: 4,
+          chain_path: JSON.stringify(['DOCUMENT', 'OCR_RESULT', 'IMAGE', 'VLM_DESCRIPTION', 'EMBEDDING']),
+        });
+      }
+    }
+
+    // Insert embedding record
+    db.insertEmbedding({
+      id: embId,
+      chunk_id: null,
+      image_id: img.id,
+      extraction_id: null,
+      document_id: img.document_id,
+      original_text: vlmResult.description,
+      original_text_length: vlmResult.description.length,
+      source_file_path: img.extracted_path ?? 'unknown',
+      source_file_name: img.extracted_path?.split('/').pop() ?? 'vlm_description',
+      source_file_hash: 'vlm_generated',
+      page_number: img.page_number,
+      page_range: null,
+      character_start: 0,
+      character_end: vlmResult.description.length,
+      chunk_index: img.image_index,
+      total_chunks: 1,
+      model_name: EMBEDDING_MODEL,
+      model_version: '1.5.0',
+      task_type: 'search_document',
+      inference_mode: 'local',
+      gpu_device: 'cuda:0',
+      provenance_id: embProvId ?? uuidv4(),
+      content_hash: descriptionHash,
+      generation_duration_ms: null,
+    });
+
+    // Store vector
+    vector.storeVector(embId, vectors[0]);
+
+    // Update image record with new VLM results
+    updateImageVLMResult(conn, img.id, {
+      description: vlmResult.description,
+      structuredData: { ...vlmResult.analysis, imageType: vlmResult.analysis?.imageType ?? 'unknown' },
+      embeddingId: embId,
+      model: vlmResult.model,
+      confidence: vlmResult.analysis?.confidence ?? 0,
+      tokensUsed: vlmResult.tokensUsed,
+    });
+
+    return formatResponse(successResult({
+      image_id: img.id,
+      extracted_path: img.extracted_path,
+      previous_description: previousDescription,
+      new_description: vlmResult.description,
+      new_confidence: vlmResult.analysis?.confidence ?? null,
+      new_embedding_id: embId,
+      provenance_id: vlmDescProvId,
+      processing_time_ms: processingDurationMs,
+      tokens_used: vlmResult.tokensUsed,
+    }));
   } catch (error) {
     return handleError(error);
   }
@@ -664,8 +960,38 @@ export const imageTools: Record<string, ToolDefinition> = {
         .describe('Exclude header/footer images'),
       page_number: z.number().int().min(1).optional()
         .describe('Filter to specific page'),
+      vlm_description_query: z.string().optional()
+        .describe('Filter by VLM description text (LIKE match)'),
       limit: z.number().int().min(1).max(100).default(50).describe('Maximum results'),
     },
     handler: handleImageSearch,
+  },
+
+  ocr_image_semantic_search: {
+    description: 'Search images by semantic similarity of their VLM descriptions. Returns images ranked by how semantically similar their descriptions are to the query.',
+    inputSchema: {
+      query: z.string().min(1).describe('Search query to match against VLM image descriptions'),
+      document_filter: z.array(z.string().min(1)).optional()
+        .describe('Filter results to specific document IDs'),
+      similarity_threshold: z.number().min(0).max(1).default(0.5)
+        .describe('Minimum similarity score (0-1)'),
+      limit: z.number().int().min(1).max(100).default(10)
+        .describe('Maximum results to return'),
+      include_provenance: z.boolean().default(false)
+        .describe('Include provenance chain for each result'),
+    },
+    handler: handleImageSemanticSearch,
+  },
+
+  ocr_image_reanalyze: {
+    description: 'Re-run VLM analysis on a specific image with optional custom prompt. Creates new provenance records while preserving old ones for audit trail.',
+    inputSchema: {
+      image_id: z.string().min(1).describe('Image ID to reanalyze'),
+      custom_prompt: z.string().optional()
+        .describe('Custom context/prompt for the VLM analysis'),
+      use_thinking: z.boolean().default(false)
+        .describe('Use extended reasoning (thinking mode) for deeper analysis'),
+    },
+    handler: handleImageReanalyze,
   },
 };
