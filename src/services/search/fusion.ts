@@ -35,6 +35,13 @@ interface RRFSearchResult {
   content_hash: string;
   found_in_bm25: boolean;
   found_in_semantic: boolean;
+  heading_context?: string | null;
+  section_path?: string | null;
+  content_types?: string | null;
+  is_atomic?: boolean;
+  page_range?: string | null;
+  heading_level?: number | null;
+  ocr_quality_score?: number | null;
 }
 
 export interface RankedResult {
@@ -56,6 +63,13 @@ export interface RankedResult {
   chunk_index: number;
   provenance_id: string;
   content_hash: string;
+  heading_context?: string | null;
+  section_path?: string | null;
+  content_types?: string | null;
+  is_atomic?: boolean;
+  page_range?: string | null;
+  heading_level?: number | null;
+  ocr_quality_score?: number | null;
 }
 
 const DEFAULT_CONFIG: RRFConfig = {
@@ -96,6 +110,13 @@ function buildFusedResult(
     content_hash: result.content_hash,
     found_in_bm25: source === 'bm25',
     found_in_semantic: source === 'semantic',
+    heading_context: result.heading_context ?? null,
+    section_path: result.section_path ?? null,
+    content_types: result.content_types ?? null,
+    is_atomic: result.is_atomic ?? false,
+    page_range: result.page_range ?? null,
+    heading_level: result.heading_level ?? null,
+    ocr_quality_score: result.ocr_quality_score ?? null,
   };
 }
 
@@ -128,9 +149,11 @@ export class RRFFusion {
   fuse(
     bm25Results: RankedResult[],
     semanticResults: RankedResult[],
-    limit: number
+    limit: number,
+    options?: { qualityBoost?: boolean }
   ): RRFSearchResult[] {
     const { k, bm25Weight, semanticWeight } = this.config;
+    const qualityBoost = options?.qualityBoost ?? false;
     // Use chunk_id/image_id as dedup key so the same chunk from BM25 and semantic
     // merges correctly, even when BM25 results lack an embedding_id.
     const fusedMap = new Map<string, RRFSearchResult>();
@@ -158,7 +181,17 @@ export class RRFFusion {
       }
     }
 
-    return Array.from(fusedMap.values())
+    const results = Array.from(fusedMap.values());
+
+    // Apply quality boost: multiply rrf_score by quality factor
+    if (qualityBoost) {
+      for (const r of results) {
+        const qualityFactor = 1 + (r.ocr_quality_score ?? 3) / 10.0;
+        r.rrf_score = r.rrf_score * qualityFactor;
+      }
+    }
+
+    return results
       .sort((a, b) => b.rrf_score - a.rrf_score)
       .slice(0, limit);
   }

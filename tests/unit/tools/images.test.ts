@@ -22,6 +22,7 @@ import {
   handleImageDeleteByDocument,
   handleImageResetFailed,
   handleImagePending,
+  handleImageSearch,
   imageTools,
 } from '../../../src/tools/images.js';
 import { resetState, clearDatabase } from '../../../src/server/state.js';
@@ -49,8 +50,8 @@ function parseResponse(response: { content: Array<{ type: string; text: string }
 // ===============================================================================
 
 describe('imageTools exports', () => {
-  it('exports all 8 image tools', () => {
-    expect(Object.keys(imageTools)).toHaveLength(8);
+  it('exports all 9 image tools', () => {
+    expect(Object.keys(imageTools)).toHaveLength(9);
     expect(imageTools).toHaveProperty('ocr_image_extract');
     expect(imageTools).toHaveProperty('ocr_image_list');
     expect(imageTools).toHaveProperty('ocr_image_get');
@@ -59,6 +60,7 @@ describe('imageTools exports', () => {
     expect(imageTools).toHaveProperty('ocr_image_delete_by_document');
     expect(imageTools).toHaveProperty('ocr_image_reset_failed');
     expect(imageTools).toHaveProperty('ocr_image_pending');
+    expect(imageTools).toHaveProperty('ocr_image_search');
   });
 
   it('each tool has description, inputSchema, and handler', () => {
@@ -81,6 +83,7 @@ describe('imageTools exports', () => {
     expect(imageTools.ocr_image_delete_by_document.handler).toBe(handleImageDeleteByDocument);
     expect(imageTools.ocr_image_reset_failed.handler).toBe(handleImageResetFailed);
     expect(imageTools.ocr_image_pending.handler).toBe(handleImagePending);
+    expect(imageTools.ocr_image_search.handler).toBe(handleImageSearch);
   });
 });
 
@@ -714,6 +717,211 @@ describe('handleImagePending', () => {
 });
 
 // ===============================================================================
+// handleImageSearch TESTS
+// ===============================================================================
+
+describe('handleImageSearch', () => {
+  beforeEach(() => {
+    resetState();
+  });
+
+  afterEach(() => {
+    clearDatabase();
+    resetState();
+  });
+
+  it('returns DATABASE_NOT_SELECTED when no database with defaults', async () => {
+    const response = await handleImageSearch({});
+    const result = parseResponse(response);
+
+    expect(result.success).toBe(false);
+    expect(result.error?.category).toBe('DATABASE_NOT_SELECTED');
+  });
+
+  it('returns DATABASE_NOT_SELECTED when no database with image_type filter', async () => {
+    const response = await handleImageSearch({ image_type: 'chart' });
+    const result = parseResponse(response);
+
+    expect(result.success).toBe(false);
+    expect(result.error?.category).toBe('DATABASE_NOT_SELECTED');
+  });
+
+  it('returns DATABASE_NOT_SELECTED when no database with block_type filter', async () => {
+    const response = await handleImageSearch({ block_type: 'Figure' });
+    const result = parseResponse(response);
+
+    expect(result.success).toBe(false);
+    expect(result.error?.category).toBe('DATABASE_NOT_SELECTED');
+  });
+
+  it('returns DATABASE_NOT_SELECTED when no database with min_confidence filter', async () => {
+    const response = await handleImageSearch({ min_confidence: 0.8 });
+    const result = parseResponse(response);
+
+    expect(result.success).toBe(false);
+    expect(result.error?.category).toBe('DATABASE_NOT_SELECTED');
+  });
+
+  it('returns DATABASE_NOT_SELECTED when no database with document_id filter', async () => {
+    const response = await handleImageSearch({ document_id: 'doc-1' });
+    const result = parseResponse(response);
+
+    expect(result.success).toBe(false);
+    expect(result.error?.category).toBe('DATABASE_NOT_SELECTED');
+  });
+
+  it('returns DATABASE_NOT_SELECTED when no database with exclude_headers_footers', async () => {
+    const response = await handleImageSearch({ exclude_headers_footers: true });
+    const result = parseResponse(response);
+
+    expect(result.success).toBe(false);
+    expect(result.error?.category).toBe('DATABASE_NOT_SELECTED');
+  });
+
+  it('returns DATABASE_NOT_SELECTED when no database with page_number filter', async () => {
+    const response = await handleImageSearch({ page_number: 3 });
+    const result = parseResponse(response);
+
+    expect(result.success).toBe(false);
+    expect(result.error?.category).toBe('DATABASE_NOT_SELECTED');
+  });
+
+  it('returns DATABASE_NOT_SELECTED when no database with all filters', async () => {
+    const response = await handleImageSearch({
+      image_type: 'diagram',
+      block_type: 'Figure',
+      min_confidence: 0.5,
+      document_id: 'doc-1',
+      exclude_headers_footers: true,
+      page_number: 1,
+      limit: 10,
+    });
+    const result = parseResponse(response);
+
+    expect(result.success).toBe(false);
+    expect(result.error?.category).toBe('DATABASE_NOT_SELECTED');
+  });
+
+  it('returns VALIDATION_ERROR when min_confidence is below 0', async () => {
+    const response = await handleImageSearch({ min_confidence: -0.1 });
+    const result = parseResponse(response);
+
+    expect(result.success).toBe(false);
+    expect(result.error?.category).toBe('VALIDATION_ERROR');
+  });
+
+  it('returns VALIDATION_ERROR when min_confidence is above 1', async () => {
+    const response = await handleImageSearch({ min_confidence: 1.5 });
+    const result = parseResponse(response);
+
+    expect(result.success).toBe(false);
+    expect(result.error?.category).toBe('VALIDATION_ERROR');
+  });
+
+  it('returns VALIDATION_ERROR when page_number is zero', async () => {
+    const response = await handleImageSearch({ page_number: 0 });
+    const result = parseResponse(response);
+
+    expect(result.success).toBe(false);
+    expect(result.error?.category).toBe('VALIDATION_ERROR');
+  });
+
+  it('returns VALIDATION_ERROR when page_number is negative', async () => {
+    const response = await handleImageSearch({ page_number: -1 });
+    const result = parseResponse(response);
+
+    expect(result.success).toBe(false);
+    expect(result.error?.category).toBe('VALIDATION_ERROR');
+  });
+
+  it('returns VALIDATION_ERROR when page_number is not an integer', async () => {
+    const response = await handleImageSearch({ page_number: 2.5 });
+    const result = parseResponse(response);
+
+    expect(result.success).toBe(false);
+    expect(result.error?.category).toBe('VALIDATION_ERROR');
+  });
+
+  it('returns VALIDATION_ERROR when limit is zero', async () => {
+    const response = await handleImageSearch({ limit: 0 });
+    const result = parseResponse(response);
+
+    expect(result.success).toBe(false);
+    expect(result.error?.category).toBe('VALIDATION_ERROR');
+  });
+
+  it('returns VALIDATION_ERROR when limit exceeds 100', async () => {
+    const response = await handleImageSearch({ limit: 101 });
+    const result = parseResponse(response);
+
+    expect(result.success).toBe(false);
+    expect(result.error?.category).toBe('VALIDATION_ERROR');
+  });
+
+  it('returns VALIDATION_ERROR when limit is not an integer', async () => {
+    const response = await handleImageSearch({ limit: 10.5 });
+    const result = parseResponse(response);
+
+    expect(result.success).toBe(false);
+    expect(result.error?.category).toBe('VALIDATION_ERROR');
+  });
+
+  it('accepts boundary limit value 1', async () => {
+    const response = await handleImageSearch({ limit: 1 });
+    const result = parseResponse(response);
+
+    expect(result.success).toBe(false);
+    expect(result.error?.category).toBe('DATABASE_NOT_SELECTED');
+  });
+
+  it('accepts boundary limit value 100', async () => {
+    const response = await handleImageSearch({ limit: 100 });
+    const result = parseResponse(response);
+
+    expect(result.success).toBe(false);
+    expect(result.error?.category).toBe('DATABASE_NOT_SELECTED');
+  });
+
+  it('accepts boundary min_confidence value 0', async () => {
+    const response = await handleImageSearch({ min_confidence: 0 });
+    const result = parseResponse(response);
+
+    expect(result.success).toBe(false);
+    expect(result.error?.category).toBe('DATABASE_NOT_SELECTED');
+  });
+
+  it('accepts boundary min_confidence value 1', async () => {
+    const response = await handleImageSearch({ min_confidence: 1 });
+    const result = parseResponse(response);
+
+    expect(result.success).toBe(false);
+    expect(result.error?.category).toBe('DATABASE_NOT_SELECTED');
+  });
+
+  it('strips unknown params and proceeds to database check', async () => {
+    const response = await handleImageSearch({
+      image_type: 'chart',
+      unknown_param: 'should be stripped',
+    });
+    const result = parseResponse(response);
+
+    expect(result.success).toBe(false);
+    expect(result.error?.category).toBe('DATABASE_NOT_SELECTED');
+  });
+
+  it('returns ToolResponse shape on error', async () => {
+    const response = await handleImageSearch({});
+
+    expect(response).toHaveProperty('content');
+    expect(Array.isArray(response.content)).toBe(true);
+    expect(response.content).toHaveLength(1);
+    expect(response.content[0]).toHaveProperty('type', 'text');
+    expect(response.content[0]).toHaveProperty('text');
+    expect(() => JSON.parse(response.content[0].text)).not.toThrow();
+  });
+});
+
+// ===============================================================================
 // EDGE CASE TESTS
 // ===============================================================================
 
@@ -975,6 +1183,7 @@ describe('Edge Cases', () => {
         () => handleImageDeleteByDocument({}),
         () => handleImageResetFailed({}),
         () => handleImagePending({}),
+        () => handleImageSearch({}),
       ];
 
       for (const handler of handlers) {

@@ -277,6 +277,16 @@ export const MetadataFilter = z
   .optional();
 
 /**
+ * Page range filter for chunk-level filtering
+ */
+export const PageRangeFilter = z
+  .object({
+    min_page: z.number().int().min(1).optional(),
+    max_page: z.number().int().min(1).optional(),
+  })
+  .optional();
+
+/**
  * Schema for semantic search
  */
 export const SearchSemanticInput = z.object({
@@ -305,6 +315,23 @@ export const SearchSemanticInput = z.object({
     .boolean()
     .default(false)
     .describe('Include cluster membership info for each result'),
+  content_type_filter: z
+    .array(z.string())
+    .optional()
+    .describe('Filter by chunk content types (e.g., ["table", "code", "heading"])'),
+  section_path_filter: z
+    .string()
+    .optional()
+    .describe('Filter by section path prefix (e.g., "Section 3" matches "Section 3 > 3.1 > Definitions")'),
+  heading_filter: z
+    .string()
+    .optional()
+    .describe('Filter by heading context text (LIKE match)'),
+  page_range_filter: PageRangeFilter.describe('Filter results to specific page range'),
+  quality_boost: z
+    .boolean()
+    .default(false)
+    .describe('Boost results from higher-quality OCR pages in ranking'),
 });
 
 /**
@@ -337,6 +364,23 @@ export const SearchInput = z.object({
     .boolean()
     .default(false)
     .describe('Include cluster membership info for each result'),
+  content_type_filter: z
+    .array(z.string())
+    .optional()
+    .describe('Filter by chunk content types (e.g., ["table", "code", "heading"])'),
+  section_path_filter: z
+    .string()
+    .optional()
+    .describe('Filter by section path prefix (e.g., "Section 3" matches "Section 3 > 3.1 > Definitions")'),
+  heading_filter: z
+    .string()
+    .optional()
+    .describe('Filter by heading context text (LIKE match)'),
+  page_range_filter: PageRangeFilter.describe('Filter results to specific page range'),
+  quality_boost: z
+    .boolean()
+    .default(false)
+    .describe('Boost results from higher-quality OCR pages in ranking'),
 });
 
 /**
@@ -370,6 +414,27 @@ export const SearchHybridInput = z.object({
     .boolean()
     .default(false)
     .describe('Include cluster membership info for each result'),
+  content_type_filter: z
+    .array(z.string())
+    .optional()
+    .describe('Filter by chunk content types (e.g., ["table", "code", "heading"])'),
+  section_path_filter: z
+    .string()
+    .optional()
+    .describe('Filter by section path prefix (e.g., "Section 3" matches "Section 3 > 3.1 > Definitions")'),
+  heading_filter: z
+    .string()
+    .optional()
+    .describe('Filter by heading context text (LIKE match)'),
+  page_range_filter: PageRangeFilter.describe('Filter results to specific page range'),
+  quality_boost: z
+    .boolean()
+    .default(false)
+    .describe('Boost results from higher-quality OCR pages in ranking'),
+  auto_route: z
+    .boolean()
+    .default(false)
+    .describe('Auto-adjust BM25/semantic weights based on query classification'),
 });
 
 /**
@@ -390,6 +455,12 @@ export const DocumentListInput = z.object({
   status_filter: z.enum(['pending', 'processing', 'complete', 'failed']).optional(),
   limit: z.number().int().min(1).max(1000).default(50),
   offset: z.number().int().min(0).default(0),
+  created_after: z.string().datetime().optional()
+    .describe('Filter documents created after this ISO 8601 timestamp'),
+  created_before: z.string().datetime().optional()
+    .describe('Filter documents created before this ISO 8601 timestamp'),
+  file_type: z.string().optional()
+    .describe('Filter by file type (e.g., "pdf", "docx")'),
 });
 
 /**

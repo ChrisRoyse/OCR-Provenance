@@ -30,6 +30,12 @@ import {
   EMBEDDING_DIM,
 } from '../services/embedding/nomic.js';
 
+const SuggestSchemaInput = z.object({
+  document_id: z.string().min(1).describe('Document ID to analyze'),
+  extraction_goal: z.string().optional()
+    .describe('What you want to extract (e.g., "invoice line items", "contract parties and dates")'),
+});
+
 const ExtractStructuredInput = z.object({
   document_id: z.string().min(1).describe('Document ID (must be OCR processed)'),
   page_schema: z.string().min(1).describe('JSON schema string for structured extraction per page'),
@@ -256,6 +262,80 @@ async function handleExtractionList(params: Record<string, unknown>) {
   }
 }
 
+async function handleSuggestSchema(params: Record<string, unknown>) {
+  try {
+    const input = validateInput(SuggestSchemaInput, params);
+    const { db } = requireDatabase();
+
+    // Get document - must exist and be complete
+    const doc = db.getDocument(input.document_id);
+    if (!doc) {
+      throw new Error(`Document not found: ${input.document_id}`);
+    }
+    if (doc.status !== 'complete') {
+      throw new Error(
+        `Document not OCR processed yet (status: ${doc.status}). Run ocr_process_pending first.`
+      );
+    }
+
+    // Get OCR result and sample text
+    const ocrResult = db.getOCRResultByDocumentId(doc.id);
+    if (!ocrResult?.extracted_text) {
+      throw new Error(`No OCR text found for document ${doc.id}. Process OCR first.`);
+    }
+
+    const sampleText = ocrResult.extracted_text.substring(0, 3000);
+
+    // Build prompt for Gemini
+    const goalClause = input.extraction_goal
+      ? `The user wants to extract: ${input.extraction_goal}\n`
+      : '';
+
+    const prompt = `Analyze the following document text and suggest a JSON schema for structured data extraction.
+
+${goalClause}
+Based on the document content, determine:
+1. A JSON schema (compatible with Datalab page_schema) that captures the key structured data in this document
+2. An explanation of what the schema extracts and why
+3. The detected document type
+
+Document text (first 3000 chars):
+---
+${sampleText}
+---
+
+Respond with valid JSON matching the schema.`;
+
+    const schemaSchema = {
+      type: 'object' as const,
+      properties: {
+        suggested_schema: { type: 'object' as const },
+        explanation: { type: 'string' as const },
+        detected_document_type: { type: 'string' as const },
+      },
+      required: ['suggested_schema', 'explanation'] as const,
+    };
+
+    const { getSharedClient } = await import('../services/gemini/index.js');
+    const gemini = getSharedClient();
+    const result = await gemini.fast(prompt, schemaSchema);
+    const suggestion = JSON.parse(result.text);
+
+    return formatResponse(
+      successResult({
+        document_id: doc.id,
+        file_name: doc.file_name,
+        suggested_schema: suggestion.suggested_schema,
+        explanation: suggestion.explanation,
+        detected_document_type: suggestion.detected_document_type ?? null,
+        usage_example: `Use this schema with ocr_extract_structured:\n  document_id: "${doc.id}"\n  page_schema: '${JSON.stringify(suggestion.suggested_schema)}'`,
+      })
+    );
+  } catch (error) {
+    return handleError(error);
+  }
+}
+
 export const structuredExtractionTools: Record<string, ToolDefinition> = {
   ocr_extract_structured: {
     description: "Run structured extraction on an already-OCR'd document using a JSON page_schema",
@@ -266,5 +346,11 @@ export const structuredExtractionTools: Record<string, ToolDefinition> = {
     description: 'List all structured extractions for a document',
     inputSchema: ExtractionListInput.shape,
     handler: handleExtractionList,
+  },
+  ocr_suggest_extraction_schema: {
+    description:
+      'Analyze a document and suggest a JSON schema for structured data extraction using Gemini AI. Useful for discovering what structured data can be extracted from a document.',
+    inputSchema: SuggestSchemaInput.shape,
+    handler: handleSuggestSchema,
   },
 };

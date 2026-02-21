@@ -73,20 +73,20 @@ const allToolModules: Record<string, ToolDefinition>[] = [
   databaseTools, // 5 tools
   ingestionTools, // 8 tools
   searchTools, // 7 tools
-  documentTools, // 3 tools
+  documentTools, // 8 tools
   provenanceTools, // 3 tools
   configTools, // 2 tools
   vlmTools, // 6 tools
-  imageTools, // 8 tools
+  imageTools, // 9 tools
   evaluationTools, // 3 tools
   extractionTools, // 3 tools
-  reportTools, // 4 tools
+  reportTools, // 8 tools
   formFillTools, // 2 tools
-  structuredExtractionTools, // 2 tools
+  structuredExtractionTools, // 3 tools
   fileManagementTools, // 5 tools
   comparisonTools, // 3 tools
-  clusteringTools, // 5 tools
-]; // Total: 69 tools
+  clusteringTools, // 6 tools
+]; // Total: 82 tools
 
 // Register tools with duplicate detection
 const registeredToolNames = new Set<string>();

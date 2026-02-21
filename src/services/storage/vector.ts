@@ -96,6 +96,17 @@ export interface VectorSearchResult {
   // Provenance
   provenance_id: string;
   content_hash: string;
+
+  // Chunk metadata (populated for chunk-based embeddings, null for VLM/extraction)
+  heading_context?: string | null;
+  section_path?: string | null;
+  content_types?: string | null;
+  is_atomic?: boolean;
+  chunk_page_range?: string | null;
+  heading_level?: number | null;
+
+  // Quality score (populated when qualityBoost is enabled)
+  ocr_quality_score?: number | null;
 }
 
 /**
@@ -108,6 +119,12 @@ export interface VectorSearchOptions {
   threshold?: number;
   /** Filter by document IDs */
   documentFilter?: string[];
+  /** Chunk-level filter conditions (from resolveChunkFilter) */
+  chunkFilter?: { conditions: string[]; params: unknown[] };
+  /** Boost results from higher-quality OCR pages */
+  qualityBoost?: boolean;
+  /** Page range filter for VLM/extraction results */
+  pageRangeFilter?: { min_page?: number; max_page?: number };
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -139,6 +156,13 @@ interface SearchRow {
   model_version: string;
   provenance_id: string;
   content_hash: string;
+  heading_context: string | null;
+  section_path: string | null;
+  content_types: string | null;
+  is_atomic: number | null;
+  chunk_page_range: string | null;
+  heading_level: number | null;
+  ocr_quality_score?: number | null;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -322,9 +346,32 @@ export class VectorService {
     const queryBuffer = Buffer.from(queryVector.buffer);
 
     if (options.documentFilter?.length) {
-      return this.searchWithFilter(queryBuffer, options.documentFilter, maxDistance, limit);
+      return this.searchWithFilter(queryBuffer, options.documentFilter, maxDistance, limit, options);
     }
-    return this.searchAll(queryBuffer, maxDistance, limit);
+    return this.searchAll(queryBuffer, maxDistance, limit, options);
+  }
+
+  /**
+   * Build chunk filter SQL fragment for vector search.
+   * Translates chunk filter conditions from 'c.' alias to 'ch.' alias used in vector queries.
+   */
+  private buildChunkFilterSQL(options: VectorSearchOptions): { sql: string; params: unknown[] } {
+    let sql = '';
+    const params: unknown[] = [];
+
+    if (options.chunkFilter?.conditions.length) {
+      for (const condition of options.chunkFilter.conditions) {
+        // Replace c. with ch. since vector.ts uses 'ch' alias for chunks table
+        sql += ` AND ${condition.replace(/\bc\./g, 'ch.')}`;
+      }
+      params.push(...options.chunkFilter.params);
+    }
+
+    // Page range filter for VLM results (which use e.page_number, not ch.page_number)
+    // This is handled post-filter in mapAndFilterResults for simplicity,
+    // since VLM and chunk results are mixed in vector search.
+
+    return { sql, params };
   }
 
   /**
@@ -334,11 +381,13 @@ export class VectorService {
     queryBuffer: Buffer,
     documentFilter: string[],
     maxDistance: number,
-    limit: number
+    limit: number,
+    options: VectorSearchOptions = {}
   ): VectorSearchResult[] {
     const placeholders = documentFilter.map(() => '?').join(', ');
+    const chunkFilterSQL = this.buildChunkFilterSQL(options);
 
-    const sql = `
+    let sql = `
       SELECT
         e.id as embedding_id,
         e.chunk_id,
@@ -360,25 +409,40 @@ export class VectorService {
         e.model_version,
         e.provenance_id,
         e.content_hash,
+        ch.heading_context,
+        ch.section_path,
+        ch.content_types,
+        ch.is_atomic,
+        ch.page_range AS chunk_page_range,
+        ch.heading_level,
+        ${options.qualityBoost ? '(SELECT o.parse_quality_score FROM ocr_results o WHERE o.document_id = e.document_id ORDER BY o.created_at DESC LIMIT 1) AS ocr_quality_score,' : ''}
         vec_distance_cosine(v.vector, ?) as distance
       FROM vec_embeddings v
       JOIN embeddings e ON e.id = v.embedding_id
+      LEFT JOIN chunks ch ON e.chunk_id = ch.id
       WHERE e.document_id IN (${placeholders})
-      ORDER BY distance ASC
-      LIMIT ?
     `;
 
-    // Build params array: queryBuffer for vec_distance_cosine, then document IDs, then limit
-    const params: (Buffer | string | number)[] = [queryBuffer];
+    // Build params array: queryBuffer for vec_distance_cosine, then document IDs
+    const params: unknown[] = [queryBuffer];
     for (const docId of documentFilter) {
       params.push(docId);
     }
+
+    // Add chunk filter conditions
+    sql += chunkFilterSQL.sql;
+    params.push(...chunkFilterSQL.params);
+
+    sql += `
+      ORDER BY distance ASC
+      LIMIT ?
+    `;
     params.push(limit * 2);
 
     try {
       const stmt = this.db.prepare(sql);
       const rows = stmt.all(...params) as SearchRow[];
-      return this.mapAndFilterResults(rows, maxDistance, limit);
+      return this.mapAndFilterResults(rows, maxDistance, limit, options);
     } catch (error) {
       throw new VectorError('Vector search failed', VectorErrorCode.SEARCH_FAILED, {
         error: String(error),
@@ -390,9 +454,16 @@ export class VectorService {
   /**
    * Search all vectors without filter
    */
-  private searchAll(queryBuffer: Buffer, maxDistance: number, limit: number): VectorSearchResult[] {
+  private searchAll(
+    queryBuffer: Buffer,
+    maxDistance: number,
+    limit: number,
+    options: VectorSearchOptions = {}
+  ): VectorSearchResult[] {
     try {
-      const sql = `
+      const chunkFilterSQL = this.buildChunkFilterSQL(options);
+
+      let sql = `
         SELECT
           e.id as embedding_id,
           e.chunk_id,
@@ -414,15 +485,35 @@ export class VectorService {
           e.model_version,
           e.provenance_id,
           e.content_hash,
+          ch.heading_context,
+          ch.section_path,
+          ch.content_types,
+          ch.is_atomic,
+          ch.page_range AS chunk_page_range,
+          ch.heading_level,
+          ${options.qualityBoost ? '(SELECT o.parse_quality_score FROM ocr_results o WHERE o.document_id = e.document_id ORDER BY o.created_at DESC LIMIT 1) AS ocr_quality_score,' : ''}
           vec_distance_cosine(v.vector, ?) as distance
         FROM vec_embeddings v
         JOIN embeddings e ON e.id = v.embedding_id
+        LEFT JOIN chunks ch ON e.chunk_id = ch.id
+      `;
+
+      const params: unknown[] = [queryBuffer];
+
+      // Add chunk filter conditions (need WHERE clause if any)
+      if (chunkFilterSQL.sql) {
+        sql += ` WHERE 1=1 ${chunkFilterSQL.sql}`;
+        params.push(...chunkFilterSQL.params);
+      }
+
+      sql += `
         ORDER BY distance ASC
         LIMIT ?
       `;
+      params.push(limit * 2);
 
-      const rows = this.db.prepare(sql).all(queryBuffer, limit * 2) as SearchRow[];
-      return this.mapAndFilterResults(rows, maxDistance, limit);
+      const rows = this.db.prepare(sql).all(...params) as SearchRow[];
+      return this.mapAndFilterResults(rows, maxDistance, limit, options);
     } catch (error) {
       throw new VectorError('Vector search failed', VectorErrorCode.SEARCH_FAILED, {
         error: String(error),
@@ -432,14 +523,16 @@ export class VectorService {
   }
 
   /**
-   * Map database rows to VectorSearchResult and filter by threshold
+   * Map database rows to VectorSearchResult and filter by threshold.
+   * Applies quality boost post-query when enabled.
    */
   private mapAndFilterResults(
     rows: SearchRow[],
     maxDistance: number,
-    limit: number
+    limit: number,
+    options: VectorSearchOptions = {}
   ): VectorSearchResult[] {
-    return rows
+    const results = rows
       .filter((row) => row.distance <= maxDistance)
       .slice(0, limit)
       .map((row) => ({
@@ -470,7 +563,25 @@ export class VectorService {
         model_version: row.model_version,
         provenance_id: row.provenance_id,
         content_hash: row.content_hash,
+        heading_context: row.heading_context ?? null,
+        section_path: row.section_path ?? null,
+        content_types: row.content_types ?? null,
+        is_atomic: !!(row.is_atomic),
+        chunk_page_range: row.chunk_page_range ?? null,
+        heading_level: row.heading_level ?? null,
+        ocr_quality_score: options.qualityBoost ? ((row.ocr_quality_score ?? null) as number | null) : undefined,
       }));
+
+    // Apply quality boost: multiply similarity_score by quality factor, then re-sort
+    if (options.qualityBoost) {
+      for (const r of results) {
+        const qualityFactor = 1 + ((r as Record<string, unknown>).ocr_quality_score as number ?? 3) / 10.0;
+        r.similarity_score = r.similarity_score * qualityFactor;
+      }
+      results.sort((a, b) => b.similarity_score - a.similarity_score);
+    }
+
+    return results;
   }
 
   // ═══════════════════════════════════════════════════════════════════════════

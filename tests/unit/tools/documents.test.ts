@@ -20,10 +20,16 @@ import {
   handleDocumentList,
   handleDocumentGet,
   handleDocumentDelete,
+  handleFindSimilar,
+  handleClassifyDocument,
+  handleDocumentStructure,
+  handleUpdateMetadata,
+  handleDuplicateDetection,
   documentTools,
 } from '../../../src/tools/documents.js';
 import { state, resetState, updateConfig, clearDatabase } from '../../../src/server/state.js';
 import { DatabaseService } from '../../../src/services/storage/database/index.js';
+import { VectorService } from '../../../src/services/storage/vector.js';
 import { computeHash } from '../../../src/utils/hash.js';
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -262,11 +268,16 @@ function insertTestChunk(
 // ═══════════════════════════════════════════════════════════════════════════════
 
 describe('documentTools exports', () => {
-  it('exports all 3 document tools', () => {
-    expect(Object.keys(documentTools)).toHaveLength(3);
+  it('exports all 8 document tools', () => {
+    expect(Object.keys(documentTools)).toHaveLength(8);
     expect(documentTools).toHaveProperty('ocr_document_list');
     expect(documentTools).toHaveProperty('ocr_document_get');
     expect(documentTools).toHaveProperty('ocr_document_delete');
+    expect(documentTools).toHaveProperty('ocr_document_find_similar');
+    expect(documentTools).toHaveProperty('ocr_document_classify');
+    expect(documentTools).toHaveProperty('ocr_document_structure');
+    expect(documentTools).toHaveProperty('ocr_document_update_metadata');
+    expect(documentTools).toHaveProperty('ocr_document_duplicates');
   });
 
   it('each tool has description, inputSchema, and handler', () => {
@@ -1192,5 +1203,887 @@ describe('Response Structure', () => {
     expect(result).toHaveProperty('error');
     expect(result.error).toHaveProperty('category');
     expect(result.error).toHaveProperty('message');
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// HELPER: Insert embedding + vector for a chunk
+// ═══════════════════════════════════════════════════════════════════════════════
+
+function insertTestEmbeddingWithVector(
+  db: DatabaseService,
+  vector: VectorService,
+  embId: string,
+  chunkId: string,
+  docId: string,
+  docProvId: string,
+  text: string,
+  vecValues: Float32Array
+): void {
+  const provId = uuidv4();
+  const now = new Date().toISOString();
+  const hash = computeHash(text);
+
+  // Insert embedding provenance
+  db.insertProvenance({
+    id: provId,
+    type: 'EMBEDDING',
+    created_at: now,
+    processed_at: now,
+    source_file_created_at: null,
+    source_file_modified_at: null,
+    source_type: 'EMBEDDING',
+    source_path: null,
+    source_id: docProvId,
+    root_document_id: docProvId,
+    location: null,
+    content_hash: hash,
+    input_hash: null,
+    file_hash: null,
+    processor: 'nomic-embed-text-v1.5',
+    processor_version: '1.0.0',
+    processing_params: {},
+    processing_duration_ms: 10,
+    processing_quality_score: null,
+    parent_id: docProvId,
+    parent_ids: JSON.stringify([docProvId]),
+    chain_depth: 3,
+    chain_path: '["DOCUMENT","OCR_RESULT","CHUNK","EMBEDDING"]',
+  });
+
+  db.insertEmbedding({
+    id: embId,
+    chunk_id: chunkId,
+    image_id: null,
+    extraction_id: null,
+    document_id: docId,
+    original_text: text,
+    original_text_length: text.length,
+    source_file_path: '/test/test.txt',
+    source_file_name: 'test.txt',
+    source_file_hash: hash,
+    page_number: 1,
+    page_range: null,
+    character_start: 0,
+    character_end: text.length,
+    chunk_index: 0,
+    total_chunks: 1,
+    model_name: 'nomic-embed-text-v1.5',
+    model_version: '1.0.0',
+    task_type: 'search_document',
+    inference_mode: 'local',
+    gpu_device: 'cpu',
+    provenance_id: provId,
+    content_hash: hash,
+    generation_duration_ms: 10,
+  });
+
+  vector.storeVector(embId, vecValues);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// handleFindSimilar TESTS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+describe('handleFindSimilar', () => {
+  let tempDir: string;
+  let dbName: string;
+
+  beforeEach(() => {
+    resetState();
+    tempDir = createTempDir('doc-similar-');
+    tempDirs.push(tempDir);
+    updateConfig({ defaultStoragePath: tempDir });
+    dbName = createUniqueName('docsimilar');
+  });
+
+  afterEach(() => {
+    clearDatabase();
+    resetState();
+  });
+
+  it('returns DATABASE_NOT_SELECTED when no database', async () => {
+    const response = await handleFindSimilar({ document_id: uuidv4() });
+    const result = parseResponse(response);
+    expect(result.success).toBe(false);
+    expect(result.error?.category).toBe('DATABASE_NOT_SELECTED');
+  });
+
+  it.skipIf(!sqliteVecAvailable)('returns DOCUMENT_NOT_FOUND for invalid doc', async () => {
+    const db = DatabaseService.create(dbName, undefined, tempDir);
+    state.currentDatabase = db;
+    state.currentDatabaseName = dbName;
+
+    const response = await handleFindSimilar({ document_id: uuidv4() });
+    const result = parseResponse(response);
+    expect(result.success).toBe(false);
+    expect(result.error?.category).toBe('DOCUMENT_NOT_FOUND');
+  });
+
+  it.skipIf(!sqliteVecAvailable)('returns error when document has no embeddings', async () => {
+    const db = DatabaseService.create(dbName, undefined, tempDir);
+    state.currentDatabase = db;
+    state.currentDatabaseName = dbName;
+
+    const docId = uuidv4();
+    insertTestDocument(db, docId, 'no-emb.txt', '/test/no-emb.txt');
+
+    const response = await handleFindSimilar({ document_id: docId });
+    const result = parseResponse(response);
+    expect(result.success).toBe(false);
+    expect(result.error?.category).toBe('VALIDATION_ERROR');
+    expect(result.error?.message).toContain('no chunk embeddings');
+  });
+
+  it.skipIf(!sqliteVecAvailable)('finds similar documents by centroid', async () => {
+    const db = DatabaseService.create(dbName, undefined, tempDir);
+    const vec = new VectorService(db.getConnection());
+    state.currentDatabase = db;
+    state.currentDatabaseName = dbName;
+    state.vectorService = vec;
+
+    // Create doc1 with a chunk+embedding
+    const doc1Id = uuidv4();
+    const doc1ProvId = insertTestDocument(db, doc1Id, 'doc1.txt', '/test/doc1.txt');
+    const chunk1Id = uuidv4();
+    insertTestChunk(db, chunk1Id, doc1Id, doc1ProvId, 'Document one text about legal contracts', 0);
+    const emb1Id = uuidv4();
+    // Create a 768-dim vector with known pattern
+    const vec1 = new Float32Array(768);
+    for (let i = 0; i < 768; i++) vec1[i] = 0.1;
+    insertTestEmbeddingWithVector(db, vec, emb1Id, chunk1Id, doc1Id, doc1ProvId, 'Document one text', vec1);
+
+    // Create doc2 with similar vector (close to doc1)
+    const doc2Id = uuidv4();
+    const doc2ProvId = insertTestDocument(db, doc2Id, 'doc2.txt', '/test/doc2.txt');
+    const chunk2Id = uuidv4();
+    insertTestChunk(db, chunk2Id, doc2Id, doc2ProvId, 'Document two also about legal contracts', 0);
+    const emb2Id = uuidv4();
+    const vec2 = new Float32Array(768);
+    for (let i = 0; i < 768; i++) vec2[i] = 0.11; // Very similar to vec1
+    insertTestEmbeddingWithVector(db, vec, emb2Id, chunk2Id, doc2Id, doc2ProvId, 'Document two text', vec2);
+
+    // Create doc3 with different vector (far from doc1)
+    const doc3Id = uuidv4();
+    const doc3ProvId = insertTestDocument(db, doc3Id, 'doc3.txt', '/test/doc3.txt');
+    const chunk3Id = uuidv4();
+    insertTestChunk(db, chunk3Id, doc3Id, doc3ProvId, 'Document three about cooking recipes', 0);
+    const emb3Id = uuidv4();
+    const vec3 = new Float32Array(768);
+    for (let i = 0; i < 768; i++) vec3[i] = (i % 2 === 0) ? -0.5 : 0.5; // Different pattern
+    insertTestEmbeddingWithVector(db, vec, emb3Id, chunk3Id, doc3Id, doc3ProvId, 'Document three text', vec3);
+
+    // Find similar to doc1
+    const response = await handleFindSimilar({ document_id: doc1Id, min_similarity: 0.0 });
+    const result = parseResponse(response);
+
+    expect(result.success).toBe(true);
+    expect(result.data?.source_document_id).toBe(doc1Id);
+    expect(result.data?.source_chunk_count).toBe(1);
+    const similar = result.data?.similar_documents as Array<Record<string, unknown>>;
+    expect(similar.length).toBeGreaterThanOrEqual(1);
+
+    // doc2 should be most similar (vectors are close)
+    expect(similar[0].document_id).toBe(doc2Id);
+    expect(similar[0].file_name).toBe('doc2.txt');
+    expect(typeof similar[0].avg_similarity).toBe('number');
+    expect((similar[0].avg_similarity as number)).toBeGreaterThan(0);
+  });
+
+  it.skipIf(!sqliteVecAvailable)('excludes source document from results', async () => {
+    const db = DatabaseService.create(dbName, undefined, tempDir);
+    const vec = new VectorService(db.getConnection());
+    state.currentDatabase = db;
+    state.currentDatabaseName = dbName;
+    state.vectorService = vec;
+
+    // Create a single document
+    const docId = uuidv4();
+    const docProvId = insertTestDocument(db, docId, 'only.txt', '/test/only.txt');
+    const chunkId = uuidv4();
+    insertTestChunk(db, chunkId, docId, docProvId, 'Only document in database', 0);
+    const embId = uuidv4();
+    const v = new Float32Array(768);
+    for (let i = 0; i < 768; i++) v[i] = 0.1;
+    insertTestEmbeddingWithVector(db, vec, embId, chunkId, docId, docProvId, 'Only text', v);
+
+    const response = await handleFindSimilar({ document_id: docId, min_similarity: 0.0 });
+    const result = parseResponse(response);
+
+    expect(result.success).toBe(true);
+    const similar = result.data?.similar_documents as Array<Record<string, unknown>>;
+    // Source doc should be excluded - no other docs, so empty
+    expect(similar.length).toBe(0);
+    expect(result.data?.total).toBe(0);
+  });
+
+  it('rejects empty document_id', async () => {
+    const response = await handleFindSimilar({ document_id: '' });
+    const result = parseResponse(response);
+    expect(result.success).toBe(false);
+    expect(result.error?.category).toBe('VALIDATION_ERROR');
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// handleClassifyDocument TESTS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+describe('handleClassifyDocument', () => {
+  let tempDir: string;
+  let dbName: string;
+
+  beforeEach(() => {
+    resetState();
+    tempDir = createTempDir('doc-classify-');
+    tempDirs.push(tempDir);
+    updateConfig({ defaultStoragePath: tempDir });
+    dbName = createUniqueName('docclassify');
+  });
+
+  afterEach(() => {
+    clearDatabase();
+    resetState();
+  });
+
+  it('returns DATABASE_NOT_SELECTED when no database', async () => {
+    const response = await handleClassifyDocument({ document_id: uuidv4() });
+    const result = parseResponse(response);
+    expect(result.success).toBe(false);
+    expect(result.error?.category).toBe('DATABASE_NOT_SELECTED');
+  });
+
+  it.skipIf(!sqliteVecAvailable)('returns DOCUMENT_NOT_FOUND for invalid doc', async () => {
+    const db = DatabaseService.create(dbName, undefined, tempDir);
+    state.currentDatabase = db;
+    state.currentDatabaseName = dbName;
+
+    const response = await handleClassifyDocument({ document_id: uuidv4() });
+    const result = parseResponse(response);
+    expect(result.success).toBe(false);
+    expect(result.error?.category).toBe('DOCUMENT_NOT_FOUND');
+  });
+
+  it.skipIf(!sqliteVecAvailable)('rejects non-complete documents', async () => {
+    const db = DatabaseService.create(dbName, undefined, tempDir);
+    state.currentDatabase = db;
+    state.currentDatabaseName = dbName;
+
+    const docId = uuidv4();
+    insertTestDocument(db, docId, 'pending.txt', '/test/pending.txt', 'pending');
+
+    const response = await handleClassifyDocument({ document_id: docId });
+    const result = parseResponse(response);
+    expect(result.success).toBe(false);
+    expect(result.error?.category).toBe('VALIDATION_ERROR');
+    expect(result.error?.message).toContain('complete');
+  });
+
+  it.skipIf(!sqliteVecAvailable)('rejects document without OCR text', async () => {
+    const db = DatabaseService.create(dbName, undefined, tempDir);
+    state.currentDatabase = db;
+    state.currentDatabaseName = dbName;
+
+    // Insert complete doc but no OCR result
+    const docId = uuidv4();
+    insertTestDocument(db, docId, 'no-ocr.txt', '/test/no-ocr.txt', 'complete');
+
+    const response = await handleClassifyDocument({ document_id: docId });
+    const result = parseResponse(response);
+    expect(result.success).toBe(false);
+    expect(result.error?.category).toBe('VALIDATION_ERROR');
+    expect(result.error?.message).toContain('no extracted text');
+  });
+
+  it('rejects empty document_id', async () => {
+    const response = await handleClassifyDocument({ document_id: '' });
+    const result = parseResponse(response);
+    expect(result.success).toBe(false);
+    expect(result.error?.category).toBe('VALIDATION_ERROR');
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// handleDocumentStructure TESTS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+describe('handleDocumentStructure', () => {
+  let tempDir: string;
+  let dbName: string;
+
+  beforeEach(() => {
+    resetState();
+    tempDir = createTempDir('doc-structure-');
+    tempDirs.push(tempDir);
+    updateConfig({ defaultStoragePath: tempDir });
+    dbName = createUniqueName('docstructure');
+  });
+
+  afterEach(() => {
+    clearDatabase();
+    resetState();
+  });
+
+  it('returns DATABASE_NOT_SELECTED when no database', async () => {
+    const response = await handleDocumentStructure({ document_id: uuidv4() });
+    const result = parseResponse(response);
+    expect(result.success).toBe(false);
+    expect(result.error?.category).toBe('DATABASE_NOT_SELECTED');
+  });
+
+  it.skipIf(!sqliteVecAvailable)('returns DOCUMENT_NOT_FOUND for invalid doc', async () => {
+    const db = DatabaseService.create(dbName, undefined, tempDir);
+    state.currentDatabase = db;
+    state.currentDatabaseName = dbName;
+
+    const response = await handleDocumentStructure({ document_id: uuidv4() });
+    const result = parseResponse(response);
+    expect(result.success).toBe(false);
+    expect(result.error?.category).toBe('DOCUMENT_NOT_FOUND');
+  });
+
+  it('rejects empty document_id', async () => {
+    const response = await handleDocumentStructure({ document_id: '' });
+    const result = parseResponse(response);
+    expect(result.success).toBe(false);
+    expect(result.error?.category).toBe('VALIDATION_ERROR');
+  });
+
+  it.skipIf(!sqliteVecAvailable)('returns empty structure for document with no OCR or chunks', async () => {
+    const db = DatabaseService.create(dbName, undefined, tempDir);
+    state.currentDatabase = db;
+    state.currentDatabaseName = dbName;
+
+    const docId = uuidv4();
+    insertTestDocument(db, docId, 'empty.txt', '/test/empty.txt');
+
+    const response = await handleDocumentStructure({ document_id: docId });
+    const result = parseResponse(response);
+
+    expect(result.success).toBe(true);
+    expect(result.data?.document_id).toBe(docId);
+    expect(result.data?.file_name).toBe('empty.txt');
+    expect(result.data?.source).toBe('chunks');
+    expect(result.data?.outline).toEqual([]);
+    expect((result.data?.tables as Record<string, unknown>).count).toBe(0);
+    expect((result.data?.figures as Record<string, unknown>).count).toBe(0);
+    expect((result.data?.code_blocks as Record<string, unknown>).count).toBe(0);
+    expect(result.data?.total_structural_elements).toBe(0);
+  });
+
+  it.skipIf(!sqliteVecAvailable)('builds outline from chunks with heading metadata', async () => {
+    const db = DatabaseService.create(dbName, undefined, tempDir);
+    state.currentDatabase = db;
+    state.currentDatabaseName = dbName;
+
+    const docId = uuidv4();
+    const docProvId = insertTestDocument(db, docId, 'headings.txt', '/test/headings.txt');
+
+    // Insert chunks with heading_context metadata
+    const chunk1Id = uuidv4();
+    insertTestChunk(db, chunk1Id, docId, docProvId, 'Introduction content', 0);
+    // Update chunk to have heading metadata
+    db.getConnection()
+      .prepare('UPDATE chunks SET heading_context = ?, heading_level = ? WHERE id = ?')
+      .run('Introduction', 1, chunk1Id);
+
+    const chunk2Id = uuidv4();
+    insertTestChunk(db, chunk2Id, docId, docProvId, 'Methods content', 1);
+    db.getConnection()
+      .prepare('UPDATE chunks SET heading_context = ?, heading_level = ? WHERE id = ?')
+      .run('Methods', 2, chunk2Id);
+
+    // Insert a chunk with same heading (should be deduplicated)
+    const chunk3Id = uuidv4();
+    insertTestChunk(db, chunk3Id, docId, docProvId, 'More introduction content', 2);
+    db.getConnection()
+      .prepare('UPDATE chunks SET heading_context = ?, heading_level = ? WHERE id = ?')
+      .run('Introduction', 1, chunk3Id);
+
+    const response = await handleDocumentStructure({ document_id: docId });
+    const result = parseResponse(response);
+
+    expect(result.success).toBe(true);
+    expect(result.data?.source).toBe('chunks');
+    const outline = result.data?.outline as Array<Record<string, unknown>>;
+    // Should have 2 unique headings (Introduction deduplicated)
+    expect(outline).toHaveLength(2);
+    expect(outline[0].text).toBe('Introduction');
+    expect(outline[0].level).toBe(1);
+    expect(outline[1].text).toBe('Methods');
+    expect(outline[1].level).toBe(2);
+    expect(result.data?.total_structural_elements).toBe(2);
+  });
+
+  it.skipIf(!sqliteVecAvailable)('extracts structure from json_blocks when available', async () => {
+    const db = DatabaseService.create(dbName, undefined, tempDir);
+    state.currentDatabase = db;
+    state.currentDatabaseName = dbName;
+
+    const docId = uuidv4();
+    const docProvId = insertTestDocument(db, docId, 'blocks.pdf', '/test/blocks.pdf');
+
+    // Insert OCR result with json_blocks
+    const ocrResultId = uuidv4();
+    const ocrProvId = uuidv4();
+    const now = new Date().toISOString();
+    const hash = computeHash('test text');
+
+    db.insertProvenance({
+      id: ocrProvId,
+      type: 'OCR_RESULT',
+      created_at: now,
+      processed_at: now,
+      source_file_created_at: null,
+      source_file_modified_at: null,
+      source_type: 'OCR',
+      source_path: null,
+      source_id: docProvId,
+      root_document_id: docProvId,
+      location: null,
+      content_hash: hash,
+      input_hash: null,
+      file_hash: null,
+      processor: 'datalab',
+      processor_version: '1.0.0',
+      processing_params: {},
+      processing_duration_ms: null,
+      processing_quality_score: null,
+      parent_id: docProvId,
+      parent_ids: JSON.stringify([docProvId]),
+      chain_depth: 1,
+      chain_path: '["DOCUMENT", "OCR_RESULT"]',
+    });
+
+    const jsonBlocks = JSON.stringify([
+      { block_type: 'Title', text: 'Document Title', page: 0 },
+      { block_type: 'SectionHeader', text: 'Background', level: 2, page: 0 },
+      { block_type: 'Table', page: 1, caption: 'Table 1: Results' },
+      { block_type: 'Figure', page: 2, caption: 'Fig 1: Architecture' },
+      { block_type: 'Code', page: 3, language: 'python' },
+      { block_type: 'SectionHeader', text: 'Conclusion', level: 2, page: 4 },
+    ]);
+
+    db.insertOCRResult({
+      id: ocrResultId,
+      provenance_id: ocrProvId,
+      document_id: docId,
+      extracted_text: 'test text',
+      text_length: 9,
+      datalab_request_id: `test-request-${uuidv4()}`,
+      datalab_mode: 'balanced',
+      parse_quality_score: 4.5,
+      page_count: 5,
+      cost_cents: 0,
+      content_hash: hash,
+      processing_started_at: now,
+      processing_completed_at: now,
+      processing_duration_ms: 100,
+    });
+
+    // Update json_blocks directly since insertOCRResult may not handle it
+    db.getConnection()
+      .prepare('UPDATE ocr_results SET json_blocks = ? WHERE id = ?')
+      .run(jsonBlocks, ocrResultId);
+
+    const response = await handleDocumentStructure({ document_id: docId });
+    const result = parseResponse(response);
+
+    expect(result.success).toBe(true);
+    expect(result.data?.source).toBe('json_blocks');
+    const outline = result.data?.outline as Array<Record<string, unknown>>;
+    expect(outline).toHaveLength(3); // Title + 2 SectionHeaders
+    expect(outline[0].text).toBe('Document Title');
+    expect(outline[0].level).toBe(1); // Title defaults to level 1
+    expect(outline[1].text).toBe('Background');
+    expect(outline[1].level).toBe(2);
+    expect(outline[2].text).toBe('Conclusion');
+
+    const tablesData = result.data?.tables as Record<string, unknown>;
+    expect(tablesData.count).toBe(1);
+    const tableItems = tablesData.items as Array<Record<string, unknown>>;
+    expect(tableItems[0].caption).toBe('Table 1: Results');
+
+    const figuresData = result.data?.figures as Record<string, unknown>;
+    expect(figuresData.count).toBe(1);
+    const figureItems = figuresData.items as Array<Record<string, unknown>>;
+    expect(figureItems[0].caption).toBe('Fig 1: Architecture');
+
+    const codeData = result.data?.code_blocks as Record<string, unknown>;
+    expect(codeData.count).toBe(1);
+    const codeItems = codeData.items as Array<Record<string, unknown>>;
+    expect(codeItems[0].language).toBe('python');
+
+    expect(result.data?.total_structural_elements).toBe(6);
+  });
+
+  it.skipIf(!sqliteVecAvailable)('handles nested json_blocks with children', async () => {
+    const db = DatabaseService.create(dbName, undefined, tempDir);
+    state.currentDatabase = db;
+    state.currentDatabaseName = dbName;
+
+    const docId = uuidv4();
+    const docProvId = insertTestDocument(db, docId, 'nested.pdf', '/test/nested.pdf');
+
+    const ocrResultId = uuidv4();
+    const ocrProvId = uuidv4();
+    const now = new Date().toISOString();
+    const hash = computeHash('nested text');
+
+    db.insertProvenance({
+      id: ocrProvId,
+      type: 'OCR_RESULT',
+      created_at: now,
+      processed_at: now,
+      source_file_created_at: null,
+      source_file_modified_at: null,
+      source_type: 'OCR',
+      source_path: null,
+      source_id: docProvId,
+      root_document_id: docProvId,
+      location: null,
+      content_hash: hash,
+      input_hash: null,
+      file_hash: null,
+      processor: 'datalab',
+      processor_version: '1.0.0',
+      processing_params: {},
+      processing_duration_ms: null,
+      processing_quality_score: null,
+      parent_id: docProvId,
+      parent_ids: JSON.stringify([docProvId]),
+      chain_depth: 1,
+      chain_path: '["DOCUMENT", "OCR_RESULT"]',
+    });
+
+    const jsonBlocks = JSON.stringify([
+      {
+        block_type: 'SectionHeader',
+        text: 'Parent Section',
+        level: 1,
+        page: 0,
+        children: [
+          { block_type: 'Table', page: 0 },
+          { block_type: 'SectionHeader', text: 'Child Section', level: 2, page: 1 },
+        ],
+      },
+    ]);
+
+    db.insertOCRResult({
+      id: ocrResultId,
+      provenance_id: ocrProvId,
+      document_id: docId,
+      extracted_text: 'nested text',
+      text_length: 11,
+      datalab_request_id: `test-request-${uuidv4()}`,
+      datalab_mode: 'balanced',
+      parse_quality_score: 4.0,
+      page_count: 2,
+      cost_cents: 0,
+      content_hash: hash,
+      processing_started_at: now,
+      processing_completed_at: now,
+      processing_duration_ms: 100,
+    });
+
+    db.getConnection()
+      .prepare('UPDATE ocr_results SET json_blocks = ? WHERE id = ?')
+      .run(jsonBlocks, ocrResultId);
+
+    const response = await handleDocumentStructure({ document_id: docId });
+    const result = parseResponse(response);
+
+    expect(result.success).toBe(true);
+    expect(result.data?.source).toBe('json_blocks');
+    const outline = result.data?.outline as Array<Record<string, unknown>>;
+    expect(outline).toHaveLength(2); // Parent + Child sections
+    expect(outline[0].text).toBe('Parent Section');
+    expect(outline[1].text).toBe('Child Section');
+
+    const tablesData = result.data?.tables as Record<string, unknown>;
+    expect(tablesData.count).toBe(1); // Nested table found
+    expect(result.data?.total_structural_elements).toBe(3); // 2 headings + 1 table
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// handleUpdateMetadata TESTS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+describe('handleUpdateMetadata', () => {
+  let tempDir: string;
+  let dbName: string;
+
+  beforeEach(() => {
+    resetState();
+    tempDir = createTempDir('doc-meta-');
+    tempDirs.push(tempDir);
+    updateConfig({ defaultStoragePath: tempDir });
+    dbName = createUniqueName('docmeta');
+  });
+
+  afterEach(() => {
+    clearDatabase();
+    resetState();
+  });
+
+  it('returns DATABASE_NOT_SELECTED when no database', async () => {
+    const response = await handleUpdateMetadata({
+      document_ids: [uuidv4()],
+      doc_title: 'Test',
+    });
+    const result = parseResponse(response);
+    expect(result.success).toBe(false);
+    expect(result.error?.category).toBe('DATABASE_NOT_SELECTED');
+  });
+
+  it('returns VALIDATION_ERROR when no metadata fields provided', async () => {
+    const response = await handleUpdateMetadata({
+      document_ids: [uuidv4()],
+    });
+    const result = parseResponse(response);
+    expect(result.success).toBe(false);
+    expect(result.error?.category).toBe('VALIDATION_ERROR');
+    expect(result.error?.message).toContain('At least one metadata field');
+  });
+
+  it('returns VALIDATION_ERROR when document_ids is empty', async () => {
+    const response = await handleUpdateMetadata({
+      document_ids: [],
+      doc_title: 'Test',
+    });
+    const result = parseResponse(response);
+    expect(result.success).toBe(false);
+    expect(result.error?.category).toBe('VALIDATION_ERROR');
+  });
+
+  it.skipIf(!sqliteVecAvailable)('updates metadata for existing documents', async () => {
+    const db = DatabaseService.create(dbName, undefined, tempDir);
+    state.currentDatabase = db;
+    state.currentDatabaseName = dbName;
+
+    const docId1 = uuidv4();
+    const docId2 = uuidv4();
+    insertTestDocument(db, docId1, 'doc1.txt', '/test/doc1.txt');
+    insertTestDocument(db, docId2, 'doc2.txt', '/test/doc2.txt');
+
+    const response = await handleUpdateMetadata({
+      document_ids: [docId1, docId2],
+      doc_title: 'Updated Title',
+      doc_author: 'Test Author',
+    });
+    const result = parseResponse(response);
+
+    expect(result.success).toBe(true);
+    expect(result.data?.updated_count).toBe(2);
+    expect(result.data?.not_found_ids).toEqual([]);
+    expect(result.data?.total_requested).toBe(2);
+
+    // Verify update persisted
+    const updatedDoc = db.getDocument(docId1);
+    expect(updatedDoc?.doc_title).toBe('Updated Title');
+    expect(updatedDoc?.doc_author).toBe('Test Author');
+  });
+
+  it.skipIf(!sqliteVecAvailable)('handles mix of found and not-found documents', async () => {
+    const db = DatabaseService.create(dbName, undefined, tempDir);
+    state.currentDatabase = db;
+    state.currentDatabaseName = dbName;
+
+    const docId = uuidv4();
+    const missingId = uuidv4();
+    insertTestDocument(db, docId, 'exists.txt', '/test/exists.txt');
+
+    const response = await handleUpdateMetadata({
+      document_ids: [docId, missingId],
+      doc_subject: 'Test Subject',
+    });
+    const result = parseResponse(response);
+
+    expect(result.success).toBe(true);
+    expect(result.data?.updated_count).toBe(1);
+    expect(result.data?.not_found_ids).toEqual([missingId]);
+    expect(result.data?.total_requested).toBe(2);
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// handleDuplicateDetection TESTS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+describe('handleDuplicateDetection', () => {
+  let tempDir: string;
+  let dbName: string;
+
+  beforeEach(() => {
+    resetState();
+    tempDir = createTempDir('doc-dup-');
+    tempDirs.push(tempDir);
+    updateConfig({ defaultStoragePath: tempDir });
+    dbName = createUniqueName('docdup');
+  });
+
+  afterEach(() => {
+    clearDatabase();
+    resetState();
+  });
+
+  it('returns DATABASE_NOT_SELECTED when no database', async () => {
+    const response = await handleDuplicateDetection({});
+    const result = parseResponse(response);
+    expect(result.success).toBe(false);
+    expect(result.error?.category).toBe('DATABASE_NOT_SELECTED');
+  });
+
+  it.skipIf(!sqliteVecAvailable)('exact mode finds documents with same hash', async () => {
+    const db = DatabaseService.create(dbName, undefined, tempDir);
+    state.currentDatabase = db;
+    state.currentDatabaseName = dbName;
+
+    // Insert two documents with the same file_path (will produce same hash)
+    const docId1 = uuidv4();
+    const docId2 = uuidv4();
+    insertTestDocument(db, docId1, 'dup1.txt', '/test/same-content.txt');
+    insertTestDocument(db, docId2, 'dup2.txt', '/test/same-content.txt');
+
+    const response = await handleDuplicateDetection({ mode: 'exact' });
+    const result = parseResponse(response);
+
+    expect(result.success).toBe(true);
+    expect(result.data?.mode).toBe('exact');
+    expect(result.data?.total_groups).toBeGreaterThanOrEqual(1);
+    const groups = result.data?.groups as Array<Record<string, unknown>>;
+    expect(groups.length).toBeGreaterThanOrEqual(1);
+    // At least one group should have 2+ docs
+    const matchGroup = groups.find((g) => (g.count as number) >= 2);
+    expect(matchGroup).toBeDefined();
+  });
+
+  it.skipIf(!sqliteVecAvailable)('exact mode returns empty when no duplicates', async () => {
+    const db = DatabaseService.create(dbName, undefined, tempDir);
+    state.currentDatabase = db;
+    state.currentDatabaseName = dbName;
+
+    // Insert documents with unique content (different paths produce different hashes)
+    insertTestDocument(db, uuidv4(), 'unique1.txt', '/test/unique1.txt');
+    insertTestDocument(db, uuidv4(), 'unique2.txt', '/test/unique2.txt');
+
+    const response = await handleDuplicateDetection({ mode: 'exact' });
+    const result = parseResponse(response);
+
+    expect(result.success).toBe(true);
+    expect(result.data?.mode).toBe('exact');
+    expect(result.data?.total_groups).toBe(0);
+  });
+
+  it.skipIf(!sqliteVecAvailable)('near mode returns empty with no comparisons', async () => {
+    const db = DatabaseService.create(dbName, undefined, tempDir);
+    state.currentDatabase = db;
+    state.currentDatabaseName = dbName;
+
+    const response = await handleDuplicateDetection({ mode: 'near', similarity_threshold: 0.9 });
+    const result = parseResponse(response);
+
+    expect(result.success).toBe(true);
+    expect(result.data?.mode).toBe('near');
+    expect(result.data?.total_pairs).toBe(0);
+    expect(result.data?.similarity_threshold).toBe(0.9);
+  });
+
+  it('rejects invalid similarity_threshold', async () => {
+    const response = await handleDuplicateDetection({ similarity_threshold: 0.3 });
+    const result = parseResponse(response);
+    expect(result.success).toBe(false);
+    expect(result.error?.category).toBe('VALIDATION_ERROR');
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// handleDocumentList DATE-RANGE FILTER TESTS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+describe('handleDocumentList date-range and file_type filters', () => {
+  let tempDir: string;
+  let dbName: string;
+
+  beforeEach(() => {
+    resetState();
+    tempDir = createTempDir('doc-filter-');
+    tempDirs.push(tempDir);
+    updateConfig({ defaultStoragePath: tempDir });
+    dbName = createUniqueName('docfilter');
+  });
+
+  afterEach(() => {
+    clearDatabase();
+    resetState();
+  });
+
+  it.skipIf(!sqliteVecAvailable)('filters by file_type', async () => {
+    const db = DatabaseService.create(dbName, undefined, tempDir);
+    state.currentDatabase = db;
+    state.currentDatabaseName = dbName;
+
+    // Insert documents with different file types
+    const docId1 = uuidv4();
+    const provId1 = uuidv4();
+    const now = new Date().toISOString();
+    const hash1 = computeHash('/test/doc1.pdf');
+    db.insertProvenance({
+      id: provId1, type: 'DOCUMENT', created_at: now, processed_at: now,
+      source_file_created_at: null, source_file_modified_at: null,
+      source_type: 'FILE', source_path: '/test/doc1.pdf', source_id: null,
+      root_document_id: provId1, location: null, content_hash: hash1,
+      input_hash: null, file_hash: hash1, processor: 'test', processor_version: '1.0.0',
+      processing_params: {}, processing_duration_ms: null, processing_quality_score: null,
+      parent_id: null, parent_ids: '[]', chain_depth: 0, chain_path: '["DOCUMENT"]',
+    });
+    db.insertDocument({
+      id: docId1, file_path: '/test/doc1.pdf', file_name: 'doc1.pdf', file_hash: hash1,
+      file_size: 1000, file_type: 'pdf', status: 'complete', page_count: 1,
+      provenance_id: provId1, error_message: null, ocr_completed_at: now,
+    });
+
+    insertTestDocument(db, uuidv4(), 'doc2.txt', '/test/doc2.txt');
+
+    const response = await handleDocumentList({ file_type: 'pdf' });
+    const result = parseResponse(response);
+
+    expect(result.success).toBe(true);
+    const documents = result.data?.documents as Array<Record<string, unknown>>;
+    expect(documents).toHaveLength(1);
+    expect(documents[0].file_type).toBe('pdf');
+    expect(result.data?.total).toBe(1);
+  });
+
+  it('rejects invalid created_after format', async () => {
+    const response = await handleDocumentList({ created_after: 'not-a-date' });
+    const result = parseResponse(response);
+    expect(result.success).toBe(false);
+    expect(result.error?.category).toBe('VALIDATION_ERROR');
+  });
+
+  it('rejects invalid created_before format', async () => {
+    const response = await handleDocumentList({ created_before: '2026-13-99' });
+    const result = parseResponse(response);
+    expect(result.success).toBe(false);
+    expect(result.error?.category).toBe('VALIDATION_ERROR');
+  });
+
+  it.skipIf(!sqliteVecAvailable)('filters by created_after', async () => {
+    const db = DatabaseService.create(dbName, undefined, tempDir);
+    state.currentDatabase = db;
+    state.currentDatabaseName = dbName;
+
+    insertTestDocument(db, uuidv4(), 'old.txt', '/test/old.txt');
+
+    // Use a date far in the future
+    const response = await handleDocumentList({ created_after: '2099-01-01T00:00:00Z' });
+    const result = parseResponse(response);
+
+    expect(result.success).toBe(true);
+    const documents = result.data?.documents as Array<Record<string, unknown>>;
+    expect(documents).toHaveLength(0);
+    expect(result.data?.total).toBe(0);
   });
 });

@@ -20,6 +20,10 @@ import {
   handleEvaluationReport,
   handleDocumentReport,
   handleQualitySummary,
+  handlePipelineAnalytics,
+  handleCorpusProfile,
+  handleErrorAnalytics,
+  handleProvenanceBottlenecks,
   reportTools,
 } from '../../../src/tools/reports.js';
 import { state, resetState, clearDatabase } from '../../../src/server/state.js';
@@ -47,12 +51,16 @@ function parseResponse(response: { content: Array<{ type: string; text: string }
 // ===============================================================================
 
 describe('reportTools exports', () => {
-  it('exports all 4 report tools', () => {
-    expect(Object.keys(reportTools)).toHaveLength(4);
+  it('exports all 8 report tools', () => {
+    expect(Object.keys(reportTools)).toHaveLength(8);
     expect(reportTools).toHaveProperty('ocr_evaluation_report');
     expect(reportTools).toHaveProperty('ocr_document_report');
     expect(reportTools).toHaveProperty('ocr_quality_summary');
     expect(reportTools).toHaveProperty('ocr_cost_summary');
+    expect(reportTools).toHaveProperty('ocr_pipeline_analytics');
+    expect(reportTools).toHaveProperty('ocr_corpus_profile');
+    expect(reportTools).toHaveProperty('ocr_error_analytics');
+    expect(reportTools).toHaveProperty('ocr_provenance_bottlenecks');
   });
 
   it('each tool has description, inputSchema, and handler', () => {
@@ -71,6 +79,10 @@ describe('reportTools exports', () => {
     expect(reportTools['ocr_document_report'].description).toContain('document');
     expect(reportTools['ocr_quality_summary'].description).toContain('quality');
     expect(reportTools['ocr_cost_summary'].description).toContain('cost');
+    expect(reportTools['ocr_pipeline_analytics'].description).toContain('pipeline');
+    expect(reportTools['ocr_corpus_profile'].description).toContain('corpus');
+    expect(reportTools['ocr_error_analytics'].description).toContain('error');
+    expect(reportTools['ocr_provenance_bottlenecks'].description).toContain('bottleneck');
   });
 
   it('ocr_evaluation_report has correct inputSchema keys', () => {
@@ -92,6 +104,25 @@ describe('reportTools exports', () => {
   it('ocr_cost_summary has correct inputSchema keys', () => {
     const schema = reportTools['ocr_cost_summary'].inputSchema;
     expect(schema).toHaveProperty('group_by');
+  });
+
+  it('ocr_pipeline_analytics has correct inputSchema keys', () => {
+    const schema = reportTools['ocr_pipeline_analytics'].inputSchema;
+    expect(schema).toHaveProperty('group_by');
+    expect(schema).toHaveProperty('limit');
+  });
+
+  it('ocr_corpus_profile has correct inputSchema keys', () => {
+    const schema = reportTools['ocr_corpus_profile'].inputSchema;
+    expect(schema).toHaveProperty('include_section_frequency');
+    expect(schema).toHaveProperty('include_content_type_distribution');
+    expect(schema).toHaveProperty('limit');
+  });
+
+  it('ocr_error_analytics has correct inputSchema keys', () => {
+    const schema = reportTools['ocr_error_analytics'].inputSchema;
+    expect(schema).toHaveProperty('include_error_messages');
+    expect(schema).toHaveProperty('limit');
   });
 });
 
@@ -366,6 +397,179 @@ describe('handler-tool wiring', () => {
     expect(reportTools['ocr_cost_summary'].handler).toBeDefined();
     expect(typeof reportTools['ocr_cost_summary'].handler).toBe('function');
   });
+
+  it('ocr_pipeline_analytics handler is handlePipelineAnalytics', () => {
+    expect(reportTools['ocr_pipeline_analytics'].handler).toBe(handlePipelineAnalytics);
+  });
+
+  it('ocr_corpus_profile handler is handleCorpusProfile', () => {
+    expect(reportTools['ocr_corpus_profile'].handler).toBe(handleCorpusProfile);
+  });
+
+  it('ocr_error_analytics handler is handleErrorAnalytics', () => {
+    expect(reportTools['ocr_error_analytics'].handler).toBe(handleErrorAnalytics);
+  });
+});
+
+// ===============================================================================
+// handlePipelineAnalytics TESTS
+// ===============================================================================
+
+describe('handlePipelineAnalytics', () => {
+  beforeEach(() => {
+    resetState();
+  });
+
+  afterEach(() => {
+    clearDatabase();
+    resetState();
+  });
+
+  it('returns DATABASE_NOT_SELECTED when no database', async () => {
+    const response = await handlePipelineAnalytics({});
+    const result = parseResponse(response);
+
+    expect(result.success).toBe(false);
+    expect(result.error?.category).toBe('DATABASE_NOT_SELECTED');
+  });
+
+  it('returns DATABASE_NOT_SELECTED with valid params when no database', async () => {
+    const response = await handlePipelineAnalytics({ group_by: 'mode', limit: 10 });
+    const result = parseResponse(response);
+
+    expect(result.success).toBe(false);
+    expect(result.error?.category).toBe('DATABASE_NOT_SELECTED');
+  });
+
+  it('returns VALIDATION_ERROR for invalid group_by', async () => {
+    const response = await handlePipelineAnalytics({ group_by: 'invalid' });
+    const result = parseResponse(response);
+
+    expect(result.success).toBe(false);
+    expect(result.error?.category).toBe('VALIDATION_ERROR');
+  });
+
+  it('returns VALIDATION_ERROR for limit below 1', async () => {
+    const response = await handlePipelineAnalytics({ limit: 0 });
+    const result = parseResponse(response);
+
+    expect(result.success).toBe(false);
+    expect(result.error?.category).toBe('VALIDATION_ERROR');
+  });
+
+  it('returns VALIDATION_ERROR for limit above 100', async () => {
+    const response = await handlePipelineAnalytics({ limit: 101 });
+    const result = parseResponse(response);
+
+    expect(result.success).toBe(false);
+    expect(result.error?.category).toBe('VALIDATION_ERROR');
+  });
+});
+
+// ===============================================================================
+// handleCorpusProfile TESTS
+// ===============================================================================
+
+describe('handleCorpusProfile', () => {
+  beforeEach(() => {
+    resetState();
+  });
+
+  afterEach(() => {
+    clearDatabase();
+    resetState();
+  });
+
+  it('returns DATABASE_NOT_SELECTED when no database', async () => {
+    const response = await handleCorpusProfile({});
+    const result = parseResponse(response);
+
+    expect(result.success).toBe(false);
+    expect(result.error?.category).toBe('DATABASE_NOT_SELECTED');
+  });
+
+  it('returns DATABASE_NOT_SELECTED with valid params when no database', async () => {
+    const response = await handleCorpusProfile({
+      include_section_frequency: false,
+      include_content_type_distribution: false,
+      limit: 5,
+    });
+    const result = parseResponse(response);
+
+    expect(result.success).toBe(false);
+    expect(result.error?.category).toBe('DATABASE_NOT_SELECTED');
+  });
+
+  it('returns VALIDATION_ERROR for limit below 1', async () => {
+    const response = await handleCorpusProfile({ limit: 0 });
+    const result = parseResponse(response);
+
+    expect(result.success).toBe(false);
+    expect(result.error?.category).toBe('VALIDATION_ERROR');
+  });
+
+  it('returns VALIDATION_ERROR for non-boolean include_section_frequency', async () => {
+    const response = await handleCorpusProfile({ include_section_frequency: 'yes' });
+    const result = parseResponse(response);
+
+    expect(result.success).toBe(false);
+    expect(result.error?.category).toBe('VALIDATION_ERROR');
+  });
+});
+
+// ===============================================================================
+// handleErrorAnalytics TESTS
+// ===============================================================================
+
+describe('handleErrorAnalytics', () => {
+  beforeEach(() => {
+    resetState();
+  });
+
+  afterEach(() => {
+    clearDatabase();
+    resetState();
+  });
+
+  it('returns DATABASE_NOT_SELECTED when no database', async () => {
+    const response = await handleErrorAnalytics({});
+    const result = parseResponse(response);
+
+    expect(result.success).toBe(false);
+    expect(result.error?.category).toBe('DATABASE_NOT_SELECTED');
+  });
+
+  it('returns DATABASE_NOT_SELECTED with valid params when no database', async () => {
+    const response = await handleErrorAnalytics({ include_error_messages: false, limit: 5 });
+    const result = parseResponse(response);
+
+    expect(result.success).toBe(false);
+    expect(result.error?.category).toBe('DATABASE_NOT_SELECTED');
+  });
+
+  it('returns VALIDATION_ERROR for limit below 1', async () => {
+    const response = await handleErrorAnalytics({ limit: 0 });
+    const result = parseResponse(response);
+
+    expect(result.success).toBe(false);
+    expect(result.error?.category).toBe('VALIDATION_ERROR');
+  });
+
+  it('returns VALIDATION_ERROR for limit above 50', async () => {
+    const response = await handleErrorAnalytics({ limit: 51 });
+    const result = parseResponse(response);
+
+    expect(result.success).toBe(false);
+    expect(result.error?.category).toBe('VALIDATION_ERROR');
+  });
+
+  it('returns VALIDATION_ERROR for non-boolean include_error_messages', async () => {
+    const response = await handleErrorAnalytics({ include_error_messages: 'true' });
+    const result = parseResponse(response);
+
+    expect(result.success).toBe(false);
+    expect(result.error?.category).toBe('VALIDATION_ERROR');
+  });
 });
 
 // ===============================================================================
@@ -534,5 +738,47 @@ describe('edge cases', () => {
   it('state is null after resetState', () => {
     expect(state.currentDatabase).toBeNull();
     expect(state.currentDatabaseName).toBeNull();
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// handleProvenanceBottlenecks TESTS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+describe('handleProvenanceBottlenecks', () => {
+  beforeEach(() => {
+    resetState();
+  });
+
+  afterEach(() => {
+    clearDatabase();
+    resetState();
+  });
+
+  it('returns DATABASE_NOT_SELECTED when no database', async () => {
+    expect(state.currentDatabase).toBeNull();
+
+    const response = await handleProvenanceBottlenecks({});
+    const result = parseResponse(response);
+
+    expect(result.success).toBe(false);
+    expect(result.error?.category).toBe('DATABASE_NOT_SELECTED');
+  });
+
+  it('accepts empty params (no required fields)', async () => {
+    // Should pass validation and fail only on database not selected
+    const response = await handleProvenanceBottlenecks({});
+    const result = parseResponse(response);
+
+    expect(result.success).toBe(false);
+    expect(result.error?.category).toBe('DATABASE_NOT_SELECTED');
+  });
+
+  it('ignores unknown extra parameters', async () => {
+    const response = await handleProvenanceBottlenecks({ unknown_param: 42 });
+    const result = parseResponse(response);
+
+    expect(result.success).toBe(false);
+    expect(result.error?.category).toBe('DATABASE_NOT_SELECTED');
   });
 });

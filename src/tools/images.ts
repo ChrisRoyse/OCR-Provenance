@@ -78,6 +78,16 @@ const ImagePendingInput = z.object({
   limit: z.number().int().min(1).max(1000).default(100),
 });
 
+const ImageSearchInput = z.object({
+  image_type: z.string().optional(),
+  block_type: z.string().optional(),
+  min_confidence: z.number().min(0).max(1).optional(),
+  document_id: z.string().optional(),
+  exclude_headers_footers: z.boolean().default(false),
+  page_number: z.number().int().min(1).optional(),
+  limit: z.number().int().min(1).max(100).default(50),
+});
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // IMAGE TOOL HANDLERS
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -441,6 +451,85 @@ export async function handleImageResetFailed(
 }
 
 /**
+ * Handle ocr_image_search - Search images by VLM classification type, block type, and other filters
+ */
+export async function handleImageSearch(params: Record<string, unknown>): Promise<ToolResponse> {
+  try {
+    const input = validateInput(ImageSearchInput, params);
+    const { db } = requireDatabase();
+    const conn = db.getConnection();
+
+    let sql = `SELECT id, document_id, page_number, image_index, format, width, height,
+      vlm_confidence, vlm_description, vlm_structured_data, block_type,
+      is_header_footer, extracted_path, file_size
+      FROM images WHERE vlm_status = 'complete'`;
+    const sqlParams: unknown[] = [];
+
+    if (input.image_type) {
+      sql += ` AND json_extract(vlm_structured_data, '$.imageType') = ?`;
+      sqlParams.push(input.image_type);
+    }
+    if (input.block_type) {
+      sql += ` AND block_type = ?`;
+      sqlParams.push(input.block_type);
+    }
+    if (input.min_confidence !== undefined) {
+      sql += ` AND vlm_confidence >= ?`;
+      sqlParams.push(input.min_confidence);
+    }
+    if (input.document_id) {
+      sql += ` AND document_id = ?`;
+      sqlParams.push(input.document_id);
+    }
+    if (input.exclude_headers_footers) {
+      sql += ` AND is_header_footer = 0`;
+    }
+    if (input.page_number !== undefined) {
+      sql += ` AND page_number = ?`;
+      sqlParams.push(input.page_number);
+    }
+
+    sql += ` ORDER BY document_id, page_number, image_index LIMIT ?`;
+    sqlParams.push(input.limit);
+
+    const rows = conn.prepare(sql).all(...sqlParams) as Record<string, unknown>[];
+
+    const results = rows.map(r => ({
+      id: r.id,
+      document_id: r.document_id,
+      page_number: r.page_number,
+      image_index: r.image_index,
+      format: r.format,
+      dimensions: { width: r.width, height: r.height },
+      vlm_confidence: r.vlm_confidence,
+      vlm_description: r.vlm_description,
+      vlm_structured_data: r.vlm_structured_data ? JSON.parse(r.vlm_structured_data as string) : null,
+      block_type: r.block_type,
+      is_header_footer: r.is_header_footer === 1,
+      extracted_path: r.extracted_path,
+      file_size: r.file_size,
+    }));
+
+    // Aggregate type counts
+    const typeCounts: Record<string, number> = {};
+    for (const r of results) {
+      const type = (r.vlm_structured_data?.imageType as string) || 'unknown';
+      typeCounts[type] = (typeCounts[type] || 0) + 1;
+    }
+
+    return formatResponse(
+      successResult({
+        images: results,
+        total: results.length,
+        type_distribution: typeCounts,
+      })
+    );
+  } catch (error) {
+    return handleError(error);
+  }
+}
+
+/**
  * Handle ocr_image_pending - Get images pending VLM processing
  */
 export async function handleImagePending(params: Record<string, unknown>): Promise<ToolResponse> {
@@ -558,5 +647,25 @@ export const imageTools: Record<string, ToolDefinition> = {
       limit: z.number().int().min(1).max(1000).default(100).describe('Maximum images to return'),
     },
     handler: handleImagePending,
+  },
+
+  ocr_image_search: {
+    description: 'Search images by VLM classification type, block type, confidence, and other filters',
+    inputSchema: {
+      image_type: z.string().optional()
+        .describe('Filter by VLM image type (e.g., "chart", "diagram", "photograph", "table", "signature")'),
+      block_type: z.string().optional()
+        .describe('Filter by Datalab block type (e.g., "Figure", "Picture", "PageHeader")'),
+      min_confidence: z.number().min(0).max(1).optional()
+        .describe('Minimum VLM confidence score'),
+      document_id: z.string().optional()
+        .describe('Filter to specific document'),
+      exclude_headers_footers: z.boolean().default(false)
+        .describe('Exclude header/footer images'),
+      page_number: z.number().int().min(1).optional()
+        .describe('Filter to specific page'),
+      limit: z.number().int().min(1).max(100).default(50).describe('Maximum results'),
+    },
+    handler: handleImageSearch,
   },
 };

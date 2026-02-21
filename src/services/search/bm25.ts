@@ -9,12 +9,21 @@ import crypto from 'crypto';
 import type Database from 'better-sqlite3';
 import { SCHEMA_VERSION } from '../storage/migrations/schema-definitions.js';
 
+interface ChunkFilterSQL {
+  conditions: string[];
+  params: unknown[];
+}
+
 interface BM25SearchOptions {
   query: string;
   limit?: number;
   phraseSearch?: boolean;
   documentFilter?: string[];
   includeHighlight?: boolean;
+  chunkFilter?: ChunkFilterSQL;
+  qualityBoost?: boolean;
+  /** Page range filter applied to VLM/extraction searches (which lack chunk metadata) */
+  pageRangeFilter?: { min_page?: number; max_page?: number };
 }
 
 interface BM25SearchResult {
@@ -37,6 +46,13 @@ interface BM25SearchResult {
   provenance_id: string;
   content_hash: string;
   highlight?: string;
+  heading_context?: string | null;
+  section_path?: string | null;
+  content_types?: string | null;
+  is_atomic?: boolean;
+  page_range?: string | null;
+  heading_level?: number | null;
+  ocr_quality_score?: number | null;
 }
 
 export class BM25SearchService {
@@ -64,6 +80,8 @@ export class BM25SearchService {
       phraseSearch = false,
       documentFilter,
       includeHighlight = true,
+      chunkFilter,
+      qualityBoost = false,
     } = options;
 
     if (!query || query.trim().length === 0) {
@@ -87,7 +105,14 @@ export class BM25SearchService {
         c.character_end,
         c.chunk_index,
         c.provenance_id,
-        c.text_hash AS content_hash
+        c.text_hash AS content_hash,
+        c.heading_context,
+        c.section_path,
+        c.content_types,
+        c.is_atomic,
+        c.page_range,
+        c.heading_level
+        ${qualityBoost ? ', (SELECT o.parse_quality_score FROM ocr_results o WHERE o.document_id = c.document_id ORDER BY o.created_at DESC LIMIT 1) AS ocr_quality_score' : ''}
         ${includeHighlight ? ", snippet(chunks_fts, 0, '<mark>', '</mark>', '...', 32) AS highlight" : ''}
       FROM chunks_fts
       JOIN chunks c ON chunks_fts.rowid = c.rowid
@@ -102,6 +127,13 @@ export class BM25SearchService {
       params.push(...documentFilter);
     }
 
+    if (chunkFilter && chunkFilter.conditions.length > 0) {
+      for (const condition of chunkFilter.conditions) {
+        sql += ` AND ${condition}`;
+      }
+      params.push(...chunkFilter.params);
+    }
+
     sql += ` ORDER BY bm25(chunks_fts) LIMIT ?`;
     params.push(limit);
 
@@ -109,7 +141,7 @@ export class BM25SearchService {
 
     // TY-09: Field casts below are intentional -- better-sqlite3 returns untyped Records.
     // The SQL query guarantees these columns exist and have the expected types.
-    return rows.map((row, index) => ({
+    const results = rows.map((row, index) => ({
       chunk_id: row.chunk_id as string,
       image_id: null as string | null,
       embedding_id: (row.embedding_id as string | null) ?? null,
@@ -129,12 +161,37 @@ export class BM25SearchService {
       provenance_id: row.provenance_id as string,
       content_hash: row.content_hash as string,
       highlight: row.highlight as string | undefined,
+      heading_context: (row.heading_context as string | null) ?? null,
+      section_path: (row.section_path as string | null) ?? null,
+      content_types: (row.content_types as string | null) ?? null,
+      is_atomic: !!(row.is_atomic as number),
+      page_range: (row.page_range as string | null) ?? null,
+      heading_level: (row.heading_level as number | null) ?? null,
+      ocr_quality_score: qualityBoost ? ((row.ocr_quality_score as number | null) ?? null) : undefined,
     }));
+
+    // Apply quality boost post-query: multiply bm25_score by quality factor
+    if (qualityBoost) {
+      for (const r of results) {
+        const qualityFactor = 1 + (r.ocr_quality_score ?? 3) / 10.0;
+        r.bm25_score = r.bm25_score * qualityFactor;
+      }
+      // Re-sort by boosted score and re-rank
+      results.sort((a, b) => b.bm25_score - a.bm25_score);
+      for (let i = 0; i < results.length; i++) {
+        results[i].rank = i + 1;
+      }
+    }
+
+    return results;
   }
 
   /**
    * Search VLM description embeddings using FTS5
    * Queries vlm_fts JOIN embeddings JOIN images JOIN documents
+   *
+   * NOTE: VLM results only support page_range_filter from chunk filters
+   * (VLM embeddings don't have heading_context, section_path, etc.)
    */
   searchVLM(options: BM25SearchOptions): BM25SearchResult[] {
     const {
@@ -143,6 +200,8 @@ export class BM25SearchService {
       phraseSearch = false,
       documentFilter,
       includeHighlight = true,
+      pageRangeFilter,
+      qualityBoost = false,
     } = options;
 
     if (!query || query.trim().length === 0) {
@@ -173,6 +232,7 @@ export class BM25SearchService {
         e.chunk_index,
         e.provenance_id,
         e.content_hash
+        ${qualityBoost ? ', (SELECT o.parse_quality_score FROM ocr_results o WHERE o.document_id = e.document_id ORDER BY o.created_at DESC LIMIT 1) AS ocr_quality_score' : ''}
         ${includeHighlight ? ", snippet(vlm_fts, 0, '<mark>', '</mark>', '...', 32) AS highlight" : ''}
       FROM vlm_fts
       JOIN embeddings e ON vlm_fts.rowid = e.rowid
@@ -187,12 +247,24 @@ export class BM25SearchService {
       params.push(...documentFilter);
     }
 
+    // VLM only supports page_range_filter (no heading/section/content_type)
+    if (pageRangeFilter) {
+      if (pageRangeFilter.min_page !== undefined) {
+        sql += ' AND e.page_number >= ?';
+        params.push(pageRangeFilter.min_page);
+      }
+      if (pageRangeFilter.max_page !== undefined) {
+        sql += ' AND e.page_number <= ?';
+        params.push(pageRangeFilter.max_page);
+      }
+    }
+
     sql += ` ORDER BY bm25(vlm_fts) LIMIT ?`;
     params.push(limit);
 
     const rows = this.db.prepare(sql).all(...params) as Array<Record<string, unknown>>;
 
-    return rows.map((row, index) => ({
+    const results = rows.map((row, index) => ({
       chunk_id: null as string | null,
       image_id: row.image_id as string,
       embedding_id: row.embedding_id as string,
@@ -212,12 +284,31 @@ export class BM25SearchService {
       provenance_id: row.provenance_id as string,
       content_hash: row.content_hash as string,
       highlight: row.highlight as string | undefined,
+      ocr_quality_score: qualityBoost ? ((row.ocr_quality_score as number | null) ?? null) : undefined,
     }));
+
+    // Apply quality boost post-query
+    if (qualityBoost) {
+      for (const r of results) {
+        const qualityFactor = 1 + (r.ocr_quality_score ?? 3) / 10.0;
+        r.bm25_score = r.bm25_score * qualityFactor;
+      }
+      results.sort((a, b) => b.bm25_score - a.bm25_score);
+      for (let i = 0; i < results.length; i++) {
+        results[i].rank = i + 1;
+      }
+    }
+
+    return results;
   }
 
   /**
    * Search extraction content using FTS5
    * Queries extractions_fts JOIN extractions JOIN documents
+   *
+   * NOTE: Extractions don't have page numbers or chunk metadata,
+   * so chunkFilter and pageRangeFilter are not applied here.
+   * Only qualityBoost is supported.
    */
   searchExtractions(options: BM25SearchOptions): BM25SearchResult[] {
     const {
@@ -226,6 +317,7 @@ export class BM25SearchService {
       phraseSearch = false,
       documentFilter,
       includeHighlight = true,
+      qualityBoost = false,
     } = options;
 
     if (!query || query.trim().length === 0) {
@@ -251,6 +343,7 @@ export class BM25SearchService {
         d.file_hash AS source_file_hash,
         ex.provenance_id,
         ex.content_hash
+        ${qualityBoost ? ', (SELECT o.parse_quality_score FROM ocr_results o WHERE o.document_id = ex.document_id ORDER BY o.created_at DESC LIMIT 1) AS ocr_quality_score' : ''}
         ${includeHighlight ? ", snippet(extractions_fts, 0, '<mark>', '</mark>', '...', 32) AS highlight" : ''}
       FROM extractions_fts
       JOIN extractions ex ON extractions_fts.rowid = ex.rowid
@@ -270,7 +363,7 @@ export class BM25SearchService {
 
     const rows = this.db.prepare(sql).all(...params) as Array<Record<string, unknown>>;
 
-    return rows.map((row, index) => ({
+    const results = rows.map((row, index) => ({
       chunk_id: null as string | null,
       image_id: null as string | null,
       embedding_id: null as string | null,
@@ -290,7 +383,22 @@ export class BM25SearchService {
       provenance_id: row.provenance_id as string,
       content_hash: row.content_hash as string,
       highlight: row.highlight as string | undefined,
+      ocr_quality_score: qualityBoost ? ((row.ocr_quality_score as number | null) ?? null) : undefined,
     }));
+
+    // Apply quality boost post-query
+    if (qualityBoost) {
+      for (const r of results) {
+        const qualityFactor = 1 + (r.ocr_quality_score ?? 3) / 10.0;
+        r.bm25_score = r.bm25_score * qualityFactor;
+      }
+      results.sort((a, b) => b.bm25_score - a.bm25_score);
+      for (let i = 0; i < results.length; i++) {
+        results[i].rank = i + 1;
+      }
+    }
+
+    return results;
   }
 
   rebuildIndex(): {

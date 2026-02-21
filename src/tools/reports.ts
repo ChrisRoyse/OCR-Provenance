@@ -43,6 +43,24 @@ const DocumentReportInput = z.object({
 
 const QualitySummaryInput = z.object({});
 
+const PipelineAnalyticsInput = z.object({
+  group_by: z.enum(['total', 'document', 'mode', 'file_type']).default('total'),
+  limit: z.number().int().min(1).max(100).default(20),
+});
+
+const CorpusProfileInput = z.object({
+  include_section_frequency: z.boolean().default(true),
+  include_content_type_distribution: z.boolean().default(true),
+  limit: z.number().int().min(1).max(100).default(20),
+});
+
+const ErrorAnalyticsInput = z.object({
+  include_error_messages: z.boolean().default(true),
+  limit: z.number().int().min(1).max(50).default(10),
+});
+
+const ProvenanceBottlenecksInput = z.object({});
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // REPORT TOOL HANDLERS
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -680,6 +698,740 @@ async function handleCostSummary(params: Record<string, unknown>): Promise<ToolR
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
+// PIPELINE PERFORMANCE ANALYTICS HANDLER
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/**
+ * Handle ocr_pipeline_analytics - Get pipeline performance analytics
+ */
+export async function handlePipelineAnalytics(
+  params: Record<string, unknown>
+): Promise<ToolResponse> {
+  try {
+    const input = validateInput(PipelineAnalyticsInput, params);
+    const { db } = requireDatabase();
+    const conn = db.getConnection();
+
+    // 1. OCR processing stats
+    const ocrStats = conn
+      .prepare(
+        `
+      SELECT
+        COALESCE(COUNT(*), 0) as total_docs,
+        COALESCE(SUM(page_count), 0) as total_pages,
+        COALESCE(AVG(processing_duration_ms), 0) as avg_duration_ms,
+        COALESCE(MIN(processing_duration_ms), 0) as min_duration_ms,
+        COALESCE(MAX(processing_duration_ms), 0) as max_duration_ms,
+        COALESCE(SUM(processing_duration_ms), 0) as total_duration_ms,
+        COALESCE(AVG(parse_quality_score), 0) as avg_quality
+      FROM ocr_results
+    `
+      )
+      .get() as {
+      total_docs: number;
+      total_pages: number;
+      avg_duration_ms: number;
+      min_duration_ms: number;
+      max_duration_ms: number;
+      total_duration_ms: number;
+      avg_quality: number;
+    };
+
+    const avgMsPerPage =
+      ocrStats.total_pages > 0 ? ocrStats.total_duration_ms / ocrStats.total_pages : 0;
+
+    // 2. Embedding generation stats
+    const embeddingStats = conn
+      .prepare(
+        `
+      SELECT
+        COALESCE(COUNT(*), 0) as total_embeddings,
+        COALESCE(AVG(generation_duration_ms), 0) as avg_duration_ms,
+        COALESCE(MIN(generation_duration_ms), 0) as min_duration_ms,
+        COALESCE(MAX(generation_duration_ms), 0) as max_duration_ms,
+        COALESCE(SUM(generation_duration_ms), 0) as total_duration_ms,
+        COUNT(DISTINCT gpu_device) as device_count
+      FROM embeddings
+    `
+      )
+      .get() as {
+      total_embeddings: number;
+      avg_duration_ms: number;
+      min_duration_ms: number;
+      max_duration_ms: number;
+      total_duration_ms: number;
+      device_count: number;
+    };
+
+    // 3. VLM processing stats
+    const vlmStats = conn
+      .prepare(
+        `
+      SELECT
+        COALESCE(COUNT(*), 0) as total_images,
+        COALESCE(SUM(CASE WHEN vlm_status = 'complete' THEN 1 ELSE 0 END), 0) as completed,
+        COALESCE(SUM(CASE WHEN vlm_status = 'failed' THEN 1 ELSE 0 END), 0) as failed,
+        COALESCE(AVG(CASE WHEN vlm_status = 'complete' THEN vlm_tokens_used END), 0) as avg_tokens,
+        COALESCE(SUM(CASE WHEN vlm_status = 'complete' THEN vlm_tokens_used ELSE 0 END), 0) as total_tokens,
+        COALESCE(AVG(CASE WHEN vlm_status = 'complete' THEN vlm_confidence END), 0) as avg_confidence
+      FROM images
+    `
+      )
+      .get() as {
+      total_images: number;
+      completed: number;
+      failed: number;
+      avg_tokens: number;
+      total_tokens: number;
+      avg_confidence: number;
+    };
+
+    // 4. Comparison stats
+    const compStats = conn
+      .prepare(
+        `
+      SELECT
+        COALESCE(COUNT(*), 0) as total,
+        COALESCE(AVG(processing_duration_ms), 0) as avg_duration_ms,
+        COALESCE(SUM(processing_duration_ms), 0) as total_duration_ms
+      FROM comparisons
+    `
+      )
+      .get() as { total: number; avg_duration_ms: number; total_duration_ms: number };
+
+    // 5. Clustering stats
+    const clusterStats = conn
+      .prepare(
+        `
+      SELECT
+        COALESCE(COUNT(*), 0) as total_clusters,
+        COUNT(DISTINCT run_id) as total_runs,
+        COALESCE(AVG(processing_duration_ms), 0) as avg_duration_ms,
+        COALESCE(SUM(processing_duration_ms), 0) as total_duration_ms
+      FROM clusters
+    `
+      )
+      .get() as {
+      total_clusters: number;
+      total_runs: number;
+      avg_duration_ms: number;
+      total_duration_ms: number;
+    };
+
+    // 6. Throughput calculations
+    const pagesPerMinute =
+      ocrStats.total_duration_ms > 0
+        ? (ocrStats.total_pages / ocrStats.total_duration_ms) * 60000
+        : 0;
+    const embeddingsPerSecond =
+      embeddingStats.total_duration_ms > 0
+        ? (embeddingStats.total_embeddings / embeddingStats.total_duration_ms) * 1000
+        : 0;
+
+    const result: Record<string, unknown> = {
+      ocr: {
+        total_docs: ocrStats.total_docs,
+        total_pages: ocrStats.total_pages,
+        avg_duration_ms: ocrStats.avg_duration_ms,
+        min_duration_ms: ocrStats.min_duration_ms,
+        max_duration_ms: ocrStats.max_duration_ms,
+        total_duration_ms: ocrStats.total_duration_ms,
+        avg_ms_per_page: avgMsPerPage,
+        avg_quality: ocrStats.avg_quality,
+      },
+      embeddings: {
+        total_embeddings: embeddingStats.total_embeddings,
+        avg_duration_ms: embeddingStats.avg_duration_ms,
+        min_duration_ms: embeddingStats.min_duration_ms,
+        max_duration_ms: embeddingStats.max_duration_ms,
+        total_duration_ms: embeddingStats.total_duration_ms,
+        device_count: embeddingStats.device_count,
+      },
+      vlm: {
+        total_images: vlmStats.total_images,
+        completed: vlmStats.completed,
+        failed: vlmStats.failed,
+        avg_tokens: vlmStats.avg_tokens,
+        total_tokens: vlmStats.total_tokens,
+        avg_confidence: vlmStats.avg_confidence,
+      },
+      comparisons: {
+        total: compStats.total,
+        avg_duration_ms: compStats.avg_duration_ms,
+        total_duration_ms: compStats.total_duration_ms,
+      },
+      clustering: {
+        total_clusters: clusterStats.total_clusters,
+        total_runs: clusterStats.total_runs,
+        avg_duration_ms: clusterStats.avg_duration_ms,
+        total_duration_ms: clusterStats.total_duration_ms,
+      },
+      throughput: {
+        pages_per_minute: pagesPerMinute,
+        embeddings_per_second: embeddingsPerSecond,
+      },
+    };
+
+    // 7. Group-by breakdown
+    if (input.group_by === 'mode') {
+      result.by_mode = conn
+        .prepare(
+          `
+        SELECT
+          datalab_mode as mode,
+          COUNT(*) as count,
+          COALESCE(AVG(processing_duration_ms), 0) as avg_ms,
+          COALESCE(AVG(parse_quality_score), 0) as avg_quality,
+          COALESCE(AVG(cost_cents), 0) as avg_cost
+        FROM ocr_results
+        GROUP BY datalab_mode
+      `
+        )
+        .all();
+    } else if (input.group_by === 'file_type') {
+      result.by_file_type = conn
+        .prepare(
+          `
+        SELECT
+          d.file_type,
+          COUNT(*) as count,
+          COALESCE(AVG(o.processing_duration_ms), 0) as avg_ms,
+          COALESCE(AVG(o.parse_quality_score), 0) as avg_quality
+        FROM ocr_results o
+        JOIN documents d ON d.id = o.document_id
+        GROUP BY d.file_type
+        LIMIT ?
+      `
+        )
+        .all(input.limit);
+    } else if (input.group_by === 'document') {
+      result.by_document = conn
+        .prepare(
+          `
+        SELECT
+          d.id as document_id,
+          d.file_name,
+          o.processing_duration_ms,
+          o.page_count,
+          o.parse_quality_score as quality,
+          o.datalab_mode as mode,
+          (SELECT COUNT(*) FROM chunks c WHERE c.document_id = d.id) as chunk_count,
+          (SELECT COUNT(*) FROM images i WHERE i.document_id = d.id) as image_count
+        FROM ocr_results o
+        JOIN documents d ON d.id = o.document_id
+        ORDER BY o.processing_duration_ms DESC
+        LIMIT ?
+      `
+        )
+        .all(input.limit);
+    }
+
+    return formatResponse(successResult(result));
+  } catch (error) {
+    return handleError(error);
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// CORPUS CONTENT PROFILE HANDLER
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/**
+ * Handle ocr_corpus_profile - Get corpus content profile
+ */
+export async function handleCorpusProfile(
+  params: Record<string, unknown>
+): Promise<ToolResponse> {
+  try {
+    const input = validateInput(CorpusProfileInput, params);
+    const { db } = requireDatabase();
+    const conn = db.getConnection();
+
+    // 1. Document size distribution
+    const docSizeStats = conn
+      .prepare(
+        `
+      SELECT
+        COALESCE(AVG(page_count), 0) as avg_page_count,
+        COALESCE(MIN(page_count), 0) as min_page_count,
+        COALESCE(MAX(page_count), 0) as max_page_count,
+        COALESCE(AVG(file_size), 0) as avg_file_size,
+        COALESCE(SUM(file_size), 0) as total_file_size,
+        COUNT(*) as total_documents
+      FROM documents
+      WHERE status = 'complete'
+    `
+      )
+      .get() as {
+      avg_page_count: number;
+      min_page_count: number;
+      max_page_count: number;
+      avg_file_size: number;
+      total_file_size: number;
+      total_documents: number;
+    };
+
+    // 2. File type distribution
+    const fileTypeDistribution = conn
+      .prepare(
+        `
+      SELECT file_type, COUNT(*) as count
+      FROM documents
+      GROUP BY file_type
+      ORDER BY count DESC
+    `
+      )
+      .all() as Array<{ file_type: string; count: number }>;
+
+    // 3. Chunk statistics
+    const chunkStats = conn
+      .prepare(
+        `
+      SELECT
+        COALESCE(COUNT(*), 0) as total_chunks,
+        COALESCE(AVG(LENGTH(text)), 0) as avg_text_length,
+        COALESCE(MIN(LENGTH(text)), 0) as min_text_length,
+        COALESCE(MAX(LENGTH(text)), 0) as max_text_length,
+        COALESCE(SUM(CASE WHEN is_atomic = 1 THEN 1 ELSE 0 END), 0) as atomic_chunks,
+        COALESCE(SUM(CASE WHEN heading_context IS NOT NULL AND heading_context != '' THEN 1 ELSE 0 END), 0) as chunks_with_headings
+      FROM chunks
+    `
+      )
+      .get() as {
+      total_chunks: number;
+      avg_text_length: number;
+      min_text_length: number;
+      max_text_length: number;
+      atomic_chunks: number;
+      chunks_with_headings: number;
+    };
+
+    // Chunks per document stats
+    const chunksPerDoc = conn
+      .prepare(
+        `
+      SELECT
+        COALESCE(AVG(cnt), 0) as avg_chunks,
+        COALESCE(MIN(cnt), 0) as min_chunks,
+        COALESCE(MAX(cnt), 0) as max_chunks
+      FROM (SELECT COUNT(*) as cnt FROM chunks GROUP BY document_id)
+    `
+      )
+      .get() as { avg_chunks: number; min_chunks: number; max_chunks: number };
+
+    // Average content_types per chunk
+    const avgContentTypes = conn
+      .prepare(
+        `
+      SELECT COALESCE(AVG(
+        CASE
+          WHEN content_types IS NOT NULL AND content_types != '[]' AND content_types != ''
+          THEN json_array_length(content_types)
+          ELSE 0
+        END
+      ), 0) as avg_content_types
+      FROM chunks
+    `
+      )
+      .get() as { avg_content_types: number };
+
+    const result: Record<string, unknown> = {
+      documents: {
+        total_complete: docSizeStats.total_documents,
+        avg_page_count: docSizeStats.avg_page_count,
+        min_page_count: docSizeStats.min_page_count,
+        max_page_count: docSizeStats.max_page_count,
+        avg_file_size: docSizeStats.avg_file_size,
+        total_file_size: docSizeStats.total_file_size,
+      },
+      file_types: fileTypeDistribution,
+      chunks: {
+        total_chunks: chunkStats.total_chunks,
+        avg_text_length: chunkStats.avg_text_length,
+        min_text_length: chunkStats.min_text_length,
+        max_text_length: chunkStats.max_text_length,
+        avg_content_types_per_chunk: avgContentTypes.avg_content_types,
+        atomic_chunks: chunkStats.atomic_chunks,
+        chunks_with_headings: chunkStats.chunks_with_headings,
+        per_document: {
+          avg: chunksPerDoc.avg_chunks,
+          min: chunksPerDoc.min_chunks,
+          max: chunksPerDoc.max_chunks,
+        },
+      },
+    };
+
+    // 5. Content type distribution (optional)
+    if (input.include_content_type_distribution) {
+      result.content_type_distribution = conn
+        .prepare(
+          `
+        SELECT
+          j.value as content_type,
+          COUNT(*) as count
+        FROM chunks, json_each(COALESCE(content_types, '[]')) j
+        GROUP BY j.value
+        ORDER BY count DESC
+        LIMIT ?
+      `
+        )
+        .all(input.limit) as Array<{ content_type: string; count: number }>;
+    }
+
+    // 6. Section frequency (optional)
+    if (input.include_section_frequency) {
+      result.section_frequency = conn
+        .prepare(
+          `
+        SELECT
+          heading_context,
+          COUNT(*) as occurrence_count,
+          COUNT(DISTINCT document_id) as document_count
+        FROM chunks
+        WHERE heading_context IS NOT NULL AND heading_context != ''
+        GROUP BY heading_context
+        ORDER BY occurrence_count DESC
+        LIMIT ?
+      `
+        )
+        .all(input.limit) as Array<{
+        heading_context: string;
+        occurrence_count: number;
+        document_count: number;
+      }>;
+    }
+
+    // 7. Image type distribution from VLM structured data
+    result.image_type_distribution = conn
+      .prepare(
+        `
+      SELECT
+        COALESCE(json_extract(vlm_structured_data, '$.imageType'), 'unknown') as image_type,
+        COUNT(*) as count
+      FROM images
+      WHERE vlm_status = 'complete' AND vlm_structured_data IS NOT NULL
+      GROUP BY image_type
+      ORDER BY count DESC
+    `
+      )
+      .all() as Array<{ image_type: string; count: number }>;
+
+    return formatResponse(successResult(result));
+  } catch (error) {
+    return handleError(error);
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// ERROR & RECOVERY ANALYTICS HANDLER
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/**
+ * Handle ocr_error_analytics - Get error and recovery analytics
+ */
+export async function handleErrorAnalytics(
+  params: Record<string, unknown>
+): Promise<ToolResponse> {
+  try {
+    const input = validateInput(ErrorAnalyticsInput, params);
+    const { db } = requireDatabase();
+    const conn = db.getConnection();
+
+    // 1. Document failure rates
+    const docFailures = conn
+      .prepare(
+        `
+      SELECT
+        COUNT(*) as total,
+        COALESCE(SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END), 0) as failed,
+        COALESCE(SUM(CASE WHEN status = 'complete' THEN 1 ELSE 0 END), 0) as complete,
+        COALESCE(SUM(CASE WHEN status = 'pending' THEN 1 ELSE 0 END), 0) as pending,
+        COALESCE(SUM(CASE WHEN status = 'processing' THEN 1 ELSE 0 END), 0) as processing
+      FROM documents
+    `
+      )
+      .get() as {
+      total: number;
+      failed: number;
+      complete: number;
+      pending: number;
+      processing: number;
+    };
+
+    const docFailureRate = docFailures.total > 0 ? (docFailures.failed / docFailures.total) * 100 : 0;
+
+    // 2. Failure by file type
+    const failureByFileType = conn
+      .prepare(
+        `
+      SELECT
+        file_type,
+        COUNT(*) as total,
+        COALESCE(SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END), 0) as failed,
+        ROUND(
+          CASE WHEN COUNT(*) > 0
+            THEN CAST(SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) AS REAL) / COUNT(*) * 100
+            ELSE 0
+          END,
+        1) as failure_rate_pct
+      FROM documents
+      GROUP BY file_type
+      ORDER BY failed DESC
+    `
+      )
+      .all() as Array<{
+      file_type: string;
+      total: number;
+      failed: number;
+      failure_rate_pct: number;
+    }>;
+
+    // 4. VLM failure stats
+    const vlmFailures = conn
+      .prepare(
+        `
+      SELECT
+        COUNT(*) as total_images,
+        COALESCE(SUM(CASE WHEN vlm_status = 'failed' THEN 1 ELSE 0 END), 0) as failed,
+        COALESCE(SUM(CASE WHEN vlm_status = 'complete' THEN 1 ELSE 0 END), 0) as complete,
+        COALESCE(SUM(CASE WHEN vlm_status = 'pending' THEN 1 ELSE 0 END), 0) as pending
+      FROM images
+    `
+      )
+      .get() as {
+      total_images: number;
+      failed: number;
+      complete: number;
+      pending: number;
+    };
+
+    const vlmFailureRate =
+      vlmFailures.total_images > 0
+        ? (vlmFailures.failed / vlmFailures.total_images) * 100
+        : 0;
+
+    // 6. Embedding failure stats (from chunks embedding_status)
+    const embeddingFailures = conn
+      .prepare(
+        `
+      SELECT
+        COUNT(*) as total_chunks,
+        COALESCE(SUM(CASE WHEN embedding_status = 'failed' THEN 1 ELSE 0 END), 0) as failed,
+        COALESCE(SUM(CASE WHEN embedding_status = 'complete' THEN 1 ELSE 0 END), 0) as complete,
+        COALESCE(SUM(CASE WHEN embedding_status = 'pending' THEN 1 ELSE 0 END), 0) as pending
+      FROM chunks
+    `
+      )
+      .get() as {
+      total_chunks: number;
+      failed: number;
+      complete: number;
+      pending: number;
+    };
+
+    const result: Record<string, unknown> = {
+      documents: {
+        total: docFailures.total,
+        failed: docFailures.failed,
+        complete: docFailures.complete,
+        pending: docFailures.pending,
+        processing: docFailures.processing,
+        failure_rate_pct: docFailureRate,
+      },
+      failure_by_file_type: failureByFileType,
+      vlm: {
+        total_images: vlmFailures.total_images,
+        failed: vlmFailures.failed,
+        complete: vlmFailures.complete,
+        pending: vlmFailures.pending,
+        failure_rate_pct: vlmFailureRate,
+      },
+      embeddings: {
+        total_chunks: embeddingFailures.total_chunks,
+        failed: embeddingFailures.failed,
+        complete: embeddingFailures.complete,
+        pending: embeddingFailures.pending,
+      },
+    };
+
+    // 3. Common document errors (optional)
+    if (input.include_error_messages) {
+      result.common_document_errors = conn
+        .prepare(
+          `
+        SELECT
+          error_message,
+          COUNT(*) as count
+        FROM documents
+        WHERE error_message IS NOT NULL
+        GROUP BY error_message
+        ORDER BY count DESC
+        LIMIT ?
+      `
+        )
+        .all(input.limit) as Array<{ error_message: string; count: number }>;
+
+      // 5. VLM common errors
+      result.common_vlm_errors = conn
+        .prepare(
+          `
+        SELECT
+          error_message,
+          COUNT(*) as count
+        FROM images
+        WHERE vlm_status = 'failed' AND error_message IS NOT NULL
+        GROUP BY error_message
+        ORDER BY count DESC
+        LIMIT ?
+      `
+        )
+        .all(input.limit) as Array<{ error_message: string; count: number }>;
+    }
+
+    return formatResponse(successResult(result));
+  } catch (error) {
+    return handleError(error);
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// PROVENANCE BOTTLENECK ANALYSIS HANDLER
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/**
+ * Handle ocr_provenance_bottlenecks - Analyze provenance processing durations to find bottlenecks
+ */
+export async function handleProvenanceBottlenecks(
+  params: Record<string, unknown>
+): Promise<ToolResponse> {
+  try {
+    validateInput(ProvenanceBottlenecksInput, params);
+    const { db } = requireDatabase();
+    const conn = db.getConnection();
+
+    // 1. Per-processor-type duration analysis
+    const byProcessor = conn
+      .prepare(
+        `
+        SELECT
+          processor,
+          type,
+          COUNT(*) as count,
+          COALESCE(AVG(processing_duration_ms), 0) as avg_duration_ms,
+          COALESCE(MIN(processing_duration_ms), 0) as min_duration_ms,
+          COALESCE(MAX(processing_duration_ms), 0) as max_duration_ms,
+          COALESCE(SUM(processing_duration_ms), 0) as total_duration_ms
+        FROM provenance
+        WHERE processing_duration_ms IS NOT NULL AND processing_duration_ms > 0
+        GROUP BY processor, type
+        ORDER BY total_duration_ms DESC
+      `
+      )
+      .all() as Array<{
+      processor: string;
+      type: string;
+      count: number;
+      avg_duration_ms: number;
+      min_duration_ms: number;
+      max_duration_ms: number;
+      total_duration_ms: number;
+    }>;
+
+    // 2. Per-chain-depth + type duration analysis
+    const byChainDepth = conn
+      .prepare(
+        `
+        SELECT
+          chain_depth,
+          type,
+          COUNT(*) as count,
+          COALESCE(AVG(processing_duration_ms), 0) as avg_duration_ms,
+          COALESCE(SUM(processing_duration_ms), 0) as total_duration_ms
+        FROM provenance
+        WHERE processing_duration_ms IS NOT NULL AND processing_duration_ms > 0
+        GROUP BY chain_depth, type
+        ORDER BY chain_depth ASC, total_duration_ms DESC
+      `
+      )
+      .all() as Array<{
+      chain_depth: number;
+      type: string;
+      count: number;
+      avg_duration_ms: number;
+      total_duration_ms: number;
+    }>;
+
+    // 3. Top 10 slowest individual operations with document names
+    const slowestOps = conn
+      .prepare(
+        `
+        SELECT
+          p.id as provenance_id,
+          p.type,
+          p.processor,
+          p.processing_duration_ms,
+          p.chain_depth,
+          p.source_path,
+          d.file_name as document_name
+        FROM provenance p
+        LEFT JOIN documents d ON d.provenance_id = p.root_document_id
+        WHERE p.processing_duration_ms IS NOT NULL AND p.processing_duration_ms > 0
+        ORDER BY p.processing_duration_ms DESC
+        LIMIT 10
+      `
+      )
+      .all() as Array<{
+      provenance_id: string;
+      type: string;
+      processor: string;
+      processing_duration_ms: number;
+      chain_depth: number;
+      source_path: string | null;
+      document_name: string | null;
+    }>;
+
+    // Calculate grand total
+    const grandTotal = byProcessor.reduce((sum, p) => sum + p.total_duration_ms, 0);
+
+    return formatResponse(
+      successResult({
+        grand_total_duration_ms: grandTotal,
+        by_processor: byProcessor.map((p) => ({
+          processor: p.processor,
+          type: p.type,
+          count: p.count,
+          avg_duration_ms: p.avg_duration_ms,
+          min_duration_ms: p.min_duration_ms,
+          max_duration_ms: p.max_duration_ms,
+          total_duration_ms: p.total_duration_ms,
+          pct_of_total: grandTotal > 0
+            ? Math.round((p.total_duration_ms / grandTotal) * 10000) / 100
+            : 0,
+        })),
+        by_chain_depth: byChainDepth.map((d) => ({
+          chain_depth: d.chain_depth,
+          type: d.type,
+          count: d.count,
+          avg_duration_ms: d.avg_duration_ms,
+          total_duration_ms: d.total_duration_ms,
+        })),
+        slowest_operations: slowestOps.map((o) => ({
+          provenance_id: o.provenance_id,
+          type: o.type,
+          processor: o.processor,
+          processing_duration_ms: o.processing_duration_ms,
+          chain_depth: o.chain_depth,
+          document_name: o.document_name,
+          source_path: o.source_path,
+        })),
+      })
+    );
+  } catch (error) {
+    return handleError(error);
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
 // HELPER FUNCTIONS
 // ═══════════════════════════════════════════════════════════════════════════════
 
@@ -861,5 +1613,55 @@ export const reportTools: Record<string, ToolDefinition> = {
         .describe('How to group cost data'),
     },
     handler: handleCostSummary,
+  },
+
+  ocr_pipeline_analytics: {
+    description:
+      'Get pipeline performance analytics including OCR, embedding, VLM, comparison, and clustering stats with throughput metrics',
+    inputSchema: {
+      group_by: z
+        .enum(['total', 'document', 'mode', 'file_type'])
+        .default('total')
+        .describe('How to group performance data'),
+      limit: z.number().int().min(1).max(100).default(20),
+    },
+    handler: handlePipelineAnalytics,
+  },
+
+  ocr_corpus_profile: {
+    description:
+      'Get corpus content profile including document sizes, chunk statistics, content type distribution, and section frequency',
+    inputSchema: {
+      include_section_frequency: z
+        .boolean()
+        .default(true)
+        .describe('Include most common section headings across documents'),
+      include_content_type_distribution: z
+        .boolean()
+        .default(true)
+        .describe('Include content type distribution (tables, code, etc.)'),
+      limit: z.number().int().min(1).max(100).default(20),
+    },
+    handler: handleCorpusProfile,
+  },
+
+  ocr_error_analytics: {
+    description:
+      'Get error and recovery analytics including failure rates for documents, VLM, and embeddings with common error messages',
+    inputSchema: {
+      include_error_messages: z
+        .boolean()
+        .default(true)
+        .describe('Include most common error messages'),
+      limit: z.number().int().min(1).max(50).default(10),
+    },
+    handler: handleErrorAnalytics,
+  },
+
+  ocr_provenance_bottlenecks: {
+    description:
+      'Analyze provenance processing durations to find bottlenecks. Shows per-processor-type duration breakdown, per-chain-depth analysis, and top 10 slowest operations.',
+    inputSchema: {},
+    handler: handleProvenanceBottlenecks,
   },
 };

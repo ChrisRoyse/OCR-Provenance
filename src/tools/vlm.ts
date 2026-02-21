@@ -62,6 +62,11 @@ const VLMStatusInput = z.object({});
 
 /**
  * Handle ocr_vlm_describe - Generate detailed description of an image using Gemini 3
+ *
+ * NOTE: This standalone tool describes arbitrary image files without database context.
+ * Embedding generation requires document_id, image_id, and provenance chain which are
+ * not available here. For database-tracked images, use ocr_vlm_process_document or
+ * ocr_evaluate_single which properly embed descriptions with full provenance.
  */
 export async function handleVLMDescribe(params: Record<string, unknown>): Promise<ToolResponse> {
   try {
@@ -98,6 +103,7 @@ export async function handleVLMDescribe(params: Record<string, unknown>): Promis
         processing_time_ms: result.processingTimeMs,
         tokens_used: result.tokensUsed,
         confidence: result.analysis.confidence,
+        embedding_note: 'Use ocr_vlm_process_document or ocr_evaluate_single for searchable embeddings with provenance tracking',
       })
     );
   } catch (error) {

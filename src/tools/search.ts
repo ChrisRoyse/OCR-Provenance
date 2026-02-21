@@ -32,6 +32,7 @@ import { BM25SearchService } from '../services/search/bm25.js';
 import { RRFFusion, type RankedResult } from '../services/search/fusion.js';
 import { rerankResults } from '../services/search/reranker.js';
 import { expandQuery, getExpandedTerms } from '../services/search/query-expander.js';
+import { classifyQuery } from '../services/search/query-classifier.js';
 import { getClusterSummariesForDocument } from '../services/storage/database/cluster-operations.js';
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -166,6 +167,63 @@ function resolveClusterFilter(
 }
 
 /**
+ * Chunk-level filter SQL conditions and params.
+ * Built by resolveChunkFilter, consumed by BM25 and vector search.
+ */
+interface ChunkFilterSQL {
+  conditions: string[];
+  params: unknown[];
+}
+
+/**
+ * Resolve chunk-level filters to SQL WHERE clause fragments.
+ * Filters apply to the chunks table (alias 'c' in BM25, 'ch' in vector).
+ * The caller is responsible for alias translation if needed.
+ */
+function resolveChunkFilter(
+  filters: {
+    content_type_filter?: string[];
+    section_path_filter?: string;
+    heading_filter?: string;
+    page_range_filter?: { min_page?: number; max_page?: number };
+  }
+): ChunkFilterSQL {
+  const conditions: string[] = [];
+  const params: unknown[] = [];
+
+  if (filters.content_type_filter && filters.content_type_filter.length > 0) {
+    // content_types is JSON array like '["table","text"]'
+    // Match if ANY of the requested types appear
+    const typeConditions = filters.content_type_filter.map(() => "c.content_types LIKE '%' || ? || '%'");
+    conditions.push(`(${typeConditions.join(' OR ')})`);
+    params.push(...filters.content_type_filter.map(t => `"${t}"`));
+  }
+
+  if (filters.section_path_filter) {
+    conditions.push("c.section_path LIKE ? || '%'");
+    params.push(filters.section_path_filter);
+  }
+
+  if (filters.heading_filter) {
+    conditions.push("c.heading_context LIKE '%' || ? || '%'");
+    params.push(filters.heading_filter);
+  }
+
+  if (filters.page_range_filter) {
+    if (filters.page_range_filter.min_page !== undefined) {
+      conditions.push('c.page_number >= ?');
+      params.push(filters.page_range_filter.min_page);
+    }
+    if (filters.page_range_filter.max_page !== undefined) {
+      conditions.push('c.page_number <= ?');
+      params.push(filters.page_range_filter.max_page);
+    }
+  }
+
+  return { conditions, params };
+}
+
+/**
  * Attach cluster context to search results.
  * For each unique document_id in results, queries cluster membership
  * and attaches cluster_context array to each result.
@@ -287,6 +345,13 @@ function toBm25Ranked(
     content_hash: string;
     rank: number;
     bm25_score: number;
+    heading_context?: string | null;
+    section_path?: string | null;
+    content_types?: string | null;
+    is_atomic?: boolean;
+    page_range?: string | null;
+    heading_level?: number | null;
+    ocr_quality_score?: number | null;
   }>
 ): RankedResult[] {
   return results.map((r) => ({
@@ -308,6 +373,13 @@ function toBm25Ranked(
     content_hash: r.content_hash,
     rank: r.rank,
     score: r.bm25_score,
+    heading_context: r.heading_context ?? null,
+    section_path: r.section_path ?? null,
+    content_types: r.content_types ?? null,
+    is_atomic: r.is_atomic ?? false,
+    page_range: r.page_range ?? null,
+    heading_level: r.heading_level ?? null,
+    ocr_quality_score: r.ocr_quality_score ?? null,
   }));
 }
 
@@ -333,6 +405,13 @@ function toSemanticRanked(
     provenance_id: string;
     content_hash: string;
     similarity_score: number;
+    heading_context?: string | null;
+    section_path?: string | null;
+    content_types?: string | null;
+    is_atomic?: boolean;
+    chunk_page_range?: string | null;
+    heading_level?: number | null;
+    ocr_quality_score?: number | null;
   }>
 ): RankedResult[] {
   return results.map((r, i) => ({
@@ -354,6 +433,13 @@ function toSemanticRanked(
     content_hash: r.content_hash,
     rank: i + 1,
     score: r.similarity_score,
+    heading_context: r.heading_context ?? null,
+    section_path: r.section_path ?? null,
+    content_types: r.content_types ?? null,
+    is_atomic: r.is_atomic ?? false,
+    page_range: r.chunk_page_range ?? null,
+    heading_level: r.heading_level ?? null,
+    ocr_quality_score: r.ocr_quality_score ?? null,
   }));
 }
 
@@ -389,6 +475,14 @@ export async function handleSearchSemantic(params: Record<string, unknown>): Pro
       )
     );
 
+    // Resolve chunk-level filters
+    const chunkFilter = resolveChunkFilter({
+      content_type_filter: input.content_type_filter,
+      section_path_filter: input.section_path_filter,
+      heading_filter: input.heading_filter,
+      page_range_filter: input.page_range_filter,
+    });
+
     // Generate query embedding (use expanded query for better semantic coverage)
     const embedder = getEmbeddingService();
     const queryVector = await embedder.embedSearchQuery(searchQuery);
@@ -402,6 +496,9 @@ export async function handleSearchSemantic(params: Record<string, unknown>): Pro
       limit: searchLimit,
       threshold,
       documentFilter,
+      chunkFilter: chunkFilter.conditions.length > 0 ? chunkFilter : undefined,
+      qualityBoost: input.quality_boost,
+      pageRangeFilter: input.page_range_filter,
     });
 
     let finalResults: Array<Record<string, unknown>>;
@@ -451,6 +548,12 @@ export async function handleSearchSemantic(params: Record<string, unknown>): Pro
           total_chunks: original.total_chunks,
           content_hash: original.content_hash,
           provenance_id: original.provenance_id,
+          heading_context: original.heading_context ?? null,
+          section_path: original.section_path ?? null,
+          content_types: original.content_types ?? null,
+          is_atomic: original.is_atomic ?? false,
+          chunk_page_range: original.chunk_page_range ?? null,
+          heading_level: original.heading_level ?? null,
           rerank_score: r.relevance_score,
           rerank_reasoning: r.reasoning,
         };
@@ -483,6 +586,12 @@ export async function handleSearchSemantic(params: Record<string, unknown>): Pro
           total_chunks: r.total_chunks,
           content_hash: r.content_hash,
           provenance_id: r.provenance_id,
+          heading_context: r.heading_context ?? null,
+          section_path: r.section_path ?? null,
+          content_types: r.content_types ?? null,
+          is_atomic: r.is_atomic ?? false,
+          chunk_page_range: r.chunk_page_range ?? null,
+          heading_level: r.heading_level ?? null,
         };
         attachProvenance(result, db, r.provenance_id, !!input.include_provenance);
         return result;
@@ -543,6 +652,14 @@ export async function handleSearch(params: Record<string, unknown>): Promise<Too
       )
     );
 
+    // Resolve chunk-level filters
+    const chunkFilter = resolveChunkFilter({
+      content_type_filter: input.content_type_filter,
+      section_path_filter: input.section_path_filter,
+      heading_filter: input.heading_filter,
+      page_range_filter: input.page_range_filter,
+    });
+
     const bm25 = new BM25SearchService(conn);
     const limit = input.limit ?? 10;
 
@@ -556,6 +673,8 @@ export async function handleSearch(params: Record<string, unknown>): Promise<Too
       phraseSearch: input.phrase_search,
       documentFilter,
       includeHighlight: input.include_highlight,
+      chunkFilter: chunkFilter.conditions.length > 0 ? chunkFilter : undefined,
+      qualityBoost: input.quality_boost,
     });
 
     // Search VLM FTS
@@ -565,6 +684,8 @@ export async function handleSearch(params: Record<string, unknown>): Promise<Too
       phraseSearch: input.phrase_search,
       documentFilter,
       includeHighlight: input.include_highlight,
+      pageRangeFilter: input.page_range_filter,
+      qualityBoost: input.quality_boost,
     });
 
     // Search extractions FTS
@@ -574,6 +695,7 @@ export async function handleSearch(params: Record<string, unknown>): Promise<Too
       phraseSearch: input.phrase_search,
       documentFilter,
       includeHighlight: input.include_highlight,
+      qualityBoost: input.quality_boost,
     });
 
     // Merge by score (higher is better), apply combined limit
@@ -665,6 +787,20 @@ export async function handleSearchHybrid(params: Record<string, unknown>): Promi
     const limit = input.limit ?? 10;
     const conn = db.getConnection();
 
+    // Auto-route: classify query and adjust weights
+    let queryClassification: ReturnType<typeof classifyQuery> | undefined;
+    if (input.auto_route) {
+      queryClassification = classifyQuery(input.query);
+      if (queryClassification.query_type === 'exact') {
+        input.bm25_weight = 1.5;
+        input.semantic_weight = 0.5;
+      } else if (queryClassification.query_type === 'semantic') {
+        input.bm25_weight = 0.5;
+        input.semantic_weight = 1.5;
+      }
+      // 'mixed' keeps defaults (1.0/1.0)
+    }
+
     // Expand query with domain-specific synonyms if requested
     let searchQuery = input.query;
     let queryExpansion: { original: string; expanded: string[]; synonyms_found: Record<string, string[]> } | undefined;
@@ -684,6 +820,14 @@ export async function handleSearchHybrid(params: Record<string, unknown>): Promi
       )
     );
 
+    // Resolve chunk-level filters
+    const chunkFilter = resolveChunkFilter({
+      content_type_filter: input.content_type_filter,
+      section_path_filter: input.section_path_filter,
+      heading_filter: input.heading_filter,
+      page_range_filter: input.page_range_filter,
+    });
+
     // Get BM25 results (chunks + VLM + extractions)
     const bm25 = new BM25SearchService(db.getConnection());
     // includeHighlight: false -- hybrid discards BM25 highlights (RRF doesn't surface snippets)
@@ -692,18 +836,23 @@ export async function handleSearchHybrid(params: Record<string, unknown>): Promi
       limit: limit * 2,
       documentFilter,
       includeHighlight: false,
+      chunkFilter: chunkFilter.conditions.length > 0 ? chunkFilter : undefined,
+      qualityBoost: input.quality_boost,
     });
     const bm25VlmResults = bm25.searchVLM({
       query: searchQuery,
       limit: limit * 2,
       documentFilter,
       includeHighlight: false,
+      pageRangeFilter: input.page_range_filter,
+      qualityBoost: input.quality_boost,
     });
     const bm25ExtractionResults = bm25.searchExtractions({
       query: searchQuery,
       limit: limit * 2,
       documentFilter,
       includeHighlight: false,
+      qualityBoost: input.quality_boost,
     });
 
     // Merge BM25 results by score
@@ -720,6 +869,9 @@ export async function handleSearchHybrid(params: Record<string, unknown>): Promi
       // Lower threshold than standalone (0.7) -- RRF de-ranks low-quality results
       threshold: 0.3,
       documentFilter,
+      chunkFilter: chunkFilter.conditions.length > 0 ? chunkFilter : undefined,
+      qualityBoost: input.quality_boost,
+      pageRangeFilter: input.page_range_filter,
     });
 
     // Convert to ranked format and fuse with RRF
@@ -733,7 +885,9 @@ export async function handleSearchHybrid(params: Record<string, unknown>): Promi
     });
 
     const fusionLimit = input.rerank ? Math.max(limit * 2, 20) : limit;
-    const rawResults = fusion.fuse(bm25Ranked, semanticRanked, fusionLimit);
+    const rawResults = fusion.fuse(bm25Ranked, semanticRanked, fusionLimit, {
+      qualityBoost: input.quality_boost,
+    });
 
     let finalResults: Array<Record<string, unknown>>;
     let rerankInfo: Record<string, unknown> | undefined;
@@ -796,6 +950,10 @@ export async function handleSearchHybrid(params: Record<string, unknown>): Promi
 
     if (chunkProximityInfo) {
       responseData.chunk_proximity_boost = chunkProximityInfo;
+    }
+
+    if (queryClassification) {
+      responseData.query_classification = queryClassification;
     }
 
     // Re-sort by rrf_score after proximity boost may have changed scores
@@ -971,6 +1129,12 @@ async function handleRagContext(params: Record<string, unknown>): Promise<ToolRe
 
       contextParts.push(`### Result ${i + 1} (Score: ${score})`);
       contextParts.push(`**Source:** ${fileName}${pageInfo}`);
+      if (r.section_path) {
+        contextParts.push(`**Section:** ${r.section_path}`);
+      }
+      if (r.heading_context) {
+        contextParts.push(`**Heading:** ${r.heading_context}`);
+      }
       contextParts.push(`> ${r.original_text.replace(/\n/g, '\n> ')}\n`);
 
       sources.push({
@@ -1278,6 +1442,29 @@ export const searchTools: Record<string, ToolDefinition> = {
         .boolean()
         .default(false)
         .describe('Include cluster membership info for each result'),
+      content_type_filter: z
+        .array(z.string())
+        .optional()
+        .describe('Filter by chunk content types (e.g., ["table", "code", "heading"])'),
+      section_path_filter: z
+        .string()
+        .optional()
+        .describe('Filter by section path prefix (e.g., "Section 3" matches "Section 3 > 3.1 > Definitions")'),
+      heading_filter: z
+        .string()
+        .optional()
+        .describe('Filter by heading context text (LIKE match)'),
+      page_range_filter: z
+        .object({
+          min_page: z.number().int().min(1).optional(),
+          max_page: z.number().int().min(1).optional(),
+        })
+        .optional()
+        .describe('Filter results to specific page range'),
+      quality_boost: z
+        .boolean()
+        .default(false)
+        .describe('Boost results from higher-quality OCR pages in ranking'),
     },
     handler: handleSearch,
   },
@@ -1324,6 +1511,29 @@ export const searchTools: Record<string, ToolDefinition> = {
         .boolean()
         .default(false)
         .describe('Include cluster membership info for each result'),
+      content_type_filter: z
+        .array(z.string())
+        .optional()
+        .describe('Filter by chunk content types (e.g., ["table", "code", "heading"])'),
+      section_path_filter: z
+        .string()
+        .optional()
+        .describe('Filter by section path prefix (e.g., "Section 3" matches "Section 3 > 3.1 > Definitions")'),
+      heading_filter: z
+        .string()
+        .optional()
+        .describe('Filter by heading context text (LIKE match)'),
+      page_range_filter: z
+        .object({
+          min_page: z.number().int().min(1).optional(),
+          max_page: z.number().int().min(1).optional(),
+        })
+        .optional()
+        .describe('Filter results to specific page range'),
+      quality_boost: z
+        .boolean()
+        .default(false)
+        .describe('Boost results from higher-quality OCR pages in ranking'),
     },
     handler: handleSearchSemantic,
   },
@@ -1364,6 +1574,33 @@ export const searchTools: Record<string, ToolDefinition> = {
         .boolean()
         .default(false)
         .describe('Include cluster membership info for each result'),
+      content_type_filter: z
+        .array(z.string())
+        .optional()
+        .describe('Filter by chunk content types (e.g., ["table", "code", "heading"])'),
+      section_path_filter: z
+        .string()
+        .optional()
+        .describe('Filter by section path prefix (e.g., "Section 3" matches "Section 3 > 3.1 > Definitions")'),
+      heading_filter: z
+        .string()
+        .optional()
+        .describe('Filter by heading context text (LIKE match)'),
+      page_range_filter: z
+        .object({
+          min_page: z.number().int().min(1).optional(),
+          max_page: z.number().int().min(1).optional(),
+        })
+        .optional()
+        .describe('Filter results to specific page range'),
+      quality_boost: z
+        .boolean()
+        .default(false)
+        .describe('Boost results from higher-quality OCR pages in ranking'),
+      auto_route: z
+        .boolean()
+        .default(false)
+        .describe('Auto-adjust BM25/semantic weights based on query classification'),
     },
     handler: handleSearchHybrid,
   },
