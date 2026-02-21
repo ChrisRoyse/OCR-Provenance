@@ -333,14 +333,16 @@ function insertMultiClusterRun(db: DatabaseService): {
 // =============================================================================
 
 describe('clusteringTools exports', () => {
-  it('exports all 6 clustering tools', () => {
-    expect(Object.keys(clusteringTools)).toHaveLength(6);
+  it('exports all 8 clustering tools', () => {
+    expect(Object.keys(clusteringTools)).toHaveLength(8);
     expect(clusteringTools).toHaveProperty('ocr_cluster_documents');
     expect(clusteringTools).toHaveProperty('ocr_cluster_list');
     expect(clusteringTools).toHaveProperty('ocr_cluster_get');
     expect(clusteringTools).toHaveProperty('ocr_cluster_assign');
     expect(clusteringTools).toHaveProperty('ocr_cluster_delete');
     expect(clusteringTools).toHaveProperty('ocr_cluster_label');
+    expect(clusteringTools).toHaveProperty('ocr_cluster_reassign');
+    expect(clusteringTools).toHaveProperty('ocr_cluster_merge');
   });
 
   it('each tool has description, inputSchema, and handler', () => {

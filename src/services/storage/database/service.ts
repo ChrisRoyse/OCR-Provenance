@@ -18,15 +18,34 @@ import {
   deleteDatabase,
   databaseExists,
 } from './static-operations.js';
-import { getStats, updateMetadataCounts, updateMetadataModified } from './stats-operations.js';
+import {
+  getStats,
+  updateMetadataCounts,
+  updateMetadataModified,
+  getTimelineStats,
+  getQualityTrends,
+  getThroughputAnalytics,
+} from './stats-operations.js';
+import type {
+  TimelineStatsOptions,
+  TimelineDataPoint,
+  QualityTrendOptions,
+  QualityTrendDataPoint,
+  ThroughputOptions,
+  ThroughputDataPoint,
+} from './stats-operations.js';
 import * as docOps from './document-operations.js';
 import * as ocrOps from './ocr-operations.js';
 import * as chunkOps from './chunk-operations.js';
+import type { ChunkFilterOptions } from './chunk-operations.js';
 import * as embOps from './embedding-operations.js';
 import * as provOps from './provenance-operations.js';
 import * as extOps from './extraction-operations.js';
 import * as ffOps from './form-fill-operations.js';
 import { updateImageProvenance } from './image-operations.js';
+import { reassignDocument, mergeClusters } from './cluster-operations.js';
+import * as tagOps from './tag-operations.js';
+import type { Tag, TagWithCount, EntityTagResult } from './tag-operations.js';
 import type { Extraction } from '../../../models/extraction.js';
 import type { FormFill } from '../../../models/form-fill.js';
 
@@ -213,6 +232,17 @@ export class DatabaseService {
     });
   }
 
+  getChunksFiltered(
+    documentId: string,
+    filters: ChunkFilterOptions
+  ): { chunks: Chunk[]; total: number } {
+    return chunkOps.getChunksFiltered(this.db, documentId, filters);
+  }
+
+  getChunkNeighbors(documentId: string, chunkIndex: number, count: number): Chunk[] {
+    return chunkOps.getChunkNeighbors(this.db, documentId, chunkIndex, count);
+  }
+
   // ==================== EMBEDDING OPERATIONS ====================
 
   insertEmbedding(embedding: Omit<Embedding, 'created_at' | 'vector'>): string {
@@ -248,6 +278,28 @@ export class DatabaseService {
     return embOps.getEmbeddingsByDocumentId(this.db, documentId);
   }
 
+  getEmbeddingsFiltered(
+    filters: embOps.EmbeddingFilterOptions
+  ): { embeddings: Array<Omit<Embedding, 'vector'>>; total: number } {
+    return embOps.getEmbeddingsFiltered(this.db, filters);
+  }
+
+  getEmbeddingStats(documentId?: string): embOps.EmbeddingStatsResult {
+    return embOps.getEmbeddingStats(this.db, documentId);
+  }
+
+  deleteEmbeddingsByChunkId(chunkId: string): number {
+    return embOps.deleteEmbeddingsByChunkId(this.db, chunkId);
+  }
+
+  deleteEmbeddingsByImageId(imageId: string): number {
+    return embOps.deleteEmbeddingsByImageId(this.db, imageId);
+  }
+
+  deleteEmbeddingsByDocumentId(documentId: string): number {
+    return embOps.deleteEmbeddingsByDocumentId(this.db, documentId);
+  }
+
   // ==================== PROVENANCE OPERATIONS ====================
 
   insertProvenance(record: ProvenanceRecord): string {
@@ -270,6 +322,18 @@ export class DatabaseService {
     return provOps.getProvenanceChildren(this.db, parentId);
   }
 
+  queryProvenance(
+    filters: provOps.ProvenanceQueryFilters
+  ): { records: ProvenanceRecord[]; total: number } {
+    return provOps.queryProvenance(this.db, filters);
+  }
+
+  getProvenanceProcessorStats(
+    filters?: { processor?: string; created_after?: string; created_before?: string }
+  ): provOps.ProvenanceProcessorStat[] {
+    return provOps.getProvenanceProcessorStats(this.db, filters);
+  }
+
   // ==================== EXTRACTION OPERATIONS ====================
 
   insertExtraction(extraction: Extraction): string {
@@ -280,6 +344,17 @@ export class DatabaseService {
 
   getExtractionsByDocument(documentId: string): Extraction[] {
     return extOps.getExtractionsByDocument(this.db, documentId);
+  }
+
+  getExtraction(id: string): Extraction | null {
+    return extOps.getExtraction(this.db, id);
+  }
+
+  searchExtractions(
+    query: string,
+    filters?: { document_filter?: string[]; limit?: number }
+  ): Extraction[] {
+    return extOps.searchExtractions(this.db, query, filters);
   }
 
   // ==================== FORM FILL OPERATIONS ====================
@@ -317,9 +392,81 @@ export class DatabaseService {
     });
   }
 
+  // ==================== TIMELINE & ANALYTICS OPERATIONS ====================
+
+  getTimelineStats(options: TimelineStatsOptions): TimelineDataPoint[] {
+    return getTimelineStats(this.db, options);
+  }
+
+  getQualityTrends(options: QualityTrendOptions): QualityTrendDataPoint[] {
+    return getQualityTrends(this.db, options);
+  }
+
+  getThroughputAnalytics(options: ThroughputOptions): ThroughputDataPoint[] {
+    return getThroughputAnalytics(this.db, options);
+  }
+
+  // ==================== CLUSTER OPERATIONS ====================
+
+  reassignDocument(
+    documentId: string,
+    targetClusterId: string
+  ): { old_cluster_id: string | null; run_id: string } {
+    return reassignDocument(this.db, documentId, targetClusterId);
+  }
+
+  mergeClusters(
+    clusterId1: string,
+    clusterId2: string
+  ): { merged_cluster_id: string; documents_moved: number } {
+    return mergeClusters(this.db, clusterId1, clusterId2);
+  }
+
   // ==================== IMAGE OPERATIONS ====================
 
   updateImageProvenance(id: string, provenanceId: string): void {
     updateImageProvenance(this.db, id, provenanceId);
+  }
+
+  // ==================== TAG OPERATIONS ====================
+
+  createTag(tag: { name: string; description?: string; color?: string }): Tag {
+    return tagOps.createTag(this.db, tag);
+  }
+
+  getTagByName(name: string): Tag | null {
+    return tagOps.getTagByName(this.db, name);
+  }
+
+  getAllTags(): Tag[] {
+    return tagOps.getAllTags(this.db);
+  }
+
+  getTagsWithCounts(): TagWithCount[] {
+    return tagOps.getTagsWithCounts(this.db);
+  }
+
+  applyTag(tagId: string, entityId: string, entityType: string): string {
+    return tagOps.applyTag(this.db, tagId, entityId, entityType);
+  }
+
+  removeTag(tagId: string, entityId: string, entityType: string): boolean {
+    return tagOps.removeTag(this.db, tagId, entityId, entityType);
+  }
+
+  getTagsForEntity(entityId: string, entityType: string): Tag[] {
+    return tagOps.getTagsForEntity(this.db, entityId, entityType);
+  }
+
+  searchByTags(
+    tagNames: string[],
+    entityType?: string,
+    matchAll?: boolean
+  ): EntityTagResult[] {
+    return tagOps.searchByTags(this.db, tagNames, entityType, matchAll);
+  }
+
+  deleteTag(tagId: string): number {
+    return tagOps.deleteTag(this.db, tagId);
   }
 }

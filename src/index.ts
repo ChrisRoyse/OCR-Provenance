@@ -54,6 +54,10 @@ import { structuredExtractionTools } from './tools/extraction-structured.js';
 import { fileManagementTools } from './tools/file-management.js';
 import { comparisonTools } from './tools/comparison.js';
 import { clusteringTools } from './tools/clustering.js';
+import { chunkTools } from './tools/chunks.js';
+import { embeddingTools } from './tools/embeddings.js';
+import { timelineTools } from './tools/timeline.js';
+import { tagTools } from './tools/tags.js';
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // SERVER INITIALIZATION
@@ -70,23 +74,27 @@ const server = new McpServer({
 
 // All tool modules in registration order
 const allToolModules: Record<string, ToolDefinition>[] = [
-  databaseTools, // 5 tools
-  ingestionTools, // 8 tools
-  searchTools, // 7 tools
-  documentTools, // 8 tools
-  provenanceTools, // 3 tools
-  configTools, // 2 tools
-  vlmTools, // 6 tools
-  imageTools, // 9 tools
-  evaluationTools, // 3 tools
-  extractionTools, // 3 tools
-  reportTools, // 8 tools
-  formFillTools, // 2 tools
-  structuredExtractionTools, // 3 tools
-  fileManagementTools, // 5 tools
-  comparisonTools, // 3 tools
-  clusteringTools, // 6 tools
-]; // Total: 82 tools
+  databaseTools,
+  ingestionTools,
+  searchTools,
+  documentTools,
+  provenanceTools,
+  configTools,
+  vlmTools,
+  imageTools,
+  evaluationTools,
+  extractionTools,
+  reportTools,
+  formFillTools,
+  structuredExtractionTools,
+  fileManagementTools,
+  comparisonTools,
+  clusteringTools,
+  chunkTools,
+  embeddingTools,
+  timelineTools,
+  tagTools,
+];
 
 // Register tools with duplicate detection
 const registeredToolNames = new Set<string>();

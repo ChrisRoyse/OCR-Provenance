@@ -1758,6 +1758,273 @@ async function handleReprocess(
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
+// RE-EMBED DOCUMENT HANDLER
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/**
+ * Handle ocr_reembed_document - Re-generate all embeddings for a document
+ * without re-running OCR.
+ *
+ * Steps:
+ * 1. Verify document exists and status='complete'
+ * 2. Get all chunks for the document
+ * 3. Delete existing chunk embeddings (embeddings table + vec_embeddings)
+ * 4. Re-generate chunk embeddings via EmbeddingService
+ * 5. If include_vlm=true, re-embed VLM descriptions for completed images
+ * 6. Return counts
+ */
+async function handleReembedDocument(
+  params: Record<string, unknown>
+): Promise<{ content: Array<{ type: 'text'; text: string }> }> {
+  try {
+    const input = validateInput(
+      z.object({
+        document_id: z.string().min(1).describe('Document ID to re-embed'),
+        include_vlm: z
+          .boolean()
+          .default(true)
+          .describe('Also re-embed VLM descriptions for images'),
+      }),
+      params
+    );
+    const { db, vector } = requireDatabase();
+
+    // 1. Verify document exists and is complete
+    const doc = db.getDocument(input.document_id);
+    if (!doc) {
+      throw documentNotFoundError(input.document_id);
+    }
+    if (doc.status !== 'complete') {
+      throw new Error(
+        `Document must have status 'complete' to re-embed (current: ${doc.status})`
+      );
+    }
+
+    const startTime = Date.now();
+
+    // 2. Get all chunks for the document
+    const chunks = db.getChunksByDocumentId(input.document_id);
+    if (chunks.length === 0) {
+      return formatResponse(
+        successResult({
+          document_id: input.document_id,
+          chunks_reembedded: 0,
+          vlm_reembedded: 0,
+          total_embeddings: 0,
+          message: 'No chunks found for this document',
+        })
+      );
+    }
+
+    // 3. Delete existing chunk embeddings from both embeddings table AND vec_embeddings
+    // Must delete vec_embeddings FIRST since they reference embedding IDs
+    vector.deleteVectorsByDocumentId(input.document_id);
+    db.deleteEmbeddingsByDocumentId(input.document_id);
+
+    // Reset chunk embedding status to 'pending'
+    for (const chunk of chunks) {
+      db.updateChunkEmbeddingStatus(chunk.id, 'pending');
+    }
+
+    // 4. Re-generate chunk embeddings via EmbeddingService
+    const embeddingService = new EmbeddingService();
+    const documentInfo = {
+      documentId: doc.id,
+      filePath: doc.file_path,
+      fileName: doc.file_name,
+      fileHash: doc.file_hash,
+      documentProvenanceId: doc.provenance_id,
+    };
+
+    const embedResult = await embeddingService.embedDocumentChunks(
+      db,
+      vector,
+      chunks,
+      documentInfo
+    );
+
+    if (!embedResult.success) {
+      throw new Error(embedResult.error ?? 'Embedding re-generation failed');
+    }
+
+    console.error(
+      `[INFO] Re-embedded ${embedResult.embeddingIds.length} chunks for document ${doc.id} in ${embedResult.elapsedMs}ms`
+    );
+
+    // 5. Optionally re-embed VLM descriptions
+    let vlmReembedded = 0;
+    const vlmProvenanceIds: string[] = [];
+
+    if (input.include_vlm) {
+      // Import image operations to get images with VLM descriptions
+      const conn = db.getConnection();
+      const vlmImages = conn
+        .prepare(
+          `SELECT id, vlm_description, vlm_embedding_id, provenance_id, page_number,
+                  extracted_path, format
+           FROM images
+           WHERE document_id = ? AND vlm_status = 'complete'
+             AND vlm_description IS NOT NULL AND vlm_description != '[SKIPPED]'`
+        )
+        .all(input.document_id) as Array<{
+        id: string;
+        vlm_description: string;
+        vlm_embedding_id: string | null;
+        provenance_id: string | null;
+        page_number: number;
+        extracted_path: string | null;
+        format: string | null;
+      }>;
+
+      for (const img of vlmImages) {
+        try {
+          // Delete old VLM embedding if exists
+          if (img.vlm_embedding_id) {
+            vector.deleteVector(img.vlm_embedding_id);
+            conn
+              .prepare('DELETE FROM embeddings WHERE id = ?')
+              .run(img.vlm_embedding_id);
+            // Null out the reference on the image
+            conn
+              .prepare('UPDATE images SET vlm_embedding_id = NULL WHERE id = ?')
+              .run(img.id);
+          }
+
+          // Generate new embedding for VLM description
+          const vlmEmbedResult = await embeddingService.embedSearchQuery(
+            img.vlm_description
+          );
+
+          // Create EMBEDDING provenance (depth 4, parent = VLM_DESCRIPTION provenance)
+          const embProvId = uuidv4();
+          const now = new Date().toISOString();
+
+          // Find VLM description provenance (depth 3) for this image
+          const vlmProvRecords = conn
+            .prepare(
+              `SELECT id, parent_ids FROM provenance
+               WHERE root_document_id = ? AND type = 'VLM_DESCRIPTION'
+                 AND source_id = ?
+               ORDER BY created_at DESC LIMIT 1`
+            )
+            .all(doc.provenance_id, img.provenance_id) as Array<{
+            id: string;
+            parent_ids: string;
+          }>;
+
+          const vlmProvId =
+            vlmProvRecords.length > 0 ? vlmProvRecords[0].id : img.provenance_id;
+          const existingParents = vlmProvRecords.length > 0
+            ? (JSON.parse(vlmProvRecords[0].parent_ids) as string[])
+            : [];
+          const parentIds = [...existingParents, vlmProvId];
+
+          db.insertProvenance({
+            id: embProvId,
+            type: ProvenanceType.EMBEDDING,
+            created_at: now,
+            processed_at: now,
+            source_file_created_at: null,
+            source_file_modified_at: null,
+            source_type: 'EMBEDDING',
+            source_path: null,
+            source_id: vlmProvId,
+            root_document_id: doc.provenance_id,
+            location: { page_number: img.page_number },
+            content_hash: computeHash(img.vlm_description),
+            input_hash: computeHash(img.vlm_description),
+            file_hash: doc.file_hash,
+            processor: 'nomic-embed-text-v1.5',
+            processor_version: '1.5.0',
+            processing_params: {
+              task_type: 'search_document',
+              inference_mode: 'local',
+              source: 'vlm_description_reembed',
+            },
+            processing_duration_ms: null,
+            processing_quality_score: null,
+            parent_id: vlmProvId,
+            parent_ids: JSON.stringify(parentIds),
+            chain_depth: 4,
+            chain_path: JSON.stringify([
+              'DOCUMENT',
+              'OCR_RESULT',
+              'IMAGE',
+              'VLM_DESCRIPTION',
+              'EMBEDDING',
+            ]),
+          });
+
+          // Insert embedding record (matches VLM pipeline pattern)
+          const embId = uuidv4();
+          db.insertEmbedding({
+            id: embId,
+            chunk_id: null,
+            image_id: img.id,
+            extraction_id: null,
+            document_id: doc.id,
+            original_text: img.vlm_description,
+            original_text_length: img.vlm_description.length,
+            source_file_path: img.extracted_path ?? 'unknown',
+            source_file_name: img.extracted_path?.split('/').pop() ?? 'vlm_description',
+            source_file_hash: 'vlm_generated',
+            page_number: img.page_number,
+            page_range: null,
+            character_start: 0,
+            character_end: img.vlm_description.length,
+            chunk_index: 0,
+            total_chunks: 1,
+            model_name: 'nomic-embed-text-v1.5',
+            model_version: '1.5.0',
+            task_type: 'search_document',
+            inference_mode: 'local',
+            gpu_device: 'cuda:0',
+            provenance_id: embProvId,
+            content_hash: computeHash(img.vlm_description),
+            generation_duration_ms: null,
+          });
+
+          // Store vector
+          vector.storeVector(embId, vlmEmbedResult);
+
+          // Update image with new VLM embedding ID
+          conn
+            .prepare('UPDATE images SET vlm_embedding_id = ? WHERE id = ?')
+            .run(embId, img.id);
+
+          vlmReembedded++;
+          vlmProvenanceIds.push(embProvId);
+        } catch (vlmError) {
+          console.error(
+            `[WARN] Failed to re-embed VLM description for image ${img.id}: ${vlmError instanceof Error ? vlmError.message : String(vlmError)}`
+          );
+          // Non-fatal: continue with remaining images
+        }
+      }
+    }
+
+    const totalEmbeddings = embedResult.embeddingIds.length + vlmReembedded;
+    const durationMs = Date.now() - startTime;
+
+    return formatResponse(
+      successResult({
+        document_id: input.document_id,
+        chunks_reembedded: embedResult.embeddingIds.length,
+        vlm_reembedded: vlmReembedded,
+        total_embeddings: totalEmbeddings,
+        provenance_ids: [
+          ...embedResult.provenanceIds,
+          ...vlmProvenanceIds,
+        ],
+        processing_duration_ms: durationMs,
+      })
+    );
+  } catch (error) {
+    return handleError(error);
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
 // TOOL DEFINITIONS FOR MCP REGISTRATION
 // ═══════════════════════════════════════════════════════════════════════════════
 
@@ -1898,5 +2165,17 @@ export const ingestionTools: Record<string, ToolDefinition> = {
         .describe('Specific pages to process (0-indexed, e.g., "0-5,10")'),
     },
     handler: handleConvertRaw,
+  },
+  ocr_reembed_document: {
+    description:
+      'Re-generate all embeddings for a document without re-running OCR. Deletes existing embeddings and creates new ones with fresh provenance records.',
+    inputSchema: {
+      document_id: z.string().min(1).describe('Document ID to re-embed'),
+      include_vlm: z
+        .boolean()
+        .default(true)
+        .describe('Also re-embed VLM descriptions for images'),
+    },
+    handler: handleReembedDocument,
   },
 };

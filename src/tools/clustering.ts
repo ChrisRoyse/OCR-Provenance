@@ -37,6 +37,8 @@ import {
   deleteClustersByRunId,
   insertDocumentCluster,
   getClusterSummariesByRunId,
+  reassignDocument,
+  mergeClusters,
 } from '../services/storage/database/cluster-operations.js';
 import type { ClusterRunConfig, DocumentCluster } from '../models/cluster.js';
 
@@ -108,6 +110,16 @@ const ClusterLabelInput = z.object({
   cluster_id: z.string().min(1).describe('Cluster ID to auto-label'),
   force: z.boolean().default(false)
     .describe('Overwrite existing label'),
+});
+
+const ClusterReassignInput = z.object({
+  document_id: z.string().min(1).describe('Document ID to reassign'),
+  target_cluster_id: z.string().min(1).describe('Target cluster ID to move the document to'),
+});
+
+const ClusterMergeInput = z.object({
+  cluster_id_1: z.string().min(1).describe('First cluster ID (surviving cluster)'),
+  cluster_id_2: z.string().min(1).describe('Second cluster ID (will be merged into first and deleted)'),
 });
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -555,6 +567,110 @@ Respond with valid JSON matching the schema.`;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
+// CLUSTER REASSIGN & MERGE HANDLERS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/**
+ * Handle ocr_cluster_reassign - Move a document between clusters
+ */
+async function handleClusterReassign(params: Record<string, unknown>): Promise<ToolResponse> {
+  try {
+    const input = validateInput(ClusterReassignInput, params);
+    const { db } = requireDatabase();
+    const conn = db.getConnection();
+
+    // Verify document exists
+    const doc = db.getDocument(input.document_id);
+    if (!doc) {
+      throw new MCPError('DOCUMENT_NOT_FOUND', `Document "${input.document_id}" not found`);
+    }
+
+    // Verify target cluster exists
+    const targetCluster = getCluster(conn, input.target_cluster_id);
+    if (!targetCluster) {
+      throw new MCPError('DOCUMENT_NOT_FOUND', `Cluster "${input.target_cluster_id}" not found`);
+    }
+
+    // Perform reassignment
+    const result = reassignDocument(conn, input.document_id, input.target_cluster_id);
+
+    return formatResponse(
+      successResult({
+        document_id: input.document_id,
+        target_cluster_id: input.target_cluster_id,
+        old_cluster_id: result.old_cluster_id,
+        run_id: result.run_id,
+        reassigned: result.old_cluster_id !== input.target_cluster_id,
+        message:
+          result.old_cluster_id === input.target_cluster_id
+            ? 'Document is already in the target cluster'
+            : result.old_cluster_id
+              ? `Document moved from cluster "${result.old_cluster_id}" to "${input.target_cluster_id}"`
+              : `Document assigned to cluster "${input.target_cluster_id}"`,
+      })
+    );
+  } catch (error) {
+    return handleError(error);
+  }
+}
+
+/**
+ * Handle ocr_cluster_merge - Merge two clusters into one
+ */
+async function handleClusterMerge(params: Record<string, unknown>): Promise<ToolResponse> {
+  try {
+    const input = validateInput(ClusterMergeInput, params);
+    const { db } = requireDatabase();
+    const conn = db.getConnection();
+
+    if (input.cluster_id_1 === input.cluster_id_2) {
+      throw new MCPError(
+        'VALIDATION_ERROR',
+        'Cannot merge a cluster with itself. Provide two different cluster IDs.'
+      );
+    }
+
+    // Verify both clusters exist
+    const cluster1 = getCluster(conn, input.cluster_id_1);
+    if (!cluster1) {
+      throw new MCPError('DOCUMENT_NOT_FOUND', `Cluster "${input.cluster_id_1}" not found`);
+    }
+
+    const cluster2 = getCluster(conn, input.cluster_id_2);
+    if (!cluster2) {
+      throw new MCPError('DOCUMENT_NOT_FOUND', `Cluster "${input.cluster_id_2}" not found`);
+    }
+
+    // Verify same run
+    if (cluster1.run_id !== cluster2.run_id) {
+      throw new MCPError(
+        'VALIDATION_ERROR',
+        `Cannot merge clusters from different runs: "${cluster1.run_id}" vs "${cluster2.run_id}"`
+      );
+    }
+
+    // Perform merge
+    const result = mergeClusters(conn, input.cluster_id_1, input.cluster_id_2);
+
+    // Get updated cluster info
+    const updatedCluster = getCluster(conn, result.merged_cluster_id);
+
+    return formatResponse(
+      successResult({
+        merged_cluster_id: result.merged_cluster_id,
+        deleted_cluster_id: input.cluster_id_2,
+        documents_moved: result.documents_moved,
+        new_document_count: updatedCluster?.document_count ?? 0,
+        run_id: cluster1.run_id,
+        message: `Merged cluster "${input.cluster_id_2}" into "${input.cluster_id_1}". ${result.documents_moved} document(s) moved.`,
+      })
+    );
+  } catch (error) {
+    return handleError(error);
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
 // TOOL DEFINITIONS FOR MCP REGISTRATION
 // ═══════════════════════════════════════════════════════════════════════════════
 
@@ -591,5 +707,17 @@ export const clusteringTools: Record<string, ToolDefinition> = {
       'Auto-label a cluster using Gemini AI analysis of member documents and top terms. Generates a descriptive label, description, and classification tag.',
     inputSchema: ClusterLabelInput.shape,
     handler: handleClusterLabel,
+  },
+  ocr_cluster_reassign: {
+    description:
+      'Move a document from its current cluster to a different target cluster within the same clustering run.',
+    inputSchema: ClusterReassignInput.shape,
+    handler: handleClusterReassign,
+  },
+  ocr_cluster_merge: {
+    description:
+      'Merge two clusters into one. All documents from the second cluster are moved to the first. Both clusters must belong to the same run.',
+    inputSchema: ClusterMergeInput.shape,
+    handler: handleClusterMerge,
   },
 };

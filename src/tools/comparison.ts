@@ -33,6 +33,14 @@ import {
   getComparison,
   listComparisons,
 } from '../services/storage/database/comparison-operations.js';
+import {
+  getCluster,
+  getClusterDocuments,
+} from '../services/storage/database/cluster-operations.js';
+import {
+  computeDocumentEmbeddings,
+  cosineSimilarity,
+} from '../services/clustering/clustering-service.js';
 import { getProvenanceTracker } from '../services/provenance/index.js';
 import { ProvenanceType } from '../models/provenance.js';
 import type { SourceType } from '../models/provenance.js';
@@ -70,6 +78,50 @@ const ComparisonListInput = z.object({
 
 const ComparisonGetInput = z.object({
   comparison_id: z.string().min(1).describe('Comparison ID'),
+});
+
+const ComparisonDiscoverInput = z.object({
+  min_similarity: z
+    .number()
+    .min(0)
+    .max(1)
+    .default(0.7)
+    .describe('Minimum cosine similarity threshold (0-1)'),
+  document_filter: z
+    .array(z.string())
+    .optional()
+    .describe('Only consider these document IDs'),
+  exclude_existing: z
+    .boolean()
+    .default(true)
+    .describe('Exclude document pairs that already have comparisons'),
+  limit: z
+    .number()
+    .int()
+    .min(1)
+    .max(100)
+    .default(20)
+    .describe('Maximum pairs to return'),
+});
+
+const ComparisonBatchInput = z.object({
+  pairs: z
+    .array(
+      z.object({
+        doc1: z.string().min(1).describe('First document ID'),
+        doc2: z.string().min(1).describe('Second document ID'),
+      })
+    )
+    .optional()
+    .describe('Explicit document pairs to compare'),
+  cluster_id: z
+    .string()
+    .optional()
+    .describe('Compare all documents within this cluster'),
+  include_text_diff: z
+    .boolean()
+    .default(true)
+    .describe('Include text-level diff operations in each comparison'),
 });
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -372,6 +424,232 @@ async function handleComparisonGet(params: Record<string, unknown>): Promise<Too
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
+// DISCOVER & BATCH HANDLERS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/**
+ * Discover document pairs likely similar based on embedding proximity.
+ * Computes document centroid embeddings (average chunk embeddings),
+ * then pairwise cosine similarity.
+ */
+async function handleComparisonDiscover(params: Record<string, unknown>): Promise<ToolResponse> {
+  try {
+    const input = validateInput(ComparisonDiscoverInput, params);
+    const { db } = requireDatabase();
+    const conn = db.getConnection();
+
+    const minSimilarity = input.min_similarity ?? 0.7;
+    const excludeExisting = input.exclude_existing ?? true;
+    const limit = input.limit ?? 20;
+
+    // Compute document centroid embeddings
+    const docEmbeddings = computeDocumentEmbeddings(
+      conn,
+      input.document_filter
+    );
+
+    if (docEmbeddings.length < 2) {
+      return formatResponse(
+        successResult({
+          pairs: [],
+          total_pairs: 0,
+          documents_analyzed: docEmbeddings.length,
+          message:
+            docEmbeddings.length === 0
+              ? 'No documents with embeddings found'
+              : 'At least 2 documents with embeddings required for comparison discovery',
+        })
+      );
+    }
+
+    // Build set of existing comparison pairs for exclusion
+    const existingPairs = new Set<string>();
+    if (excludeExisting) {
+      const existing = conn
+        .prepare('SELECT document_id_1, document_id_2 FROM comparisons')
+        .all() as Array<{ document_id_1: string; document_id_2: string }>;
+      for (const row of existing) {
+        // Store both orderings
+        existingPairs.add(`${row.document_id_1}:${row.document_id_2}`);
+        existingPairs.add(`${row.document_id_2}:${row.document_id_1}`);
+      }
+    }
+
+    // Compute pairwise cosine similarity
+    const pairs: Array<{
+      document_id_1: string;
+      document_id_2: string;
+      similarity: number;
+      file_name_1: string;
+      file_name_2: string;
+    }> = [];
+
+    // Get file names for all documents
+    const fileNameMap = new Map<string, string>();
+    for (const de of docEmbeddings) {
+      const doc = db.getDocument(de.document_id);
+      fileNameMap.set(de.document_id, doc?.file_name ?? 'unknown');
+    }
+
+    for (let i = 0; i < docEmbeddings.length; i++) {
+      for (let j = i + 1; j < docEmbeddings.length; j++) {
+        const docA = docEmbeddings[i];
+        const docB = docEmbeddings[j];
+
+        // Skip if already compared
+        if (excludeExisting && existingPairs.has(`${docA.document_id}:${docB.document_id}`)) {
+          continue;
+        }
+
+        const similarity = cosineSimilarity(docA.embedding, Array.from(docB.embedding));
+        if (similarity >= minSimilarity) {
+          pairs.push({
+            document_id_1: docA.document_id,
+            document_id_2: docB.document_id,
+            similarity: Math.round(similarity * 10000) / 10000,
+            file_name_1: fileNameMap.get(docA.document_id) ?? 'unknown',
+            file_name_2: fileNameMap.get(docB.document_id) ?? 'unknown',
+          });
+        }
+      }
+    }
+
+    // Sort by similarity descending, then limit
+    pairs.sort((a, b) => b.similarity - a.similarity);
+    const limitedPairs = pairs.slice(0, limit);
+
+    return formatResponse(
+      successResult({
+        pairs: limitedPairs,
+        total_pairs: pairs.length,
+        returned_pairs: limitedPairs.length,
+        documents_analyzed: docEmbeddings.length,
+        min_similarity: minSimilarity,
+        exclude_existing: excludeExisting,
+      })
+    );
+  } catch (error) {
+    return handleError(error);
+  }
+}
+
+/**
+ * Compare multiple document pairs in one batch operation.
+ * Can specify explicit pairs or compare all documents in a cluster.
+ */
+async function handleComparisonBatch(params: Record<string, unknown>): Promise<ToolResponse> {
+  try {
+    const input = validateInput(ComparisonBatchInput, params);
+    const { db } = requireDatabase();
+    const conn = db.getConnection();
+
+    // Build list of pairs to compare
+    let pairsToCompare: Array<{ doc1: string; doc2: string }> = [];
+
+    if (input.cluster_id) {
+      // Get all documents in cluster and generate all pairs
+      const cluster = getCluster(conn, input.cluster_id);
+      if (!cluster) {
+        throw new MCPError('DOCUMENT_NOT_FOUND', `Cluster "${input.cluster_id}" not found`);
+      }
+
+      const members = getClusterDocuments(conn, input.cluster_id);
+      if (members.length < 2) {
+        return formatResponse(
+          successResult({
+            results: [],
+            total_compared: 0,
+            message: `Cluster has ${members.length} document(s), need at least 2 for comparison`,
+          })
+        );
+      }
+
+      for (let i = 0; i < members.length; i++) {
+        for (let j = i + 1; j < members.length; j++) {
+          pairsToCompare.push({
+            doc1: members[i].document_id,
+            doc2: members[j].document_id,
+          });
+        }
+      }
+    } else if (input.pairs && input.pairs.length > 0) {
+      pairsToCompare = input.pairs;
+    } else {
+      throw new MCPError(
+        'VALIDATION_ERROR',
+        'Either pairs or cluster_id must be provided'
+      );
+    }
+
+    if (pairsToCompare.length === 0) {
+      return formatResponse(
+        successResult({
+          results: [],
+          total_compared: 0,
+          message: 'No pairs to compare',
+        })
+      );
+    }
+
+    // Compare each pair by calling the existing compare handler
+    const results: Array<Record<string, unknown>> = [];
+    const errors: Array<{ doc1: string; doc2: string; error: string }> = [];
+
+    for (const pair of pairsToCompare) {
+      try {
+        const compareResult = await handleDocumentCompare({
+          document_id_1: pair.doc1,
+          document_id_2: pair.doc2,
+          include_text_diff: input.include_text_diff ?? true,
+          max_diff_operations: 100, // Use smaller limit for batch
+          include_provenance: false,
+        });
+
+        const parsed = JSON.parse(compareResult.content[0].text) as {
+          success: boolean;
+          data?: Record<string, unknown>;
+          error?: { message: string };
+        };
+
+        if (parsed.success && parsed.data) {
+          results.push({
+            document_id_1: pair.doc1,
+            document_id_2: pair.doc2,
+            comparison_id: parsed.data.comparison_id,
+            similarity_ratio: parsed.data.similarity_ratio,
+            summary: parsed.data.summary,
+          });
+        } else {
+          errors.push({
+            doc1: pair.doc1,
+            doc2: pair.doc2,
+            error: parsed.error?.message ?? 'Unknown error',
+          });
+        }
+      } catch (e) {
+        errors.push({
+          doc1: pair.doc1,
+          doc2: pair.doc2,
+          error: e instanceof Error ? e.message : String(e),
+        });
+      }
+    }
+
+    return formatResponse(
+      successResult({
+        results,
+        errors: errors.length > 0 ? errors : undefined,
+        total_compared: results.length,
+        total_errors: errors.length,
+        total_pairs_requested: pairsToCompare.length,
+      })
+    );
+  } catch (error) {
+    return handleError(error);
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
 // TOOL EXPORTS
 // ═══════════════════════════════════════════════════════════════════════════════
 
@@ -393,5 +671,17 @@ export const comparisonTools: Record<string, ToolDefinition> = {
       'Get a specific comparison by ID with full diff data including text operations and structural differences.',
     inputSchema: ComparisonGetInput.shape,
     handler: handleComparisonGet,
+  },
+  ocr_comparison_discover: {
+    description:
+      'Discover document pairs likely similar based on embedding proximity. Computes document centroid embeddings and pairwise cosine similarity to find candidates for comparison.',
+    inputSchema: ComparisonDiscoverInput.shape,
+    handler: handleComparisonDiscover,
+  },
+  ocr_comparison_batch: {
+    description:
+      'Compare multiple document pairs in one operation. Provide explicit pairs or a cluster_id to compare all documents within a cluster.',
+    inputSchema: ComparisonBatchInput.shape,
+    handler: handleComparisonBatch,
   },
 };

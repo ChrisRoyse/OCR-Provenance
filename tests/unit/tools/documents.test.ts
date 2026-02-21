@@ -268,8 +268,8 @@ function insertTestChunk(
 // ═══════════════════════════════════════════════════════════════════════════════
 
 describe('documentTools exports', () => {
-  it('exports all 8 document tools', () => {
-    expect(Object.keys(documentTools)).toHaveLength(8);
+  it('exports all 11 document tools', () => {
+    expect(Object.keys(documentTools)).toHaveLength(11);
     expect(documentTools).toHaveProperty('ocr_document_list');
     expect(documentTools).toHaveProperty('ocr_document_get');
     expect(documentTools).toHaveProperty('ocr_document_delete');
@@ -278,6 +278,9 @@ describe('documentTools exports', () => {
     expect(documentTools).toHaveProperty('ocr_document_structure');
     expect(documentTools).toHaveProperty('ocr_document_update_metadata');
     expect(documentTools).toHaveProperty('ocr_document_duplicates');
+    expect(documentTools).toHaveProperty('ocr_document_sections');
+    expect(documentTools).toHaveProperty('ocr_document_export');
+    expect(documentTools).toHaveProperty('ocr_corpus_export');
   });
 
   it('each tool has description, inputSchema, and handler', () => {

@@ -36,6 +36,7 @@ import { rerankResults } from '../services/search/reranker.js';
 import { expandQuery, getExpandedTerms } from '../services/search/query-expander.js';
 import { classifyQuery } from '../services/search/query-classifier.js';
 import { getClusterSummariesForDocument } from '../services/storage/database/cluster-operations.js';
+import { getImage } from '../services/storage/database/image-operations.js';
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // TYPE DEFINITIONS
@@ -264,6 +265,29 @@ function attachClusterContext(
     const docId = r.document_id as string;
     if (docId) {
       r.cluster_context = clusterCache.get(docId) ?? [];
+    }
+  }
+}
+
+/**
+ * Enrich VLM search results with image metadata (extracted_path, page_number, dimensions, etc.).
+ * For results with an image_id, looks up the image record and attaches its metadata.
+ * Non-VLM results and results with missing images are left unchanged.
+ */
+function enrichVLMResultsWithImageMetadata(
+  conn: ReturnType<ReturnType<typeof requireDatabase>['db']['getConnection']>,
+  results: Array<Record<string, unknown>>
+): void {
+  for (const result of results) {
+    if (result.image_id) {
+      const image = getImage(conn, result.image_id as string);
+      if (image) {
+        result.image_extracted_path = image.extracted_path;
+        result.image_page_number = image.page_number;
+        result.image_dimensions = { width: image.dimensions.width, height: image.dimensions.height };
+        result.image_block_type = image.block_type;
+        result.image_format = image.format;
+      }
     }
   }
 }
@@ -600,6 +624,9 @@ export async function handleSearchSemantic(params: Record<string, unknown>): Pro
       });
     }
 
+    // Enrich VLM results with image metadata
+    enrichVLMResultsWithImageMetadata(conn, finalResults);
+
     const responseData: Record<string, unknown> = {
       query: input.query,
       results: finalResults,
@@ -737,6 +764,9 @@ export async function handleSearch(params: Record<string, unknown>): Promise<Too
         return base;
       });
     }
+
+    // Enrich VLM results with image metadata
+    enrichVLMResultsWithImageMetadata(conn, finalResults);
 
     // Compute source counts from final merged results (not pre-merge candidates)
     let finalChunkCount = 0;
@@ -923,6 +953,9 @@ export async function handleSearchHybrid(params: Record<string, unknown>): Promi
     // Chunk proximity boost - reward clusters of nearby relevant chunks
     const chunkProximityInfo =
       finalResults.length > 0 ? applyChunkProximityBoost(finalResults) : undefined;
+
+    // Enrich VLM results with image metadata
+    enrichVLMResultsWithImageMetadata(conn, finalResults);
 
     const responseData: Record<string, unknown> = {
       query: input.query,
@@ -1114,6 +1147,10 @@ async function handleRagContext(params: Record<string, unknown>): Promise<ToolRe
       );
     }
 
+    // Enrich VLM results with image metadata
+    const enrichedFused = fusedResults as unknown as Array<Record<string, unknown>>;
+    enrichVLMResultsWithImageMetadata(conn, enrichedFused);
+
     // ── Step 2: Assemble markdown context ──────────────────────────────────
     const contextParts: string[] = [];
 
@@ -1124,6 +1161,7 @@ async function handleRagContext(params: Record<string, unknown>): Promise<ToolRe
 
     for (let i = 0; i < fusedResults.length; i++) {
       const r = fusedResults[i];
+      const enriched = enrichedFused[i];
       const score = Math.round(r.rrf_score * 1000) / 1000;
       const fileName = r.source_file_name || path.basename(r.source_file_path || 'unknown');
       const pageInfo =
@@ -1137,7 +1175,17 @@ async function handleRagContext(params: Record<string, unknown>): Promise<ToolRe
       if (r.heading_context) {
         contextParts.push(`**Heading:** ${r.heading_context}`);
       }
-      contextParts.push(`> ${r.original_text.replace(/\n/g, '\n> ')}\n`);
+
+      // For VLM results with image metadata, include image context
+      if (enriched.image_extracted_path) {
+        const blockType = enriched.image_block_type || 'Image';
+        const imgPage = enriched.image_page_number ?? r.page_number ?? 'unknown';
+        contextParts.push(`> **[Image: ${blockType} on page ${imgPage}]**`);
+        contextParts.push(`> File: ${enriched.image_extracted_path}`);
+        contextParts.push(`> Description: ${r.original_text.replace(/\n/g, '\n> ')}\n`);
+      } else {
+        contextParts.push(`> ${r.original_text.replace(/\n/g, '\n> ')}\n`);
+      }
 
       sources.push({
         file_name: fileName,

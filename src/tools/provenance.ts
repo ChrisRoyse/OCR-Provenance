@@ -2,7 +2,8 @@
  * Provenance Management MCP Tools
  *
  * Extracted from src/index.ts Task 22.
- * Tools: ocr_provenance_get, ocr_provenance_verify, ocr_provenance_export
+ * Tools: ocr_provenance_get, ocr_provenance_verify, ocr_provenance_export,
+ *         ocr_provenance_query, ocr_provenance_timeline, ocr_provenance_processor_stats
  *
  * CRITICAL: NEVER use console.log() - stdout is reserved for JSON-RPC protocol.
  * Use console.error() for all logging.
@@ -450,6 +451,242 @@ export async function handleProvenanceExport(
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
+// PROVENANCE QUERY TOOL HANDLERS (Phase 5)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/**
+ * Handle ocr_provenance_query - Query provenance records with filters
+ *
+ * Supports filtering by processor, type, chain_depth, date range, quality score,
+ * duration, and root_document_id. Supports ordering and pagination.
+ */
+export async function handleProvenanceQuery(
+  params: Record<string, unknown>
+): Promise<ToolResponse> {
+  try {
+    const input = validateInput(
+      z.object({
+        processor: z.string().optional().describe('Filter by processor name'),
+        type: z
+          .enum([
+            'DOCUMENT',
+            'OCR_RESULT',
+            'FORM_FILL',
+            'CHUNK',
+            'IMAGE',
+            'EXTRACTION',
+            'COMPARISON',
+            'CLUSTERING',
+            'EMBEDDING',
+            'VLM_DESCRIPTION',
+          ])
+          .optional()
+          .describe('Filter by provenance type'),
+        chain_depth: z.number().int().min(0).optional().describe('Filter by exact chain depth'),
+        created_after: z.string().optional().describe('Filter records created after this ISO 8601 timestamp'),
+        created_before: z.string().optional().describe('Filter records created before this ISO 8601 timestamp'),
+        min_quality_score: z.number().min(0).optional().describe('Minimum processing quality score'),
+        min_duration_ms: z.number().min(0).optional().describe('Minimum processing duration in ms'),
+        root_document_id: z.string().optional().describe('Filter by root document provenance ID'),
+        limit: z.number().int().min(1).max(100).default(50).describe('Maximum results (default 50)'),
+        offset: z.number().int().min(0).default(0).describe('Offset for pagination'),
+        order_by: z
+          .enum(['created_at', 'processing_duration_ms', 'processing_quality_score'])
+          .default('created_at')
+          .describe('Field to order by'),
+        order_dir: z.enum(['asc', 'desc']).default('desc').describe('Sort direction'),
+      }),
+      params
+    );
+
+    const { db } = requireDatabase();
+
+    const { records, total } = db.queryProvenance({
+      processor: input.processor,
+      type: input.type,
+      chain_depth: input.chain_depth,
+      created_after: input.created_after,
+      created_before: input.created_before,
+      min_quality_score: input.min_quality_score,
+      min_duration_ms: input.min_duration_ms,
+      root_document_id: input.root_document_id,
+      limit: input.limit,
+      offset: input.offset,
+      order_by: input.order_by,
+      order_dir: input.order_dir,
+    });
+
+    // Build filters_applied for response transparency
+    const filtersApplied: Record<string, unknown> = {};
+    if (input.processor !== undefined) filtersApplied.processor = input.processor;
+    if (input.type !== undefined) filtersApplied.type = input.type;
+    if (input.chain_depth !== undefined) filtersApplied.chain_depth = input.chain_depth;
+    if (input.created_after !== undefined) filtersApplied.created_after = input.created_after;
+    if (input.created_before !== undefined) filtersApplied.created_before = input.created_before;
+    if (input.min_quality_score !== undefined) filtersApplied.min_quality_score = input.min_quality_score;
+    if (input.min_duration_ms !== undefined) filtersApplied.min_duration_ms = input.min_duration_ms;
+    if (input.root_document_id !== undefined) filtersApplied.root_document_id = input.root_document_id;
+
+    const formattedRecords = records.map((r) => ({
+      id: r.id,
+      type: r.type,
+      chain_depth: r.chain_depth,
+      processor: r.processor,
+      processor_version: r.processor_version,
+      processing_duration_ms: r.processing_duration_ms,
+      processing_quality_score: r.processing_quality_score,
+      content_hash: r.content_hash,
+      root_document_id: r.root_document_id,
+      parent_id: r.parent_id,
+      created_at: r.created_at,
+    }));
+
+    return formatResponse(
+      successResult({
+        records: formattedRecords,
+        total,
+        limit: input.limit,
+        offset: input.offset,
+        filters_applied: filtersApplied,
+      })
+    );
+  } catch (error) {
+    return handleError(error);
+  }
+}
+
+/**
+ * Handle ocr_provenance_timeline - Complete processing timeline for a document
+ *
+ * Shows every transformation chronologically with step numbers, types,
+ * processors, durations, and quality scores.
+ */
+export async function handleProvenanceTimeline(
+  params: Record<string, unknown>
+): Promise<ToolResponse> {
+  try {
+    const input = validateInput(
+      z.object({
+        document_id: z.string().min(1).describe('Document ID to get timeline for'),
+        include_params: z
+          .boolean()
+          .default(false)
+          .describe('Include processing parameters in each step'),
+      }),
+      params
+    );
+
+    const { db } = requireDatabase();
+
+    // Get the document to find its provenance_id
+    const doc = db.getDocument(input.document_id);
+    if (!doc) {
+      throw documentNotFoundError(input.document_id);
+    }
+
+    // Get all provenance records for this document's root
+    const records = db.getProvenanceByRootDocument(doc.provenance_id);
+
+    if (records.length === 0) {
+      return formatResponse(
+        successResult({
+          document_id: input.document_id,
+          total_processing_time_ms: 0,
+          steps_count: 0,
+          timeline: [],
+        })
+      );
+    }
+
+    // Sort chronologically by created_at, then by chain_depth for stable ordering
+    const sorted = [...records].sort((a, b) => {
+      const timeCompare = a.created_at.localeCompare(b.created_at);
+      if (timeCompare !== 0) return timeCompare;
+      return a.chain_depth - b.chain_depth;
+    });
+
+    // Compute total processing time
+    let totalProcessingTimeMs = 0;
+    for (const r of sorted) {
+      if (r.processing_duration_ms !== null) {
+        totalProcessingTimeMs += r.processing_duration_ms;
+      }
+    }
+
+    // Build timeline entries
+    const timeline = sorted.map((r, index) => {
+      const entry: Record<string, unknown> = {
+        step: index + 1,
+        type: r.type,
+        processor: r.processor,
+        processor_version: r.processor_version,
+        duration_ms: r.processing_duration_ms,
+        quality_score: r.processing_quality_score,
+        chain_depth: r.chain_depth,
+        timestamp: r.created_at,
+        provenance_id: r.id,
+        parent_id: r.parent_id,
+      };
+
+      if (input.include_params) {
+        entry.processing_params = r.processing_params;
+      }
+
+      return entry;
+    });
+
+    return formatResponse(
+      successResult({
+        document_id: input.document_id,
+        total_processing_time_ms: totalProcessingTimeMs,
+        steps_count: timeline.length,
+        timeline,
+      })
+    );
+  } catch (error) {
+    return handleError(error);
+  }
+}
+
+/**
+ * Handle ocr_provenance_processor_stats - Aggregate statistics per processor
+ *
+ * Groups by processor and processor_version with COUNT, AVG, MIN, MAX, SUM
+ * aggregations on processing_duration_ms and processing_quality_score.
+ */
+export async function handleProvenanceProcessorStats(
+  params: Record<string, unknown>
+): Promise<ToolResponse> {
+  try {
+    const input = validateInput(
+      z.object({
+        processor: z.string().optional().describe('Filter by specific processor name'),
+        created_after: z.string().optional().describe('Filter records created after this ISO 8601 timestamp'),
+        created_before: z.string().optional().describe('Filter records created before this ISO 8601 timestamp'),
+      }),
+      params
+    );
+
+    const { db } = requireDatabase();
+
+    const stats = db.getProvenanceProcessorStats({
+      processor: input.processor,
+      created_after: input.created_after,
+      created_before: input.created_before,
+    });
+
+    return formatResponse(
+      successResult({
+        stats,
+        total_processors: stats.length,
+      })
+    );
+  } catch (error) {
+    return handleError(error);
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
 // TOOL DEFINITIONS FOR MCP REGISTRATION
 // ═══════════════════════════════════════════════════════════════════════════════
 
@@ -504,5 +741,63 @@ export const provenanceTools: Record<string, ToolDefinition> = {
       format: z.enum(['json', 'w3c-prov', 'csv']).default('json').describe('Export format'),
     },
     handler: handleProvenanceExport,
+  },
+  ocr_provenance_query: {
+    description:
+      'Query provenance records by processor, type, date, depth, quality. For system auditing and analysis.',
+    inputSchema: {
+      processor: z.string().optional().describe('Filter by processor name'),
+      type: z
+        .enum([
+          'DOCUMENT',
+          'OCR_RESULT',
+          'FORM_FILL',
+          'CHUNK',
+          'IMAGE',
+          'EXTRACTION',
+          'COMPARISON',
+          'CLUSTERING',
+          'EMBEDDING',
+          'VLM_DESCRIPTION',
+        ])
+        .optional()
+        .describe('Filter by provenance type'),
+      chain_depth: z.number().int().min(0).optional().describe('Filter by exact chain depth'),
+      created_after: z.string().optional().describe('Filter records created after this ISO 8601 timestamp'),
+      created_before: z.string().optional().describe('Filter records created before this ISO 8601 timestamp'),
+      min_quality_score: z.number().min(0).optional().describe('Minimum processing quality score'),
+      min_duration_ms: z.number().min(0).optional().describe('Minimum processing duration in ms'),
+      root_document_id: z.string().optional().describe('Filter by root document provenance ID'),
+      limit: z.number().int().min(1).max(100).default(50).describe('Maximum results (default 50)'),
+      offset: z.number().int().min(0).default(0).describe('Offset for pagination'),
+      order_by: z
+        .enum(['created_at', 'processing_duration_ms', 'processing_quality_score'])
+        .default('created_at')
+        .describe('Field to order by'),
+      order_dir: z.enum(['asc', 'desc']).default('desc').describe('Sort direction'),
+    },
+    handler: handleProvenanceQuery,
+  },
+  ocr_provenance_timeline: {
+    description:
+      'Complete processing timeline for a document, showing every transformation chronologically',
+    inputSchema: {
+      document_id: z.string().min(1).describe('Document ID to get timeline for'),
+      include_params: z
+        .boolean()
+        .default(false)
+        .describe('Include processing parameters in each step'),
+    },
+    handler: handleProvenanceTimeline,
+  },
+  ocr_provenance_processor_stats: {
+    description:
+      'Aggregate statistics per processor across the database. Shows operation counts, duration stats, and quality scores.',
+    inputSchema: {
+      processor: z.string().optional().describe('Filter by specific processor name'),
+      created_after: z.string().optional().describe('Filter records created after this ISO 8601 timestamp'),
+      created_before: z.string().optional().describe('Filter records created before this ISO 8601 timestamp'),
+    },
+    handler: handleProvenanceProcessorStats,
   },
 };

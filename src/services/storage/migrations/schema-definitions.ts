@@ -8,7 +8,7 @@
  */
 
 /** Current schema version */
-export const SCHEMA_VERSION = 28;
+export const SCHEMA_VERSION = 29;
 
 /**
  * Database configuration pragmas for optimal performance and safety
@@ -527,6 +527,33 @@ CREATE TABLE IF NOT EXISTS saved_searches (
 `;
 
 /**
+ * Tags table - user-defined annotations for cross-entity tagging
+ * v29 addition
+ */
+export const CREATE_TAGS_TABLE = `
+CREATE TABLE IF NOT EXISTS tags (
+  id TEXT PRIMARY KEY NOT NULL,
+  name TEXT NOT NULL UNIQUE,
+  description TEXT,
+  color TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+)`;
+
+/**
+ * Entity tags table - many-to-many relationship between tags and entities
+ * v29 addition
+ */
+export const CREATE_ENTITY_TAGS_TABLE = `
+CREATE TABLE IF NOT EXISTS entity_tags (
+  id TEXT PRIMARY KEY NOT NULL,
+  tag_id TEXT NOT NULL REFERENCES tags(id) ON DELETE CASCADE,
+  entity_id TEXT NOT NULL,
+  entity_type TEXT NOT NULL CHECK(entity_type IN ('document', 'chunk', 'image', 'extraction', 'cluster')),
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  UNIQUE(tag_id, entity_id, entity_type)
+)`;
+
+/**
  * All required indexes for query performance
  */
 export const CREATE_INDEXES = [
@@ -597,6 +624,10 @@ export const CREATE_INDEXES = [
   'CREATE INDEX IF NOT EXISTS idx_saved_searches_name ON saved_searches(name)',
   'CREATE INDEX IF NOT EXISTS idx_saved_searches_search_type ON saved_searches(search_type)',
   'CREATE INDEX IF NOT EXISTS idx_saved_searches_created ON saved_searches(created_at DESC)',
+
+  // Tags indexes
+  'CREATE INDEX IF NOT EXISTS idx_entity_tags_entity ON entity_tags(entity_id, entity_type)',
+  'CREATE INDEX IF NOT EXISTS idx_entity_tags_tag ON entity_tags(tag_id)',
 ] as const;
 
 /**
@@ -617,6 +648,8 @@ export const TABLE_DEFINITIONS = [
   { name: 'clusters', sql: CREATE_CLUSTERS_TABLE },
   { name: 'document_clusters', sql: CREATE_DOCUMENT_CLUSTERS_TABLE },
   { name: 'saved_searches', sql: CREATE_SAVED_SEARCHES_TABLE },
+  { name: 'tags', sql: CREATE_TAGS_TABLE },
+  { name: 'entity_tags', sql: CREATE_ENTITY_TAGS_TABLE },
 ] as const;
 
 /**
@@ -643,6 +676,8 @@ export const REQUIRED_TABLES = [
   'clusters',
   'document_clusters',
   'saved_searches',
+  'tags',
+  'entity_tags',
 ] as const;
 
 /**
@@ -691,4 +726,6 @@ export const REQUIRED_INDEXES = [
   'idx_saved_searches_name',
   'idx_saved_searches_search_type',
   'idx_saved_searches_created',
+  'idx_entity_tags_entity',
+  'idx_entity_tags_tag',
 ] as const;

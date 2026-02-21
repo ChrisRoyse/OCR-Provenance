@@ -23,6 +23,8 @@ import {
   handleImageResetFailed,
   handleImagePending,
   handleImageSearch,
+  handleImageSemanticSearch,
+  handleImageReanalyze,
   imageTools,
 } from '../../../src/tools/images.js';
 import { resetState, clearDatabase } from '../../../src/server/state.js';
@@ -50,8 +52,8 @@ function parseResponse(response: { content: Array<{ type: string; text: string }
 // ===============================================================================
 
 describe('imageTools exports', () => {
-  it('exports all 9 image tools', () => {
-    expect(Object.keys(imageTools)).toHaveLength(9);
+  it('exports all 11 image tools', () => {
+    expect(Object.keys(imageTools)).toHaveLength(11);
     expect(imageTools).toHaveProperty('ocr_image_extract');
     expect(imageTools).toHaveProperty('ocr_image_list');
     expect(imageTools).toHaveProperty('ocr_image_get');
@@ -61,6 +63,8 @@ describe('imageTools exports', () => {
     expect(imageTools).toHaveProperty('ocr_image_reset_failed');
     expect(imageTools).toHaveProperty('ocr_image_pending');
     expect(imageTools).toHaveProperty('ocr_image_search');
+    expect(imageTools).toHaveProperty('ocr_image_semantic_search');
+    expect(imageTools).toHaveProperty('ocr_image_reanalyze');
   });
 
   it('each tool has description, inputSchema, and handler', () => {
@@ -84,6 +88,8 @@ describe('imageTools exports', () => {
     expect(imageTools.ocr_image_reset_failed.handler).toBe(handleImageResetFailed);
     expect(imageTools.ocr_image_pending.handler).toBe(handleImagePending);
     expect(imageTools.ocr_image_search.handler).toBe(handleImageSearch);
+    expect(imageTools.ocr_image_semantic_search.handler).toBe(handleImageSemanticSearch);
+    expect(imageTools.ocr_image_reanalyze.handler).toBe(handleImageReanalyze);
   });
 });
 

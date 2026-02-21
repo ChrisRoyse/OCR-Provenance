@@ -305,11 +305,14 @@ function insertProvenanceWithInvalidHash(
 // ═══════════════════════════════════════════════════════════════════════════════
 
 describe('provenanceTools exports', () => {
-  it('exports all 3 provenance tools', () => {
-    expect(Object.keys(provenanceTools)).toHaveLength(3);
+  it('exports all 6 provenance tools', () => {
+    expect(Object.keys(provenanceTools)).toHaveLength(6);
     expect(provenanceTools).toHaveProperty('ocr_provenance_get');
     expect(provenanceTools).toHaveProperty('ocr_provenance_verify');
     expect(provenanceTools).toHaveProperty('ocr_provenance_export');
+    expect(provenanceTools).toHaveProperty('ocr_provenance_query');
+    expect(provenanceTools).toHaveProperty('ocr_provenance_timeline');
+    expect(provenanceTools).toHaveProperty('ocr_provenance_processor_stats');
   });
 
   it('each tool has description, inputSchema, and handler', () => {
