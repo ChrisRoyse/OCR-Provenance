@@ -244,14 +244,14 @@ export const databaseTools: Record<string, ToolDefinition> = {
     handler: handleDatabaseCreate,
   },
   ocr_db_list: {
-    description: 'List all available OCR databases',
+    description: '[START HERE] List all available databases with sizes and document counts. Use this first to see what databases exist, then ocr_db_select to switch.',
     inputSchema: {
       include_stats: z.boolean().default(false).describe('Include document/chunk/embedding counts'),
     },
     handler: handleDatabaseList,
   },
   ocr_db_select: {
-    description: 'Select a database as the active database for operations',
+    description: 'Switch to a different database. All subsequent tool calls will operate on the selected database until you switch again.',
     inputSchema: {
       database_name: z.string().min(1).describe('Name of the database to select'),
     },

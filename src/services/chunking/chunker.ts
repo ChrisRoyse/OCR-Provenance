@@ -260,6 +260,28 @@ export function chunkHybridSectionAware(
   }
 
   /**
+   * Find table metadata for a chunk based on its offset range.
+   * Returns metadata if the chunk overlaps with a known table structure.
+   */
+  function findTableMetadata(
+    offset: number,
+    length: number,
+  ): ChunkResult['tableMetadata'] {
+    const end = offset + length;
+    for (const ts of tableStructures) {
+      // Check if chunk overlaps with table structure
+      if (offset <= ts.endOffset && end >= ts.startOffset) {
+        return {
+          columnHeaders: ts.columnHeaders,
+          rowCount: ts.rowCount,
+          columnCount: ts.columnCount,
+        };
+      }
+    }
+    return null;
+  }
+
+  /**
    * Build a column header prefix string for a table chunk.
    * Format: "[Table: col1 | col2 | col3] "
    */
@@ -329,6 +351,10 @@ export function chunkHybridSectionAware(
       }
     }
 
+    const tableMetaForAtomicChunk = block.type === 'table'
+      ? findTableMetadata(startOff, endOff - startOff)
+      : null;
+
     chunks.push({
       index: chunkIndex++,
       text: chunkText,
@@ -343,6 +369,7 @@ export function chunkHybridSectionAware(
       sectionPath: currentSectionPath,
       contentTypes: [mapBlockTypeToContentType(block.type)],
       isAtomic: true,
+      tableMetadata: tableMetaForAtomicChunk,
     });
   }
 
@@ -397,6 +424,10 @@ export function chunkHybridSectionAware(
         const endOff = block.startOffset + endPos;
         const pageInfo = determinePageInfoForSpan(startOff, endOff, pageOffsets);
 
+        const tableMetaForSubChunk = block.type === 'table'
+          ? findTableMetadata(startOff, endOff - startOff)
+          : null;
+
         chunks.push({
           index: chunkIndex++,
           text: chunkText,
@@ -411,6 +442,7 @@ export function chunkHybridSectionAware(
           sectionPath: currentSectionPath,
           contentTypes: [mapBlockTypeToContentType(block.type)],
           isAtomic: true,
+          tableMetadata: tableMetaForSubChunk,
         });
       }
 

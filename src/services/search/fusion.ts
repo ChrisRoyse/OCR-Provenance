@@ -45,6 +45,13 @@ interface RRFSearchResult {
   doc_title?: string | null;
   doc_author?: string | null;
   doc_subject?: string | null;
+  overlap_previous?: number;
+  overlap_next?: number;
+  chunking_strategy?: string | null;
+  embedding_status?: string;
+  doc_page_count?: number | null;
+  datalab_mode?: string | null;
+  total_chunks?: number;
 }
 
 export interface RankedResult {
@@ -76,6 +83,13 @@ export interface RankedResult {
   doc_title?: string | null;
   doc_author?: string | null;
   doc_subject?: string | null;
+  overlap_previous?: number;
+  overlap_next?: number;
+  chunking_strategy?: string | null;
+  embedding_status?: string;
+  doc_page_count?: number | null;
+  datalab_mode?: string | null;
+  total_chunks?: number;
 }
 
 const DEFAULT_CONFIG: RRFConfig = {
@@ -126,6 +140,13 @@ function buildFusedResult(
     doc_title: result.doc_title ?? null,
     doc_author: result.doc_author ?? null,
     doc_subject: result.doc_subject ?? null,
+    overlap_previous: result.overlap_previous ?? 0,
+    overlap_next: result.overlap_next ?? 0,
+    chunking_strategy: result.chunking_strategy ?? null,
+    embedding_status: result.embedding_status ?? 'pending',
+    doc_page_count: result.doc_page_count ?? null,
+    datalab_mode: result.datalab_mode ?? null,
+    total_chunks: result.total_chunks ?? 0,
   };
 }
 

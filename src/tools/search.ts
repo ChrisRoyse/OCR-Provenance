@@ -31,7 +31,7 @@ import {
 } from '../utils/validation.js';
 import { MCPError } from '../server/errors.js';
 import { formatResponse, handleError, type ToolResponse, type ToolDefinition } from './shared.js';
-import { BM25SearchService } from '../services/search/bm25.js';
+import { BM25SearchService, sanitizeFTS5Query } from '../services/search/bm25.js';
 import { RRFFusion, type RankedResult } from '../services/search/fusion.js';
 import { rerankResults } from '../services/search/reranker.js';
 import { expandQuery, getExpandedTerms } from '../services/search/query-expander.js';
@@ -199,6 +199,11 @@ function resolveChunkFilter(
     section_path_filter?: string;
     heading_filter?: string;
     page_range_filter?: { min_page?: number; max_page?: number };
+    is_atomic_filter?: boolean;
+    heading_level_filter?: { min_level?: number; max_level?: number };
+    min_page_count?: number;
+    max_page_count?: number;
+    table_columns_contain?: string;
   }
 ): ChunkFilterSQL {
   const conditions: string[] = [];
@@ -233,7 +238,188 @@ function resolveChunkFilter(
     }
   }
 
+  if (filters.is_atomic_filter !== undefined) {
+    conditions.push(`c.is_atomic = ?`);
+    params.push(filters.is_atomic_filter ? 1 : 0);
+  }
+
+  if (filters.heading_level_filter) {
+    if (filters.heading_level_filter.min_level !== undefined) {
+      conditions.push('c.heading_level >= ?');
+      params.push(filters.heading_level_filter.min_level);
+    }
+    if (filters.heading_level_filter.max_level !== undefined) {
+      conditions.push('c.heading_level <= ?');
+      params.push(filters.heading_level_filter.max_level);
+    }
+  }
+
+  if (filters.min_page_count !== undefined) {
+    conditions.push('(SELECT page_count FROM documents WHERE id = c.document_id) >= ?');
+    params.push(filters.min_page_count);
+  }
+
+  if (filters.max_page_count !== undefined) {
+    conditions.push('(SELECT page_count FROM documents WHERE id = c.document_id) <= ?');
+    params.push(filters.max_page_count);
+  }
+
+  if (filters.table_columns_contain) {
+    // Filter to atomic table chunks with matching column headers in provenance processing_params
+    conditions.push(`c.is_atomic = 1`);
+    conditions.push(`EXISTS (SELECT 1 FROM provenance p WHERE p.id = c.provenance_id AND LOWER(p.processing_params) LIKE '%' || LOWER(?) || '%')`);
+    params.push(filters.table_columns_contain);
+  }
+
   return { conditions, params };
+}
+
+/**
+ * Attach neighboring chunk context to search results.
+ * For each result with a chunk_id and chunk_index, fetches N neighbors before and after.
+ * Deduplicates: skips neighbors that are already primary results.
+ */
+function attachContextChunks(
+  conn: ReturnType<ReturnType<typeof requireDatabase>['db']['getConnection']>,
+  results: Array<Record<string, unknown>>,
+  contextSize: number
+): void {
+  if (contextSize <= 0 || results.length === 0) return;
+
+  // Build set of primary result chunk IDs for dedup
+  const primaryChunkIds = new Set(
+    results.map(r => r.chunk_id as string).filter(Boolean)
+  );
+
+  // Group results by document_id for batch queries
+  const byDoc = new Map<string, Array<Record<string, unknown>>>();
+  for (const r of results) {
+    const docId = r.document_id as string;
+    const chunkIndex = r.chunk_index as number | undefined;
+    if (!docId || chunkIndex === undefined) {
+      r.context_before = [];
+      r.context_after = [];
+      continue;
+    }
+    if (!byDoc.has(docId)) byDoc.set(docId, []);
+    byDoc.get(docId)!.push(r);
+  }
+
+  for (const [docId, docResults] of byDoc) {
+    // Batch query: get all potentially needed chunks for this doc
+    const allIndices = docResults.map(r => r.chunk_index as number);
+    const minIdx = Math.min(...allIndices) - contextSize;
+    const maxIdx = Math.max(...allIndices) + contextSize;
+
+    const neighbors = conn.prepare(
+      `SELECT id, text, chunk_index, page_number, heading_context, section_path, content_types
+       FROM chunks
+       WHERE document_id = ? AND chunk_index BETWEEN ? AND ?
+       ORDER BY chunk_index`
+    ).all(docId, minIdx, maxIdx) as Array<{
+      id: string;
+      text: string;
+      chunk_index: number;
+      page_number: number | null;
+      heading_context: string | null;
+      section_path: string | null;
+      content_types: string | null;
+    }>;
+
+    const neighborMap = new Map(neighbors.map(n => [n.chunk_index, n]));
+
+    for (const r of docResults) {
+      const idx = r.chunk_index as number;
+      const before: Array<Record<string, unknown>> = [];
+      const after: Array<Record<string, unknown>> = [];
+
+      for (let i = idx - contextSize; i < idx; i++) {
+        const n = neighborMap.get(i);
+        if (n && !primaryChunkIds.has(n.id)) {
+          before.push({
+            chunk_id: n.id,
+            chunk_index: n.chunk_index,
+            text: n.text.substring(0, 500),
+            page_number: n.page_number,
+            heading_context: n.heading_context,
+            is_context: true,
+          });
+        }
+      }
+
+      for (let i = idx + 1; i <= idx + contextSize; i++) {
+        const n = neighborMap.get(i);
+        if (n && !primaryChunkIds.has(n.id)) {
+          after.push({
+            chunk_id: n.id,
+            chunk_index: n.chunk_index,
+            text: n.text.substring(0, 500),
+            page_number: n.page_number,
+            heading_context: n.heading_context,
+            is_context: true,
+          });
+        }
+      }
+
+      r.context_before = before;
+      r.context_after = after;
+    }
+  }
+}
+
+/**
+ * Attach table metadata to search results for atomic table chunks.
+ * For each result where is_atomic=true and content_types contains "table",
+ * queries provenance processing_params to extract table_columns, table_row_count, table_column_count.
+ * Batches queries by chunk_id.
+ */
+function attachTableMetadata(
+  conn: ReturnType<ReturnType<typeof requireDatabase>['db']['getConnection']>,
+  results: Array<Record<string, unknown>>
+): void {
+  // Find atomic table chunk IDs
+  const tableChunkIds: string[] = [];
+  for (const r of results) {
+    if (r.is_atomic && r.chunk_id && typeof r.content_types === 'string' && r.content_types.includes('"table"')) {
+      tableChunkIds.push(r.chunk_id as string);
+    }
+  }
+  if (tableChunkIds.length === 0) return;
+
+  // Batch query provenance for table metadata via chunks.provenance_id -> provenance.id
+  const placeholders = tableChunkIds.map(() => '?').join(',');
+  const rows = conn.prepare(
+    `SELECT c.id AS chunk_id, p.processing_params
+     FROM chunks c
+     INNER JOIN provenance p ON c.provenance_id = p.id
+     WHERE c.id IN (${placeholders})`
+  ).all(...tableChunkIds) as Array<{ chunk_id: string; processing_params: string }>;
+
+  // Build map: chunk_id -> table metadata
+  const metadataMap = new Map<string, { table_columns: string[]; table_row_count: number; table_column_count: number }>();
+  for (const row of rows) {
+    if (metadataMap.has(row.chunk_id)) continue;
+    try {
+      const params = JSON.parse(row.processing_params);
+      if (params.table_columns) {
+        metadataMap.set(row.chunk_id, {
+          table_columns: params.table_columns,
+          table_row_count: params.table_row_count ?? 0,
+          table_column_count: params.table_column_count ?? 0,
+        });
+      }
+    } catch {
+      // Skip unparseable processing_params
+    }
+  }
+
+  // Attach to results
+  for (const r of results) {
+    const meta = r.chunk_id ? metadataMap.get(r.chunk_id as string) : undefined;
+    if (meta) {
+      r.table_metadata = meta;
+    }
+  }
 }
 
 /**
@@ -543,6 +729,13 @@ function toBm25Ranked(
     doc_title?: string | null;
     doc_author?: string | null;
     doc_subject?: string | null;
+    overlap_previous?: number;
+    overlap_next?: number;
+    chunking_strategy?: string | null;
+    embedding_status?: string;
+    doc_page_count?: number | null;
+    datalab_mode?: string | null;
+    total_chunks?: number;
   }>
 ): RankedResult[] {
   return results.map((r) => ({
@@ -574,6 +767,13 @@ function toBm25Ranked(
     doc_title: r.doc_title ?? null,
     doc_author: r.doc_author ?? null,
     doc_subject: r.doc_subject ?? null,
+    overlap_previous: r.overlap_previous ?? 0,
+    overlap_next: r.overlap_next ?? 0,
+    chunking_strategy: r.chunking_strategy ?? null,
+    embedding_status: r.embedding_status ?? 'pending',
+    doc_page_count: r.doc_page_count ?? null,
+    datalab_mode: r.datalab_mode ?? null,
+    total_chunks: r.total_chunks ?? 0,
   }));
 }
 
@@ -596,6 +796,7 @@ function toSemanticRanked(
     character_start: number;
     character_end: number;
     chunk_index: number;
+    total_chunks?: number;
     provenance_id: string;
     content_hash: string;
     similarity_score: number;
@@ -609,6 +810,12 @@ function toSemanticRanked(
     doc_title?: string | null;
     doc_author?: string | null;
     doc_subject?: string | null;
+    overlap_previous?: number;
+    overlap_next?: number;
+    chunking_strategy?: string | null;
+    embedding_status?: string;
+    doc_page_count?: number | null;
+    datalab_mode?: string | null;
   }>
 ): RankedResult[] {
   return results.map((r, i) => ({
@@ -626,6 +833,7 @@ function toSemanticRanked(
     character_start: r.character_start,
     character_end: r.character_end,
     chunk_index: r.chunk_index,
+    total_chunks: r.total_chunks ?? 0,
     provenance_id: r.provenance_id,
     content_hash: r.content_hash,
     rank: i + 1,
@@ -640,6 +848,12 @@ function toSemanticRanked(
     doc_title: r.doc_title ?? null,
     doc_author: r.doc_author ?? null,
     doc_subject: r.doc_subject ?? null,
+    overlap_previous: r.overlap_previous ?? 0,
+    overlap_next: r.overlap_next ?? 0,
+    chunking_strategy: r.chunking_strategy ?? null,
+    embedding_status: r.embedding_status ?? 'pending',
+    doc_page_count: r.doc_page_count ?? null,
+    datalab_mode: r.datalab_mode ?? null,
   }));
 }
 
@@ -681,6 +895,11 @@ export async function handleSearchSemantic(params: Record<string, unknown>): Pro
       section_path_filter: input.section_path_filter,
       heading_filter: input.heading_filter,
       page_range_filter: input.page_range_filter,
+      is_atomic_filter: input.is_atomic_filter,
+      heading_level_filter: input.heading_level_filter,
+      min_page_count: input.min_page_count,
+      max_page_count: input.max_page_count,
+      table_columns_contain: input.table_columns_contain,
     });
 
     // Generate query embedding (use expanded query for better semantic coverage)
@@ -815,6 +1034,12 @@ export async function handleSearchSemantic(params: Record<string, unknown>): Pro
           doc_title: original.doc_title ?? null,
           doc_author: original.doc_author ?? null,
           doc_subject: original.doc_subject ?? null,
+          overlap_previous: original.overlap_previous ?? 0,
+          overlap_next: original.overlap_next ?? 0,
+          chunking_strategy: original.chunking_strategy ?? null,
+          embedding_status: original.embedding_status ?? 'pending',
+          doc_page_count: original.doc_page_count ?? null,
+          datalab_mode: original.datalab_mode ?? null,
           rerank_score: r.relevance_score,
           rerank_reasoning: r.reasoning,
         };
@@ -857,6 +1082,12 @@ export async function handleSearchSemantic(params: Record<string, unknown>): Pro
           doc_title: r.doc_title ?? null,
           doc_author: r.doc_author ?? null,
           doc_subject: r.doc_subject ?? null,
+          overlap_previous: r.overlap_previous ?? 0,
+          overlap_next: r.overlap_next ?? 0,
+          chunking_strategy: r.chunking_strategy ?? null,
+          embedding_status: r.embedding_status ?? 'pending',
+          doc_page_count: r.doc_page_count ?? null,
+          datalab_mode: r.datalab_mode ?? null,
         };
         attachProvenance(result, db, r.provenance_id, !!input.include_provenance);
         return result;
@@ -883,6 +1114,15 @@ export async function handleSearchSemantic(params: Record<string, unknown>): Pro
     if (clusterContextIncluded) {
       attachClusterContext(conn, finalResults);
     }
+
+    // Phase 4: Attach neighbor context chunks if requested
+    const contextChunkCount = input.include_context_chunks ?? 0;
+    if (contextChunkCount > 0) {
+      attachContextChunks(conn, finalResults, contextChunkCount);
+    }
+
+    // Phase 5: Attach table metadata for atomic table chunks
+    attachTableMetadata(conn, finalResults);
 
     const responseData: Record<string, unknown> = {
       query: input.query,
@@ -950,6 +1190,11 @@ export async function handleSearch(params: Record<string, unknown>): Promise<Too
       section_path_filter: input.section_path_filter,
       heading_filter: input.heading_filter,
       page_range_filter: input.page_range_filter,
+      is_atomic_filter: input.is_atomic_filter,
+      heading_level_filter: input.heading_level_filter,
+      min_page_count: input.min_page_count,
+      max_page_count: input.max_page_count,
+      table_columns_contain: input.table_columns_contain,
     });
 
     const bm25 = new BM25SearchService(conn);
@@ -1059,6 +1304,15 @@ export async function handleSearch(params: Record<string, unknown>): Promise<Too
       attachClusterContext(conn, finalResults);
     }
 
+    // Phase 4: Attach neighbor context chunks if requested
+    const contextChunkCount = input.include_context_chunks ?? 0;
+    if (contextChunkCount > 0) {
+      attachContextChunks(conn, finalResults, contextChunkCount);
+    }
+
+    // Phase 5: Attach table metadata for atomic table chunks
+    attachTableMetadata(conn, finalResults);
+
     // Document metadata matches (v30 FTS5 on doc_title/author/subject)
     let documentMetadataMatches: Array<Record<string, unknown>> | undefined;
     try {
@@ -1163,6 +1417,11 @@ export async function handleSearchHybrid(params: Record<string, unknown>): Promi
       section_path_filter: input.section_path_filter,
       heading_filter: input.heading_filter,
       page_range_filter: input.page_range_filter,
+      is_atomic_filter: input.is_atomic_filter,
+      heading_level_filter: input.heading_level_filter,
+      min_page_count: input.min_page_count,
+      max_page_count: input.max_page_count,
+      table_columns_contain: input.table_columns_contain,
     });
 
     // Get BM25 results (chunks + VLM + extractions)
@@ -1284,6 +1543,15 @@ export async function handleSearchHybrid(params: Record<string, unknown>): Promi
     if (clusterContextIncluded) {
       attachClusterContext(conn, finalResults);
     }
+
+    // Phase 4: Attach neighbor context chunks if requested
+    const contextChunkCount = input.include_context_chunks ?? 0;
+    if (contextChunkCount > 0) {
+      attachContextChunks(conn, finalResults, contextChunkCount);
+    }
+
+    // Phase 5: Attach table metadata for atomic table chunks
+    attachTableMetadata(db.getConnection(), finalResults);
 
     const responseData: Record<string, unknown> = {
       query: input.query,
@@ -2165,7 +2433,8 @@ async function handleCrossDbSearch(params: Record<string, unknown>): Promise<Too
           continue;
         }
 
-        // Run BM25 search
+        // Run BM25 search (sanitize query for FTS5 safety)
+        const ftsQuery = sanitizeFTS5Query(input.query);
         const rows = conn
           .prepare(
             `SELECT c.id, c.document_id, c.text, c.chunk_index, rank
@@ -2175,7 +2444,7 @@ async function handleCrossDbSearch(params: Record<string, unknown>): Promise<Too
              ORDER BY rank
              LIMIT ?`
           )
-          .all(input.query, input.limit_per_db) as Array<{
+          .all(ftsQuery, input.limit_per_db) as Array<{
           id: string;
           document_id: string;
           text: string;
@@ -2196,7 +2465,7 @@ async function handleCrossDbSearch(params: Record<string, unknown>): Promise<Too
             chunk_id: row.id,
             chunk_index: row.chunk_index,
             text_preview: row.text.substring(0, 300),
-            bm25_score: row.rank,
+            bm25_score: Math.abs(row.rank),
           });
         }
       } catch (dbError) {
@@ -2214,8 +2483,8 @@ async function handleCrossDbSearch(params: Record<string, unknown>): Promise<Too
       }
     }
 
-    // Sort by absolute BM25 rank (BM25 scores are negative, lower=better)
-    allResults.sort((a, b) => a.bm25_score - b.bm25_score);
+    // Sort by BM25 score (higher=better, already Math.abs'd)
+    allResults.sort((a, b) => b.bm25_score - a.bm25_score);
 
     return formatResponse(
       successResult({
@@ -2240,7 +2509,7 @@ async function handleCrossDbSearch(params: Record<string, unknown>): Promise<Too
  */
 export const searchTools: Record<string, ToolDefinition> = {
   ocr_search: {
-    description: 'Search documents using BM25 full-text ranking (best for exact terms, codes, IDs)',
+    description: '[PRIMARY] Full-text BM25 keyword search. Best for: exact terms, IDs, codes, quoted phrases. Returns chunks ranked by term frequency. Use ocr_search_hybrid instead for general questions.',
     inputSchema: {
       query: z.string().min(1).max(1000).describe('Search query'),
       limit: z.number().int().min(1).max(100).default(10).describe('Maximum results'),
@@ -2302,11 +2571,26 @@ export const searchTools: Record<string, ToolDefinition> = {
         .boolean()
         .default(false)
         .describe('Remove duplicate chunks (same text_hash) from results'),
+      is_atomic_filter: z.boolean().optional()
+        .describe('When true, return only atomic chunks (tables, figures, code). When false, exclude them.'),
+      heading_level_filter: z
+        .object({
+          min_level: z.number().int().min(1).max(6).optional(),
+          max_level: z.number().int().min(1).max(6).optional(),
+        })
+        .optional()
+        .describe('Filter by heading level (1=h1, 6=h6)'),
+      min_page_count: z.number().int().min(1).optional()
+        .describe('Only results from documents with at least this many pages'),
+      max_page_count: z.number().int().min(1).optional()
+        .describe('Only results from documents with at most this many pages'),
+      include_context_chunks: z.number().int().min(0).max(3).default(0)
+        .describe('Number of neighboring chunks before/after each result (0=none, max 3)'),
     },
     handler: handleSearch,
   },
   ocr_search_semantic: {
-    description: 'Search documents using semantic similarity (vector search)',
+    description: 'Vector similarity search by meaning. Best for: conceptual/meaning-based queries where exact terms may not match. Use ocr_search_hybrid instead for general questions.',
     inputSchema: {
       query: z.string().min(1).max(1000).describe('Search query'),
       limit: z.number().int().min(1).max(100).default(10).describe('Maximum results to return'),
@@ -2375,11 +2659,26 @@ export const searchTools: Record<string, ToolDefinition> = {
         .boolean()
         .default(false)
         .describe('Remove duplicate chunks (same text_hash) from results'),
+      is_atomic_filter: z.boolean().optional()
+        .describe('When true, return only atomic chunks (tables, figures, code). When false, exclude them.'),
+      heading_level_filter: z
+        .object({
+          min_level: z.number().int().min(1).max(6).optional(),
+          max_level: z.number().int().min(1).max(6).optional(),
+        })
+        .optional()
+        .describe('Filter by heading level (1=h1, 6=h6)'),
+      min_page_count: z.number().int().min(1).optional()
+        .describe('Only results from documents with at least this many pages'),
+      max_page_count: z.number().int().min(1).optional()
+        .describe('Only results from documents with at most this many pages'),
+      include_context_chunks: z.number().int().min(0).max(3).default(0)
+        .describe('Number of neighboring chunks before/after each result (0=none, max 3)'),
     },
     handler: handleSearchSemantic,
   },
   ocr_search_hybrid: {
-    description: 'Hybrid search using Reciprocal Rank Fusion (BM25 + semantic)',
+    description: '[RECOMMENDED DEFAULT] Combined BM25 + semantic search with auto-routing. Use this as your default search tool. Handles both exact and conceptual queries. Returns chunks with full metadata including structural context.',
     inputSchema: {
       query: z.string().min(1).max(1000).describe('Search query'),
       limit: z.number().int().min(1).max(100).default(10).describe('Maximum results'),
@@ -2446,6 +2745,21 @@ export const searchTools: Record<string, ToolDefinition> = {
         .boolean()
         .default(false)
         .describe('Remove duplicate chunks (same text_hash) from results'),
+      is_atomic_filter: z.boolean().optional()
+        .describe('When true, return only atomic chunks (tables, figures, code). When false, exclude them.'),
+      heading_level_filter: z
+        .object({
+          min_level: z.number().int().min(1).max(6).optional(),
+          max_level: z.number().int().min(1).max(6).optional(),
+        })
+        .optional()
+        .describe('Filter by heading level (1=h1, 6=h6)'),
+      min_page_count: z.number().int().min(1).optional()
+        .describe('Only results from documents with at least this many pages'),
+      max_page_count: z.number().int().min(1).optional()
+        .describe('Only results from documents with at most this many pages'),
+      include_context_chunks: z.number().int().min(0).max(3).default(0)
+        .describe('Number of neighboring chunks before/after each result (0=none, max 3)'),
     },
     handler: handleSearchHybrid,
   },
@@ -2486,7 +2800,7 @@ export const searchTools: Record<string, ToolDefinition> = {
   },
   ocr_rag_context: {
     description:
-      'Assemble a RAG (Retrieval-Augmented Generation) context block for LLM consumption. Runs hybrid search and returns a single markdown context block.',
+      'Get pre-assembled RAG context for answering questions. Returns a deduplicated, source-diverse markdown block with the most relevant excerpts from hybrid search. Use this when you need context to answer a user question.',
     inputSchema: {
       question: z.string().min(1).max(2000).describe('The question to build context for'),
       limit: z
@@ -2536,7 +2850,7 @@ export const searchTools: Record<string, ToolDefinition> = {
   },
   ocr_search_cross_db: {
     description:
-      'Search across multiple databases using BM25 full-text search. Opens each database independently as read-only. Returns merged results sorted by BM25 rank.',
+      'Search across ALL databases using BM25. Use when you need to find content across multiple document collections. Returns merged results sorted by BM25 rank.',
     inputSchema: CrossDbSearchInput.shape,
     handler: handleCrossDbSearch,
   },

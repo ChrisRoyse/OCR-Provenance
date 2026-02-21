@@ -339,6 +339,20 @@ export const SearchSemanticInput = z.object({
     .boolean()
     .default(false)
     .describe('Remove duplicate chunks (same text_hash) from results, keeping only the first occurrence'),
+  is_atomic_filter: z.boolean().optional()
+    .describe('When true, return only atomic chunks (complete tables, figures, code blocks). When false, exclude atomic chunks.'),
+  heading_level_filter: z.object({
+    min_level: z.number().int().min(1).max(6).optional(),
+    max_level: z.number().int().min(1).max(6).optional(),
+  }).optional().describe('Filter by heading level (1=h1 top-level, 6=h6 deepest)'),
+  min_page_count: z.number().int().min(1).optional()
+    .describe('Only include results from documents with at least this many pages'),
+  max_page_count: z.number().int().min(1).optional()
+    .describe('Only include results from documents with at most this many pages'),
+  include_context_chunks: z.number().int().min(0).max(3).default(0)
+    .describe('Number of neighboring chunks to include before and after each result (0=none, max 3). Adds context_before and context_after arrays.'),
+  table_columns_contain: z.string().optional()
+    .describe('Filter to table chunks whose column headers contain this text (case-insensitive match on stored table_columns in processing_params)'),
 });
 
 /**
@@ -392,6 +406,20 @@ export const SearchInput = z.object({
     .boolean()
     .default(false)
     .describe('Remove duplicate chunks (same text_hash) from results, keeping only the first occurrence'),
+  is_atomic_filter: z.boolean().optional()
+    .describe('When true, return only atomic chunks (complete tables, figures, code blocks). When false, exclude atomic chunks.'),
+  heading_level_filter: z.object({
+    min_level: z.number().int().min(1).max(6).optional(),
+    max_level: z.number().int().min(1).max(6).optional(),
+  }).optional().describe('Filter by heading level (1=h1 top-level, 6=h6 deepest)'),
+  min_page_count: z.number().int().min(1).optional()
+    .describe('Only include results from documents with at least this many pages'),
+  max_page_count: z.number().int().min(1).optional()
+    .describe('Only include results from documents with at most this many pages'),
+  include_context_chunks: z.number().int().min(0).max(3).default(0)
+    .describe('Number of neighboring chunks to include before and after each result (0=none, max 3). Adds context_before and context_after arrays.'),
+  table_columns_contain: z.string().optional()
+    .describe('Filter to table chunks whose column headers contain this text (case-insensitive match on stored table_columns in processing_params)'),
 });
 
 /**
@@ -450,6 +478,20 @@ export const SearchHybridInput = z.object({
     .boolean()
     .default(false)
     .describe('Remove duplicate chunks (same text_hash) from results, keeping only the first occurrence'),
+  is_atomic_filter: z.boolean().optional()
+    .describe('When true, return only atomic chunks (complete tables, figures, code blocks). When false, exclude atomic chunks.'),
+  heading_level_filter: z.object({
+    min_level: z.number().int().min(1).max(6).optional(),
+    max_level: z.number().int().min(1).max(6).optional(),
+  }).optional().describe('Filter by heading level (1=h1 top-level, 6=h6 deepest)'),
+  min_page_count: z.number().int().min(1).optional()
+    .describe('Only include results from documents with at least this many pages'),
+  max_page_count: z.number().int().min(1).optional()
+    .describe('Only include results from documents with at most this many pages'),
+  include_context_chunks: z.number().int().min(0).max(3).default(0)
+    .describe('Number of neighboring chunks to include before and after each result (0=none, max 3). Adds context_before and context_after arrays.'),
+  table_columns_contain: z.string().optional()
+    .describe('Filter to table chunks whose column headers contain this text (case-insensitive match on stored table_columns in processing_params)'),
 });
 
 /**

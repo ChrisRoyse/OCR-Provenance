@@ -252,7 +252,7 @@ async function handleHealthCheck(params: Record<string, unknown>): Promise<ToolR
 export const healthTools: Record<string, ToolDefinition> = {
   ocr_health_check: {
     description:
-      'Detect data integrity gaps: chunks without embeddings, documents without OCR, images without VLM descriptions, embeddings without vectors, orphaned provenance. Set fix=true to auto-generate missing embeddings.',
+      'Check system health: find documents without chunks, chunks without embeddings, stale FTS indexes, and other data integrity issues. Use to diagnose problems.',
     inputSchema: HealthCheckInput.shape,
     handler: handleHealthCheck,
   },

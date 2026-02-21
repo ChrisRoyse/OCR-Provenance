@@ -56,6 +56,13 @@ interface BM25SearchResult {
   doc_title?: string | null;
   doc_author?: string | null;
   doc_subject?: string | null;
+  overlap_previous?: number;
+  overlap_next?: number;
+  chunking_strategy?: string | null;
+  embedding_status?: string;
+  doc_page_count?: number | null;
+  datalab_mode?: string | null;
+  total_chunks?: number;
 }
 
 export class BM25SearchService {
@@ -118,7 +125,14 @@ export class BM25SearchService {
         d.doc_title,
         d.doc_author,
         d.doc_subject,
-        (SELECT o.parse_quality_score FROM ocr_results o WHERE o.document_id = c.document_id ORDER BY o.processing_completed_at DESC LIMIT 1) AS ocr_quality_score
+        (SELECT o.parse_quality_score FROM ocr_results o WHERE o.document_id = c.document_id ORDER BY o.processing_completed_at DESC LIMIT 1) AS ocr_quality_score,
+        c.overlap_previous,
+        c.overlap_next,
+        c.chunking_strategy,
+        c.embedding_status,
+        d.page_count AS doc_page_count,
+        (SELECT o.datalab_mode FROM ocr_results o WHERE o.document_id = c.document_id ORDER BY o.processing_completed_at DESC LIMIT 1) AS datalab_mode,
+        (SELECT COUNT(*) FROM chunks c2 WHERE c2.document_id = c.document_id) AS total_chunks
         ${includeHighlight ? ", snippet(chunks_fts, 0, '<mark>', '</mark>', '...', 32) AS highlight" : ''}
       FROM chunks_fts
       JOIN chunks c ON chunks_fts.rowid = c.rowid
@@ -177,6 +191,13 @@ export class BM25SearchService {
       doc_title: (row.doc_title as string | null) ?? null,
       doc_author: (row.doc_author as string | null) ?? null,
       doc_subject: (row.doc_subject as string | null) ?? null,
+      overlap_previous: (row.overlap_previous as number) ?? 0,
+      overlap_next: (row.overlap_next as number) ?? 0,
+      chunking_strategy: (row.chunking_strategy as string | null) ?? null,
+      embedding_status: (row.embedding_status as string) ?? 'pending',
+      doc_page_count: (row.doc_page_count as number | null) ?? null,
+      datalab_mode: (row.datalab_mode as string | null) ?? null,
+      total_chunks: (row.total_chunks as number) ?? 0,
     }));
 
     // Apply quality boost post-query: multiply bm25_score by quality factor

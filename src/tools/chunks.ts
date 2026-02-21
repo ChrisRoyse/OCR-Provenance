@@ -312,7 +312,7 @@ export const chunkTools: Record<string, ToolDefinition> = {
   },
   ocr_chunk_context: {
     description:
-      'Get a chunk with its N neighboring chunks for building context windows.',
+      'Expand a search result with neighboring chunks. Use after search to get surrounding text for a specific chunk_id with configurable context_size (number of neighbors).',
     inputSchema: ChunkContextInput.shape,
     handler: handleChunkContext,
   },

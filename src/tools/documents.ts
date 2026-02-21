@@ -28,6 +28,7 @@ import { formatResponse, handleError, fetchProvenanceChain, parseGeminiJson, typ
 import { getComparisonSummariesByDocument } from '../services/storage/database/comparison-operations.js';
 import { getClusterSummariesForDocument } from '../services/storage/database/cluster-operations.js';
 import { getImagesByDocument } from '../services/storage/database/image-operations.js';
+import { extractTableStructures } from '../services/chunking/json-block-analyzer.js';
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // DOCUMENT STRUCTURE TYPES
@@ -101,6 +102,9 @@ export async function handleDocumentList(params: Record<string, unknown>): Promi
     const dataParams = [...queryParams, input.limit, input.offset];
     const rows = conn.prepare(dataQuery).all(...dataParams) as Array<Record<string, unknown>>;
 
+    // Phase 2: Prepared statement for structural summary from extras_json
+    const extrasStmt = conn.prepare('SELECT extras_json FROM ocr_results WHERE document_id = ? LIMIT 1');
+
     return formatResponse(
       successResult({
         documents: rows.map((d) => ({
@@ -115,6 +119,22 @@ export async function handleDocumentList(params: Record<string, unknown>): Promi
           doc_author: d.doc_author ?? null,
           doc_subject: d.doc_subject ?? null,
           created_at: d.created_at,
+          structural_summary: (() => {
+            try {
+              const ocrRow = extrasStmt.get(d.id as string) as { extras_json: string | null } | undefined;
+              if (!ocrRow?.extras_json) return null;
+              const extras = JSON.parse(ocrRow.extras_json) as Record<string, unknown>;
+              const fp = extras.structural_fingerprint as Record<string, unknown> | undefined;
+              if (!fp) return null;
+              const headingDepths = fp.heading_depths as Record<string, number> | undefined;
+              return {
+                table_count: fp.table_count ?? 0,
+                figure_count: fp.figure_count ?? 0,
+                heading_count: headingDepths ? Object.values(headingDepths).reduce((a: number, b: number) => a + b, 0) : 0,
+                content_types: fp.content_type_distribution ?? null,
+              };
+            } catch { return null; }
+          })(),
         })),
         total,
         limit: input.limit,
@@ -846,23 +866,70 @@ export async function handleDocumentStructure(params: Record<string, unknown>): 
       throw documentNotFoundError(input.document_id);
     }
 
+    const conn = db.getConnection();
     const outline: OutlineEntry[] = [];
     const tables: TableEntry[] = [];
     const figures: FigureEntry[] = [];
     const codeBlocks: CodeBlockEntry[] = [];
     let source: 'json_blocks' | 'chunks' = 'chunks';
+    let documentMap: Record<string, unknown> | null = null;
 
     // Try json_blocks first (richer structure)
-    const ocrRow = db.getConnection()
+    const ocrRow = conn
       .prepare('SELECT json_blocks FROM ocr_results WHERE document_id = ?')
       .get(input.document_id) as { json_blocks: string | null } | undefined;
 
     if (ocrRow?.json_blocks) {
       try {
-        const blocks = JSON.parse(ocrRow.json_blocks) as Array<Record<string, unknown>>;
-        if (Array.isArray(blocks) && blocks.length > 0) {
+        const parsed = JSON.parse(ocrRow.json_blocks) as Record<string, unknown> | Array<Record<string, unknown>>;
+        // Handle both formats: array of blocks or {children: [...]} object
+        const blocks = Array.isArray(parsed) ? parsed
+          : (Array.isArray((parsed as Record<string, unknown>).children) ? (parsed as Record<string, unknown>).children as Array<Record<string, unknown>> : null);
+        if (blocks && blocks.length > 0) {
           walkBlocks(blocks, outline, tables, figures, codeBlocks);
           source = 'json_blocks';
+
+          // Build document map with table column details
+          try {
+            const ocrTextRow = conn.prepare('SELECT extracted_text FROM ocr_results WHERE document_id = ?')
+              .get(input.document_id) as { extracted_text: string | null } | undefined;
+
+            if (ocrTextRow?.extracted_text) {
+              // Pass the original parsed object (or wrap array in {children:...})
+              const jsonBlocksRoot = Array.isArray(parsed)
+                ? { children: parsed } as Record<string, unknown>
+                : parsed as Record<string, unknown>;
+              const tableStructures = extractTableStructures(
+                jsonBlocksRoot,
+                ocrTextRow.extracted_text,
+                [] // pageOffsets not needed for structure extraction
+              );
+
+              documentMap = {
+                sections: outline.map(o => ({
+                  heading: o.text,
+                  level: o.level,
+                  page: o.page,
+                })),
+                tables: tableStructures.map(ts => ({
+                  page: ts.pageNumber,
+                  columns: ts.columnHeaders,
+                  row_count: ts.rowCount,
+                  column_count: ts.columnCount,
+                })),
+                figures: figures.map(f => ({
+                  page: f.page,
+                  caption: f.caption ?? null,
+                })),
+                code_blocks: codeBlocks.map(cb => ({
+                  page: cb.page,
+                  language: cb.language ?? null,
+                })),
+              };
+            }
+          } catch (mapErr) {
+            console.error(`[DocumentStructure] Failed to build document_map: ${String(mapErr)}`);
+          }
         }
       } catch (parseErr) {
         console.error(`[DocumentStructure] Failed to parse json_blocks for ${input.document_id}: ${String(parseErr)}`);
@@ -882,19 +949,22 @@ export async function handleDocumentStructure(params: Record<string, unknown>): 
       outline.push(...chunkOutline);
     }
 
-    return formatResponse(
-      successResult({
-        document_id: doc.id,
-        file_name: doc.file_name,
-        page_count: doc.page_count,
-        source,
-        outline,
-        tables: { count: tables.length, items: tables },
-        figures: { count: figures.length, items: figures },
-        code_blocks: { count: codeBlocks.length, items: codeBlocks },
-        total_structural_elements: outline.length + tables.length + figures.length + codeBlocks.length,
-      })
-    );
+    const responseData: Record<string, unknown> = {
+      document_id: doc.id,
+      file_name: doc.file_name,
+      page_count: doc.page_count,
+      source,
+      outline,
+      tables: { count: tables.length, items: tables },
+      figures: { count: figures.length, items: figures },
+      code_blocks: { count: codeBlocks.length, items: codeBlocks },
+      total_structural_elements: outline.length + tables.length + figures.length + codeBlocks.length,
+    };
+    if (documentMap) {
+      responseData.document_map = documentMap;
+    }
+
+    return formatResponse(successResult(responseData));
   } catch (error) {
     return handleError(error);
   }
@@ -1641,7 +1711,7 @@ async function handleDocumentWorkflow(params: Record<string, unknown>): Promise<
 export const documentTools: Record<string, ToolDefinition> = {
   ocr_document_list: {
     description:
-      'List documents in the current database. Supports status filtering.',
+      '[START HERE] Browse the document corpus. Returns document metadata with structural summaries (table/figure/heading counts). Use this first to understand what documents are in the database.',
     inputSchema: {
       status_filter: z
         .enum(['pending', 'processing', 'complete', 'failed'])
@@ -1660,7 +1730,7 @@ export const documentTools: Record<string, ToolDefinition> = {
   },
   ocr_document_get: {
     description:
-      'Get detailed information about a specific document including OCR results, chunks, and provenance.',
+      'Deep dive into one document. Returns OCR metadata, structural fingerprint, links, block stats, comparison and cluster memberships. Set include_chunks=true for chunk listing.',
     inputSchema: {
       document_id: z.string().min(1).describe('Document ID'),
       include_text: z.boolean().default(false).describe('Include OCR extracted text'),
@@ -1696,7 +1766,7 @@ export const documentTools: Record<string, ToolDefinition> = {
   },
   ocr_document_structure: {
     description:
-      'Analyze document structure including headings outline, tables, figures, and code blocks. Uses json_blocks when available, falls back to chunk metadata.',
+      'Get document outline: headings, tables, figures, code blocks with page numbers and document map. Use after ocr_document_get to understand document layout before searching within it.',
     inputSchema: DocumentStructureInput.shape,
     handler: handleDocumentStructure,
   },

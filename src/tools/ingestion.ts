@@ -125,6 +125,11 @@ function storeChunks(
         section_path: cr.sectionPath ?? null,
         is_atomic: cr.isAtomic,
         content_types: cr.contentTypes,
+        ...(cr.tableMetadata ? {
+          table_columns: cr.tableMetadata.columnHeaders,
+          table_row_count: cr.tableMetadata.rowCount,
+          table_column_count: cr.tableMetadata.columnCount,
+        } : {}),
       },
       location: {
         chunk_index: i,

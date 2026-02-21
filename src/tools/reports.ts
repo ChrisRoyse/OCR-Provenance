@@ -1676,7 +1676,7 @@ export const reportTools: Record<string, ToolDefinition> = {
 
   ocr_corpus_profile: {
     description:
-      'Get corpus content profile including document sizes, chunk statistics, content type distribution, and section frequency',
+      '[START HERE] Get corpus overview: document counts, chunk statistics, content type distribution, section frequency. Use this to understand the database before searching.',
     inputSchema: {
       include_section_frequency: z
         .boolean()

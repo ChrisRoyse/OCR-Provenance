@@ -112,6 +112,12 @@ export interface VectorSearchResult {
   doc_title?: string | null;
   doc_author?: string | null;
   doc_subject?: string | null;
+  overlap_previous?: number;
+  overlap_next?: number;
+  chunking_strategy?: string | null;
+  embedding_status?: string;
+  doc_page_count?: number | null;
+  datalab_mode?: string | null;
 }
 
 /**
@@ -171,6 +177,12 @@ interface SearchRow {
   doc_title: string | null;
   doc_author: string | null;
   doc_subject: string | null;
+  overlap_previous: number | null;
+  overlap_next: number | null;
+  chunking_strategy: string | null;
+  embedding_status: string | null;
+  doc_page_count: number | null;
+  datalab_mode: string | null;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -426,6 +438,12 @@ export class VectorService {
         doc.doc_title,
         doc.doc_author,
         doc.doc_subject,
+        ch.overlap_previous,
+        ch.overlap_next,
+        ch.chunking_strategy,
+        ch.embedding_status,
+        doc.page_count AS doc_page_count,
+        (SELECT o.datalab_mode FROM ocr_results o WHERE o.document_id = e.document_id ORDER BY o.processing_completed_at DESC LIMIT 1) AS datalab_mode,
         (SELECT o.parse_quality_score FROM ocr_results o WHERE o.document_id = e.document_id ORDER BY o.processing_completed_at DESC LIMIT 1) AS ocr_quality_score,
         vec_distance_cosine(v.vector, ?) as distance
       FROM vec_embeddings v
@@ -506,6 +524,12 @@ export class VectorService {
           doc.doc_title,
           doc.doc_author,
           doc.doc_subject,
+          ch.overlap_previous,
+          ch.overlap_next,
+          ch.chunking_strategy,
+          ch.embedding_status,
+          doc.page_count AS doc_page_count,
+          (SELECT o.datalab_mode FROM ocr_results o WHERE o.document_id = e.document_id ORDER BY o.processing_completed_at DESC LIMIT 1) AS datalab_mode,
           (SELECT o.parse_quality_score FROM ocr_results o WHERE o.document_id = e.document_id ORDER BY o.processing_completed_at DESC LIMIT 1) AS ocr_quality_score,
           vec_distance_cosine(v.vector, ?) as distance
         FROM vec_embeddings v
@@ -594,6 +618,12 @@ export class VectorService {
         doc_title: row.doc_title ?? null,
         doc_author: row.doc_author ?? null,
         doc_subject: row.doc_subject ?? null,
+        overlap_previous: row.overlap_previous ?? 0,
+        overlap_next: row.overlap_next ?? 0,
+        chunking_strategy: row.chunking_strategy ?? null,
+        embedding_status: row.embedding_status ?? 'pending',
+        doc_page_count: row.doc_page_count ?? null,
+        datalab_mode: row.datalab_mode ?? null,
       }));
 
     // Apply quality boost: multiply similarity_score by quality factor, then re-sort
