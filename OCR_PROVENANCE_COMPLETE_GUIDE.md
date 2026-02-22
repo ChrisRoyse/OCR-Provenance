@@ -29,7 +29,7 @@ OCR Provenance is a **Model Context Protocol (MCP) server** that gives AI agents
 | **VLM Model** | Gemini 3 Flash (image analysis only) |
 | **OCR Engine** | Datalab API (PDF, DOCX, images, presentations) |
 | **Reranking** | Local cross-encoder (ms-marco-MiniLM-L-12-v2) |
-| **Tests** | 2,368 passing across 109 test files |
+| **Tests** | 2,344 passing across 109 test files |
 
 The system runs entirely locally (except for Datalab OCR API calls and Gemini VLM calls). Embeddings, search, reranking, clustering, and all database operations are local.
 
@@ -436,7 +436,7 @@ The server communicates via JSON-RPC over stdin/stdout (stdio transport). Any MC
 
 ### The Agent-Tool Relationship
 
-When you connect this MCP server to Claude (or any MCP-compatible AI), the agent gains access to all 122 tools. The agent can call any tool by name with the right parameters. **You control the agent through natural language instructions.**
+When you connect this MCP server to Claude (or any MCP-compatible AI), the agent gains access to all 111 tools. The agent can call any tool by name with the right parameters. **You control the agent through natural language instructions.**
 
 ### How to Give Effective Instructions
 
@@ -1228,5 +1228,5 @@ ocr_health_check { fix: true }
 ---
 
 *Document generated: 2026-02-22*
-*System version: Schema v31, 122 MCP tools*
+*System version: Schema v31, 111 MCP tools*
 *Repository: https://github.com/anthropics/datalab (OCR Provenance MCP Server)*
