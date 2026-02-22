@@ -497,30 +497,32 @@ Respond with valid JSON matching the response schema.`;
 
 export const structuredExtractionTools: Record<string, ToolDefinition> = {
   ocr_extract_structured: {
-    description: "Run structured extraction on an already-OCR'd document using a JSON page_schema",
+    description:
+      '[PROCESSING] Use to extract structured data from an OCR-processed document using a JSON page_schema. Returns extracted data with embedding. Document must have status "complete". Use ocr_suggest_extraction_schema first if unsure about schema.',
     inputSchema: ExtractStructuredInput.shape,
     handler: handleExtractStructured,
   },
   ocr_extraction_list: {
-    description: 'List all structured extractions for a document',
+    description:
+      '[ADMIN] Use to list all structured extractions previously run on a document. Returns extraction IDs, schemas, and results.',
     inputSchema: ExtractionListInput.shape,
     handler: handleExtractionList,
   },
   ocr_suggest_extraction_schema: {
     description:
-      'Analyze a document and suggest a JSON schema for structured data extraction using Gemini AI. Useful for discovering what structured data can be extracted from a document.',
+      '[ADMIN] Use when you need a JSON schema for structured extraction but do not know the document format. Returns an AI-suggested schema using Gemini. Requires GEMINI_API_KEY. Follow with ocr_extract_structured.',
     inputSchema: SuggestSchemaInput.shape,
     handler: handleSuggestSchema,
   },
   ocr_extraction_get: {
     description:
-      'Retrieve full structured extraction results by ID with document context, parsed JSON, embedding status, and optional provenance chain',
+      '[ADMIN] Use to retrieve full results of a specific structured extraction by ID. Returns parsed extraction JSON, schema, embedding status, and optional provenance chain.',
     inputSchema: ExtractionGetInput.shape,
     handler: handleExtractionGet,
   },
   ocr_extraction_search: {
     description:
-      'Search within structured extraction JSON content using text matching. Returns matching extractions with document context and optional provenance',
+      '[ADMIN] Use to search across structured extraction results by text matching within JSON content. Returns matching extractions with document context.',
     inputSchema: ExtractionSearchInput.shape,
     handler: handleExtractionSearch,
   },

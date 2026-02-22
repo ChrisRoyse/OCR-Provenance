@@ -190,14 +190,14 @@ export async function handleConfigSet(params: Record<string, unknown>): Promise<
  */
 export const configTools: Record<string, ToolDefinition> = {
   ocr_config_get: {
-    description: 'Get current system configuration',
+    description: '[ADMIN] Use to view current system configuration (OCR mode, chunk size, embedding settings, auto-clustering). Returns all or one specific key.',
     inputSchema: {
       key: ConfigKey.optional().describe('Specific config key to retrieve'),
     },
     handler: handleConfigGet,
   },
   ocr_config_set: {
-    description: 'Update a configuration setting',
+    description: '[ADMIN] Use to change a system configuration setting (OCR mode, chunk size, concurrency, auto-clustering). Returns updated value.',
     inputSchema: {
       key: ConfigKey.describe('Configuration key to update'),
       value: z.union([z.string(), z.number(), z.boolean()]).describe('New value'),

@@ -1,7 +1,7 @@
 /**
  * Intelligence MCP Tools
  *
- * Tools: ocr_document_tables, ocr_document_recommend, ocr_document_extras
+ * Tools: ocr_guide, ocr_document_tables, ocr_document_recommend, ocr_document_extras
  *
  * Internal-only data access and analysis tools. No external API calls needed.
  *
@@ -12,16 +12,21 @@
  */
 
 import { z } from 'zod';
-import { requireDatabase } from '../server/state.js';
+import { state, hasDatabase, requireDatabase, getDefaultStoragePath } from '../server/state.js';
+import { DatabaseService } from '../services/storage/database/index.js';
 import { successResult } from '../server/types.js';
 import { validateInput } from '../utils/validation.js';
-import { MCPError } from '../server/errors.js';
-import { documentNotFoundError } from '../server/errors.js';
+import { MCPError, documentNotFoundError } from '../server/errors.js';
 import { formatResponse, handleError, type ToolResponse, type ToolDefinition } from './shared.js';
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // INPUT SCHEMAS
 // ═══════════════════════════════════════════════════════════════════════════════
+
+const GuideInput = z.object({
+  intent: z.enum(['explore', 'search', 'ingest', 'analyze', 'status']).optional()
+    .describe('Optional intent hint: explore (browse data), search (find content), ingest (add documents), analyze (compare/cluster), status (check health). Omit for general guidance.'),
+});
 
 const DocumentTablesInput = z.object({
   document_id: z.string().min(1).describe('Document ID to extract tables from'),
@@ -223,6 +228,258 @@ function extractBlockText(block: Record<string, unknown>): string {
   }
 
   return '';
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// HANDLER: ocr_guide
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/**
+ * Handle ocr_guide - Contextual navigation aid for AI agents.
+ *
+ * Inspects current system state (databases, selected DB, document counts,
+ * processing status) and returns actionable guidance. No external API calls.
+ */
+async function handleGuide(params: Record<string, unknown>): Promise<ToolResponse> {
+  try {
+    const input = validateInput(GuideInput, params);
+    const intent = input.intent;
+
+    const storagePath = getDefaultStoragePath();
+    const databases = DatabaseService.list(storagePath);
+    const selectedDb = state.currentDatabaseName;
+    const dbSelected = hasDatabase();
+
+    // Build context about current state
+    const context: Record<string, unknown> = {
+      databases_available: databases.length,
+      database_names: databases.map(d => d.name),
+      selected_database: selectedDb ?? 'none',
+    };
+
+    // If a database is selected, get its stats
+    let docCount = 0;
+    let pendingCount = 0;
+    let completeCount = 0;
+    let failedCount = 0;
+    let chunkCount = 0;
+    let embeddingCount = 0;
+    let imageCount = 0;
+    let clusterCount = 0;
+
+    if (dbSelected) {
+      try {
+        const { db, vector } = requireDatabase();
+        const conn = db.getConnection();
+
+        const statusRows = conn.prepare(
+          'SELECT status, COUNT(*) as count FROM documents GROUP BY status'
+        ).all() as Array<{ status: string; count: number }>;
+
+        for (const row of statusRows) {
+          docCount += row.count;
+          if (row.status === 'pending') pendingCount = row.count;
+          else if (row.status === 'complete') completeCount = row.count;
+          else if (row.status === 'failed') failedCount = row.count;
+        }
+
+        chunkCount = (conn.prepare('SELECT COUNT(*) as c FROM chunks').get() as { c: number }).c;
+        embeddingCount = (conn.prepare('SELECT COUNT(*) as c FROM embeddings').get() as { c: number }).c;
+        imageCount = (conn.prepare('SELECT COUNT(*) as c FROM images').get() as { c: number }).c;
+        clusterCount = (conn.prepare('SELECT COUNT(*) as c FROM clusters').get() as { c: number }).c;
+
+        context.database_stats = {
+          total_documents: docCount,
+          complete: completeCount,
+          pending: pendingCount,
+          failed: failedCount,
+          chunks: chunkCount,
+          embeddings: embeddingCount,
+          images: imageCount,
+          clusters: clusterCount,
+          vectors: vector.getVectorCount(),
+        };
+      } catch (err) {
+        const errMsg = err instanceof Error ? err.message : String(err);
+        context.database_stats_error = errMsg;
+        return formatResponse(successResult({
+          status: 'database_error',
+          message: `Database "${selectedDb}" selected but query failed: ${errMsg}. Try ocr_health_check to diagnose.`,
+          context,
+          next_steps: [
+            { tool: 'ocr_health_check', description: 'Diagnose database integrity issues.', priority: 'required' },
+            { tool: 'ocr_db_select', description: 'Re-select the database to reset connection.', priority: 'optional' },
+          ],
+        }));
+      }
+    }
+
+    // Build next_steps based on state and intent
+    const next_steps: Array<{ tool: string; description: string; priority: string }> = [];
+
+    if (!dbSelected) {
+      if (databases.length === 0) {
+        next_steps.push({
+          tool: 'ocr_db_create',
+          description: 'Create a database first, then ingest documents.',
+          priority: 'required',
+        });
+      } else {
+        next_steps.push({
+          tool: 'ocr_db_select',
+          description: `Select a database to work with. Available: ${databases.map(d => d.name).join(', ')}`,
+          priority: 'required',
+        });
+      }
+      return formatResponse(successResult({
+        status: 'no_database_selected',
+        message: databases.length === 0
+          ? 'No databases exist. Create one with ocr_db_create, then ingest documents.'
+          : `${databases.length} database(s) available. Select one with ocr_db_select to get started.`,
+        context,
+        next_steps,
+      }));
+    }
+
+    // Database is selected - provide guidance based on intent and state
+    if (intent === 'ingest' || (docCount === 0 && !intent)) {
+      next_steps.push({
+        tool: 'ocr_ingest_files',
+        description: 'Ingest specific files by path.',
+        priority: docCount === 0 ? 'required' : 'optional',
+      });
+      next_steps.push({
+        tool: 'ocr_ingest_directory',
+        description: 'Scan a directory for documents to ingest.',
+        priority: 'optional',
+      });
+      if (pendingCount > 0) {
+        next_steps.push({
+          tool: 'ocr_process_pending',
+          description: `Process ${pendingCount} pending documents through OCR pipeline.`,
+          priority: 'required',
+        });
+      }
+    } else if (intent === 'search' || (!intent && completeCount > 0)) {
+      next_steps.push({
+        tool: 'ocr_search_hybrid',
+        description: 'Search across all documents. Default and recommended search tool.',
+        priority: 'recommended',
+      });
+      next_steps.push({
+        tool: 'ocr_rag_context',
+        description: 'Get pre-assembled context for answering a specific question.',
+        priority: 'recommended',
+      });
+      if (embeddingCount === 0 && chunkCount > 0) {
+        next_steps.push({
+          tool: 'ocr_health_check',
+          description: 'Chunks exist but no embeddings. Run health check with fix=true.',
+          priority: 'required',
+        });
+      }
+    } else if (intent === 'explore') {
+      next_steps.push({
+        tool: 'ocr_document_list',
+        description: `Browse ${docCount} documents in the database.`,
+        priority: 'recommended',
+      });
+      next_steps.push({
+        tool: 'ocr_corpus_profile',
+        description: 'Get corpus overview with content type distribution.',
+        priority: 'optional',
+      });
+    } else if (intent === 'analyze') {
+      if (clusterCount > 0) {
+        next_steps.push({
+          tool: 'ocr_cluster_list',
+          description: `View ${clusterCount} existing clusters.`,
+          priority: 'recommended',
+        });
+      } else if (completeCount >= 2) {
+        next_steps.push({
+          tool: 'ocr_cluster_documents',
+          description: `Cluster ${completeCount} documents by similarity.`,
+          priority: 'recommended',
+        });
+      }
+      if (completeCount >= 2) {
+        next_steps.push({
+          tool: 'ocr_document_compare',
+          description: 'Compare two documents to find differences.',
+          priority: 'optional',
+        });
+      }
+      next_steps.push({
+        tool: 'ocr_document_duplicates',
+        description: 'Find duplicate documents by hash or similarity.',
+        priority: 'optional',
+      });
+    } else if (intent === 'status') {
+      next_steps.push({
+        tool: 'ocr_health_check',
+        description: 'Check for data integrity issues.',
+        priority: 'recommended',
+      });
+      next_steps.push({
+        tool: 'ocr_db_stats',
+        description: 'Get comprehensive database statistics.',
+        priority: 'optional',
+      });
+      if (failedCount > 0) {
+        next_steps.push({
+          tool: 'ocr_retry_failed',
+          description: `${failedCount} failed documents. Reset for reprocessing.`,
+          priority: 'recommended',
+        });
+      }
+    } else {
+      // General guidance when DB has data and no specific intent
+      if (pendingCount > 0) {
+        next_steps.push({
+          tool: 'ocr_process_pending',
+          description: `${pendingCount} documents awaiting processing.`,
+          priority: 'recommended',
+        });
+      }
+      if (failedCount > 0) {
+        next_steps.push({
+          tool: 'ocr_retry_failed',
+          description: `${failedCount} failed documents need attention.`,
+          priority: 'recommended',
+        });
+      }
+      if (completeCount > 0) {
+        next_steps.push({
+          tool: 'ocr_search_hybrid',
+          description: 'Search across all documents.',
+          priority: 'recommended',
+        });
+      }
+      next_steps.push({
+        tool: 'ocr_document_list',
+        description: `Browse ${docCount} documents.`,
+        priority: 'optional',
+      });
+    }
+
+    // Build summary message
+    const parts: string[] = [];
+    parts.push(`Database "${selectedDb}" selected.`);
+    parts.push(`${docCount} documents (${completeCount} complete, ${pendingCount} pending, ${failedCount} failed).`);
+    if (chunkCount > 0) parts.push(`${chunkCount} chunks, ${embeddingCount} embeddings.`);
+    if (imageCount > 0) parts.push(`${imageCount} images.`);
+    if (clusterCount > 0) parts.push(`${clusterCount} clusters.`);
+
+    return formatResponse(successResult({
+      status: 'ready',
+      message: parts.join(' '),
+      context,
+      next_steps,
+    }));
+  } catch (error) {
+    return handleError(error);
+  }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -588,21 +845,29 @@ async function handleDocumentExtras(params: Record<string, unknown>): Promise<To
  * Intelligence tools collection for MCP server registration
  */
 export const intelligenceTools: Record<string, ToolDefinition> = {
+  ocr_guide: {
+    description:
+      '[CORE] Use first to understand the system state and get guidance on what to do next. ' +
+      'Returns available databases, selected database stats, and prioritized next_steps with tool recommendations. ' +
+      'Optional intent parameter narrows guidance: explore, search, ingest, analyze, or status.',
+    inputSchema: GuideInput.shape,
+    handler: handleGuide,
+  },
   ocr_document_tables: {
     description:
-      'Extract structured table data from document JSON blocks. Returns rows, columns, and cell data for each table found in OCR results.',
+      '[ANALYSIS] Use to extract structured table data from a document. Returns rows, columns, and cell text for each table. Specify table_index for a specific table, or omit for all.',
     inputSchema: DocumentTablesInput.shape,
     handler: handleDocumentTables,
   },
   ocr_document_recommend: {
     description:
-      'Get document recommendations based on cluster membership and vector similarity. Combines cluster peers with centroid-based similar documents.',
+      '[ANALYSIS] Use to find related documents based on cluster membership and vector similarity. Returns ranked recommendations with scores and reasons. Requires embeddings and/or clustering.',
     inputSchema: DocumentRecommendInput.shape,
     handler: handleDocumentRecommend,
   },
   ocr_document_extras: {
     description:
-      'Surface extras data from OCR results including charts, links, tracked changes, table row bounding boxes, and infographics.',
+      '[ANALYSIS] Use to access supplementary OCR data: charts, links, tracked changes, table bounding boxes, and infographics. Returns available sections from extras_json. Specify section to filter.',
     inputSchema: DocumentExtrasInput.shape,
     handler: handleDocumentExtras,
   },

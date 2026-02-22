@@ -588,34 +588,37 @@ async function handleFileIngestUploaded(params: Record<string, unknown>) {
 export const fileManagementTools: Record<string, ToolDefinition> = {
   ocr_file_upload: {
     description:
-      'Upload a file to Datalab cloud storage. Deduplicates by file hash - returns existing upload if hash matches.',
+      '[ADMIN] Use to upload a file to Datalab cloud storage. Returns upload ID and Datalab reference. Deduplicates by file hash. Follow with ocr_file_ingest_uploaded.',
     inputSchema: FileUploadInput.shape,
     handler: handleFileUpload,
   },
   ocr_file_list: {
     description:
-      'List uploaded files with optional status filter (pending, uploading, confirming, complete, failed). Set include_duplicate_check=true to flag potential duplicates by similar file sizes.',
+      '[ADMIN] Use to list uploaded files with optional status filter. Returns file names, sizes, and upload status. Set include_duplicate_check=true to detect potential duplicates.',
     inputSchema: FileListInput.shape,
     handler: handleFileList,
   },
   ocr_file_get: {
-    description: 'Get metadata for a specific uploaded file by ID',
+    description:
+      '[ADMIN] Use to get metadata for a specific uploaded file by ID. Returns file details, Datalab info, and optional provenance chain.',
     inputSchema: FileGetInput.shape,
     handler: handleFileGet,
   },
   ocr_file_download: {
-    description: 'Get a download URL for a file uploaded to Datalab cloud',
+    description:
+      '[ADMIN] Use to get a download URL for a file previously uploaded to Datalab cloud. Returns a temporary download URL.',
     inputSchema: FileDownloadInput.shape,
     handler: handleFileDownload,
   },
   ocr_file_delete: {
-    description: 'Delete an uploaded file record. Optionally also delete from Datalab cloud.',
+    description:
+      '[ADMIN] Use to delete an uploaded file record. Returns confirmation. Set delete_from_datalab=true to also remove from Datalab cloud.',
     inputSchema: FileDeleteInput.shape,
     handler: handleFileDelete,
   },
   ocr_file_ingest_uploaded: {
     description:
-      'Bridge file uploads and document ingestion. Takes uploaded files and creates document records ready for OCR processing. Deduplicates by file hash.',
+      '[PROCESSING] Use to convert uploaded files into document records ready for OCR. Returns ingested document IDs. Deduplicates by file hash. Follow with ocr_process_pending.',
     inputSchema: FileIngestUploadedInput.shape,
     handler: handleFileIngestUploaded,
   },

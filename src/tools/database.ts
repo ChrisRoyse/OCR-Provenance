@@ -134,6 +134,11 @@ export async function handleDatabaseSelect(
           embedding_count: stats.total_embeddings,
           vector_count: vector.getVectorCount(),
         },
+        next_steps: [
+          { tool: 'ocr_document_list', description: 'Browse documents in this database' },
+          { tool: 'ocr_search_hybrid', description: 'Search for content across all documents' },
+          { tool: 'ocr_db_stats', description: 'Get detailed statistics for this database' },
+        ],
       })
     );
   } catch (error) {
@@ -282,7 +287,7 @@ export async function handleDatabaseDelete(
  */
 export const databaseTools: Record<string, ToolDefinition> = {
   ocr_db_create: {
-    description: 'Create a new OCR database for document storage and search',
+    description: '[ADMIN] Use to create a new database before ingesting documents. Returns database name and path. Follow with ocr_db_select, then ocr_ingest_files or ocr_ingest_directory.',
     inputSchema: {
       name: z
         .string()
@@ -296,14 +301,14 @@ export const databaseTools: Record<string, ToolDefinition> = {
     handler: handleDatabaseCreate,
   },
   ocr_db_list: {
-    description: '[START HERE] List all available databases with sizes and document counts. Use this first to see what databases exist, then ocr_db_select to switch.',
+    description: '[CORE] Use first to discover available databases. Returns names, sizes, and document counts. Follow with ocr_db_select to choose one.',
     inputSchema: {
       include_stats: z.boolean().default(false).describe('Include document/chunk/embedding counts'),
     },
     handler: handleDatabaseList,
   },
   ocr_db_select: {
-    description: 'Switch to a different database. All subsequent tool calls will operate on the selected database until you switch again.',
+    description: '[CORE] Use to switch active database. All subsequent tools operate on the selected database. Returns basic stats. Prerequisite for most tools.',
     inputSchema: {
       database_name: z.string().min(1).describe('Name of the database to select'),
     },
@@ -311,7 +316,7 @@ export const databaseTools: Record<string, ToolDefinition> = {
   },
   ocr_db_stats: {
     description:
-      'Get detailed statistics and comprehensive overview for a database including document counts, embeddings, images, costs, file type distribution, quality stats, top clusters, and recent documents',
+      '[CORE] Use to check database size, document counts, quality stats, and recent activity. Returns comprehensive overview including file types, clusters, and costs.',
     inputSchema: {
       database_name: z
         .string()
@@ -321,7 +326,7 @@ export const databaseTools: Record<string, ToolDefinition> = {
     handler: handleDatabaseStats,
   },
   ocr_db_delete: {
-    description: 'Delete a database and all its data permanently',
+    description: '[ADMIN] Use to permanently delete a database and all its data. Returns confirmation. Requires confirm=true.',
     inputSchema: {
       database_name: z.string().min(1).describe('Name of the database to delete'),
       confirm: z.literal(true).describe('Must be true to confirm deletion'),

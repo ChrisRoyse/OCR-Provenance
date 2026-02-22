@@ -2231,7 +2231,7 @@ async function handleReembedDocument(
  */
 export const ingestionTools: Record<string, ToolDefinition> = {
   ocr_ingest_directory: {
-    description: 'Scan and ingest documents from a directory into the current database',
+    description: '[PROCESSING] Use to bulk-ingest all supported files from a directory. Returns per-file status (pending/skipped/error). Follow with ocr_process_pending to run OCR.',
     inputSchema: {
       directory_path: z.string().min(1).describe('Path to directory to scan'),
       recursive: z.boolean().default(true).describe('Scan subdirectories'),
@@ -2244,7 +2244,7 @@ export const ingestionTools: Record<string, ToolDefinition> = {
   },
   ocr_ingest_files: {
     description:
-      'Ingest specific files into the current database. Supports local file paths and optional file URLs for Datalab direct URL processing.',
+      '[PROCESSING] Use to ingest specific files by path into the current database. Returns per-file status. Follow with ocr_process_pending to run OCR.',
     inputSchema: {
       file_paths: z.array(z.string().min(1)).min(1).describe('Array of file paths to ingest'),
     },
@@ -2252,7 +2252,7 @@ export const ingestionTools: Record<string, ToolDefinition> = {
   },
   ocr_process_pending: {
     description:
-      'Process pending documents through OCR pipeline (OCR -> Chunk -> Embed -> Vector -> VLM). Optionally reassign to clusters after processing.',
+      '[PROCESSING] Use after ingesting files to run the full OCR pipeline (OCR, chunking, embedding, VLM). Returns processed/failed counts. Requires DATALAB_API_KEY.',
     inputSchema: {
       max_concurrent: z
         .number()
@@ -2309,7 +2309,7 @@ export const ingestionTools: Record<string, ToolDefinition> = {
     handler: handleProcessPending,
   },
   ocr_status: {
-    description: 'Get OCR processing status for documents',
+    description: '[ADMIN] Use to check processing status of documents (pending/processing/complete/failed). Returns per-document status and summary counts.',
     inputSchema: {
       document_id: z.string().optional().describe('Specific document ID to check'),
       status_filter: z
@@ -2321,12 +2321,12 @@ export const ingestionTools: Record<string, ToolDefinition> = {
   },
   ocr_chunk_complete: {
     description:
-      "Chunk and embed documents that completed OCR but have no chunks yet. Fixes documents that were OCR'd but never chunked/embedded.",
+      '[PROCESSING] Use to fix documents that completed OCR but are missing chunks/embeddings. Returns processed/skipped counts. No parameters needed.',
     inputSchema: {},
     handler: handleChunkComplete,
   },
   ocr_retry_failed: {
-    description: 'Reset failed documents back to pending status so they can be reprocessed',
+    description: '[PROCESSING] Use to reset failed documents back to pending for reprocessing. Cleans derived data first. Follow with ocr_process_pending.',
     inputSchema: {
       document_id: z
         .string()
@@ -2336,7 +2336,7 @@ export const ingestionTools: Record<string, ToolDefinition> = {
     handler: handleRetryFailed,
   },
   ocr_reprocess: {
-    description: 'Reprocess a document with different OCR settings (cleans existing data first)',
+    description: '[PROCESSING] Use to re-run OCR on a document with different settings. Cleans existing data first. Returns quality comparison (before/after).',
     inputSchema: {
       document_id: z.string().min(1).describe('Document ID to reprocess'),
       ocr_mode: z.enum(['fast', 'balanced', 'accurate']).optional().describe('OCR mode override'),
@@ -2349,7 +2349,7 @@ export const ingestionTools: Record<string, ToolDefinition> = {
   },
   ocr_convert_raw: {
     description:
-      'Convert a document via OCR and return raw results without storing in database. Quick one-off conversions.',
+      '[PROCESSING] Use for quick one-off OCR conversion without storing in database. Returns raw markdown text and metadata. No database required.',
     inputSchema: {
       file_path: z.string().min(1).describe('Path to file to convert'),
       ocr_mode: z
@@ -2366,7 +2366,7 @@ export const ingestionTools: Record<string, ToolDefinition> = {
   },
   ocr_reembed_document: {
     description:
-      'Re-generate all embeddings for a document without re-running OCR. Deletes existing embeddings and creates new ones with fresh provenance records.',
+      '[PROCESSING] Use to regenerate embeddings without re-running OCR. Returns chunk and VLM embedding counts. Useful after embedding model updates.',
     inputSchema: {
       document_id: z.string().min(1).describe('Document ID to re-embed'),
       include_vlm: z

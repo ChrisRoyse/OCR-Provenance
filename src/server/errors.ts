@@ -256,7 +256,7 @@ export function validationError(message: string, details?: Record<string, unknow
  * Create database not selected error
  */
 export function databaseNotSelectedError(): MCPError {
-  return new MCPError('DATABASE_NOT_SELECTED', 'No database selected. Use ocr_db_select first.');
+  return new MCPError('DATABASE_NOT_SELECTED', 'No database selected. Use ocr_db_list to see available databases, then ocr_db_select to choose one.');
 }
 
 /**
@@ -282,7 +282,7 @@ export function databaseAlreadyExistsError(name: string): MCPError {
  * Create document not found error
  */
 export function documentNotFoundError(documentId: string): MCPError {
-  return new MCPError('DOCUMENT_NOT_FOUND', `Document "${documentId}" not found`, {
+  return new MCPError('DOCUMENT_NOT_FOUND', `Document not found: ${documentId}. Use ocr_document_list to browse available documents.`, {
     documentId,
   });
 }

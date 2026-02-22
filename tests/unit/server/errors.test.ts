@@ -315,7 +315,7 @@ describe('databaseNotSelectedError', () => {
 
     expect(error).toBeInstanceOf(MCPError);
     expect(error.category).toBe('DATABASE_NOT_SELECTED');
-    expect(error.message).toBe('No database selected. Use ocr_db_select first.');
+    expect(error.message).toBe('No database selected. Use ocr_db_list to see available databases, then ocr_db_select to choose one.');
     expect(error.details).toBeUndefined();
   });
 
@@ -390,7 +390,7 @@ describe('documentNotFoundError', () => {
 
     expect(error).toBeInstanceOf(MCPError);
     expect(error.category).toBe('DOCUMENT_NOT_FOUND');
-    expect(error.message).toBe('Document "doc-uuid-123" not found');
+    expect(error.message).toBe('Document not found: doc-uuid-123. Use ocr_document_list to browse available documents.');
     expect(error.details).toEqual({ documentId: 'doc-uuid-123' });
   });
 

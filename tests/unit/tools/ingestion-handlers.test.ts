@@ -160,7 +160,7 @@ describe('ocr_convert_raw validation', () => {
 describe('ocr_convert_raw tool definition', () => {
   it('should be registered in ingestionTools', async () => {
     expect(ingestionTools).toHaveProperty('ocr_convert_raw');
-    expect(ingestionTools['ocr_convert_raw'].description).toContain('raw results');
+    expect(ingestionTools['ocr_convert_raw'].description).toContain('one-off OCR');
     expect(ingestionTools['ocr_convert_raw'].handler).toBeDefined();
     expect(typeof ingestionTools['ocr_convert_raw'].handler).toBe('function');
   });
@@ -328,7 +328,7 @@ describe('QW-4: Document Re-OCR Tool (ocr_reprocess)', () => {
 
   it('should have ocr_reprocess in ingestionTools', () => {
     expect(ingestionTools['ocr_reprocess']).toBeDefined();
-    expect(ingestionTools['ocr_reprocess'].description).toContain('Reprocess');
+    expect(ingestionTools['ocr_reprocess'].description).toContain('re-run OCR');
   });
 
   it.skipIf(!sqliteVecAvailable)('should error for non-existent document', async () => {

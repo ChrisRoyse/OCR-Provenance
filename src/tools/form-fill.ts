@@ -266,12 +266,13 @@ async function handleFormFillStatus(params: Record<string, unknown>) {
 export const formFillTools: Record<string, ToolDefinition> = {
   ocr_form_fill: {
     description:
-      'Fill a PDF or image form using Datalab API. Provide field names and values, optionally save filled form to disk.',
+      '[ADMIN] Use to fill a PDF or image form with field values via Datalab API. Returns filled fields, unfound fields, and optionally saves the output PDF. Requires DATALAB_API_KEY.',
     inputSchema: FormFillInput.shape,
     handler: handleFormFill,
   },
   ocr_form_fill_status: {
-    description: 'Get status and details of form fill operations',
+    description:
+      '[ADMIN] Use to check status or retrieve details of past form fill operations. Returns form fill records with field data and status. Use after ocr_form_fill.',
     inputSchema: FormFillStatusInput.shape,
     handler: handleFormFillStatus,
   },

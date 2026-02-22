@@ -508,7 +508,7 @@ export async function handleExtractionCheck(
 export const extractionTools: Record<string, ToolDefinition> = {
   ocr_extract_images: {
     description:
-      'Extract images from a document (PDF or DOCX). Saves images to disk and creates database records for VLM processing.',
+      '[PROCESSING] Use to extract images from PDF/DOCX files via PyMuPDF/python-docx. Saves to disk and creates DB records. Follow with ocr_vlm_process_pending for descriptions.',
     inputSchema: {
       document_id: z.string().min(1).describe('Document ID (must be OCR processed first)'),
       min_size: z
@@ -543,7 +543,7 @@ export const extractionTools: Record<string, ToolDefinition> = {
 
   ocr_extract_images_batch: {
     description:
-      'Extract images from all documents (PDF, DOCX) that have been OCR processed',
+      '[PROCESSING] Use to bulk-extract images from all OCR-processed documents. Returns per-document extraction counts. Follow with ocr_vlm_process_pending.',
     inputSchema: {
       min_size: z
         .number()
@@ -573,7 +573,7 @@ export const extractionTools: Record<string, ToolDefinition> = {
   },
 
   ocr_extraction_check: {
-    description: 'Check if Python environment is configured for image extraction (PyMuPDF, Pillow)',
+    description: '[ADMIN] Use to check if Python dependencies for image extraction are installed (PyMuPDF, Pillow). Run before ocr_extract_images if extraction fails.',
     inputSchema: {},
     handler: handleExtractionCheck,
   },
