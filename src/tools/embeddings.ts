@@ -509,7 +509,7 @@ async function handleEmbeddingRebuild(params: Record<string, unknown>): Promise<
 
 export const embeddingTools: Record<string, ToolDefinition> = {
   ocr_embedding_list: {
-    description: 'List embeddings with filtering by document, source type (chunk/image/extraction), and model name. Returns enriched metadata with source context.',
+    description: '[ADMIN] Use to browse embeddings with filtering by document, source type (chunk/image/extraction), and model. Returns embedding metadata with source context.',
     inputSchema: {
       document_id: z.string().min(1).optional().describe('Filter by document ID'),
       source_type: z.enum(['chunk', 'image', 'extraction']).optional().describe('Filter by source type'),
@@ -521,7 +521,7 @@ export const embeddingTools: Record<string, ToolDefinition> = {
   },
 
   ocr_embedding_stats: {
-    description: 'Get embedding statistics: total count, breakdown by source type with average durations, by device, and counts of unembedded chunks/images.',
+    description: '[ADMIN] Use to check embedding coverage and performance. Returns total count, breakdown by source type, device stats, and counts of unembedded chunks/images.',
     inputSchema: {
       document_id: z.string().min(1).optional().describe('Scope stats to a specific document'),
     },
@@ -529,7 +529,7 @@ export const embeddingTools: Record<string, ToolDefinition> = {
   },
 
   ocr_embedding_get: {
-    description: 'Get full details about a specific embedding including source context (chunk text, image path, extraction data), document context, and optional provenance chain.',
+    description: '[ADMIN] Use to inspect a specific embedding by ID. Returns source context (chunk, image, or extraction), document context, model info, and optional provenance chain.',
     inputSchema: {
       embedding_id: z.string().min(1).describe('Embedding ID to retrieve'),
       include_provenance: z.boolean().default(false).describe('Include full provenance chain'),
@@ -538,7 +538,7 @@ export const embeddingTools: Record<string, ToolDefinition> = {
   },
 
   ocr_embedding_rebuild: {
-    description: 'Re-generate embeddings for a document, chunk, or image. Deletes old embeddings and vectors, regenerates via the embedding model, and creates new provenance records. Exactly one target must be specified.',
+    description: '[ADMIN] Use to regenerate embeddings after model updates or corruption. Deletes old embeddings and creates new ones with provenance. Specify exactly one of document_id, chunk_id, or image_id.',
     inputSchema: {
       document_id: z.string().min(1).optional().describe('Rebuild all chunk embeddings for this document'),
       chunk_id: z.string().min(1).optional().describe('Rebuild embedding for this specific chunk'),

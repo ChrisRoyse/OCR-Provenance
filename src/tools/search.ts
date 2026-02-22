@@ -1778,6 +1778,11 @@ export async function handleSearchHybrid(params: Record<string, unknown>): Promi
       },
       metadata_boosts_applied: true,
       cluster_context_included: clusterContextIncluded,
+      next_steps: [
+        { tool: 'ocr_chunk_context', description: 'Expand a result with neighboring chunks for more context' },
+        { tool: 'ocr_document_get', description: 'Deep-dive into a specific source document' },
+        { tool: 'ocr_document_page', description: 'Read the full page a result came from' },
+      ],
     };
 
     // Task 3.2: Standardized query expansion details
@@ -2729,7 +2734,7 @@ async function handleCrossDbSearch(params: Record<string, unknown>): Promise<Too
  */
 export const searchTools: Record<string, ToolDefinition> = {
   ocr_search: {
-    description: '[PRIMARY] Full-text BM25 keyword search. Best for: exact terms, IDs, codes, quoted phrases. Returns chunks ranked by term frequency. Use ocr_search_hybrid instead for general questions.',
+    description: '[SEARCH] Use for exact keyword/phrase matching (IDs, codes, names, quoted phrases). Returns chunks ranked by term frequency. For general questions, use ocr_search_hybrid instead.',
     inputSchema: {
       query: z.string().min(1).max(1000).describe('Search query'),
       limit: z.number().int().min(1).max(100).default(10).describe('Maximum results'),
@@ -2818,7 +2823,7 @@ export const searchTools: Record<string, ToolDefinition> = {
     handler: handleSearch,
   },
   ocr_search_semantic: {
-    description: 'Vector similarity search by meaning. Best for: conceptual/meaning-based queries where exact terms may not match. Use ocr_search_hybrid instead for general questions.',
+    description: '[SEARCH] Use for conceptual/meaning-based queries where exact terms may not appear. Returns chunks ranked by vector similarity. For general questions, use ocr_search_hybrid instead.',
     inputSchema: {
       query: z.string().min(1).max(1000).describe('Search query'),
       limit: z.number().int().min(1).max(100).default(10).describe('Maximum results to return'),
@@ -2914,7 +2919,7 @@ export const searchTools: Record<string, ToolDefinition> = {
     handler: handleSearchSemantic,
   },
   ocr_search_hybrid: {
-    description: '[RECOMMENDED DEFAULT] Combined BM25 + semantic search with auto-routing. Use this as your default search tool. Handles both exact and conceptual queries. Returns chunks with full metadata including structural context.',
+    description: '[CORE] Default search tool. Use for any search query -- combines keyword and semantic matching. Returns ranked chunks with metadata. Prefer this over ocr_search or ocr_search_semantic.',
     inputSchema: {
       query: z.string().min(1).max(1000).describe('Search query'),
       limit: z.number().int().min(1).max(100).default(10).describe('Maximum results'),
@@ -3008,14 +3013,14 @@ export const searchTools: Record<string, ToolDefinition> = {
     handler: handleSearchHybrid,
   },
   ocr_fts_manage: {
-    description: 'Manage FTS5 full-text search index (rebuild or check status)',
+    description: '[ADMIN] Use to rebuild or check status of the FTS5 full-text index. Returns index health. Use after bulk ingestion if search results seem stale.',
     inputSchema: {
       action: z.enum(['rebuild', 'status']).describe('Action: rebuild index or check status'),
     },
     handler: handleFTSManage,
   },
   ocr_search_export: {
-    description: 'Export search results to CSV or JSON file',
+    description: '[SEARCH] Use to export search results to a CSV or JSON file on disk. Returns file path and result count.',
     inputSchema: {
       query: z.string().min(1).max(1000).describe('Search query'),
       search_type: z
@@ -3030,7 +3035,7 @@ export const searchTools: Record<string, ToolDefinition> = {
     handler: handleSearchExport,
   },
   ocr_benchmark_compare: {
-    description: 'Compare search results across multiple databases for benchmarking',
+    description: '[SEARCH] Use to compare search results across multiple databases side-by-side. Returns per-database results for benchmarking. Requires 2+ database names.',
     inputSchema: {
       query: z.string().min(1).max(1000).describe('Search query'),
       database_names: z
@@ -3044,7 +3049,7 @@ export const searchTools: Record<string, ToolDefinition> = {
   },
   ocr_rag_context: {
     description:
-      'Get pre-assembled RAG context for answering questions. Returns a deduplicated, source-diverse markdown block with the most relevant excerpts from hybrid search. Use this when you need context to answer a user question.',
+      '[CORE] Use when answering a user question about document content. Returns pre-assembled, deduplicated markdown context from hybrid search. Best for RAG workflows.',
     inputSchema: {
       question: z.string().min(1).max(2000).describe('The question to build context for'),
       limit: z
@@ -3073,28 +3078,28 @@ export const searchTools: Record<string, ToolDefinition> = {
     handler: handleRagContext,
   },
   ocr_search_save: {
-    description: 'Save search results with a name for later retrieval',
+    description: '[SEARCH] Use to save search results for later retrieval or re-execution. Returns saved search ID. Retrieve with ocr_search_saved_get.',
     inputSchema: SearchSaveInput.shape,
     handler: handleSearchSave,
   },
   ocr_search_saved_list: {
-    description: 'List saved searches with optional type filtering',
+    description: '[SEARCH] Use to list all saved searches with optional type filtering. Returns saved search names, types, and IDs.',
     inputSchema: SearchSavedListInput.shape,
     handler: handleSearchSavedList,
   },
   ocr_search_saved_get: {
-    description: 'Retrieve a saved search by ID including all parameters and result IDs',
+    description: '[SEARCH] Use to retrieve a saved search by ID. Returns original parameters and result IDs. Use ocr_search_saved_execute to re-run it.',
     inputSchema: SearchSavedGetInput.shape,
     handler: handleSearchSavedGet,
   },
   ocr_search_saved_execute: {
-    description: 'Re-execute a saved search with current data. Reads saved parameters and dispatches to the original search handler (BM25, semantic, or hybrid).',
+    description: '[SEARCH] Use to re-run a previously saved search against current data. Returns fresh results using the saved parameters.',
     inputSchema: SearchSavedExecuteInput.shape,
     handler: handleSearchSavedExecute,
   },
   ocr_search_cross_db: {
     description:
-      'Search across ALL databases using BM25. Use when you need to find content across multiple document collections. Returns merged results sorted by BM25 rank.',
+      '[SEARCH] Use to search across ALL databases at once using BM25 keyword matching. Returns merged results with database source. No need to switch databases.',
     inputSchema: CrossDbSearchInput.shape,
     handler: handleCrossDbSearch,
   },

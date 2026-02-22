@@ -624,7 +624,7 @@ async function generateAndStoreEmbedding(
 export const evaluationTools: Record<string, ToolDefinition> = {
   ocr_evaluate_single: {
     description:
-      'Evaluate a single image with the universal prompt (NO CONTEXT). Returns detailed description and metrics.',
+      '[ADMIN] Use to evaluate a single image with the universal prompt (no context). Returns description and quality metrics. For benchmarking VLM accuracy.',
     inputSchema: {
       image_id: z.string().min(1).describe('Image ID to evaluate'),
       save_to_db: z.boolean().default(true).describe('Save results to database'),
@@ -634,7 +634,7 @@ export const evaluationTools: Record<string, ToolDefinition> = {
 
   ocr_evaluate_document: {
     description:
-      'Evaluate all pending images in a document with the universal prompt.',
+      '[ADMIN] Use to evaluate all pending images in a single document. Returns per-image evaluation results. For benchmarking VLM accuracy at document level.',
     inputSchema: {
       document_id: z.string().min(1).describe('Document ID'),
       batch_size: z.number().int().min(1).max(20).default(5).describe('Images per batch'),
@@ -643,7 +643,7 @@ export const evaluationTools: Record<string, ToolDefinition> = {
   },
 
   ocr_evaluate_pending: {
-    description: 'Evaluate all pending images across all documents with the universal prompt',
+    description: '[ADMIN] Use to bulk-evaluate all pending images across all documents. Returns aggregate evaluation results. For benchmarking VLM accuracy at corpus level.',
     inputSchema: {
       limit: z.number().int().min(1).max(500).default(100).describe('Maximum images to process'),
       batch_size: z.number().int().min(1).max(50).default(10).describe('Images per batch'),

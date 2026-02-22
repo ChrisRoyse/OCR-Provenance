@@ -1621,7 +1621,7 @@ ${imageStats.total > 0 ? `Processed: ${'█'.repeat(Math.round((imageStats.proce
 export const reportTools: Record<string, ToolDefinition> = {
   ocr_evaluation_report: {
     description:
-      'Generate comprehensive evaluation report with OCR and VLM metrics, saves as markdown file',
+      '[ADMIN] Use to generate a comprehensive evaluation report with OCR and VLM metrics. Saves as markdown file. Returns report path and summary.',
     inputSchema: {
       output_path: z.string().optional().describe('Path to save markdown report (optional)'),
       confidence_threshold: z
@@ -1636,7 +1636,7 @@ export const reportTools: Record<string, ToolDefinition> = {
 
   ocr_document_report: {
     description:
-      'Get detailed report for a single document including image analysis, extractions, comparisons, and cluster memberships',
+      '[ADMIN] Use to get a detailed report for a single document (images, extractions, comparisons, clusters). Returns comprehensive document analysis.',
     inputSchema: {
       document_id: z.string().min(1).describe('Document ID'),
     },
@@ -1645,13 +1645,13 @@ export const reportTools: Record<string, ToolDefinition> = {
 
   ocr_quality_summary: {
     description:
-      'Get quick quality summary across all documents and images',
+      '[ADMIN] Use to get a quick quality summary across all documents and images. Returns aggregate quality scores and issue counts.',
     inputSchema: {},
     handler: handleQualitySummary,
   },
 
   ocr_cost_summary: {
-    description: 'Get cost analytics for OCR and form fill operations',
+    description: '[ADMIN] Use to get cost analytics for OCR and form fill operations. Returns costs grouped by document, mode, month, or total.',
     inputSchema: {
       group_by: z
         .enum(['document', 'mode', 'month', 'total'])
@@ -1663,7 +1663,7 @@ export const reportTools: Record<string, ToolDefinition> = {
 
   ocr_pipeline_analytics: {
     description:
-      'Get pipeline performance analytics including OCR, embedding, VLM, comparison, and clustering stats with throughput metrics',
+      '[ADMIN] Use to get pipeline performance analytics (OCR, embedding, VLM durations and throughput). Returns metrics grouped by total, document, mode, or file type.',
     inputSchema: {
       group_by: z
         .enum(['total', 'document', 'mode', 'file_type'])
@@ -1676,7 +1676,7 @@ export const reportTools: Record<string, ToolDefinition> = {
 
   ocr_corpus_profile: {
     description:
-      '[START HERE] Get corpus overview: document counts, chunk statistics, content type distribution, section frequency. Use this to understand the database before searching.',
+      '[ADMIN] Use to get corpus overview: document counts, chunk stats, content type distribution, common section headings. Returns corpus-level profile for understanding the data.',
     inputSchema: {
       include_section_frequency: z
         .boolean()
@@ -1693,7 +1693,7 @@ export const reportTools: Record<string, ToolDefinition> = {
 
   ocr_error_analytics: {
     description:
-      'Get error and recovery analytics including failure rates for documents, VLM, and embeddings with common error messages',
+      '[ADMIN] Use to get error and recovery analytics (failure rates, common error messages). Returns error breakdown for documents, VLM, and embeddings.',
     inputSchema: {
       include_error_messages: z
         .boolean()
@@ -1706,14 +1706,14 @@ export const reportTools: Record<string, ToolDefinition> = {
 
   ocr_provenance_bottlenecks: {
     description:
-      'Analyze provenance processing durations to find bottlenecks. Shows per-processor-type duration breakdown, per-chain-depth analysis, and top 10 slowest operations.',
+      '[ADMIN] Use to find processing bottlenecks by analyzing provenance durations. Returns per-processor breakdown, chain-depth analysis, and top 10 slowest operations.',
     inputSchema: {},
     handler: handleProvenanceBottlenecks,
   },
 
   ocr_quality_trends: {
     description:
-      'Quality score trends over time, optionally grouped by OCR mode or processor. Shows avg/min/max quality per time bucket.',
+      '[ADMIN] Use to view quality score trends over time. Returns avg/min/max quality per time bucket, optionally grouped by OCR mode or processor.',
     inputSchema: {
       bucket: z
         .enum(['hourly', 'daily', 'weekly', 'monthly'])

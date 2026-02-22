@@ -277,7 +277,7 @@ function verifyEntityExists(
 export const tagTools: Record<string, ToolDefinition> = {
   ocr_tag_create: {
     description:
-      'Create a new tag for cross-entity annotation. Tags can be applied to documents, chunks, images, extractions, and clusters.',
+      '[ANALYSIS] Use to create a reusable tag for annotating documents, chunks, images, extractions, or clusters. Returns the new tag ID. Follow with ocr_tag_apply to attach it to entities.',
     inputSchema: {
       name: z.string().min(1).max(200).describe('Tag name (must be unique)'),
       description: z.string().max(500).optional().describe('Tag description'),
@@ -287,14 +287,14 @@ export const tagTools: Record<string, ToolDefinition> = {
   },
 
   ocr_tag_list: {
-    description: 'List all tags with usage counts showing how many entities each tag is applied to.',
+    description: '[ANALYSIS] Use to see all available tags and how many entities each is applied to. Returns tag names, descriptions, colors, and usage counts.',
     inputSchema: {},
     handler: handleTagList,
   },
 
   ocr_tag_apply: {
     description:
-      'Apply a tag to an entity (document, chunk, image, extraction, or cluster). The tag must exist and the entity must exist.',
+      '[ANALYSIS] Use to attach a tag to an entity (document, chunk, image, extraction, or cluster). Returns the association ID. Tag must exist (use ocr_tag_create first).',
     inputSchema: {
       tag_name: z.string().min(1).describe('Name of the tag to apply'),
       entity_id: z.string().min(1).describe('ID of the entity to tag'),
@@ -306,7 +306,7 @@ export const tagTools: Record<string, ToolDefinition> = {
   },
 
   ocr_tag_remove: {
-    description: 'Remove a tag from an entity.',
+    description: '[ANALYSIS] Use to detach a tag from an entity. Returns confirmation. Does not delete the tag itself.',
     inputSchema: {
       tag_name: z.string().min(1).describe('Name of the tag to remove'),
       entity_id: z.string().min(1).describe('ID of the entity to untag'),
@@ -319,7 +319,7 @@ export const tagTools: Record<string, ToolDefinition> = {
 
   ocr_tag_search: {
     description:
-      'Find entities that have specified tags. Use match_all=true to require ALL tags, or false (default) for ANY tag.',
+      '[ANALYSIS] Use to find entities by tag. Returns matching documents, chunks, images, extractions, or clusters. Set match_all=true to require ALL tags, or false for ANY tag.',
     inputSchema: {
       tags: z
         .array(z.string().min(1))
@@ -338,7 +338,7 @@ export const tagTools: Record<string, ToolDefinition> = {
 
   ocr_tag_delete: {
     description:
-      'Delete a tag and remove all its entity associations. Requires confirm=true.',
+      '[ANALYSIS] Use to permanently delete a tag and all its entity associations. Returns count of removed associations. Requires confirm=true.',
     inputSchema: {
       tag_name: z.string().min(1).describe('Name of the tag to delete'),
       confirm: z.literal(true).describe('Must be true to confirm deletion'),

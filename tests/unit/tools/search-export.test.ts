@@ -235,7 +235,7 @@ describe('Search Result Export (ocr_search_export)', () => {
 
   it('should have ocr_search_export in searchTools', () => {
     expect(searchTools['ocr_search_export']).toBeDefined();
-    expect(searchTools['ocr_search_export'].description).toContain('Export');
+    expect(searchTools['ocr_search_export'].description).toContain('export search results');
   });
 
   it.skipIf(!sqliteVecAvailable)('should export BM25 results to CSV', async () => {

@@ -481,7 +481,7 @@ export async function handleVLMStatus(params: Record<string, unknown>): Promise<
  */
 export const vlmTools: Record<string, ToolDefinition> = {
   ocr_vlm_describe: {
-    description: 'Generate detailed description of an image using Gemini 3 multimodal analysis',
+    description: '[PROCESSING] Use to generate a detailed AI description of a single image file. Returns multi-paragraph description with optional embedding. Requires GEMINI_API_KEY.',
     inputSchema: {
       image_path: z.string().min(1).describe('Path to image file (PNG, JPG, JPEG, GIF, WEBP)'),
       context_text: z.string().optional().describe('Surrounding text context from document'),
@@ -494,7 +494,7 @@ export const vlmTools: Record<string, ToolDefinition> = {
   },
 
   ocr_vlm_classify: {
-    description: 'Quick classification of an image (type, complexity, text density)',
+    description: '[PROCESSING] Use for quick image classification (type, complexity, text density). Returns classification without full description. Faster than ocr_vlm_describe.',
     inputSchema: {
       image_path: z.string().min(1).describe('Path to image file'),
     },
@@ -503,7 +503,7 @@ export const vlmTools: Record<string, ToolDefinition> = {
 
   ocr_vlm_process_document: {
     description:
-      'Process all extracted images in a document with Gemini 3 VLM, generating descriptions and embeddings',
+      '[PROCESSING] Use to run VLM analysis on all images in a single document. Returns per-image results with descriptions and embeddings. Use ocr_vlm_process_pending for bulk.',
     inputSchema: {
       document_id: z.string().min(1).describe('Document ID'),
       batch_size: z.number().int().min(1).max(20).default(5).describe('Images per batch'),
@@ -512,7 +512,7 @@ export const vlmTools: Record<string, ToolDefinition> = {
   },
 
   ocr_vlm_process_pending: {
-    description: 'Process all images pending VLM description across all documents',
+    description: '[PROCESSING] Use to bulk-process all images pending VLM descriptions across all documents. Returns processed/failed counts. Requires GEMINI_API_KEY.',
     inputSchema: {
       limit: z.number().int().min(1).max(500).default(50).describe('Maximum images to process'),
     },
@@ -520,7 +520,7 @@ export const vlmTools: Record<string, ToolDefinition> = {
   },
 
   ocr_vlm_analyze_pdf: {
-    description: 'Analyze a PDF document directly with Gemini 3 (max 20MB)',
+    description: '[PROCESSING] Use to analyze a PDF directly with Gemini 3 multimodal AI (max 20MB). Returns AI analysis with optional custom prompt. No database needed.',
     inputSchema: {
       pdf_path: z.string().min(1).describe('Path to PDF file'),
       prompt: z
@@ -533,7 +533,7 @@ export const vlmTools: Record<string, ToolDefinition> = {
 
   ocr_vlm_status: {
     description:
-      'Get VLM service status including API configuration, rate limits, and circuit breaker state',
+      '[ADMIN] Use to check VLM service health (API config, rate limits, circuit breaker state). Returns service status. Use to diagnose VLM failures.',
     inputSchema: {},
     handler: handleVLMStatus,
   },

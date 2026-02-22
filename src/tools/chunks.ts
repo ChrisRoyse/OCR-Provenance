@@ -409,25 +409,25 @@ async function handleDocumentPage(params: Record<string, unknown>): Promise<Tool
 export const chunkTools: Record<string, ToolDefinition> = {
   ocr_chunk_get: {
     description:
-      'Get detailed information about a specific chunk including text, metadata, section context, and provenance chain.',
+      '[CORE] Use to inspect a specific chunk by ID: full text, section path, heading, quality score, and embedding status. Returns complete chunk metadata. Use after search results return a chunk_id.',
     inputSchema: ChunkGetInput.shape,
     handler: handleChunkGet,
   },
   ocr_chunk_list: {
     description:
-      'List chunks for a document with filtering by section, heading, content type, quality, and embedding status.',
+      '[CORE] Use to browse all chunks in a document with filtering by section, heading, content type, page range, and quality. Returns chunk metadata list. Set include_text=true for full text.',
     inputSchema: ChunkListInput.shape,
     handler: handleChunkList,
   },
   ocr_chunk_context: {
     description:
-      'Expand a search result with neighboring chunks. Use after search to get surrounding text for a specific chunk_id with configurable context_size (number of neighbors).',
+      '[CORE] Use after search to expand a result with surrounding text. Provide a chunk_id and number of neighbors. Returns the center chunk plus before/after chunks with combined text.',
     inputSchema: ChunkContextInput.shape,
     handler: handleChunkContext,
   },
   ocr_document_page: {
     description:
-      'Get all chunks and optionally images for a specific page of a document. Use for page-by-page navigation.',
+      '[CORE] Use to read a specific page of a document. Returns all chunks on that page with navigation (previous/next). Set include_images=true for page images.',
     inputSchema: DocumentPageInput.shape,
     handler: handleDocumentPage,
   },

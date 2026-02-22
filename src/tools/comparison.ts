@@ -896,37 +896,37 @@ async function handleComparisonMatrix(params: Record<string, unknown>): Promise<
 export const comparisonTools: Record<string, ToolDefinition> = {
   ocr_document_compare: {
     description:
-      'Compare two OCR-processed documents to find differences in text and structure. Returns similarity ratio, text diff operations, and structural metadata comparison.',
+      '[ANALYSIS] Use to compare two OCR-processed documents for text and structural differences. Returns similarity ratio, composite similarity, text diff, and structural diff. Both documents must have status "complete".',
     inputSchema: DocumentCompareInput.shape,
     handler: handleDocumentCompare,
   },
   ocr_comparison_list: {
     description:
-      'List document comparisons with optional filtering by document ID. Returns comparison summaries without large diff data.',
+      '[ANALYSIS] Use to list past document comparisons with optional filtering by document ID. Returns comparison summaries with similarity ratios. Use ocr_comparison_get for full diff data.',
     inputSchema: ComparisonListInput.shape,
     handler: handleComparisonList,
   },
   ocr_comparison_get: {
     description:
-      'Get a specific comparison by ID with full diff data including text operations and structural differences.',
+      '[ANALYSIS] Use to retrieve full diff data for a specific comparison by ID. Returns text diff operations and structural differences. Use after ocr_comparison_list.',
     inputSchema: ComparisonGetInput.shape,
     handler: handleComparisonGet,
   },
   ocr_comparison_discover: {
     description:
-      'Discover document pairs likely similar based on embedding proximity. Computes document centroid embeddings and pairwise cosine similarity to find candidates for comparison.',
+      '[ANALYSIS] Use to find document pairs that are likely similar before comparing them. Returns pairs ranked by embedding cosine similarity. Follow with ocr_document_compare or ocr_comparison_batch.',
     inputSchema: ComparisonDiscoverInput.shape,
     handler: handleComparisonDiscover,
   },
   ocr_comparison_batch: {
     description:
-      'Compare multiple document pairs in one operation. Provide explicit pairs or a cluster_id to compare all documents within a cluster.',
+      '[ANALYSIS] Use to compare multiple document pairs in one operation. Provide explicit pairs or a cluster_id to compare all documents within a cluster. Returns summaries for each pair.',
     inputSchema: ComparisonBatchInput.shape,
     handler: handleComparisonBatch,
   },
   ocr_comparison_matrix: {
     description:
-      'Compute an NxN pairwise cosine similarity matrix for documents using document centroid embeddings. Identifies most/least similar pairs and average similarity.',
+      '[ANALYSIS] Use to compute an NxN pairwise similarity matrix across documents. Returns cosine similarity scores, most/least similar pairs, and average similarity. Requires documents with embeddings.',
     inputSchema: ComparisonMatrixInput.shape,
     handler: handleComparisonMatrix,
   },

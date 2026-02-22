@@ -58,7 +58,7 @@ describe('ocr_file_ingest_uploaded', () => {
   it('should be registered as a tool', () => {
     expect(fileManagementTools.ocr_file_ingest_uploaded).toBeDefined();
     expect(fileManagementTools.ocr_file_ingest_uploaded.handler).toBeDefined();
-    expect(fileManagementTools.ocr_file_ingest_uploaded.description).toContain('Bridge');
+    expect(fileManagementTools.ocr_file_ingest_uploaded.description).toContain('[PROCESSING]');
   });
 
   it('should return 6 tools total', () => {
@@ -325,7 +325,7 @@ describe('ocr_reembed_document', () => {
   it('should be registered as a tool', () => {
     expect(ingestionTools.ocr_reembed_document).toBeDefined();
     expect(ingestionTools.ocr_reembed_document.handler).toBeDefined();
-    expect(ingestionTools.ocr_reembed_document.description).toContain('Re-generate');
+    expect(ingestionTools.ocr_reembed_document.description).toContain('regenerate embeddings');
   });
 
   it('should return 9 tools total for ingestion', () => {

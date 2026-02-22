@@ -139,6 +139,11 @@ export async function handleDocumentList(params: Record<string, unknown>): Promi
         total,
         limit: input.limit,
         offset: input.offset,
+        next_steps: [
+          { tool: 'ocr_document_get', description: 'Get details for a specific document by ID' },
+          { tool: 'ocr_search_hybrid', description: 'Search within the corpus' },
+          { tool: 'ocr_document_structure', description: 'View a document outline (headings, tables)' },
+        ],
       })
     );
   } catch (error) {
@@ -315,6 +320,13 @@ export async function handleDocumentGet(params: Record<string, unknown>): Promis
         coherence_score: c.coherence_score,
       }));
     }
+
+    result.next_steps = [
+      { tool: 'ocr_document_page', description: 'Read a specific page of this document' },
+      { tool: 'ocr_document_structure', description: 'View document outline and layout' },
+      { tool: 'ocr_search_hybrid', description: 'Search within this document (use document_id filter)' },
+      { tool: 'ocr_chunk_list', description: 'List all chunks with section/heading filtering' },
+    ];
 
     return formatResponse(successResult(result));
   } catch (error) {
@@ -1825,7 +1837,7 @@ async function handleDocumentWorkflow(params: Record<string, unknown>): Promise<
 export const documentTools: Record<string, ToolDefinition> = {
   ocr_document_list: {
     description:
-      '[START HERE] Browse the document corpus. Returns document metadata with structural summaries (table/figure/heading counts). Use this first to understand what documents are in the database.',
+      '[CORE] Use to browse documents in the current database. Returns metadata with structural summaries. Filter by status, date, or file type. Start here after ocr_db_select.',
     inputSchema: {
       status_filter: z
         .enum(['pending', 'processing', 'complete', 'failed'])
@@ -1844,7 +1856,7 @@ export const documentTools: Record<string, ToolDefinition> = {
   },
   ocr_document_get: {
     description:
-      'Deep dive into one document. Returns OCR metadata, structural fingerprint, links, block stats, comparison and cluster memberships. Set include_chunks=true for chunk listing.',
+      '[CORE] Use to get full details for a single document. Returns OCR metadata, structure, quality, and memberships. Use ocr_document_page to read specific pages.',
     inputSchema: {
       document_id: z.string().min(1).describe('Document ID'),
       include_text: z.boolean().default(false).describe('Include OCR extracted text'),
@@ -1859,7 +1871,7 @@ export const documentTools: Record<string, ToolDefinition> = {
   },
   ocr_document_delete: {
     description:
-      'Delete a document and all its derived data (chunks, embeddings, vectors, provenance)',
+      '[ADMIN] Use to permanently delete a document and all derived data (chunks, embeddings, images, provenance). Requires confirm=true.',
     inputSchema: {
       document_id: z.string().min(1).describe('Document ID to delete'),
       confirm: z.literal(true).describe('Must be true to confirm deletion'),
@@ -1868,61 +1880,61 @@ export const documentTools: Record<string, ToolDefinition> = {
   },
   ocr_document_find_similar: {
     description:
-      'Find documents similar to a given document using averaged chunk embeddings as document centroid for vector similarity search.',
+      '[ANALYSIS] Use to find documents similar to a given document by content. Returns ranked list with similarity scores. Requires completed embeddings.',
     inputSchema: FindSimilarInput.shape,
     handler: handleFindSimilar,
   },
   ocr_document_classify: {
     description:
-      'Classify a document into a category (contract, invoice, report, etc.) using Gemini AI analysis of OCR text.',
+      '[ANALYSIS] Use to classify a document type (contract, invoice, report, etc.) using Gemini AI. Returns category, confidence, and reasoning.',
     inputSchema: ClassifyDocumentInput.shape,
     handler: handleClassifyDocument,
   },
   ocr_document_structure: {
     description:
-      'Get document outline: headings, tables, figures, code blocks with page numbers and document map. Use after ocr_document_get to understand document layout before searching within it.',
+      '[CORE] Use to get the document outline: headings, tables, figures, code blocks with page numbers. Returns structural map. Useful before targeted search.',
     inputSchema: DocumentStructureInput.shape,
     handler: handleDocumentStructure,
   },
   ocr_document_update_metadata: {
     description:
-      'Batch update metadata (title, author, subject) for one or more documents.',
+      '[ANALYSIS] Use to update title, author, or subject metadata on one or more documents. Returns updated document IDs.',
     inputSchema: UpdateMetadataInput.shape,
     handler: handleUpdateMetadata,
   },
   ocr_document_duplicates: {
     description:
-      'Detect duplicate documents. Exact mode finds documents with identical file hashes. Near mode finds high-similarity document pairs from the comparisons table.',
+      '[ANALYSIS] Use to find duplicate documents. Exact mode matches file hashes; near mode uses similarity scores from comparisons. Returns duplicate pairs.',
     inputSchema: DuplicateDetectionInput.shape,
     handler: handleDuplicateDetection,
   },
   ocr_document_sections: {
     description:
-      'Get a hierarchical TOC of document sections from chunk section_path data. Each node includes heading_level, chunk index range, chunk counts, and page ranges. Use format="outline" for a flat numbered list, or format="tree" (default) for nested structure.',
+      '[CORE] Use to get a hierarchical table of contents for a document. Returns section headings with page ranges and chunk counts. Use format="outline" for flat list.',
     inputSchema: DocumentSectionsInput.shape,
     handler: handleDocumentSections,
   },
   ocr_document_export: {
     description:
-      'Export all data for a document to JSON or markdown format. Includes document metadata, OCR results, chunks, images, extractions, and optionally provenance.',
+      '[ADMIN] Use to export all data for a document to JSON or markdown file. Returns complete document data including chunks, images, and extractions.',
     inputSchema: DocumentExportInput.shape,
     handler: handleDocumentExport,
   },
   ocr_corpus_export: {
     description:
-      'Export entire corpus metadata and statistics. JSON format includes document objects with nested data. CSV format has one row per document.',
+      '[ADMIN] Use to export entire corpus metadata to JSON or CSV. Returns all document summaries with statistics. Use for backup or external analysis.',
     inputSchema: CorpusExportInput.shape,
     handler: handleCorpusExport,
   },
   ocr_document_versions: {
     description:
-      'Find all versions of a document by file_path. Returns all documents sharing the same file path, ordered by creation date (newest first).',
+      '[ANALYSIS] Use to find all versions of a re-ingested document. Returns documents sharing the same file path, newest first.',
     inputSchema: DocumentVersionsInput.shape,
     handler: handleDocumentVersions,
   },
   ocr_document_workflow: {
     description:
-      'Manage document workflow states (draft, review, approved, rejected, archived) using the tags system. Supports get, set, and history actions.',
+      '[ANALYSIS] Use to manage document workflow states (draft/review/approved/rejected/archived). Supports get, set, and history actions via tags.',
     inputSchema: DocumentWorkflowInput.shape,
     handler: handleDocumentWorkflow,
   },

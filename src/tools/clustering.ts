@@ -677,46 +677,49 @@ async function handleClusterMerge(params: Record<string, unknown>): Promise<Tool
 export const clusteringTools: Record<string, ToolDefinition> = {
   ocr_cluster_documents: {
     description:
-      'Cluster documents by semantic similarity using HDBSCAN, agglomerative, or k-means algorithms.',
+      '[PROCESSING] Use to group documents by semantic similarity using HDBSCAN, agglomerative, or k-means. Returns cluster assignments with coherence scores. Requires documents with embeddings.',
     inputSchema: ClusterDocumentsInput.shape,
     handler: handleClusterDocuments,
   },
   ocr_cluster_list: {
-    description: 'List document clusters with optional filtering by run ID or tag',
+    description:
+      '[ANALYSIS] Use to browse existing document clusters with optional filtering by run ID or classification tag. Returns cluster summaries with labels and document counts. Use ocr_cluster_get for details.',
     inputSchema: ClusterListInput.shape,
     handler: handleClusterList,
   },
   ocr_cluster_get: {
-    description: 'Get detailed information about a specific cluster including member documents',
+    description:
+      '[ANALYSIS] Use to inspect a cluster: member documents, label, and statistics. Returns cluster details with document list. Use after ocr_cluster_list.',
     inputSchema: ClusterGetInput.shape,
     handler: handleClusterGet,
   },
   ocr_cluster_assign: {
     description:
-      'Auto-classify a document by assigning it to the nearest existing cluster based on embedding similarity.',
+      '[ANALYSIS] Use to auto-classify a new document into an existing cluster by embedding similarity. Returns nearest cluster and similarity score. Requires a completed clustering run_id.',
     inputSchema: ClusterAssignInput.shape,
     handler: handleClusterAssign,
   },
   ocr_cluster_delete: {
-    description: 'Delete all clusters and assignments for a clustering run',
+    description:
+      '[ANALYSIS] Use to delete all clusters and assignments for a clustering run. Returns deletion count. Requires confirm=true.',
     inputSchema: ClusterDeleteInput.shape,
     handler: handleClusterDelete,
   },
   ocr_cluster_label: {
     description:
-      'Auto-label a cluster using Gemini AI analysis of member documents and top terms. Generates a descriptive label, description, and classification tag.',
+      '[ANALYSIS] Use to auto-label a cluster with a descriptive name using Gemini AI. Returns label, description, and classification tag. Requires GEMINI_API_KEY. Use force=true to overwrite existing label.',
     inputSchema: ClusterLabelInput.shape,
     handler: handleClusterLabel,
   },
   ocr_cluster_reassign: {
     description:
-      'Move a document from its current cluster to a different target cluster within the same clustering run.',
+      '[ANALYSIS] Use to move a document from one cluster to another within the same run. Returns old and new cluster IDs.',
     inputSchema: ClusterReassignInput.shape,
     handler: handleClusterReassign,
   },
   ocr_cluster_merge: {
     description:
-      'Merge two clusters into one. All documents from the second cluster are moved to the first. Both clusters must belong to the same run.',
+      '[ANALYSIS] Use to merge two clusters into one within the same run. All documents from the second cluster move to the first. Returns merged cluster details.',
     inputSchema: ClusterMergeInput.shape,
     handler: handleClusterMerge,
   },

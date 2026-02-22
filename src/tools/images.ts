@@ -901,7 +901,7 @@ export async function handleImageReanalyze(params: Record<string, unknown>): Pro
  */
 export const imageTools: Record<string, ToolDefinition> = {
   ocr_image_extract: {
-    description: 'Extract images from a PDF document and store references in database',
+    description: '[PROCESSING] Use to extract images from a PDF via Datalab OCR pipeline. Returns image records with paths. Prefer ocr_extract_images for file-based extraction.',
     inputSchema: {
       pdf_path: z.string().min(1).describe('Path to PDF file'),
       output_dir: z.string().min(1).describe('Directory to save extracted images'),
@@ -920,7 +920,7 @@ export const imageTools: Record<string, ToolDefinition> = {
   },
 
   ocr_image_list: {
-    description: 'List all images extracted from a document',
+    description: '[ANALYSIS] Use to list all images from a document with optional VLM status filter. Returns image metadata and optionally descriptions.',
     inputSchema: {
       document_id: z.string().min(1).describe('Document ID'),
       include_descriptions: z.boolean().default(false).describe('Include VLM descriptions'),
@@ -933,7 +933,7 @@ export const imageTools: Record<string, ToolDefinition> = {
   },
 
   ocr_image_get: {
-    description: 'Get detailed information about a specific image',
+    description: '[ANALYSIS] Use to get full details for a single image (path, dimensions, VLM description, confidence, provenance). Returns complete image record.',
     inputSchema: {
       image_id: z.string().min(1).describe('Image ID'),
     },
@@ -941,13 +941,13 @@ export const imageTools: Record<string, ToolDefinition> = {
   },
 
   ocr_image_stats: {
-    description: 'Get image processing statistics',
+    description: '[ADMIN] Use to get image processing statistics (total, by status, by type). Returns aggregate counts across all documents.',
     inputSchema: {},
     handler: handleImageStats,
   },
 
   ocr_image_delete: {
-    description: 'Delete a specific image record and optionally the file',
+    description: '[ADMIN] Use to delete a single image record and optionally the file on disk. Returns deletion confirmation.',
     inputSchema: {
       image_id: z.string().min(1).describe('Image ID'),
       delete_file: z.boolean().default(false).describe('Also delete the extracted image file'),
@@ -956,7 +956,7 @@ export const imageTools: Record<string, ToolDefinition> = {
   },
 
   ocr_image_delete_by_document: {
-    description: 'Delete all images for a document',
+    description: '[ADMIN] Use to delete all image records for a document and optionally the files. Returns deletion count.',
     inputSchema: {
       document_id: z.string().min(1).describe('Document ID'),
       delete_files: z.boolean().default(false).describe('Also delete the extracted image files'),
@@ -965,7 +965,7 @@ export const imageTools: Record<string, ToolDefinition> = {
   },
 
   ocr_image_reset_failed: {
-    description: 'Reset failed images to pending status for reprocessing',
+    description: '[PROCESSING] Use to reset failed VLM images back to pending for retry. Returns reset count. Follow with ocr_vlm_process_pending.',
     inputSchema: {
       document_id: z.string().optional().describe('Document ID (omit for all documents)'),
     },
@@ -973,7 +973,7 @@ export const imageTools: Record<string, ToolDefinition> = {
   },
 
   ocr_image_pending: {
-    description: 'Get images pending VLM processing',
+    description: '[ADMIN] Use to list images that still need VLM processing. Returns pending image IDs and metadata. Check before running ocr_vlm_process_pending.',
     inputSchema: {
       limit: z.number().int().min(1).max(1000).default(100).describe('Maximum images to return'),
     },
@@ -981,7 +981,7 @@ export const imageTools: Record<string, ToolDefinition> = {
   },
 
   ocr_image_search: {
-    description: 'Search images by VLM classification type, block type, confidence, and other filters',
+    description: '[ANALYSIS] Use to search images by type (chart/diagram/photo), block type, confidence, or page. Returns filtered image list with VLM metadata.',
     inputSchema: {
       image_type: z.string().optional()
         .describe('Filter by VLM image type (e.g., "chart", "diagram", "photograph", "table", "signature")'),
@@ -1003,7 +1003,7 @@ export const imageTools: Record<string, ToolDefinition> = {
   },
 
   ocr_image_semantic_search: {
-    description: 'Search images by semantic similarity of their VLM descriptions. Returns images ranked by how semantically similar their descriptions are to the query.',
+    description: '[ANALYSIS] Use to find images by meaning (e.g., "bar chart showing revenue"). Returns images ranked by semantic similarity of VLM descriptions to your query.',
     inputSchema: {
       query: z.string().min(1).describe('Search query to match against VLM image descriptions'),
       document_filter: z.array(z.string().min(1)).optional()
@@ -1019,7 +1019,7 @@ export const imageTools: Record<string, ToolDefinition> = {
   },
 
   ocr_image_reanalyze: {
-    description: 'Re-run VLM analysis on a specific image with optional custom prompt. Creates new provenance records while preserving old ones for audit trail.',
+    description: '[PROCESSING] Use to re-run VLM analysis on a specific image with optional custom prompt. Returns new description while preserving audit trail.',
     inputSchema: {
       image_id: z.string().min(1).describe('Image ID to reanalyze'),
       custom_prompt: z.string().optional()

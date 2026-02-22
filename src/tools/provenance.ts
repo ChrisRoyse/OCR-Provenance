@@ -696,7 +696,7 @@ export async function handleProvenanceProcessorStats(
 export const provenanceTools: Record<string, ToolDefinition> = {
   ocr_provenance_get: {
     description:
-      'Get the complete provenance chain for an item',
+      '[ANALYSIS] Use to trace the complete processing history of any item (document, chunk, image, etc.). Returns provenance chain from origin to current state.',
     inputSchema: {
       item_id: z
         .string()
@@ -724,7 +724,7 @@ export const provenanceTools: Record<string, ToolDefinition> = {
   },
   ocr_provenance_verify: {
     description:
-      'Verify the integrity of an item through its provenance chain',
+      '[ANALYSIS] Use to verify data integrity by checking content hashes and chain consistency. Returns verification status with any issues found.',
     inputSchema: {
       item_id: z.string().min(1).describe('ID of the item to verify'),
       verify_content: z.boolean().default(true).describe('Verify content hashes'),
@@ -734,7 +734,7 @@ export const provenanceTools: Record<string, ToolDefinition> = {
   },
   ocr_provenance_export: {
     description:
-      'Export provenance data in various formats (JSON, W3C PROV-JSON, CSV)',
+      '[ADMIN] Use to export provenance records to JSON, W3C PROV-JSON, or CSV. Scope to a document or entire database.',
     inputSchema: {
       scope: z.enum(['document', 'database']).describe('Export scope'),
       document_id: z.string().optional().describe('Document ID (required when scope is document)'),
@@ -744,7 +744,7 @@ export const provenanceTools: Record<string, ToolDefinition> = {
   },
   ocr_provenance_query: {
     description:
-      'Query provenance records by processor, type, date, depth, quality. For system auditing and analysis.',
+      '[ANALYSIS] Use to query provenance records with filters (processor, type, date, depth, quality). Returns paginated records for auditing.',
     inputSchema: {
       processor: z.string().optional().describe('Filter by processor name'),
       type: z
@@ -780,7 +780,7 @@ export const provenanceTools: Record<string, ToolDefinition> = {
   },
   ocr_provenance_timeline: {
     description:
-      'Complete processing timeline for a document, showing every transformation chronologically',
+      '[ANALYSIS] Use to see the complete processing timeline for a document. Returns every transformation step chronologically with durations.',
     inputSchema: {
       document_id: z.string().min(1).describe('Document ID to get timeline for'),
       include_params: z
@@ -792,7 +792,7 @@ export const provenanceTools: Record<string, ToolDefinition> = {
   },
   ocr_provenance_processor_stats: {
     description:
-      'Aggregate statistics per processor across the database. Shows operation counts, duration stats, and quality scores.',
+      '[ADMIN] Use to get aggregate performance stats per processor (operation counts, durations, quality). Returns processor-level analytics.',
     inputSchema: {
       processor: z.string().optional().describe('Filter by specific processor name'),
       created_after: z.string().optional().describe('Filter records created after this ISO 8601 timestamp'),

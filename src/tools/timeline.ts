@@ -141,7 +141,7 @@ async function handleThroughputAnalytics(
 export const timelineTools: Record<string, ToolDefinition> = {
   ocr_timeline_analytics: {
     description:
-      'Processing volume over time buckets (hourly, daily, weekly, monthly). Track documents, pages, chunks, embeddings, images, or cost over time.',
+      '[ADMIN] Use to view processing volume trends over time. Returns counts bucketed by hour/day/week/month for documents, pages, chunks, embeddings, images, or cost.',
     inputSchema: {
       bucket: z
         .enum(['hourly', 'daily', 'weekly', 'monthly'])
@@ -165,7 +165,7 @@ export const timelineTools: Record<string, ToolDefinition> = {
 
   ocr_throughput_analytics: {
     description:
-      'Processing throughput metrics per time bucket. Shows pages processed, embeddings generated, images processed, and average processing times.',
+      '[ADMIN] Use to measure processing speed and throughput over time. Returns pages processed, embeddings generated, images processed, and average durations per time bucket.',
     inputSchema: {
       bucket: z
         .enum(['hourly', 'daily', 'weekly', 'monthly'])
