@@ -517,26 +517,50 @@ export async function handleImageSearch(params: Record<string, unknown>): Promis
 
     const rows = conn.prepare(sql).all(...sqlParams) as Record<string, unknown>[];
 
-    const results = rows.map(r => ({
-      id: r.id,
-      document_id: r.document_id,
-      page_number: r.page_number,
-      image_index: r.image_index,
-      format: r.format,
-      dimensions: { width: r.width, height: r.height },
-      vlm_confidence: r.vlm_confidence,
-      vlm_description: r.vlm_description,
-      vlm_structured_data: r.vlm_structured_data ? JSON.parse(r.vlm_structured_data as string) : null,
-      block_type: r.block_type,
-      is_header_footer: r.is_header_footer === 1,
-      extracted_path: r.extracted_path,
-      file_size: r.file_size,
-    }));
+    const results = rows.map(r => {
+      // Parse vlm_structured_data once and reuse for both the raw field and surfaced fields
+      let structured: Record<string, unknown> | null = null;
+      if (r.vlm_structured_data) {
+        try {
+          structured = JSON.parse(r.vlm_structured_data as string);
+        } catch {
+          console.error(`[T1.1] Failed to parse vlm_structured_data for image ${r.id}: malformed JSON`);
+        }
+      }
+
+      const base: Record<string, unknown> = {
+        id: r.id,
+        document_id: r.document_id,
+        page_number: r.page_number,
+        image_index: r.image_index,
+        format: r.format,
+        dimensions: { width: r.width, height: r.height },
+        vlm_confidence: r.vlm_confidence,
+        vlm_description: r.vlm_description,
+        vlm_structured_data: structured,
+        block_type: r.block_type,
+        is_header_footer: r.is_header_footer === 1,
+        extracted_path: r.extracted_path,
+        file_size: r.file_size,
+      };
+
+      // T1.1: Surface VLM structured data fields at top level
+      if (structured) {
+        base.image_type = structured.imageType ?? null;
+        base.vlm_extracted_text = structured.extractedText ?? [];
+        base.vlm_dates = structured.dates ?? [];
+        base.vlm_names = structured.names ?? [];
+        base.vlm_numbers = structured.numbers ?? [];
+        base.vlm_primary_subject = structured.primarySubject ?? null;
+      }
+
+      return base;
+    });
 
     // Aggregate type counts
     const typeCounts: Record<string, number> = {};
     for (const r of results) {
-      const type = (r.vlm_structured_data?.imageType as string) || 'unknown';
+      const type = (r.image_type as string) || 'unknown';
       typeCounts[type] = (typeCounts[type] || 0) + 1;
     }
 
@@ -638,6 +662,17 @@ export async function handleImageSemanticSearch(params: Record<string, unknown>)
         similarity_score: r.similarity_score,
         embedding_id: r.embedding_id,
       };
+
+      // T1.1: Surface VLM structured data fields at top level
+      if (img.vlm_structured_data) {
+        const structured = img.vlm_structured_data;
+        result.image_type = structured.imageType ?? null;
+        result.vlm_extracted_text = structured.extractedText ?? [];
+        result.vlm_dates = structured.dates ?? [];
+        result.vlm_names = structured.names ?? [];
+        result.vlm_numbers = structured.numbers ?? [];
+        result.vlm_primary_subject = structured.primarySubject ?? null;
+      }
 
       if (input.include_provenance && img.provenance_id) {
         result.provenance_chain = fetchProvenanceChain(db, img.provenance_id, '[image_semantic_search]');

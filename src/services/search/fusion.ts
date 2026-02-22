@@ -5,6 +5,8 @@
  * Formula: score = sum(weight / (k + rank))
  */
 
+import { computeQualityMultiplier } from './quality.js';
+
 interface RRFConfig {
   k: number;
   bm25Weight: number;
@@ -52,6 +54,9 @@ interface RRFSearchResult {
   doc_page_count?: number | null;
   datalab_mode?: string | null;
   total_chunks?: number;
+  table_columns?: string[] | null;
+  table_row_count?: number | null;
+  table_column_count?: number | null;
 }
 
 export interface RankedResult {
@@ -90,6 +95,9 @@ export interface RankedResult {
   doc_page_count?: number | null;
   datalab_mode?: string | null;
   total_chunks?: number;
+  table_columns?: string[] | null;
+  table_row_count?: number | null;
+  table_column_count?: number | null;
 }
 
 const DEFAULT_CONFIG: RRFConfig = {
@@ -180,10 +188,9 @@ export class RRFFusion {
     bm25Results: RankedResult[],
     semanticResults: RankedResult[],
     limit: number,
-    options?: { qualityBoost?: boolean }
+    _options?: { qualityBoost?: boolean }
   ): RRFSearchResult[] {
     const { k, bm25Weight, semanticWeight } = this.config;
-    const qualityBoost = options?.qualityBoost ?? false;
     // Use chunk_id/image_id as dedup key so the same chunk from BM25 and semantic
     // merges correctly, even when BM25 results lack an embedding_id.
     const fusedMap = new Map<string, RRFSearchResult>();
@@ -213,12 +220,9 @@ export class RRFFusion {
 
     const results = Array.from(fusedMap.values());
 
-    // Apply quality boost: multiply rrf_score by quality factor
-    if (qualityBoost) {
-      for (const r of results) {
-        const qualityFactor = 1 + (r.ocr_quality_score ?? 3) / 10.0;
-        r.rrf_score = r.rrf_score * qualityFactor;
-      }
+    // Always apply quality-aware scoring (soft signal, not opt-in filter)
+    for (const r of results) {
+      r.rrf_score *= computeQualityMultiplier(r.ocr_quality_score);
     }
 
     return results

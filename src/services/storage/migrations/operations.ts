@@ -1336,6 +1336,11 @@ export function migrateToLatest(db: Database.Database): void {
     migrateV29ToV30(db);
     bumpVersion(30);
   }
+
+  if (currentVersion < 31) {
+    migrateV30ToV31(db);
+    bumpVersion(31);
+  }
 }
 
 /**
@@ -3278,6 +3283,68 @@ function migrateV29ToV30(db: Database.Database): void {
       'migrate',
       'documents_fts',
       error
+    );
+  }
+}
+
+/**
+ * Migration v30 → v31: Document metadata indexes, VLM text enrichment
+ *
+ * Changes:
+ * - New indexes: idx_documents_doc_author, idx_documents_doc_subject
+ *
+ * @param db - Database instance from better-sqlite3
+ * @throws MigrationError if migration fails
+ */
+function migrateV30ToV31(db: Database.Database): void {
+  console.error('[MIGRATION] Applying v30 → v31: document metadata indexes, VLM text enrichment');
+  try {
+    db.exec('CREATE INDEX IF NOT EXISTS idx_documents_doc_author ON documents(doc_author)');
+    db.exec('CREATE INDEX IF NOT EXISTS idx_documents_doc_subject ON documents(doc_subject)');
+
+    // T2.10: Backfill VLM extracted text into embeddings for FTS searchability
+    // Appends extracted text from vlm_structured_data to the embedding's original_text
+    // so it enters the vlm_fts index automatically via existing triggers
+    db.exec(`
+      UPDATE embeddings SET original_text = original_text || ' ' ||
+        COALESCE((
+          SELECT GROUP_CONCAT(value, ' ')
+          FROM images i, json_each(json_extract(i.vlm_structured_data, '$.extractedText'))
+          WHERE i.id = embeddings.image_id
+          AND i.vlm_structured_data IS NOT NULL
+          AND json_valid(i.vlm_structured_data)
+          AND json_extract(i.vlm_structured_data, '$.extractedText') IS NOT NULL
+        ), '')
+      WHERE embeddings.image_id IS NOT NULL
+      AND EXISTS (
+        SELECT 1 FROM images i
+        WHERE i.id = embeddings.image_id
+        AND i.vlm_structured_data IS NOT NULL
+        AND json_valid(i.vlm_structured_data)
+        AND json_extract(i.vlm_structured_data, '$.extractedText') IS NOT NULL
+      )
+    `);
+
+    // Rebuild VLM FTS index to pick up the updated text
+    // H-4: Must use delete-all + selective re-insert (NOT 'rebuild') because
+    // FTS5 external content 'rebuild' reads ALL rows from embeddings table,
+    // including chunk embeddings (image_id IS NULL), creating ghost VLM results.
+    try {
+      db.exec("INSERT INTO vlm_fts(vlm_fts) VALUES('delete-all')");
+      db.exec(`
+        INSERT INTO vlm_fts(rowid, original_text)
+        SELECT rowid, original_text FROM embeddings WHERE image_id IS NOT NULL
+      `);
+      console.error('[MIGRATION] VLM FTS index rebuilt with extracted text');
+    } catch (ftsError) {
+      console.error('[MIGRATION] VLM FTS rebuild skipped (may not exist yet):', ftsError instanceof Error ? ftsError.message : String(ftsError));
+    }
+
+    console.error('[MIGRATION] v31 migration complete: indexes + VLM text enrichment');
+  } catch (error) {
+    const cause = error instanceof Error ? error.message : String(error);
+    throw new MigrationError(
+      `Failed to migrate v30 to v31: ${cause}`, 'migrate', 'document_indexes', error
     );
   }
 }

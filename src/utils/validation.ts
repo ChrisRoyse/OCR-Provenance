@@ -353,6 +353,12 @@ export const SearchSemanticInput = z.object({
     .describe('Number of neighboring chunks to include before and after each result (0=none, max 3). Adds context_before and context_after arrays.'),
   table_columns_contain: z.string().optional()
     .describe('Filter to table chunks whose column headers contain this text (case-insensitive match on stored table_columns in processing_params)'),
+  include_headers_footers: z.boolean().default(false)
+    .describe('Include repeated page headers/footers in search results (excluded by default)'),
+  group_by_document: z.boolean().default(false)
+    .describe('Group results by source document with document-level statistics'),
+  include_document_context: z.boolean().default(false)
+    .describe('Include cluster membership and related document info for each source document'),
 });
 
 /**
@@ -420,6 +426,12 @@ export const SearchInput = z.object({
     .describe('Number of neighboring chunks to include before and after each result (0=none, max 3). Adds context_before and context_after arrays.'),
   table_columns_contain: z.string().optional()
     .describe('Filter to table chunks whose column headers contain this text (case-insensitive match on stored table_columns in processing_params)'),
+  include_headers_footers: z.boolean().default(false)
+    .describe('Include repeated page headers/footers in search results (excluded by default)'),
+  group_by_document: z.boolean().default(false)
+    .describe('Group results by source document with document-level statistics'),
+  include_document_context: z.boolean().default(false)
+    .describe('Include cluster membership and related document info for each source document'),
 });
 
 /**
@@ -442,8 +454,8 @@ export const SearchHybridInput = z.object({
     .describe('Minimum OCR quality score (0-5). Filters documents with low-quality OCR results.'),
   expand_query: z
     .boolean()
-    .default(false)
-    .describe('Expand query with domain-specific legal/medical synonyms'),
+    .default(true)
+    .describe('Expand query with domain-specific legal/medical synonyms (default: true for hybrid search)'),
   rerank: z
     .boolean()
     .default(false)
@@ -492,6 +504,12 @@ export const SearchHybridInput = z.object({
     .describe('Number of neighboring chunks to include before and after each result (0=none, max 3). Adds context_before and context_after arrays.'),
   table_columns_contain: z.string().optional()
     .describe('Filter to table chunks whose column headers contain this text (case-insensitive match on stored table_columns in processing_params)'),
+  include_headers_footers: z.boolean().default(false)
+    .describe('Include repeated page headers/footers in search results (excluded by default)'),
+  group_by_document: z.boolean().default(false)
+    .describe('Group results by source document with document-level statistics'),
+  include_document_context: z.boolean().default(false)
+    .describe('Include cluster membership and related document info for each source document'),
 });
 
 /**

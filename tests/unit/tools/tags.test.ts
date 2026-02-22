@@ -744,13 +744,13 @@ describe('Phase 9: Cross-Entity Tagging Tools', () => {
       expect(indexNames).toContain('idx_entity_tags_tag');
     });
 
-    it('should have schema version 30', () => {
+    it('should have schema version 31', () => {
       const { db } = requireDatabase();
       const conn = db.getConnection();
       const row = conn.prepare('SELECT version FROM schema_version WHERE id = 1').get() as {
         version: number;
       };
-      expect(row.version).toBe(30);
+      expect(row.version).toBe(31);
     });
 
     it('should enforce entity_type CHECK constraint', () => {

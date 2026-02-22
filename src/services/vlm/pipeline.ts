@@ -448,11 +448,16 @@ export class VLMPipeline {
         }
 
         // Generate embedding for description with VLM provenance ID
+        // T2.10: Include VLM extracted text in embedding for FTS searchability
         let embeddingId: string | null = null;
 
         if (!this.config.skipEmbeddings && vlmResult.description) {
+          let textForEmbedding = vlmResult.description;
+          if (vlmResult.analysis?.extractedText?.length > 0) {
+            textForEmbedding += '\n\nExtracted text: ' + vlmResult.analysis.extractedText.join(', ');
+          }
           embeddingId = await this.generateAndStoreEmbedding(
-            vlmResult.description,
+            textForEmbedding,
             image,
             vlmProvId
           );

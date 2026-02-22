@@ -61,6 +61,67 @@ interface QueryExpansionInfo {
   corpus_terms?: Record<string, string[]>;
 }
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// DOCUMENT GROUPING HELPER
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/** A group of search results belonging to a single source document */
+interface DocumentGroup {
+  document_id: string;
+  file_name: string;
+  file_path: string;
+  doc_title: string | null;
+  doc_author: string | null;
+  total_pages: number | null;
+  total_chunks: number;
+  ocr_quality_score: number | null;
+  result_count: number;
+  results: Array<Record<string, unknown>>;
+}
+
+/**
+ * Group flat search results by their source document.
+ * Each group contains document-level metadata and the subset of results
+ * belonging to that document. Groups are sorted by result_count descending.
+ */
+function groupResultsByDocument(
+  results: Array<Record<string, unknown>>
+): { grouped: DocumentGroup[]; total_documents: number } {
+  const groups = new Map<string, DocumentGroup>();
+
+  for (const r of results) {
+    const docId = (r.document_id ?? r.source_document_id) as string;
+    if (!docId) continue;
+
+    if (!groups.has(docId)) {
+      groups.set(docId, {
+        document_id: docId,
+        file_name: (r.source_file_name as string) ?? '',
+        file_path: (r.source_file_path as string) ?? '',
+        doc_title: (r.doc_title as string) ?? null,
+        doc_author: (r.doc_author as string) ?? null,
+        total_pages: (r.doc_page_count as number) ?? null,
+        total_chunks: (r.total_chunks as number) ?? 0,
+        ocr_quality_score: (r.ocr_quality_score as number) ?? null,
+        result_count: 0,
+        results: [],
+      });
+    }
+    const group = groups.get(docId)!;
+    group.result_count++;
+    group.results.push(r);
+  }
+
+  return {
+    grouped: Array.from(groups.values()).sort((a, b) => b.result_count - a.result_count),
+    total_documents: groups.size,
+  };
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// METADATA FILTER RESOLVER
+// ═══════════════════════════════════════════════════════════════════════════════
+
 /**
  * Resolve metadata_filter to document IDs.
  * Returns undefined if no metadata filter or no matches, allowing all documents.
@@ -368,19 +429,21 @@ function attachContextChunks(
 }
 
 /**
- * Attach table metadata to search results for atomic table chunks.
- * For each result where is_atomic=true and content_types contains "table",
+ * Attach table metadata to search results for table chunks.
+ * For each result where content_types contains "table",
  * queries provenance processing_params to extract table_columns, table_row_count, table_column_count.
+ * Sets both top-level fields (table_columns, table_row_count, table_column_count) and
+ * a nested table_metadata object for backward compatibility.
  * Batches queries by chunk_id.
  */
 function attachTableMetadata(
   conn: ReturnType<ReturnType<typeof requireDatabase>['db']['getConnection']>,
   results: Array<Record<string, unknown>>
 ): void {
-  // Find atomic table chunk IDs
+  // Find table chunk IDs (any chunk with "table" in content_types, not just atomic)
   const tableChunkIds: string[] = [];
   for (const r of results) {
-    if (r.is_atomic && r.chunk_id && typeof r.content_types === 'string' && r.content_types.includes('"table"')) {
+    if (r.chunk_id && typeof r.content_types === 'string' && r.content_types.includes('"table"')) {
       tableChunkIds.push(r.chunk_id as string);
     }
   }
@@ -413,13 +476,41 @@ function attachTableMetadata(
     }
   }
 
-  // Attach to results
+  // Attach to results: top-level fields + nested table_metadata for backward compat
   for (const r of results) {
     const meta = r.chunk_id ? metadataMap.get(r.chunk_id as string) : undefined;
     if (meta) {
+      r.table_columns = meta.table_columns;
+      r.table_row_count = meta.table_row_count;
+      r.table_column_count = meta.table_column_count;
       r.table_metadata = meta;
     }
   }
+}
+
+/**
+ * Exclude chunks tagged as repeated headers/footers (T2.8).
+ * Queries entity_tags for the system:repeated_header_footer tag
+ * and filters them out of the results array.
+ * Returns a new filtered array.
+ */
+function excludeRepeatedHeaderFooterChunks(
+  conn: ReturnType<ReturnType<typeof requireDatabase>['db']['getConnection']>,
+  results: Array<Record<string, unknown>>
+): Array<Record<string, unknown>> {
+  const taggedChunks = conn.prepare(
+    `SELECT et.entity_id FROM entity_tags et
+     JOIN tags t ON t.id = et.tag_id
+     WHERE t.name = 'system:repeated_header_footer' AND et.entity_type = 'chunk'`
+  ).all() as Array<{ entity_id: string }>;
+
+  if (taggedChunks.length === 0) return results;
+
+  const excludeChunkIds = new Set(taggedChunks.map(t => t.entity_id));
+  return results.filter(r => {
+    const chunkId = r.chunk_id as string | null;
+    return !chunkId || !excludeChunkIds.has(chunkId);
+  });
 }
 
 /**
@@ -461,6 +552,66 @@ function attachClusterContext(
     const docId = r.document_id as string;
     if (docId) {
       r.cluster_context = clusterCache.get(docId) ?? [];
+    }
+  }
+}
+
+/**
+ * Attach cross-document context (cluster memberships and related comparisons)
+ * to the first result per document. This gives callers awareness of how each
+ * source document relates to the wider corpus without bloating every result.
+ */
+function attachCrossDocumentContext(
+  conn: ReturnType<ReturnType<typeof requireDatabase>['db']['getConnection']>,
+  results: Array<Record<string, unknown>>
+): void {
+  const docIds = [...new Set(
+    results.map(r => (r.document_id ?? r.source_document_id) as string).filter(Boolean)
+  )];
+  if (docIds.length === 0) return;
+
+  const contextMap = new Map<string, Record<string, unknown>>();
+
+  for (const docId of docIds) {
+    try {
+      // Get cluster memberships
+      const clusters = conn.prepare(
+        `SELECT c.id, c.label, c.classification_tag, dc.similarity_to_centroid
+         FROM document_clusters dc JOIN clusters c ON c.id = dc.cluster_id
+         WHERE dc.document_id = ? LIMIT 3`
+      ).all(docId) as Array<Record<string, unknown>>;
+
+      // Get comparison summaries (documents already compared to this one)
+      const comparisons = conn.prepare(
+        `SELECT
+           CASE WHEN document_id_1 = ? THEN document_id_2 ELSE document_id_1 END as related_doc_id,
+           similarity_ratio, summary
+         FROM comparisons
+         WHERE document_id_1 = ? OR document_id_2 = ?
+         ORDER BY similarity_ratio DESC LIMIT 3`
+      ).all(docId, docId, docId) as Array<Record<string, unknown>>;
+
+      contextMap.set(docId, {
+        clusters: clusters.length > 0 ? clusters : null,
+        related_documents: comparisons.length > 0 ? comparisons : null,
+      });
+    } catch (error) {
+      console.error(
+        `[Search] Failed to get cross-document context for ${docId}: ${String(error)}`
+      );
+    }
+  }
+
+  // Attach to first result per document (not every result to reduce noise)
+  const seen = new Set<string>();
+  for (const r of results) {
+    const docId = (r.document_id ?? r.source_document_id) as string;
+    if (docId && !seen.has(docId)) {
+      seen.add(docId);
+      const ctx = contextMap.get(docId);
+      if (ctx) {
+        r.document_context = ctx;
+      }
     }
   }
 }
@@ -1109,6 +1260,11 @@ export async function handleSearchSemantic(params: Record<string, unknown>): Pro
       finalResults = deduplicateByContentHash(finalResults);
     }
 
+    // T2.8: Exclude system:repeated_header_footer tagged chunks by default
+    if (!input.include_headers_footers) {
+      finalResults = excludeRepeatedHeaderFooterChunks(conn, finalResults);
+    }
+
     // Task 3.1: Cluster context included by default (unless explicitly false)
     const clusterContextIncluded = input.include_cluster_context && finalResults.length > 0;
     if (clusterContextIncluded) {
@@ -1123,6 +1279,11 @@ export async function handleSearchSemantic(params: Record<string, unknown>): Pro
 
     // Phase 5: Attach table metadata for atomic table chunks
     attachTableMetadata(conn, finalResults);
+
+    // T2.12: Attach cross-document context if requested
+    if (input.include_document_context) {
+      attachCrossDocumentContext(conn, finalResults);
+    }
 
     const responseData: Record<string, unknown> = {
       query: input.query,
@@ -1147,6 +1308,19 @@ export async function handleSearchSemantic(params: Record<string, unknown>): Pro
 
     if (rerankInfo) {
       responseData.rerank = rerankInfo;
+    }
+
+    if (input.group_by_document) {
+      const { grouped, total_documents } = groupResultsByDocument(finalResults);
+      const groupedResponse: Record<string, unknown> = {
+        ...responseData,
+        total_results: finalResults.length,
+        total_documents,
+        documents: grouped,
+      };
+      delete groupedResponse.results;
+      delete groupedResponse.total;
+      return formatResponse(successResult(groupedResponse));
     }
 
     return formatResponse(successResult(responseData));
@@ -1288,6 +1462,11 @@ export async function handleSearch(params: Record<string, unknown>): Promise<Too
       finalResults = deduplicateByContentHash(finalResults);
     }
 
+    // T2.8: Exclude system:repeated_header_footer tagged chunks by default
+    if (!input.include_headers_footers) {
+      finalResults = excludeRepeatedHeaderFooterChunks(conn, finalResults);
+    }
+
     // Compute source counts from final merged results (not pre-merge candidates)
     let finalChunkCount = 0;
     let finalVlmCount = 0;
@@ -1312,6 +1491,11 @@ export async function handleSearch(params: Record<string, unknown>): Promise<Too
 
     // Phase 5: Attach table metadata for atomic table chunks
     attachTableMetadata(conn, finalResults);
+
+    // T2.12: Attach cross-document context if requested
+    if (input.include_document_context) {
+      attachCrossDocumentContext(conn, finalResults);
+    }
 
     // Document metadata matches (v30 FTS5 on doc_title/author/subject)
     let documentMetadataMatches: Array<Record<string, unknown>> | undefined;
@@ -1359,6 +1543,19 @@ export async function handleSearch(params: Record<string, unknown>): Promise<Too
 
     if (rerankInfo) {
       responseData.rerank = rerankInfo;
+    }
+
+    if (input.group_by_document) {
+      const { grouped, total_documents } = groupResultsByDocument(finalResults);
+      const groupedResponse: Record<string, unknown> = {
+        ...responseData,
+        total_results: finalResults.length,
+        total_documents,
+        documents: grouped,
+      };
+      delete groupedResponse.results;
+      delete groupedResponse.total;
+      return formatResponse(successResult(groupedResponse));
     }
 
     return formatResponse(successResult(responseData));
@@ -1538,6 +1735,11 @@ export async function handleSearchHybrid(params: Record<string, unknown>): Promi
       finalResults = deduplicateByContentHash(finalResults);
     }
 
+    // T2.8: Exclude system:repeated_header_footer tagged chunks by default
+    if (!input.include_headers_footers) {
+      finalResults = excludeRepeatedHeaderFooterChunks(conn, finalResults);
+    }
+
     // Task 3.1: Cluster context included by default (unless explicitly false)
     const clusterContextIncluded = input.include_cluster_context && finalResults.length > 0;
     if (clusterContextIncluded) {
@@ -1552,6 +1754,11 @@ export async function handleSearchHybrid(params: Record<string, unknown>): Promi
 
     // Phase 5: Attach table metadata for atomic table chunks
     attachTableMetadata(db.getConnection(), finalResults);
+
+    // T2.12: Attach cross-document context if requested
+    if (input.include_document_context) {
+      attachCrossDocumentContext(conn, finalResults);
+    }
 
     const responseData: Record<string, unknown> = {
       query: input.query,
@@ -1594,6 +1801,19 @@ export async function handleSearchHybrid(params: Record<string, unknown>): Promi
 
     if (queryClassification) {
       responseData.query_classification = queryClassification;
+    }
+
+    if (input.group_by_document) {
+      const { grouped, total_documents } = groupResultsByDocument(finalResults);
+      const groupedResponse: Record<string, unknown> = {
+        ...responseData,
+        total_results: finalResults.length,
+        total_documents,
+        documents: grouped,
+      };
+      delete groupedResponse.results;
+      delete groupedResponse.total;
+      return formatResponse(successResult(groupedResponse));
     }
 
     return formatResponse(successResult(responseData));
@@ -2588,6 +2808,12 @@ export const searchTools: Record<string, ToolDefinition> = {
         .describe('Number of neighboring chunks before/after each result (0=none, max 3)'),
       table_columns_contain: z.string().optional()
         .describe('Filter to table chunks whose column headers contain this text (case-insensitive match on stored table_columns in processing_params)'),
+      include_headers_footers: z.boolean().default(false)
+        .describe('Include repeated page headers/footers in search results (excluded by default)'),
+      group_by_document: z.boolean().default(false)
+        .describe('Group results by source document with document-level statistics'),
+      include_document_context: z.boolean().default(false)
+        .describe('Include cluster membership and related document comparisons for each source document (first result per doc)'),
     },
     handler: handleSearch,
   },
@@ -2678,6 +2904,12 @@ export const searchTools: Record<string, ToolDefinition> = {
         .describe('Number of neighboring chunks before/after each result (0=none, max 3)'),
       table_columns_contain: z.string().optional()
         .describe('Filter to table chunks whose column headers contain this text (case-insensitive match on stored table_columns in processing_params)'),
+      include_headers_footers: z.boolean().default(false)
+        .describe('Include repeated page headers/footers in search results (excluded by default)'),
+      group_by_document: z.boolean().default(false)
+        .describe('Group results by source document with document-level statistics'),
+      include_document_context: z.boolean().default(false)
+        .describe('Include cluster membership and related document comparisons for each source document (first result per doc)'),
     },
     handler: handleSearchSemantic,
   },
@@ -2707,8 +2939,8 @@ export const searchTools: Record<string, ToolDefinition> = {
         .describe('Minimum OCR quality score (0-5)'),
       expand_query: z
         .boolean()
-        .default(false)
-        .describe('Expand query with domain-specific legal/medical synonyms'),
+        .default(true)
+        .describe('Expand query with domain-specific legal/medical synonyms (default: true for hybrid search)'),
       rerank: z
         .boolean()
         .default(false)
@@ -2766,6 +2998,12 @@ export const searchTools: Record<string, ToolDefinition> = {
         .describe('Number of neighboring chunks before/after each result (0=none, max 3)'),
       table_columns_contain: z.string().optional()
         .describe('Filter to table chunks whose column headers contain this text (case-insensitive match on stored table_columns in processing_params)'),
+      include_headers_footers: z.boolean().default(false)
+        .describe('Include repeated page headers/footers in search results (excluded by default)'),
+      group_by_document: z.boolean().default(false)
+        .describe('Group results by source document with document-level statistics'),
+      include_document_context: z.boolean().default(false)
+        .describe('Include cluster membership and related document comparisons for each source document (first result per doc)'),
     },
     handler: handleSearchHybrid,
   },

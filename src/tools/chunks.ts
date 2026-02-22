@@ -4,7 +4,7 @@
  * Tools for inspecting individual chunks, browsing document structure
  * at chunk granularity, and building context windows from neighboring chunks.
  *
- * Tools: ocr_chunk_get, ocr_chunk_list, ocr_chunk_context
+ * Tools: ocr_chunk_get, ocr_chunk_list, ocr_chunk_context, ocr_document_page
  *
  * CRITICAL: NEVER use console.log() - stdout is reserved for JSON-RPC protocol.
  * Use console.error() for all logging.
@@ -15,8 +15,10 @@
 import { z } from 'zod';
 import { formatResponse, handleError, fetchProvenanceChain, type ToolResponse, type ToolDefinition } from './shared.js';
 import { successResult } from '../server/types.js';
+import { MCPError } from '../server/errors.js';
 import { requireDatabase } from '../server/state.js';
 import { validateInput } from '../utils/validation.js';
+import { getImagesByDocument } from '../services/storage/database/image-operations.js';
 import { basename } from 'path';
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -61,6 +63,12 @@ const ChunkContextInput = z.object({
     .describe('Number of chunks before and after'),
   include_provenance: z.boolean().default(false)
     .describe('Include provenance for each chunk'),
+});
+
+const DocumentPageInput = z.object({
+  document_id: z.string().min(1).describe('Document ID to navigate'),
+  page_number: z.number().int().min(1).describe('Page number to retrieve (1-indexed)'),
+  include_images: z.boolean().default(false).describe('Include images on this page'),
 });
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -290,6 +298,107 @@ async function handleChunkContext(params: Record<string, unknown>): Promise<Tool
   }
 }
 
+/**
+ * Handle ocr_document_page - Get all chunks and optionally images for a specific page
+ */
+async function handleDocumentPage(params: Record<string, unknown>): Promise<ToolResponse> {
+  try {
+    const input = validateInput(DocumentPageInput, params);
+    const { db } = requireDatabase();
+    const conn = db.getConnection();
+
+    // Fetch document
+    const doc = conn.prepare('SELECT id, file_name, file_path, page_count FROM documents WHERE id = ?')
+      .get(input.document_id) as { id: string; file_name: string; file_path: string; page_count: number | null } | undefined;
+
+    if (!doc) {
+      throw new MCPError('DOCUMENT_NOT_FOUND', `Document not found: ${input.document_id}`, {
+        document_id: input.document_id,
+      });
+    }
+
+    const totalPages = doc.page_count ?? null;
+
+    // Validate page number against total pages if known
+    if (totalPages !== null && input.page_number > totalPages) {
+      throw new MCPError('VALIDATION_ERROR', `Page ${input.page_number} exceeds document page count (${totalPages})`, {
+        page_number: input.page_number,
+        total_pages: totalPages,
+      });
+    }
+
+    // Fetch chunks for this page
+    const chunks = conn.prepare(
+      'SELECT * FROM chunks WHERE document_id = ? AND page_number = ? ORDER BY chunk_index'
+    ).all(input.document_id, input.page_number) as Array<Record<string, unknown>>;
+
+    const chunkData = chunks.map((c) => ({
+      id: c.id,
+      chunk_index: c.chunk_index,
+      text: c.text,
+      text_length: typeof c.text === 'string' ? c.text.length : 0,
+      character_start: c.character_start,
+      character_end: c.character_end,
+      heading_context: c.heading_context ?? null,
+      heading_level: c.heading_level ?? null,
+      section_path: c.section_path ?? null,
+      content_types: c.content_types ?? null,
+      is_atomic: c.is_atomic,
+      ocr_quality_score: c.ocr_quality_score ?? null,
+      embedding_status: c.embedding_status,
+      chunking_strategy: c.chunking_strategy,
+    }));
+
+    // Optionally fetch images for this page
+    let imageData: Array<Record<string, unknown>> | undefined;
+    if (input.include_images) {
+      const allImages = getImagesByDocument(conn, input.document_id);
+      const pageImages = allImages.filter((img) => img.page_number === input.page_number);
+      imageData = pageImages.map((img) => ({
+        id: img.id,
+        image_index: img.image_index,
+        format: img.format,
+        dimensions: img.dimensions,
+        block_type: img.block_type ?? null,
+        is_header_footer: img.is_header_footer,
+        vlm_status: img.vlm_status,
+        vlm_description: img.vlm_description ?? null,
+        vlm_confidence: img.vlm_confidence ?? null,
+        extracted_path: img.extracted_path ?? null,
+      }));
+    }
+
+    // Navigation
+    const hasPrevious = input.page_number > 1;
+    const hasNext = totalPages !== null ? input.page_number < totalPages : true;
+
+    const result: Record<string, unknown> = {
+      document_id: input.document_id,
+      file_name: doc.file_name,
+      file_path: doc.file_path,
+      page_number: input.page_number,
+      total_pages: totalPages,
+      chunks: chunkData,
+      chunk_count: chunkData.length,
+      navigation: {
+        has_previous: hasPrevious,
+        has_next: hasNext,
+        previous_page: hasPrevious ? input.page_number - 1 : null,
+        next_page: hasNext ? input.page_number + 1 : null,
+      },
+    };
+
+    if (imageData !== undefined) {
+      result.images = imageData;
+      result.image_count = imageData.length;
+    }
+
+    return formatResponse(successResult(result));
+  } catch (error) {
+    return handleError(error);
+  }
+}
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // TOOL DEFINITIONS FOR MCP REGISTRATION
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -315,5 +424,11 @@ export const chunkTools: Record<string, ToolDefinition> = {
       'Expand a search result with neighboring chunks. Use after search to get surrounding text for a specific chunk_id with configurable context_size (number of neighbors).',
     inputSchema: ChunkContextInput.shape,
     handler: handleChunkContext,
+  },
+  ocr_document_page: {
+    description:
+      'Get all chunks and optionally images for a specific page of a document. Use for page-by-page navigation.',
+    inputSchema: DocumentPageInput.shape,
+    handler: handleDocumentPage,
   },
 };

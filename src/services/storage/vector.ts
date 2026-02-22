@@ -13,6 +13,7 @@
 import Database from 'better-sqlite3';
 import { createRequire } from 'module';
 import { SqliteVecModule } from './types.js';
+import { computeQualityMultiplier } from '../search/quality.js';
 
 const require = createRequire(import.meta.url);
 
@@ -573,13 +574,13 @@ export class VectorService {
 
   /**
    * Map database rows to VectorSearchResult and filter by threshold.
-   * Applies quality boost post-query when enabled.
+   * Applies quality-weighted scoring to all results.
    */
   private mapAndFilterResults(
     rows: SearchRow[],
     maxDistance: number,
     limit: number,
-    options: VectorSearchOptions = {}
+    _options: VectorSearchOptions = {}
   ): VectorSearchResult[] {
     const results = rows
       .filter((row) => row.distance <= maxDistance)
@@ -626,14 +627,12 @@ export class VectorService {
         datalab_mode: row.datalab_mode ?? null,
       }));
 
-    // Apply quality boost: multiply similarity_score by quality factor, then re-sort
-    if (options.qualityBoost) {
-      for (const r of results) {
-        const qualityFactor = 1 + (r.ocr_quality_score ?? 3) / 10.0;
-        r.similarity_score = r.similarity_score * qualityFactor;
-      }
-      results.sort((a, b) => b.similarity_score - a.similarity_score);
+    // Always apply quality-weighted scoring (soft signal, not opt-in filter)
+    for (const r of results) {
+      r.similarity_score *= computeQualityMultiplier(r.ocr_quality_score);
     }
+    // Re-sort by quality-adjusted similarity score
+    results.sort((a, b) => b.similarity_score - a.similarity_score);
 
     return results;
   }

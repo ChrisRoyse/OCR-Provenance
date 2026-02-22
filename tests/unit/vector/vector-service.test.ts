@@ -555,9 +555,10 @@ describe('VectorService', () => {
       // At most 1 result should pass high threshold
       expect(highThreshold.length).toBeLessThanOrEqual(1);
 
-      // All results should be above threshold
+      // All results should be above threshold (adjusted for quality multiplier)
+      // With null ocr_quality_score, multiplier is 0.9, so displayed score = raw * 0.9
       for (const result of highThreshold) {
-        expect(result.similarity_score).toBeGreaterThanOrEqual(0.95);
+        expect(result.similarity_score).toBeGreaterThanOrEqual(0.95 * 0.9);
       }
     });
 
@@ -702,9 +703,12 @@ describe('VectorService', () => {
 
       expect(results.length).toBeGreaterThan(0);
 
-      // For each result, verify similarity_score = 1 - distance
+      // For each result, verify similarity_score = (1 - distance) * qualityMultiplier
+      // With null ocr_quality_score, multiplier is 0.9 (neutral)
       for (const result of results) {
-        const expectedSimilarity = 1 - result.distance;
+        const rawSimilarity = 1 - result.distance;
+        const qualityMultiplier = 0.9; // null quality → neutral
+        const expectedSimilarity = rawSimilarity * qualityMultiplier;
         expect(result.similarity_score).toBeCloseTo(expectedSimilarity, 10);
       }
     });

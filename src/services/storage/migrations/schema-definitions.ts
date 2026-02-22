@@ -8,7 +8,7 @@
  */
 
 /** Current schema version */
-export const SCHEMA_VERSION = 30;
+export const SCHEMA_VERSION = 31;
 
 /**
  * Database configuration pragmas for optimal performance and safety
@@ -633,8 +633,10 @@ export const CREATE_INDEXES = [
   // Form fills indexes
   'CREATE INDEX IF NOT EXISTS idx_form_fills_status ON form_fills(status)',
 
-  // Documents metadata index
+  // Documents metadata indexes
   'CREATE INDEX IF NOT EXISTS idx_documents_doc_title ON documents(doc_title)',
+  'CREATE INDEX IF NOT EXISTS idx_documents_doc_author ON documents(doc_author)',
+  'CREATE INDEX IF NOT EXISTS idx_documents_doc_subject ON documents(doc_subject)',
 
   // Provenance indexes
   'CREATE INDEX IF NOT EXISTS idx_provenance_source_id ON provenance(source_id)',
@@ -756,6 +758,8 @@ export const REQUIRED_INDEXES = [
   'idx_extractions_document_id',
   'idx_form_fills_status',
   'idx_documents_doc_title',
+  'idx_documents_doc_author',
+  'idx_documents_doc_subject',
   'idx_uploaded_files_file_hash',
   'idx_uploaded_files_status',
   'idx_uploaded_files_datalab_file_id',

@@ -57,7 +57,7 @@ import {
 import { getProvenanceTracker } from '../services/provenance/index.js';
 import { createVLMPipeline } from '../services/vlm/pipeline.js';
 import { ImageExtractor } from '../services/images/extractor.js';
-import { computeBlockTypeStats } from '../services/chunking/json-block-analyzer.js';
+import { computeBlockTypeStats, detectRepeatedHeadersFooters, isRepeatedHeaderFooter } from '../services/chunking/json-block-analyzer.js';
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // TYPE DEFINITIONS
@@ -725,6 +725,44 @@ async function processOneDocument(
   const chunks = storeChunks(db, doc, ocrResult, chunkResults, chunkConfig);
 
   console.error(`[INFO] Chunks stored: ${chunks.length}`);
+
+  // Step 3.4: Detect repeated headers/footers and tag matching chunks (T2.8)
+  if (processResult.jsonBlocks) {
+    try {
+      const headerFooterInfo = detectRepeatedHeadersFooters(processResult.jsonBlocks);
+      const allRepeated = [...headerFooterInfo.repeatedHeaders, ...headerFooterInfo.repeatedFooters];
+
+      if (allRepeated.length > 0) {
+        const conn = db.getConnection();
+        let tagRow = conn.prepare("SELECT id FROM tags WHERE name = ?").get('system:repeated_header_footer') as { id: string } | undefined;
+        if (!tagRow) {
+          const tagId = uuidv4();
+          conn.prepare("INSERT INTO tags (id, name, description, color) VALUES (?, ?, ?, ?)").run(
+            tagId, 'system:repeated_header_footer', 'Auto-detected repeated page header or footer content', '#888888'
+          );
+          tagRow = { id: tagId };
+        }
+
+        let taggedCount = 0;
+        for (const chunk of chunks) {
+          if (isRepeatedHeaderFooter(chunk.text, allRepeated)) {
+            const entityTagId = uuidv4();
+            conn.prepare(
+              "INSERT OR IGNORE INTO entity_tags (id, tag_id, entity_id, entity_type) VALUES (?, ?, ?, 'chunk')"
+            ).run(entityTagId, tagRow.id, chunk.id);
+            taggedCount++;
+          }
+        }
+        console.error(`[T2.8] Tagged ${taggedCount} chunks as repeated header/footer (${allRepeated.length} patterns detected) for document ${doc.id}`);
+      }
+    } catch (tagError) {
+      // Non-fatal: tagging failure should not block document processing
+      console.error(
+        `[WARN] Header/footer tagging failed for ${doc.id}: ` +
+        `${tagError instanceof Error ? tagError.message : String(tagError)}`
+      );
+    }
+  }
 
   // Step 3.5: Enrich extras_json with block stats, links, and structural fingerprint
   // (Tasks 4.1, 4.2, 4.4 - Ingestion Pipeline Enrichment)

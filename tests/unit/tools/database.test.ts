@@ -421,6 +421,35 @@ describe('handleDatabaseStats', () => {
     expect(result.data).toHaveProperty('vector_count');
   });
 
+  it.skipIf(!sqliteVecAvailable)('returns overview with comprehensive database summary', async () => {
+    const name = createUniqueName('stats-overview');
+    await handleDatabaseCreate({ name, storage_path: tempDir });
+
+    const response = await handleDatabaseStats({});
+    const result = parseResponse(response);
+
+    expect(result.success).toBe(true);
+    expect(result.data).toHaveProperty('overview');
+
+    const overview = result.data?.overview as Record<string, unknown>;
+    expect(overview).toBeDefined();
+    expect(overview.total_documents).toBe(0);
+    expect(overview.total_chunks).toBe(0);
+    expect(overview.total_embeddings).toBe(0);
+    expect(overview.total_images).toBe(0);
+    expect(overview.file_type_distribution).toEqual([]);
+    expect(overview.document_date_range).toEqual({ earliest: null, latest: null });
+    expect(overview.status_distribution).toEqual([]);
+    expect(overview.quality_stats).toEqual({
+      avg_quality: null,
+      min_quality: null,
+      max_quality: null,
+    });
+    expect(overview.top_clusters).toEqual([]);
+    expect(overview.recent_documents).toEqual([]);
+    expect(typeof overview.fts_indexed).toBe('boolean');
+  });
+
   it('returns DATABASE_NOT_SELECTED when no database selected', async () => {
     const response = await handleDatabaseStats({});
     const result = parseResponse(response);

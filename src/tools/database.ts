@@ -146,6 +146,45 @@ export async function handleDatabaseSelect(
  */
 function buildStatsResponse(db: DatabaseService, vector: VectorService): Record<string, unknown> {
   const stats = db.getStats();
+  const conn = db.getConnection();
+
+  // Additional overview queries
+  const fileTypeDist = conn.prepare(
+    "SELECT file_type, COUNT(*) as count FROM documents GROUP BY file_type ORDER BY count DESC"
+  ).all();
+
+  const dateRange = conn.prepare(
+    "SELECT MIN(created_at) as earliest, MAX(created_at) as latest FROM documents"
+  ).get() as { earliest: string | null; latest: string | null } | undefined;
+
+  const statusDist = conn.prepare(
+    "SELECT status, COUNT(*) as count FROM documents GROUP BY status"
+  ).all();
+
+  const qualityStats = conn.prepare(
+    `SELECT AVG(parse_quality_score) as avg_quality,
+            MIN(parse_quality_score) as min_quality,
+            MAX(parse_quality_score) as max_quality
+     FROM ocr_results WHERE parse_quality_score IS NOT NULL`
+  ).get() as { avg_quality: number | null; min_quality: number | null; max_quality: number | null } | undefined;
+
+  const clusterSummary = conn.prepare(
+    `SELECT c.id, c.label, c.document_count, c.classification_tag
+     FROM clusters c ORDER BY c.document_count DESC LIMIT 5`
+  ).all();
+
+  const recentDocs = conn.prepare(
+    "SELECT file_name, file_type, status, page_count, created_at FROM documents ORDER BY created_at DESC LIMIT 5"
+  ).all();
+
+  const totalChunks = conn.prepare("SELECT COUNT(*) as count FROM chunks").get() as { count: number };
+  const totalEmbeddings = conn.prepare("SELECT COUNT(*) as count FROM embeddings").get() as { count: number };
+  const totalImages = conn.prepare("SELECT COUNT(*) as count FROM images").get() as { count: number };
+
+  const ftsStatus = conn.prepare(
+    "SELECT COUNT(*) as count FROM fts_index_metadata"
+  ).get() as { count: number };
+
   return {
     name: db.getName(),
     path: db.getPath(),
@@ -167,6 +206,19 @@ function buildStatsResponse(db: DatabaseService, vector: VectorService): Record<
     vector_count: vector.getVectorCount(),
     ocr_quality: stats.ocr_quality,
     costs: stats.costs,
+    overview: {
+      total_documents: stats.total_documents,
+      total_chunks: totalChunks.count,
+      total_embeddings: totalEmbeddings.count,
+      total_images: totalImages.count,
+      file_type_distribution: fileTypeDist,
+      document_date_range: dateRange ?? null,
+      status_distribution: statusDist,
+      quality_stats: qualityStats ?? null,
+      top_clusters: clusterSummary,
+      recent_documents: recentDocs,
+      fts_indexed: ftsStatus.count > 0,
+    },
   };
 }
 
@@ -259,7 +311,7 @@ export const databaseTools: Record<string, ToolDefinition> = {
   },
   ocr_db_stats: {
     description:
-      'Get detailed statistics for a database including document counts, embeddings, images, and costs',
+      'Get detailed statistics and comprehensive overview for a database including document counts, embeddings, images, costs, file type distribution, quality stats, top clusters, and recent documents',
     inputSchema: {
       database_name: z
         .string()

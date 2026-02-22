@@ -8,6 +8,7 @@
 import crypto from 'crypto';
 import type Database from 'better-sqlite3';
 import { SCHEMA_VERSION } from '../storage/migrations/schema-definitions.js';
+import { computeQualityMultiplier } from './quality.js';
 
 interface ChunkFilterSQL {
   conditions: string[];
@@ -65,6 +66,19 @@ interface BM25SearchResult {
   total_chunks?: number;
 }
 
+/**
+ * Apply quality multiplier to BM25 results, re-sort, and re-rank.
+ */
+function applyQualityAndRerank(results: Array<{ bm25_score: number; rank: number; ocr_quality_score?: number | null }>): void {
+  for (const r of results) {
+    r.bm25_score *= computeQualityMultiplier(r.ocr_quality_score);
+  }
+  results.sort((a, b) => b.bm25_score - a.bm25_score);
+  for (let i = 0; i < results.length; i++) {
+    results[i].rank = i + 1;
+  }
+}
+
 export class BM25SearchService {
   constructor(private readonly db: Database.Database) {
     this.verifyFTSTableExists();
@@ -91,7 +105,6 @@ export class BM25SearchService {
       documentFilter,
       includeHighlight = true,
       chunkFilter,
-      qualityBoost = false,
     } = options;
 
     if (!query || query.trim().length === 0) {
@@ -200,18 +213,7 @@ export class BM25SearchService {
       total_chunks: (row.total_chunks as number) ?? 0,
     }));
 
-    // Apply quality boost post-query: multiply bm25_score by quality factor
-    if (qualityBoost) {
-      for (const r of results) {
-        const qualityFactor = 1 + (r.ocr_quality_score ?? 3) / 10.0;
-        r.bm25_score = r.bm25_score * qualityFactor;
-      }
-      // Re-sort by boosted score and re-rank
-      results.sort((a, b) => b.bm25_score - a.bm25_score);
-      for (let i = 0; i < results.length; i++) {
-        results[i].rank = i + 1;
-      }
-    }
+    applyQualityAndRerank(results);
 
     return results;
   }
@@ -231,7 +233,6 @@ export class BM25SearchService {
       documentFilter,
       includeHighlight = true,
       pageRangeFilter,
-      qualityBoost = false,
     } = options;
 
     if (!query || query.trim().length === 0) {
@@ -323,17 +324,7 @@ export class BM25SearchService {
       doc_subject: (row.doc_subject as string | null) ?? null,
     }));
 
-    // Apply quality boost post-query
-    if (qualityBoost) {
-      for (const r of results) {
-        const qualityFactor = 1 + (r.ocr_quality_score ?? 3) / 10.0;
-        r.bm25_score = r.bm25_score * qualityFactor;
-      }
-      results.sort((a, b) => b.bm25_score - a.bm25_score);
-      for (let i = 0; i < results.length; i++) {
-        results[i].rank = i + 1;
-      }
-    }
+    applyQualityAndRerank(results);
 
     return results;
   }
@@ -344,7 +335,6 @@ export class BM25SearchService {
    *
    * NOTE: Extractions don't have page numbers or chunk metadata,
    * so chunkFilter and pageRangeFilter are not applied here.
-   * Only qualityBoost is supported.
    */
   searchExtractions(options: BM25SearchOptions): BM25SearchResult[] {
     const {
@@ -353,7 +343,6 @@ export class BM25SearchService {
       phraseSearch = false,
       documentFilter,
       includeHighlight = true,
-      qualityBoost = false,
     } = options;
 
     if (!query || query.trim().length === 0) {
@@ -428,17 +417,7 @@ export class BM25SearchService {
       doc_subject: (row.doc_subject as string | null) ?? null,
     }));
 
-    // Apply quality boost post-query
-    if (qualityBoost) {
-      for (const r of results) {
-        const qualityFactor = 1 + (r.ocr_quality_score ?? 3) / 10.0;
-        r.bm25_score = r.bm25_score * qualityFactor;
-      }
-      results.sort((a, b) => b.bm25_score - a.bm25_score);
-      for (let i = 0; i < results.length; i++) {
-        results[i].rank = i + 1;
-      }
-    }
+    applyQualityAndRerank(results);
 
     return results;
   }

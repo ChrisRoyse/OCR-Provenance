@@ -868,8 +868,10 @@ describe('RRF Fusion Map Key Tests', () => {
     expect(fused[0].semantic_rank).toBe(2);
     expect(fused[0].semantic_score).toBe(0.92);
 
-    // RRF score should be sum of both contributions: 1/(60+1) + 1/(60+2)
-    const expectedScore = 1.0 / (60 + 1) + 1.0 / (60 + 2);
+    // RRF score should be sum of both contributions: (1/(60+1) + 1/(60+2)) * qualityMultiplier
+    // With null/undefined ocr_quality_score, multiplier is 0.9 (neutral)
+    const rawScore = 1.0 / (60 + 1) + 1.0 / (60 + 2);
+    const expectedScore = rawScore * 0.9;
     expect(fused[0].rrf_score).toBeCloseTo(expectedScore, 6);
   });
 });

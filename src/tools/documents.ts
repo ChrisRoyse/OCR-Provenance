@@ -212,6 +212,43 @@ export async function handleDocumentGet(params: Record<string, unknown>): Promis
       }
     }
 
+    // Compute document_profile from block_type_stats (no additional DB queries)
+    const stats = result.block_type_stats as {
+      total_blocks: number;
+      text_blocks: number;
+      table_blocks: number;
+      figure_blocks: number;
+      code_blocks: number;
+      list_blocks: number;
+      tables_per_page: number;
+      figures_per_page: number;
+      text_density: number;
+    } | undefined;
+    if (stats) {
+      const richBlockCount = stats.table_blocks + stats.figure_blocks + stats.code_blocks;
+      let contentComplexity: 'high' | 'medium' | 'low';
+      if (richBlockCount > 5) {
+        contentComplexity = 'high';
+      } else if (stats.table_blocks + stats.figure_blocks > 0) {
+        contentComplexity = 'medium';
+      } else {
+        contentComplexity = 'low';
+      }
+
+      result.document_profile = {
+        has_tables: stats.table_blocks > 0,
+        has_figures: stats.figure_blocks > 0,
+        has_code: stats.code_blocks > 0,
+        has_lists: stats.list_blocks > 0,
+        content_complexity: contentComplexity,
+        tables_per_page: stats.tables_per_page ?? null,
+        figures_per_page: stats.figures_per_page ?? null,
+        text_density: stats.text_density ?? null,
+      };
+    } else {
+      result.document_profile = null;
+    }
+
     if (input.include_text) {
       result.ocr_text = ocrResult?.extracted_text ?? null;
     }
@@ -347,6 +384,8 @@ const DocumentSectionsInput = z.object({
     .describe('Include chunk IDs in each section node'),
   include_page_numbers: z.boolean().default(true)
     .describe('Include page numbers in each section node'),
+  format: z.enum(['tree', 'outline']).default('tree')
+    .describe('Output format: "tree" for nested structure, "outline" for flat numbered list'),
 });
 
 const FindSimilarInput = z.object({
@@ -978,10 +1017,31 @@ export async function handleDocumentStructure(params: Record<string, unknown>): 
 interface SectionNode {
   name: string;
   chunk_count: number;
+  heading_level: number | null;
+  first_chunk_index: number | null;
+  last_chunk_index: number | null;
   chunk_ids?: string[];
   page_numbers?: number[];
   page_range?: string | null;
   children: SectionNode[];
+}
+
+/**
+ * Flatten a section tree into a numbered outline format.
+ * Example: "1. Introduction (pages 1-3) [5 chunks]"
+ */
+function flattenToOutline(nodes: SectionNode[], prefix = ''): string[] {
+  const lines: string[] = [];
+  for (let i = 0; i < nodes.length; i++) {
+    const num = prefix ? `${prefix}.${i + 1}` : `${i + 1}`;
+    const node = nodes[i];
+    const pageInfo = node.page_range ? ` (pages ${node.page_range})` : '';
+    lines.push(`${num}. ${node.name}${pageInfo} [${node.chunk_count} chunks]`);
+    if (node.children && node.children.length > 0) {
+      lines.push(...flattenToOutline(node.children, num));
+    }
+  }
+  return lines;
 }
 
 /**
@@ -1003,6 +1063,9 @@ export async function handleDocumentSections(params: Record<string, unknown>): P
     const root: SectionNode = {
       name: '(root)',
       chunk_count: 0,
+      heading_level: null,
+      first_chunk_index: null,
+      last_chunk_index: null,
       chunk_ids: input.include_chunk_ids ? [] : undefined,
       page_numbers: input.include_page_numbers ? [] : undefined,
       children: [],
@@ -1011,11 +1074,23 @@ export async function handleDocumentSections(params: Record<string, unknown>): P
     let chunksWithSections = 0;
     let chunksWithoutSections = 0;
 
+    /** Helper to update chunk index range on a node */
+    const updateChunkIndexRange = (node: SectionNode, chunkIndex: number | null | undefined): void => {
+      if (chunkIndex == null) return;
+      if (node.first_chunk_index === null || chunkIndex < node.first_chunk_index) {
+        node.first_chunk_index = chunkIndex;
+      }
+      if (node.last_chunk_index === null || chunkIndex > node.last_chunk_index) {
+        node.last_chunk_index = chunkIndex;
+      }
+    };
+
     for (const chunk of chunks) {
       if (!chunk.section_path) {
         // Chunks without section_path go to root
         chunksWithoutSections++;
         root.chunk_count++;
+        updateChunkIndexRange(root, chunk.chunk_index);
         if (input.include_chunk_ids && root.chunk_ids) {
           root.chunk_ids.push(chunk.id);
         }
@@ -1040,6 +1115,9 @@ export async function handleDocumentSections(params: Record<string, unknown>): P
           child = {
             name: partName,
             chunk_count: 0,
+            heading_level: null,
+            first_chunk_index: null,
+            last_chunk_index: null,
             chunk_ids: input.include_chunk_ids ? [] : undefined,
             page_numbers: input.include_page_numbers ? [] : undefined,
             children: [],
@@ -1050,6 +1128,11 @@ export async function handleDocumentSections(params: Record<string, unknown>): P
         // Only add chunk to the deepest (leaf) level
         if (i === parts.length - 1) {
           child.chunk_count++;
+          updateChunkIndexRange(child, chunk.chunk_index);
+          // Set heading_level from the chunk (first non-null wins)
+          if (child.heading_level === null && chunk.heading_level != null) {
+            child.heading_level = chunk.heading_level;
+          }
           if (input.include_chunk_ids && child.chunk_ids) {
             child.chunk_ids.push(chunk.id);
           }
@@ -1083,13 +1166,44 @@ export async function handleDocumentSections(params: Record<string, unknown>): P
       computePageRange(root);
     }
 
+    // Count total sections in the tree
+    const countSections = (nodes: SectionNode[]): number => {
+      let count = nodes.length;
+      for (const node of nodes) {
+        count += countSections(node.children);
+      }
+      return count;
+    };
+    const totalSections = countSections(root.children);
+
+    if (input.format === 'outline') {
+      // Flat numbered outline format
+      const outline = flattenToOutline(root.children);
+      return formatResponse(
+        successResult({
+          document_id: doc.id,
+          file_name: doc.file_name,
+          format: 'outline',
+          total_chunks: chunks.length,
+          chunks_with_sections: chunksWithSections,
+          chunks_without_sections: chunksWithoutSections,
+          total_sections: totalSections,
+          root_chunks: root.chunk_count,
+          outline,
+        })
+      );
+    }
+
+    // Default: tree format
     return formatResponse(
       successResult({
         document_id: doc.id,
         file_name: doc.file_name,
+        format: 'tree',
         total_chunks: chunks.length,
         chunks_with_sections: chunksWithSections,
         chunks_without_sections: chunksWithoutSections,
+        total_sections: totalSections,
         sections: root.children,
         root_chunks: root.chunk_count,
       })
@@ -1784,7 +1898,7 @@ export const documentTools: Record<string, ToolDefinition> = {
   },
   ocr_document_sections: {
     description:
-      'Get a tree-view of the document section hierarchy from chunk section_path data. Shows nested headings with chunk counts and page ranges.',
+      'Get a hierarchical TOC of document sections from chunk section_path data. Each node includes heading_level, chunk index range, chunk counts, and page ranges. Use format="outline" for a flat numbered list, or format="tree" (default) for nested structure.',
     inputSchema: DocumentSectionsInput.shape,
     handler: handleDocumentSections,
   },
