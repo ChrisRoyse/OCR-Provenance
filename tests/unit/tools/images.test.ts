@@ -18,11 +18,9 @@ import {
   handleImageGet,
   handleImageStats,
   handleImageDelete,
-  handleImageDeleteByDocument,
   handleImageResetFailed,
   handleImagePending,
   handleImageSearch,
-  handleImageSemanticSearch,
   handleImageReanalyze,
   imageTools,
 } from '../../../src/tools/images.js';
@@ -51,17 +49,15 @@ function parseResponse(response: { content: Array<{ type: string; text: string }
 // ===============================================================================
 
 describe('imageTools exports', () => {
-  it('exports all 10 image tools', () => {
-    expect(Object.keys(imageTools)).toHaveLength(10);
+  it('exports all 8 image tools', () => {
+    expect(Object.keys(imageTools)).toHaveLength(8);
     expect(imageTools).toHaveProperty('ocr_image_list');
     expect(imageTools).toHaveProperty('ocr_image_get');
     expect(imageTools).toHaveProperty('ocr_image_stats');
     expect(imageTools).toHaveProperty('ocr_image_delete');
-    expect(imageTools).toHaveProperty('ocr_image_delete_by_document');
     expect(imageTools).toHaveProperty('ocr_image_reset_failed');
     expect(imageTools).toHaveProperty('ocr_image_pending');
     expect(imageTools).toHaveProperty('ocr_image_search');
-    expect(imageTools).toHaveProperty('ocr_image_semantic_search');
     expect(imageTools).toHaveProperty('ocr_image_reanalyze');
   });
 
@@ -81,11 +77,9 @@ describe('imageTools exports', () => {
     expect(imageTools.ocr_image_get.handler).toBe(handleImageGet);
     expect(imageTools.ocr_image_stats.handler).toBe(handleImageStats);
     expect(imageTools.ocr_image_delete.handler).toBe(handleImageDelete);
-    expect(imageTools.ocr_image_delete_by_document.handler).toBe(handleImageDeleteByDocument);
     expect(imageTools.ocr_image_reset_failed.handler).toBe(handleImageResetFailed);
     expect(imageTools.ocr_image_pending.handler).toBe(handleImagePending);
     expect(imageTools.ocr_image_search.handler).toBe(handleImageSearch);
-    expect(imageTools.ocr_image_semantic_search.handler).toBe(handleImageSemanticSearch);
     expect(imageTools.ocr_image_reanalyze.handler).toBe(handleImageReanalyze);
   });
 });
@@ -299,28 +293,28 @@ describe('handleImageDelete', () => {
     expect(result.error?.category).toBe('VALIDATION_ERROR');
   });
 
-  it('returns DATABASE_NOT_SELECTED when no database and valid params', async () => {
+  it('returns VALIDATION_ERROR when confirm is not true', async () => {
     const response = await handleImageDelete({ image_id: 'img-1' });
+    const result = parseResponse(response);
+
+    expect(result.success).toBe(false);
+    expect(result.error?.category).toBe('VALIDATION_ERROR');
+  });
+
+  it('returns DATABASE_NOT_SELECTED when no database and valid params', async () => {
+    const response = await handleImageDelete({ image_id: 'img-1', confirm: true });
     const result = parseResponse(response);
 
     expect(result.success).toBe(false);
     expect(result.error?.category).toBe('DATABASE_NOT_SELECTED');
   });
 
-  it('accepts delete_file boolean without crashing on validation', async () => {
+  it('accepts delete_files boolean without crashing on validation', async () => {
     const response = await handleImageDelete({
       image_id: 'img-1',
-      delete_file: true,
+      delete_files: true,
+      confirm: true,
     });
-    const result = parseResponse(response);
-
-    expect(result.success).toBe(false);
-    expect(result.error?.category).toBe('DATABASE_NOT_SELECTED');
-  });
-
-  it('defaults delete_file to false', async () => {
-    // Should pass validation without delete_file and fail on DB
-    const response = await handleImageDelete({ image_id: 'img-1' });
     const result = parseResponse(response);
 
     expect(result.success).toBe(false);
@@ -329,10 +323,10 @@ describe('handleImageDelete', () => {
 });
 
 // ===============================================================================
-// handleImageDeleteByDocument TESTS
+// handleImageDelete with document_id TESTS (merged from handleImageDeleteByDocument)
 // ===============================================================================
 
-describe('handleImageDeleteByDocument', () => {
+describe('handleImageDelete with document_id', () => {
   beforeEach(() => {
     resetState();
   });
@@ -342,16 +336,24 @@ describe('handleImageDeleteByDocument', () => {
     resetState();
   });
 
-  it('returns INTERNAL_ERROR when document_id is missing', async () => {
-    const response = await handleImageDeleteByDocument({});
+  it('returns VALIDATION_ERROR when neither image_id nor document_id provided', async () => {
+    const response = await handleImageDelete({ confirm: true });
     const result = parseResponse(response);
 
     expect(result.success).toBe(false);
     expect(result.error?.category).toBe('VALIDATION_ERROR');
   });
 
-  it('returns INTERNAL_ERROR when document_id is empty string', async () => {
-    const response = await handleImageDeleteByDocument({ document_id: '' });
+  it('returns VALIDATION_ERROR when document_id is empty string', async () => {
+    const response = await handleImageDelete({ document_id: '', confirm: true });
+    const result = parseResponse(response);
+
+    expect(result.success).toBe(false);
+    expect(result.error?.category).toBe('VALIDATION_ERROR');
+  });
+
+  it('returns VALIDATION_ERROR when confirm is not true', async () => {
+    const response = await handleImageDelete({ document_id: 'doc-1' });
     const result = parseResponse(response);
 
     expect(result.success).toBe(false);
@@ -359,7 +361,7 @@ describe('handleImageDeleteByDocument', () => {
   });
 
   it('returns DATABASE_NOT_SELECTED when no database and valid params', async () => {
-    const response = await handleImageDeleteByDocument({ document_id: 'doc-1' });
+    const response = await handleImageDelete({ document_id: 'doc-1', confirm: true });
     const result = parseResponse(response);
 
     expect(result.success).toBe(false);
@@ -367,18 +369,11 @@ describe('handleImageDeleteByDocument', () => {
   });
 
   it('accepts delete_files boolean without crashing on validation', async () => {
-    const response = await handleImageDeleteByDocument({
+    const response = await handleImageDelete({
       document_id: 'doc-1',
       delete_files: true,
+      confirm: true,
     });
-    const result = parseResponse(response);
-
-    expect(result.success).toBe(false);
-    expect(result.error?.category).toBe('DATABASE_NOT_SELECTED');
-  });
-
-  it('defaults delete_files to false', async () => {
-    const response = await handleImageDeleteByDocument({ document_id: 'doc-1' });
     const result = parseResponse(response);
 
     expect(result.success).toBe(false);
@@ -805,6 +800,7 @@ describe('Edge Cases', () => {
       const response = await handleImageDelete({
         image_id: 'img-1',
         cascade: true,
+        confirm: true,
       });
       const result = parseResponse(response);
 
@@ -812,10 +808,11 @@ describe('Edge Cases', () => {
       expect(result.error?.category).toBe('DATABASE_NOT_SELECTED');
     });
 
-    it('image_delete_by_document strips unknown params and proceeds to database check', async () => {
-      const response = await handleImageDeleteByDocument({
+    it('image_delete with document_id strips unknown params and proceeds to database check', async () => {
+      const response = await handleImageDelete({
         document_id: 'doc-1',
         force: true,
+        confirm: true,
       });
       const result = parseResponse(response);
 
@@ -859,8 +856,8 @@ describe('Edge Cases', () => {
       expect(result.error?.category).toBe('VALIDATION_ERROR');
     });
 
-    it('image_delete_by_document rejects non-string document_id', async () => {
-      const response = await handleImageDeleteByDocument({ document_id: false });
+    it('image_delete with document_id rejects non-string document_id', async () => {
+      const response = await handleImageDelete({ document_id: false, confirm: true });
       const result = parseResponse(response);
 
       expect(result.success).toBe(false);
@@ -891,7 +888,6 @@ describe('Edge Cases', () => {
         () => handleImageGet({}),
         () => handleImageStats({}),
         () => handleImageDelete({}),
-        () => handleImageDeleteByDocument({}),
         () => handleImageResetFailed({}),
         () => handleImagePending({}),
         () => handleImageSearch({}),

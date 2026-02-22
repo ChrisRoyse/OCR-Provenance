@@ -42,19 +42,13 @@ import type { ProvenanceRecord } from '../models/provenance.js';
 // VALIDATION SCHEMAS
 // ===============================================================================
 
-const EvaluateSingleInput = z.object({
-  image_id: z.string().min(1),
+const EvaluateInput = z.object({
+  image_id: z.string().optional(),
+  document_id: z.string().optional(),
   save_to_db: z.boolean().default(true),
-});
-
-const EvaluateDocumentInput = z.object({
-  document_id: z.string().min(1),
-  batch_size: z.number().int().min(1).max(20).default(5),
-});
-
-const EvaluatePendingInput = z.object({
-  limit: z.number().int().min(1).max(500).default(100),
+  reference_text: z.string().optional(),
   batch_size: z.number().int().min(1).max(50).default(10),
+  limit: z.number().int().min(1).max(500).default(100),
 });
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -62,13 +56,10 @@ const EvaluatePendingInput = z.object({
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /**
- * Handle ocr_evaluate_single - Evaluate a single image with universal prompt (NO CONTEXT)
+ * Internal handler for evaluating a single image with universal prompt (NO CONTEXT)
  */
-export async function handleEvaluateSingle(params: Record<string, unknown>): Promise<ToolResponse> {
+async function evaluateSingleImage(imageId: string, saveToDb: boolean): Promise<ToolResponse> {
   try {
-    const input = validateInput(EvaluateSingleInput, params);
-    const imageId = input.image_id;
-    const saveToDb = input.save_to_db ?? true;
 
     const { db, vector } = requireDatabase();
 
@@ -169,7 +160,7 @@ export async function handleEvaluateSingle(params: Record<string, unknown>): Pro
           },
           next_steps: [
             { tool: 'ocr_image_get', description: 'View the evaluated image details' },
-            { tool: 'ocr_evaluate_document', description: 'Evaluate all images in the document' },
+            { tool: 'ocr_evaluate', description: 'Evaluate more images (pass document_id or omit for all pending)' },
           ],
         })
       );
@@ -186,15 +177,13 @@ export async function handleEvaluateSingle(params: Record<string, unknown>): Pro
 }
 
 /**
- * Handle ocr_evaluate_document - Evaluate all images in a document
+ * Internal handler for evaluating all images in a document
  */
-export async function handleEvaluateDocument(
-  params: Record<string, unknown>
+async function evaluateDocument(
+  documentId: string,
+  batchSize: number
 ): Promise<ToolResponse> {
   try {
-    const input = validateInput(EvaluateDocumentInput, params);
-    const documentId = input.document_id;
-    const batchSize = input.batch_size ?? 5;
 
     const { db } = requireDatabase();
 
@@ -224,7 +213,7 @@ export async function handleEvaluateDocument(
           message: 'No pending images to evaluate',
           next_steps: [
             { tool: 'ocr_evaluation_report', description: 'Generate a full evaluation report' },
-            { tool: 'ocr_evaluate_pending', description: 'Evaluate remaining images across all documents' },
+            { tool: 'ocr_evaluate', description: 'Evaluate remaining images (omit params for all pending)' },
           ],
         })
       );
@@ -253,10 +242,7 @@ export async function handleEvaluateDocument(
 
       for (const img of batch) {
         try {
-          const result = await handleEvaluateSingle({
-            image_id: img.id,
-            save_to_db: true,
-          });
+          const result = await evaluateSingleImage(img.id, true);
 
           // Parse result
           if (!result.content || result.content.length === 0) {
@@ -313,7 +299,7 @@ export async function handleEvaluateDocument(
         results: results.slice(0, 20), // Limit results in response
         next_steps: [
           { tool: 'ocr_evaluation_report', description: 'Generate a full evaluation report' },
-          { tool: 'ocr_evaluate_pending', description: 'Evaluate remaining images across all documents' },
+          { tool: 'ocr_evaluate', description: 'Evaluate remaining images (omit params for all pending)' },
         ],
       })
     );
@@ -323,15 +309,13 @@ export async function handleEvaluateDocument(
 }
 
 /**
- * Handle ocr_evaluate_pending - Evaluate all pending images across all documents
+ * Internal handler for evaluating all pending images across all documents
  */
-export async function handleEvaluatePending(
-  params: Record<string, unknown>
+async function evaluatePending(
+  limit: number,
+  batchSize: number
 ): Promise<ToolResponse> {
   try {
-    const input = validateInput(EvaluatePendingInput, params);
-    const limit = input.limit ?? 100;
-    const batchSize = input.batch_size ?? 10;
 
     const { db } = requireDatabase();
 
@@ -372,10 +356,7 @@ export async function handleEvaluatePending(
 
       for (const img of batch) {
         try {
-          const result = await handleEvaluateSingle({
-            image_id: img.id,
-            save_to_db: true,
-          });
+          const result = await evaluateSingleImage(img.id, true);
 
           const data = JSON.parse(result.content[0].text);
           if (data.success && data.data) {
@@ -428,6 +409,33 @@ export async function handleEvaluatePending(
         ],
       })
     );
+  } catch (error) {
+    return handleError(error);
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// UNIFIED EVALUATION HANDLER
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/**
+ * Handle ocr_evaluate - Unified evaluation dispatcher
+ *
+ * If image_id provided: evaluate single image
+ * If document_id provided: evaluate all images in document
+ * If neither: evaluate all pending images
+ */
+export async function handleEvaluate(params: Record<string, unknown>): Promise<ToolResponse> {
+  try {
+    const input = validateInput(EvaluateInput, params);
+
+    if (input.image_id) {
+      return evaluateSingleImage(input.image_id, input.save_to_db ?? true);
+    } else if (input.document_id) {
+      return evaluateDocument(input.document_id, input.batch_size ?? 10);
+    } else {
+      return evaluatePending(input.limit ?? 100, input.batch_size ?? 10);
+    }
   } catch (error) {
     return handleError(error);
   }
@@ -642,32 +650,17 @@ async function generateAndStoreEmbedding(
  * Evaluation tools collection for MCP server registration
  */
 export const evaluationTools: Record<string, ToolDefinition> = {
-  ocr_evaluate_single: {
+  ocr_evaluate: {
     description:
-      '[STATUS] Use to evaluate a single image with the universal prompt (no context). Returns description and quality metrics. For benchmarking VLM accuracy.',
+      '[STATUS] Use to evaluate VLM description quality. Pass image_id for one image, document_id for all in a document, or neither for all pending.',
     inputSchema: {
-      image_id: z.string().min(1).describe('Image ID to evaluate'),
-      save_to_db: z.boolean().default(true).describe('Save results to database'),
+      image_id: z.string().optional().describe('Image ID (single image evaluation)'),
+      document_id: z.string().optional().describe('Document ID (evaluate all images in document)'),
+      save_to_db: z.boolean().default(true).describe('Save results to database (single image mode)'),
+      reference_text: z.string().optional().describe('Reference text for comparison (single image mode)'),
+      batch_size: z.number().int().min(1).max(50).default(10).describe('Images per batch (document/pending mode)'),
+      limit: z.number().int().min(1).max(500).default(100).describe('Maximum images to process (pending mode)'),
     },
-    handler: handleEvaluateSingle,
-  },
-
-  ocr_evaluate_document: {
-    description:
-      '[STATUS] Use to evaluate all pending images in a single document. Returns per-image evaluation results. For benchmarking VLM accuracy at document level.',
-    inputSchema: {
-      document_id: z.string().min(1).describe('Document ID'),
-      batch_size: z.number().int().min(1).max(20).default(5).describe('Images per batch'),
-    },
-    handler: handleEvaluateDocument,
-  },
-
-  ocr_evaluate_pending: {
-    description: '[STATUS] Use to bulk-evaluate all pending images across all documents. Returns aggregate evaluation results. For benchmarking VLM accuracy at corpus level.',
-    inputSchema: {
-      limit: z.number().int().min(1).max(500).default(100).describe('Maximum images to process'),
-      batch_size: z.number().int().min(1).max(50).default(10).describe('Images per batch'),
-    },
-    handler: handleEvaluatePending,
+    handler: handleEvaluate,
   },
 };

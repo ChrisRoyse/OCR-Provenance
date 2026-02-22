@@ -219,10 +219,10 @@ describe('Extraction Tools', () => {
   });
 
   // Verify tool count
-  it('should export 4 tools', () => {
-    expect(Object.keys(structuredExtractionTools)).toHaveLength(4);
+  it('should export 3 tools', () => {
+    expect(Object.keys(structuredExtractionTools)).toHaveLength(3);
     expect(structuredExtractionTools.ocr_extraction_get).toBeDefined();
-    expect(structuredExtractionTools.ocr_extraction_search).toBeDefined();
+    expect(structuredExtractionTools.ocr_extraction_list).toBeDefined();
   });
 
   // ==================== ocr_extraction_get ====================
@@ -344,8 +344,8 @@ describe('Extraction Tools', () => {
 
   // ==================== ocr_extraction_search ====================
 
-  describe('ocr_extraction_search', () => {
-    const handler = structuredExtractionTools.ocr_extraction_search.handler;
+  describe('ocr_extraction_list search mode', () => {
+    const handler = structuredExtractionTools.ocr_extraction_list.handler;
 
     it('should find extraction matching query', async () => {
       const response = await handler({ query: 'revenue' });

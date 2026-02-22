@@ -166,7 +166,7 @@ async function handleHealthCheck(params: Record<string, unknown>): Promise<ToolR
       count: imagesWithoutVLM.length,
       sample_ids: imagesWithoutVLM.slice(0, SAMPLE_LIMIT).map(r => r.id),
       fixable: false,
-      fix_tool: 'ocr_vlm_process_pending',
+      fix_tool: 'ocr_vlm_process',
     };
 
     // ──────────────────────────────────────────────────────────────
@@ -234,7 +234,7 @@ async function handleHealthCheck(params: Record<string, unknown>): Promise<ToolR
       nextSteps.push({ tool: 'ocr_retry_failed', description: 'Retry failed documents' });
     }
     if (gaps.images_without_vlm?.count > 0) {
-      nextSteps.push({ tool: 'ocr_vlm_process_pending', description: 'Generate VLM descriptions for images without them' });
+      nextSteps.push({ tool: 'ocr_vlm_process', description: 'Generate VLM descriptions for images without them' });
     }
     if (nextSteps.length === 0 && healthy) {
       nextSteps.push({ tool: 'ocr_search', description: 'Search across all documents' });

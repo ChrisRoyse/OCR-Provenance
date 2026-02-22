@@ -20,6 +20,7 @@ import {
   type ToolDefinition,
 } from './shared.js';
 import { successResult } from '../server/types.js';
+import { MCPError } from '../server/errors.js';
 import { validateInput } from '../utils/validation.js';
 import { requireDatabase } from '../server/state.js';
 import { DatalabClient } from '../services/ocr/datalab.js';
@@ -38,19 +39,18 @@ const ExtractStructuredInput = z.object({
 });
 
 const ExtractionListInput = z.object({
-  document_id: z.string().min(1).describe('Document ID to list extractions for'),
+  document_id: z.string().optional().describe('Document ID to list extractions for'),
+  label: z.string().optional().describe('Filter by extraction label'),
+  // Search params (when query is provided, search mode is used)
+  query: z.string().optional().describe('Search query to match within extraction JSON content'),
+  document_filter: z.array(z.string()).optional().describe('Filter by document IDs (search mode)'),
+  limit: z.number().min(1).max(100).default(50).describe('Maximum results'),
+  include_provenance: z.boolean().default(false).describe('Include provenance chain'),
 });
 
 const ExtractionGetInput = z.object({
   extraction_id: z.string().min(1).describe('Extraction ID to retrieve'),
   include_provenance: z.boolean().default(false).describe('Include provenance chain'),
-});
-
-const ExtractionSearchInput = z.object({
-  query: z.string().min(1).describe('Search query to match within extraction JSON content'),
-  document_filter: z.array(z.string()).optional().describe('Filter by document IDs'),
-  limit: z.number().min(1).max(100).default(10).describe('Maximum results'),
-  include_provenance: z.boolean().default(false).describe('Include provenance chain for each result'),
 });
 
 async function handleExtractStructured(params: Record<string, unknown>) {
@@ -250,23 +250,95 @@ async function handleExtractionList(params: Record<string, unknown>) {
     const input = validateInput(ExtractionListInput, params);
     const { db } = requireDatabase();
 
-    const extractions = db.getExtractionsByDocument(input.document_id);
+    if (input.query) {
+      // ── Search mode: query extraction JSON content ──
+      const results = db.searchExtractions(input.query, {
+        document_filter: input.document_filter,
+        limit: input.limit,
+      });
 
-    return formatResponse(
-      successResult({
-        document_id: input.document_id,
-        total: extractions.length,
-        extractions: extractions.map((ext) => ({
+      const enrichedResults = results.map((ext) => {
+        const doc = db.getDocument(ext.document_id);
+
+        let parsedExtractionJson: unknown;
+        try {
+          parsedExtractionJson = JSON.parse(ext.extraction_json);
+        } catch {
+          parsedExtractionJson = ext.extraction_json;
+        }
+
+        let parsedSchemaJson: unknown;
+        try {
+          parsedSchemaJson = JSON.parse(ext.schema_json);
+        } catch {
+          parsedSchemaJson = ext.schema_json;
+        }
+
+        const provenanceChain = input.include_provenance
+          ? fetchProvenanceChain(db, ext.provenance_id, '[extraction-search]')
+          : undefined;
+
+        return {
           id: ext.id,
-          schema_json: ext.schema_json,
-          extraction_json: JSON.parse(ext.extraction_json),
+          document_id: ext.document_id,
+          document_file_path: doc?.file_path ?? null,
+          document_file_name: doc?.file_name ?? null,
+          schema_json: parsedSchemaJson,
+          extraction_json: parsedExtractionJson,
           content_hash: ext.content_hash,
           provenance_id: ext.provenance_id,
           created_at: ext.created_at,
-        })),
-        next_steps: [{ tool: 'ocr_extraction_get', description: 'View a specific extraction in detail' }, { tool: 'ocr_extract_structured', description: 'Run a new structured extraction' }],
-      })
-    );
+          provenance_chain: provenanceChain,
+        };
+      });
+
+      return formatResponse(
+        successResult({
+          mode: 'search',
+          query: input.query,
+          total: enrichedResults.length,
+          results: enrichedResults,
+          next_steps: [
+            { tool: 'ocr_extraction_get', description: 'View a specific matched extraction' },
+            { tool: 'ocr_extract_structured', description: 'Run a new extraction with different schema' },
+          ],
+        })
+      );
+    } else {
+      // ── List mode: list extractions for a document ──
+      if (!input.document_id) {
+        throw new MCPError('VALIDATION_ERROR', 'Provide document_id for listing or query for searching', {});
+      }
+
+      const extractions = db.getExtractionsByDocument(input.document_id);
+
+      return formatResponse(
+        successResult({
+          mode: 'list',
+          document_id: input.document_id,
+          total: extractions.length,
+          extractions: extractions.map((ext) => {
+            const provenanceChain = input.include_provenance
+              ? fetchProvenanceChain(db, ext.provenance_id, '[extraction-list]')
+              : undefined;
+
+            return {
+              id: ext.id,
+              schema_json: ext.schema_json,
+              extraction_json: JSON.parse(ext.extraction_json),
+              content_hash: ext.content_hash,
+              provenance_id: ext.provenance_id,
+              created_at: ext.created_at,
+              provenance_chain: provenanceChain,
+            };
+          }),
+          next_steps: [
+            { tool: 'ocr_extraction_get', description: 'View a specific extraction in detail' },
+            { tool: 'ocr_extract_structured', description: 'Run a new structured extraction' },
+          ],
+        })
+      );
+    }
   } catch (error) {
     return handleError(error);
   }
@@ -325,66 +397,7 @@ async function handleExtractionGet(params: Record<string, unknown>): Promise<Too
         has_embedding: hasEmbedding,
         embedding_id: embedding?.id ?? null,
         provenance_chain: provenanceChain,
-        next_steps: [{ tool: 'ocr_extraction_search', description: 'Search across all extractions' }, { tool: 'ocr_document_get', description: 'View the source document' }],
-      })
-    );
-  } catch (error) {
-    return handleError(error);
-  }
-}
-
-async function handleExtractionSearch(params: Record<string, unknown>): Promise<ToolResponse> {
-  try {
-    const input = validateInput(ExtractionSearchInput, params);
-    const { db } = requireDatabase();
-
-    const results = db.searchExtractions(input.query, {
-      document_filter: input.document_filter,
-      limit: input.limit,
-    });
-
-    // Enrich each result with document context and parsed JSON
-    const enrichedResults = results.map((ext) => {
-      const doc = db.getDocument(ext.document_id);
-
-      let parsedExtractionJson: unknown;
-      try {
-        parsedExtractionJson = JSON.parse(ext.extraction_json);
-      } catch {
-        parsedExtractionJson = ext.extraction_json;
-      }
-
-      let parsedSchemaJson: unknown;
-      try {
-        parsedSchemaJson = JSON.parse(ext.schema_json);
-      } catch {
-        parsedSchemaJson = ext.schema_json;
-      }
-
-      const provenanceChain = input.include_provenance
-        ? fetchProvenanceChain(db, ext.provenance_id, '[extraction-search]')
-        : undefined;
-
-      return {
-        id: ext.id,
-        document_id: ext.document_id,
-        document_file_path: doc?.file_path ?? null,
-        document_file_name: doc?.file_name ?? null,
-        schema_json: parsedSchemaJson,
-        extraction_json: parsedExtractionJson,
-        content_hash: ext.content_hash,
-        provenance_id: ext.provenance_id,
-        created_at: ext.created_at,
-        provenance_chain: provenanceChain,
-      };
-    });
-
-    return formatResponse(
-      successResult({
-        query: input.query,
-        total: enrichedResults.length,
-        results: enrichedResults,
-        next_steps: [{ tool: 'ocr_extraction_get', description: 'View a specific matched extraction' }, { tool: 'ocr_extract_structured', description: 'Run a new extraction with different schema' }],
+        next_steps: [{ tool: 'ocr_extraction_list', description: 'Search across all extractions (pass query param)' }, { tool: 'ocr_document_get', description: 'View the source document' }],
       })
     );
   } catch (error) {
@@ -401,7 +414,7 @@ export const structuredExtractionTools: Record<string, ToolDefinition> = {
   },
   ocr_extraction_list: {
     description:
-      '[STATUS] Use to list all structured extractions previously run on a document. Returns extraction IDs, schemas, and results.',
+      '[STATUS] Use to list or search structured extractions. Filter by document_id, or search by query across all extractions.',
     inputSchema: ExtractionListInput.shape,
     handler: handleExtractionList,
   },
@@ -410,11 +423,5 @@ export const structuredExtractionTools: Record<string, ToolDefinition> = {
       '[STATUS] Use to retrieve full results of a specific structured extraction by ID. Returns parsed extraction JSON, schema, embedding status, and optional provenance chain.',
     inputSchema: ExtractionGetInput.shape,
     handler: handleExtractionGet,
-  },
-  ocr_extraction_search: {
-    description:
-      '[STATUS] Use to search across structured extraction results by text matching within JSON content. Returns matching extractions with document context.',
-    inputSchema: ExtractionSearchInput.shape,
-    handler: handleExtractionSearch,
   },
 };

@@ -328,6 +328,10 @@ export async function handleDocumentGet(params: Record<string, unknown>): Promis
       { tool: 'ocr_document_structure', description: 'View document outline and layout' },
       { tool: 'ocr_search', description: 'Search within this document (use document_id filter)' },
       { tool: 'ocr_chunk_list', description: 'List all chunks with section/heading filtering' },
+      { tool: 'ocr_form_fill', description: 'Fill form fields using this document' },
+      { tool: 'ocr_document_versions', description: 'Find other versions of this document' },
+      { tool: 'ocr_document_extras', description: 'View OCR extras (blocks, links, fingerprint)' },
+      { tool: 'ocr_document_recommend', description: 'Get cluster-based document recommendations' },
     ];
 
     return formatResponse(successResult(result));

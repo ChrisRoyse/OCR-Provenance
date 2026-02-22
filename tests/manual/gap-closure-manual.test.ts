@@ -319,8 +319,8 @@ describe('Gap Closure Phases 0-10: Manual E2E Test', () => {
       }));
     });
 
-    it('ocr_extraction_search - finds extraction by content', async () => {
-      const data = ok(await callTool(structuredExtractionTools, 'ocr_extraction_search', {
+    it('ocr_extraction_list search mode - finds extraction by content', async () => {
+      const data = ok(await callTool(structuredExtractionTools, 'ocr_extraction_list', {
         query: 'Test Contract',
         limit: 10,
       }));
@@ -329,8 +329,8 @@ describe('Gap Closure Phases 0-10: Manual E2E Test', () => {
       expect(results[0].document_id).toBe(DOC_ID_1);
     });
 
-    it('ocr_extraction_search - with document filter', async () => {
-      const data = ok(await callTool(structuredExtractionTools, 'ocr_extraction_search', {
+    it('ocr_extraction_list search mode - with document filter', async () => {
+      const data = ok(await callTool(structuredExtractionTools, 'ocr_extraction_list', {
         query: 'Test',
         document_filter: [DOC_ID_2],
         limit: 10,
@@ -338,8 +338,8 @@ describe('Gap Closure Phases 0-10: Manual E2E Test', () => {
       expect(data.total).toBe(0); // Extraction is for DOC_ID_1, not DOC_ID_2
     });
 
-    it('ocr_extraction_search - no results for nonexistent term', async () => {
-      const data = ok(await callTool(structuredExtractionTools, 'ocr_extraction_search', {
+    it('ocr_extraction_list search mode - no results for nonexistent term', async () => {
+      const data = ok(await callTool(structuredExtractionTools, 'ocr_extraction_list', {
         query: 'xyznonexistent9876',
         limit: 10,
       }));
@@ -352,10 +352,11 @@ describe('Gap Closure Phases 0-10: Manual E2E Test', () => {
   // =============================================================================
 
   describe('Phase 3: Image Tools', () => {
-    it('ocr_image_semantic_search - handles missing VLM embeddings gracefully', async () => {
+    it('ocr_image_search mode=semantic - handles missing VLM embeddings gracefully', async () => {
       // We have no VLM embeddings in our synthetic data, so this should return empty
       // or handle the error gracefully
-      const result = await callTool(imageTools, 'ocr_image_semantic_search', {
+      const result = await callTool(imageTools, 'ocr_image_search', {
+        mode: 'semantic',
         query: 'test chart',
         limit: 5,
       });

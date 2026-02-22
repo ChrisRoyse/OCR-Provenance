@@ -30,7 +30,6 @@ import {
   computeHash,
 } from '../../integration/server/helpers.js';
 import {
-  handleImageSemanticSearch,
   handleImageReanalyze,
   handleImageSearch,
 } from '../../../src/tools/images.js';
@@ -123,11 +122,11 @@ afterAll(() => {
 // ocr_image_semantic_search TESTS
 // ===============================================================================
 
-describe('handleImageSemanticSearch', () => {
+describe('handleImageSearch mode=semantic', () => {
   describe('database not selected', () => {
     it('returns DATABASE_NOT_SELECTED when no database selected', async () => {
       resetState();
-      const response = await handleImageSemanticSearch({ query: 'chart with bars' });
+      const response = await handleImageSearch({ mode: 'semantic', query: 'chart with bars' });
       const result = parseResponse(response);
 
       expect(result.success).toBe(false);
@@ -140,7 +139,7 @@ describe('handleImageSemanticSearch', () => {
 
   describe('validation', () => {
     it('returns VALIDATION_ERROR when query is missing', async () => {
-      const response = await handleImageSemanticSearch({});
+      const response = await handleImageSearch({ mode: 'semantic',});
       const result = parseResponse(response);
 
       expect(result.success).toBe(false);
@@ -148,7 +147,7 @@ describe('handleImageSemanticSearch', () => {
     });
 
     it('returns VALIDATION_ERROR when query is empty string', async () => {
-      const response = await handleImageSemanticSearch({ query: '' });
+      const response = await handleImageSearch({ mode: 'semantic', query: '' });
       const result = parseResponse(response);
 
       expect(result.success).toBe(false);
@@ -156,7 +155,7 @@ describe('handleImageSemanticSearch', () => {
     });
 
     it('returns VALIDATION_ERROR when similarity_threshold is above 1', async () => {
-      const response = await handleImageSemanticSearch({ query: 'test', similarity_threshold: 1.5 });
+      const response = await handleImageSearch({ mode: 'semantic', query: 'test', similarity_threshold: 1.5 });
       const result = parseResponse(response);
 
       expect(result.success).toBe(false);
@@ -164,7 +163,7 @@ describe('handleImageSemanticSearch', () => {
     });
 
     it('returns VALIDATION_ERROR when similarity_threshold is below 0', async () => {
-      const response = await handleImageSemanticSearch({ query: 'test', similarity_threshold: -0.1 });
+      const response = await handleImageSearch({ mode: 'semantic', query: 'test', similarity_threshold: -0.1 });
       const result = parseResponse(response);
 
       expect(result.success).toBe(false);
@@ -172,7 +171,7 @@ describe('handleImageSemanticSearch', () => {
     });
 
     it('returns VALIDATION_ERROR when limit is 0', async () => {
-      const response = await handleImageSemanticSearch({ query: 'test', limit: 0 });
+      const response = await handleImageSearch({ mode: 'semantic', query: 'test', limit: 0 });
       const result = parseResponse(response);
 
       expect(result.success).toBe(false);
@@ -180,7 +179,7 @@ describe('handleImageSemanticSearch', () => {
     });
 
     it('returns VALIDATION_ERROR when limit exceeds 100', async () => {
-      const response = await handleImageSemanticSearch({ query: 'test', limit: 101 });
+      const response = await handleImageSearch({ mode: 'semantic', query: 'test', limit: 101 });
       const result = parseResponse(response);
 
       expect(result.success).toBe(false);
@@ -193,7 +192,7 @@ describe('handleImageSemanticSearch', () => {
       // This test requires the embedding service to be available.
       // The embedSearchQuery call needs GPU/model, so we skip if not available.
       try {
-        const response = await handleImageSemanticSearch({
+        const response = await handleImageSearch({ mode: 'semantic',
           query: 'a bar chart showing revenue',
           limit: 5,
         });
@@ -314,7 +313,7 @@ describe('handleImageSemanticSearch', () => {
     it('finds VLM image when searching with related query', async () => {
       // This test requires GPU for embedding query generation
       try {
-        const response = await handleImageSemanticSearch({
+        const response = await handleImageSearch({ mode: 'semantic',
           query: 'revenue chart',
           limit: 10,
           similarity_threshold: 0.0, // Accept any similarity for test
@@ -343,7 +342,7 @@ describe('handleImageSemanticSearch', () => {
 
     it('respects document_filter parameter', async () => {
       try {
-        const response = await handleImageSemanticSearch({
+        const response = await handleImageSearch({ mode: 'semantic',
           query: 'revenue chart',
           document_filter: ['nonexistent-doc-id'],
           similarity_threshold: 0.0,
@@ -361,7 +360,7 @@ describe('handleImageSemanticSearch', () => {
 
     it('respects high similarity_threshold filtering', async () => {
       try {
-        const response = await handleImageSemanticSearch({
+        const response = await handleImageSearch({ mode: 'semantic',
           query: 'completely unrelated query about dinosaurs',
           similarity_threshold: 0.99, // Very high threshold
           limit: 10,
@@ -719,8 +718,8 @@ describe('handleImageSearch with vlm_description_query', () => {
 // ===============================================================================
 
 describe('Response structure verification', () => {
-  it('handleImageSemanticSearch returns correct ToolResponse shape on error', async () => {
-    const response = await handleImageSemanticSearch({});
+  it('handleImageSearch mode=semantic returns correct ToolResponse shape on error', async () => {
+    const response = await handleImageSearch({ mode: 'semantic',});
     expect(response).toHaveProperty('content');
     expect(Array.isArray(response.content)).toBe(true);
     expect(response.content).toHaveLength(1);

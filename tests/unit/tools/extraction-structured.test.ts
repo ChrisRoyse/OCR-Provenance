@@ -41,12 +41,11 @@ const handleExtractionList = structuredExtractionTools['ocr_extraction_list'].ha
 // =============================================================================
 
 describe('structuredExtractionTools exports', () => {
-  it('exports all 4 structured extraction tools', () => {
-    expect(Object.keys(structuredExtractionTools)).toHaveLength(4);
+  it('exports all 3 structured extraction tools', () => {
+    expect(Object.keys(structuredExtractionTools)).toHaveLength(3);
     expect(structuredExtractionTools).toHaveProperty('ocr_extract_structured');
     expect(structuredExtractionTools).toHaveProperty('ocr_extraction_list');
     expect(structuredExtractionTools).toHaveProperty('ocr_extraction_get');
-    expect(structuredExtractionTools).toHaveProperty('ocr_extraction_search');
   });
 
   it('each tool has description, inputSchema, and handler', () => {

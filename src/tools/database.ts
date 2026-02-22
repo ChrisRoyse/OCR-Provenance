@@ -110,6 +110,7 @@ export async function handleDatabaseList(
         next_steps: [
           { tool: 'ocr_db_select', description: 'Select a database to work with' },
           { tool: 'ocr_db_create', description: 'Create a new database' },
+          { tool: 'ocr_search_cross_db', description: 'Search across all databases' },
         ],
       })
     );
@@ -248,6 +249,7 @@ export async function handleDatabaseStats(
       { tool: 'ocr_document_list', description: 'Browse documents in this database' },
       { tool: 'ocr_search', description: 'Search for content across documents' },
       { tool: 'ocr_report_overview', description: 'Get quality and corpus analytics' },
+      { tool: 'ocr_benchmark_compare', description: 'Benchmark search modes against each other' },
     ];
 
     // If database_name is provided, temporarily open that database

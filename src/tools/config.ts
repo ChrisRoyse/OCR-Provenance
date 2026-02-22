@@ -184,6 +184,7 @@ export async function handleConfigSet(params: Record<string, unknown>): Promise<
         next_steps: [
           { tool: 'ocr_config_get', description: 'Verify the updated configuration' },
           { tool: 'ocr_process_pending', description: 'Process documents with new settings' },
+          { tool: 'ocr_db_stats', description: 'Check database overview and statistics' },
         ],
       })
     );
