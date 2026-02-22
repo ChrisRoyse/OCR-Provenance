@@ -1,9 +1,9 @@
 /**
- * Unit Tests for SE-2: Gemini Re-ranking
+ * Unit Tests for Local Cross-Encoder Re-ranking
  *
- * Tests the reranker module's structure and prompt construction.
- * Since we cannot call the actual Gemini API in unit tests, we test
- * the prompt builder, schema structure, and empty-input handling.
+ * Tests the reranker module's prompt builder and empty-input handling.
+ * Reranking uses a local cross-encoder model (ms-marco-MiniLM-L-12-v2)
+ * via the Python reranker worker. No Gemini/cloud dependency.
  *
  * @module tests/unit/services/search/reranker
  */
@@ -63,8 +63,8 @@ describe('Reranker', () => {
       expect(result).toEqual([]);
     });
 
-    // Note: Testing with actual Gemini API calls is intentionally skipped
-    // because unit tests should not depend on external services.
+    // Note: Testing with the actual Python cross-encoder is intentionally skipped
+    // in unit tests to avoid dependency on sentence-transformers installation.
     // The rerankResults function with actual results is tested in integration tests.
   });
 });

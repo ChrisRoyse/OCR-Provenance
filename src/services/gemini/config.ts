@@ -85,7 +85,7 @@ export function loadGeminiConfig(overrides?: Partial<GeminiConfig>): GeminiConfi
   if (!apiKey || apiKey.trim().length === 0) {
     throw new Error(
       'GEMINI_API_KEY environment variable is not set. ' +
-        'Set it in .env or environment to use Gemini features (VLM, evaluation, re-ranking).'
+        'Set it in .env or environment to use Gemini VLM features (image analysis, PDF analysis, evaluation).'
     );
   }
 

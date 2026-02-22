@@ -97,7 +97,7 @@ export async function rerankResults(
 }
 
 /**
- * Build the re-rank prompt (kept for backward compatibility with tests).
+ * Build a re-rank prompt string (legacy helper, used only by unit tests).
  *
  * @param query - Search query
  * @param excerpts - Array of text excerpts
