@@ -8,8 +8,8 @@ Point this at a folder of PDFs, Word docs, spreadsheets, images, or presentation
 [![Node.js](https://img.shields.io/badge/Node.js-%3E%3D20-green)](https://nodejs.org/)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.5+-blue)](https://www.typescriptlang.org/)
 [![MCP](https://img.shields.io/badge/MCP-1.0-purple)](https://modelcontextprotocol.io/)
-[![Tools](https://img.shields.io/badge/MCP_Tools-126-orange)](#tool-reference-126-tools)
-[![Tests](https://img.shields.io/badge/Tests-2%2C381_passing-brightgreen)](#development)
+[![Tools](https://img.shields.io/badge/MCP_Tools-127-orange)](#tool-reference-127-tools)
+[![Tests](https://img.shields.io/badge/Tests-2%2C382_passing-brightgreen)](#development)
 
 ---
 
@@ -149,16 +149,16 @@ Each database is fully isolated. Create one per case, project, or client.
 ┌─────────────────────────────────────────────────────────────┐
 │                    MCP Server (stdio)                        │
 │  TypeScript + @modelcontextprotocol/sdk                     │
-│  126 tools across 22 tool modules                           │
+│  127 tools across 22 tool modules                           │
 ├─────────────────────────────────────────────────────────────┤
 │                                                              │
 │  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐   │
 │  │ Ingestion│  │  Search  │  │ Analysis │  │  Reports │   │
-│  │ 9 tools  │  │ 12 tools │  │ 37 tools │  │ 10 tools │   │
+│  │ 9 tools  │  │ 12 tools │  │ 37 tools │  │  9 tools │   │
 │  └────┬─────┘  └────┬─────┘  └────┬─────┘  └────┬─────┘   │
 │       │              │              │              │          │
 │  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐   │
-│  │   VLM    │  │  Images  │  │  Tags    │  │   Intel  │   │
+│  │   VLM    │  │  Images  │  │  Tags    │  │  Intel   │   │
 │  │ 6 tools  │  │ 14 tools │  │ 6 tools  │  │  4 tools │   │
 │  └────┬─────┘  └────┬─────┘  └────┬─────┘  └────┬─────┘   │
 │       │              │              │              │          │
@@ -175,10 +175,10 @@ Each database is fully isolated. Create one per case, project, or client.
 │  └─────────┘   └─────────┘   └──────────┘                  │
 │                                                              │
 │  ┌──────────────────────────────────────────────────────┐   │
-│  │            Python Workers (8 processes)               │   │
+│  │            Python Workers (9 processes)               │   │
 │  │  OCR · Embedding · Clustering · Image Extraction    │   │
 │  │  DOCX Extraction · Image Optimizer · Form Fill      │   │
-│  │  File Manager                                        │   │
+│  │  File Manager · Local Reranker                      │   │
 │  └──────────────────────────────────────────────────────┘   │
 │                                                              │
 │  ┌──────────────────────────────────────────────────────┐   │
@@ -189,8 +189,8 @@ Each database is fully isolated. Create one per case, project, or client.
 └─────────────────────────────────────────────────────────────┘
 ```
 
-- **TypeScript MCP Server** -- 126 tools across 22 modules, Zod validation, provenance tracking
-- **Python Workers** (8) -- OCR, GPU embedding, image extraction, clustering, form fill, file management
+- **TypeScript MCP Server** -- 127 tools across 22 modules, Zod validation, provenance tracking
+- **Python Workers** (9) -- OCR, GPU embedding, image extraction, clustering, form fill, file management, local reranking
 - **SQLite + sqlite-vec** -- 18 tables, FTS5 full-text search, vector similarity search, WAL mode
 - **Gemini 3 Flash** -- vision analysis, search re-ranking, query expansion, document classification, cluster labeling, schema suggestion
 - **Datalab API** -- document OCR, form filling, structured extraction, cloud storage
@@ -210,6 +210,8 @@ OCR text (markdown)
   ├─ Section-Aware Splitting ─ Chunk at heading boundaries, respect atomic regions
   ├─ Page Tracking ────────── Assign page numbers via Datalab page separators
   ├─ Chunk Merging ────────── Merge heading-only chunks into their content
+  ├─ Chunk Deduplication ──── Remove near-duplicate chunks via fuzzy matching
+  ├─ Header/Footer Tagging ── Auto-tag header/footer chunks for search exclusion
   └─ Metadata Enrichment ──── section_path, heading_context, content_types per chunk
 ```
 
@@ -230,12 +232,18 @@ Three search modes, combinable via Reciprocal Rank Fusion:
 All three search modes support a shared enhancement stack:
 
 - **Query classification** -- heuristic analysis auto-routes queries between exact/semantic/mixed modes (`auto_route` on hybrid)
-- **Query expansion** -- legal/medical synonym injection for broader recall (`expand_query`)
+- **Query expansion** -- legal/medical synonym injection for broader recall (`expand_query`, default on for hybrid)
 - **Gemini AI re-ranking** -- re-scores results using Gemini 3 Flash for relevance (`rerank`)
-- **Chunk-level filters** -- `content_type_filter`, `section_path_filter` (prefix match), `heading_filter` (LIKE), `page_range_filter`, `quality_boost`
+- **Local reranking** -- Python-based cross-encoder reranker for fast local re-scoring without API calls
+- **Quality-weighted ranking** -- always-on quality score multiplier (0.8x--1.0x) boosts higher-quality OCR results
+- **Chunk-level filters** -- `content_type_filter`, `section_path_filter` (prefix match), `heading_filter` (LIKE), `page_range_filter`, `quality_boost`, `table_columns_contain`
 - **Metadata filters** -- title/author/subject LIKE matching, document ID filtering, cluster filtering, quality score threshold
 - **VLM image enrichment** -- search results from VLM descriptions include image metadata (path, dimensions, type)
-- **Cluster context** -- optionally attach cluster labels and membership info to results
+- **Table metadata** -- search results include table column headers and row/column counts from OCR blocks
+- **Context chunks** -- surrounding chunks automatically included with results for broader context
+- **Group by document** -- deduplicate results by document, returning only the best match per document (`group_by_document`)
+- **Header/footer exclusion** -- header/footer chunks auto-tagged during ingestion and excluded from search by default (`include_headers_footers`)
+- **Document context** -- optionally attach cluster labels and comparison info to results (`include_document_context`)
 - **Provenance inclusion** -- attach full provenance chain to each search result
 - **Search persistence** -- save, list, retrieve, and re-execute named searches
 - **Cross-database search** -- BM25 search across all databases simultaneously
@@ -316,7 +324,7 @@ cp .env.example .env
 # Edit .env with your DATALAB_API_KEY and GEMINI_API_KEY
 
 # Verify
-ocr-provenance-mcp  # Should print "Tools registered: 126" on stderr
+ocr-provenance-mcp  # Should print "Tools registered: 127" on stderr
 ```
 
 > **PyTorch GPU note:** If `pip install torch` gives you CPU-only, install the CUDA version explicitly:
@@ -424,7 +432,7 @@ STORAGE_DATABASES_PATH=~/.ocr-provenance/databases/
 
 ---
 
-## Tool Reference (126 Tools)
+## Tool Reference (127 Tools)
 
 <details>
 <summary><strong>Database Management (5)</strong></summary>
@@ -478,7 +486,7 @@ STORAGE_DATABASES_PATH=~/.ocr-provenance/databases/
 | `ocr_search_saved_execute` | Re-execute a saved search with optional parameter overrides |
 | `ocr_search_cross_db` | BM25 search across all databases simultaneously |
 
-**Enhancement options:** Gemini re-ranking (`rerank`), query expansion (`expand_query`), auto-routing (`auto_route`), chunk-level filters (content type, section path, heading, page range), metadata filters, cluster filtering, quality score filtering, VLM image enrichment, provenance inclusion.
+**Enhancement options:** Gemini re-ranking (`rerank`), local reranking, query expansion (`expand_query`), auto-routing (`auto_route`), quality-weighted ranking, chunk-level filters (content type, section path, heading, page range, table columns), metadata filters, cluster filtering, group by document, header/footer exclusion, context chunks, VLM image enrichment, provenance inclusion.
 
 </details>
 
@@ -594,13 +602,14 @@ VLM descriptions automatically generate searchable embeddings for semantic image
 </details>
 
 <details>
-<summary><strong>Chunks (3)</strong></summary>
+<summary><strong>Chunks & Pages (4)</strong></summary>
 
 | Tool | Description |
 |------|-------------|
 | `ocr_chunk_get` | Get a chunk by ID with full metadata |
 | `ocr_chunk_list` | List chunks with filtering (content type, section path, page, heading) |
 | `ocr_chunk_context` | Get a chunk with N neighboring chunks for context |
+| `ocr_document_page` | Get all chunks for a specific page number (page-by-page navigation) |
 
 </details>
 
@@ -668,10 +677,11 @@ VLM descriptions automatically generate searchable embeddings for semantic image
 </details>
 
 <details>
-<summary><strong>Document Intelligence (3)</strong></summary>
+<summary><strong>Intelligence & Navigation (4)</strong></summary>
 
 | Tool | Description |
 |------|-------------|
+| `ocr_guide` | AI agent navigation -- inspects system state and recommends next tools/actions |
 | `ocr_document_tables` | Extract and parse tables from OCR JSON blocks |
 | `ocr_document_recommend` | Get related document recommendations via embedding similarity |
 | `ocr_document_extras` | Access OCR extras data (charts, links, tracked changes, infographics) |
@@ -690,11 +700,10 @@ VLM descriptions automatically generate searchable embeddings for semantic image
 </details>
 
 <details>
-<summary><strong>Reports & Analytics (10)</strong></summary>
+<summary><strong>Reports & Analytics (9)</strong></summary>
 
 | Tool | Description |
 |------|-------------|
-| `ocr_quality` | Quick quality check for a document or all documents |
 | `ocr_evaluation_report` | Comprehensive OCR + VLM metrics report (markdown) |
 | `ocr_document_report` | Single document report (images, extractions, comparisons, clusters) |
 | `ocr_quality_summary` | Quality summary across all documents |
@@ -761,7 +770,9 @@ File on disk
   │                  │   ├─ Text + heading normalization
   │                  │   ├─ Markdown structure parsing
   │                  │   ├─ Atomic region detection (tables, figures)
-  │                  │   └─ Heading-only chunk merging
+  │                  │   ├─ Heading-only chunk merging
+  │                  │   ├─ Near-duplicate deduplication
+  │                  │   └─ Header/footer auto-tagging
   │                  ├─ 2000 chars with 10% overlap
   │                  ├─ section_path, heading_context, content_types
   │                  ├─ page_number assignment via page separators
@@ -794,7 +805,7 @@ File on disk
 
 ---
 
-## Data Architecture (Schema v29)
+## Data Architecture (Schema v31)
 
 18 core tables + FTS5 virtual tables + vec_embeddings:
 
@@ -830,7 +841,8 @@ File on disk
 | Image Description | Gemini 3 Flash | `ocr_vlm_describe`, `ocr_vlm_process_*` |
 | Image Classification | Gemini 3 Flash | `ocr_vlm_classify` |
 | Document Classification | Gemini 3 Flash | `ocr_document_classify` |
-| Search Reranking | Gemini 3 Flash | `rerank` parameter on all search tools |
+| Search Reranking (AI) | Gemini 3 Flash | `rerank` parameter on all search tools |
+| Search Reranking (Local) | Python cross-encoder | Local reranker worker (no API calls) |
 | Query Expansion | Heuristic synonyms | `expand_query` parameter |
 | Query Classification | Heuristic patterns | `auto_route` parameter (hybrid search) |
 | Cluster Auto-Labeling | Gemini 3 Flash | `ocr_cluster_label` |
@@ -847,6 +859,8 @@ File on disk
 | PDF Direct Analysis | Gemini 3 Flash multimodal | `ocr_vlm_analyze_pdf` |
 | Table Extraction | OCR JSON block parsing | `ocr_document_tables` |
 | Cross-DB Search | BM25 across all databases | `ocr_search_cross_db` |
+| Chunk Deduplication | Fuzzy text matching | Automatic during chunking pipeline |
+| AI Agent Navigation | System state analysis | `ocr_guide` |
 | Health Diagnostics | Data integrity analysis | `ocr_health_check` |
 
 ---
@@ -855,7 +869,7 @@ File on disk
 
 ```bash
 npm run build             # Build TypeScript
-npm test                  # All tests (2,381 across 118 files)
+npm test                  # All tests (2,382 across 109 test suites)
 npm run test:unit         # Unit tests only
 npm run test:integration  # Integration tests only
 npm run lint:all          # TypeScript + Python linting
@@ -878,14 +892,14 @@ src/
     clustering.ts       # Cluster, label, merge (8 tools)
     vlm.ts              # Gemini vision analysis (6 tools)
     images.ts           # Image ops, semantic search (11 tools)
-    reports.ts          # Analytics + quality reports (10 tools)
+    reports.ts          # Analytics + quality reports (9 tools)
     tags.ts             # Cross-entity tagging (6 tools)
-    intelligence.ts     # Tables, recommendations, extras (3 tools)
+    intelligence.ts     # AI guide, tables, recommendations, extras (4 tools)
     embeddings.ts       # Embedding management (4 tools)
     extraction-structured.ts  # JSON schema extraction (5 tools)
     extraction.ts       # Local image extraction (3 tools)
     file-management.ts  # Cloud file ops (6 tools)
-    chunks.ts           # Chunk inspection (3 tools)
+    chunks.ts           # Chunk inspection + page navigation (4 tools)
     timeline.ts         # Time-series analytics (2 tools)
     form-fill.ts        # PDF form filling (2 tools)
     evaluation.ts       # VLM evaluation (3 tools)
@@ -899,18 +913,19 @@ src/
       heading-normalizer.ts
       text-normalizer.ts
       chunk-merger.ts
+      chunk-deduplicator.ts
       json-block-analyzer.ts
-    search/             # BM25, semantic, hybrid, fusion, reranker, query expansion/classification
+    search/             # BM25, semantic, hybrid, fusion, reranker (AI + local), query expansion/classification, quality weighting
     gemini/             # Gemini client with caching, circuit breaker, rate limiting
     storage/            # SQLite database + migrations (19 operation files)
     ...                 # OCR, embedding, VLM, provenance, comparison, clustering, images
   models/               # Zod schemas and TypeScript types
   utils/                # Hash, validation, path sanitization
   server/               # Server state, types, errors (14 custom error classes)
-python/                 # 8 Python workers + GPU utils
+python/                 # 9 Python workers + GPU utils
 tests/
-  unit/                 # Unit tests (~110 files)
-  integration/          # Integration tests (~8 files)
+  unit/                 # Unit tests
+  integration/          # Integration tests
   e2e/                  # End-to-end pipeline tests
   manual/               # Verification tests
   benchmark/            # Chunking benchmark
@@ -922,19 +937,19 @@ docs/                   # System documentation and reports
 
 | Metric | Value |
 |--------|-------|
-| MCP tools | 126 |
+| MCP tools | 127 |
 | Tool modules | 22 |
 | Database tables | 18 core + FTS + vec |
-| Schema version | v29 (29 migrations) |
+| Schema version | v31 (31 migrations) |
 | Database operation files | 19 |
 | Service domains | 11 |
-| Test files | 118 |
-| Tests passing | 2,381 |
-| TypeScript source | ~43,000 lines |
-| Python source | ~4,600 lines |
-| Test code | ~61,000 lines |
+| Test suites | 109 |
+| Tests passing | 2,382 |
+| TypeScript source | ~46,000 lines |
+| Python source | ~4,700 lines |
+| Test code | ~65,000 lines |
 | Production deps | 9 packages |
-| Python workers | 8 |
+| Python workers | 9 |
 | External APIs | 3 (Datalab, Gemini, Nomic local) |
 | Custom error classes | 14 |
 | File types supported | 18 |
