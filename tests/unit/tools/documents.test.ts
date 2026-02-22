@@ -21,7 +21,6 @@ import {
   handleDocumentGet,
   handleDocumentDelete,
   handleFindSimilar,
-  handleClassifyDocument,
   handleDocumentStructure,
   handleUpdateMetadata,
   handleDuplicateDetection,
@@ -268,13 +267,12 @@ function insertTestChunk(
 // ═══════════════════════════════════════════════════════════════════════════════
 
 describe('documentTools exports', () => {
-  it('exports all 13 document tools', () => {
-    expect(Object.keys(documentTools)).toHaveLength(13);
+  it('exports all 12 document tools', () => {
+    expect(Object.keys(documentTools)).toHaveLength(12);
     expect(documentTools).toHaveProperty('ocr_document_list');
     expect(documentTools).toHaveProperty('ocr_document_get');
     expect(documentTools).toHaveProperty('ocr_document_delete');
     expect(documentTools).toHaveProperty('ocr_document_find_similar');
-    expect(documentTools).toHaveProperty('ocr_document_classify');
     expect(documentTools).toHaveProperty('ocr_document_structure');
     expect(documentTools).toHaveProperty('ocr_document_update_metadata');
     expect(documentTools).toHaveProperty('ocr_document_duplicates');
@@ -1424,84 +1422,6 @@ describe('handleFindSimilar', () => {
 
   it('rejects empty document_id', async () => {
     const response = await handleFindSimilar({ document_id: '' });
-    const result = parseResponse(response);
-    expect(result.success).toBe(false);
-    expect(result.error?.category).toBe('VALIDATION_ERROR');
-  });
-});
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// handleClassifyDocument TESTS
-// ═══════════════════════════════════════════════════════════════════════════════
-
-describe('handleClassifyDocument', () => {
-  let tempDir: string;
-  let dbName: string;
-
-  beforeEach(() => {
-    resetState();
-    tempDir = createTempDir('doc-classify-');
-    tempDirs.push(tempDir);
-    updateConfig({ defaultStoragePath: tempDir });
-    dbName = createUniqueName('docclassify');
-  });
-
-  afterEach(() => {
-    clearDatabase();
-    resetState();
-  });
-
-  it('returns DATABASE_NOT_SELECTED when no database', async () => {
-    const response = await handleClassifyDocument({ document_id: uuidv4() });
-    const result = parseResponse(response);
-    expect(result.success).toBe(false);
-    expect(result.error?.category).toBe('DATABASE_NOT_SELECTED');
-  });
-
-  it.skipIf(!sqliteVecAvailable)('returns DOCUMENT_NOT_FOUND for invalid doc', async () => {
-    const db = DatabaseService.create(dbName, undefined, tempDir);
-    state.currentDatabase = db;
-    state.currentDatabaseName = dbName;
-
-    const response = await handleClassifyDocument({ document_id: uuidv4() });
-    const result = parseResponse(response);
-    expect(result.success).toBe(false);
-    expect(result.error?.category).toBe('DOCUMENT_NOT_FOUND');
-  });
-
-  it.skipIf(!sqliteVecAvailable)('rejects non-complete documents', async () => {
-    const db = DatabaseService.create(dbName, undefined, tempDir);
-    state.currentDatabase = db;
-    state.currentDatabaseName = dbName;
-
-    const docId = uuidv4();
-    insertTestDocument(db, docId, 'pending.txt', '/test/pending.txt', 'pending');
-
-    const response = await handleClassifyDocument({ document_id: docId });
-    const result = parseResponse(response);
-    expect(result.success).toBe(false);
-    expect(result.error?.category).toBe('VALIDATION_ERROR');
-    expect(result.error?.message).toContain('complete');
-  });
-
-  it.skipIf(!sqliteVecAvailable)('rejects document without OCR text', async () => {
-    const db = DatabaseService.create(dbName, undefined, tempDir);
-    state.currentDatabase = db;
-    state.currentDatabaseName = dbName;
-
-    // Insert complete doc but no OCR result
-    const docId = uuidv4();
-    insertTestDocument(db, docId, 'no-ocr.txt', '/test/no-ocr.txt', 'complete');
-
-    const response = await handleClassifyDocument({ document_id: docId });
-    const result = parseResponse(response);
-    expect(result.success).toBe(false);
-    expect(result.error?.category).toBe('VALIDATION_ERROR');
-    expect(result.error?.message).toContain('no extracted text');
-  });
-
-  it('rejects empty document_id', async () => {
-    const response = await handleClassifyDocument({ document_id: '' });
     const result = parseResponse(response);
     expect(result.success).toBe(false);
     expect(result.error?.category).toBe('VALIDATION_ERROR');

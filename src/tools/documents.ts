@@ -3,7 +3,7 @@
  *
  * Extracted from src/index.ts Task 22.
  * Tools: ocr_document_list, ocr_document_get, ocr_document_delete,
- *        ocr_document_find_similar, ocr_document_classify
+ *        ocr_document_find_similar
  *
  * CRITICAL: NEVER use console.log() - stdout is reserved for JSON-RPC protocol.
  * Use console.error() for all logging.
@@ -24,7 +24,7 @@ import {
   DocumentDeleteInput,
 } from '../utils/validation.js';
 import { documentNotFoundError, MCPError } from '../server/errors.js';
-import { formatResponse, handleError, fetchProvenanceChain, parseGeminiJson, type ToolResponse, type ToolDefinition } from './shared.js';
+import { formatResponse, handleError, fetchProvenanceChain, type ToolResponse, type ToolDefinition } from './shared.js';
 import { getComparisonSummariesByDocument } from '../services/storage/database/comparison-operations.js';
 import { getClusterSummariesForDocument } from '../services/storage/database/cluster-operations.js';
 import { getImagesByDocument } from '../services/storage/database/image-operations.js';
@@ -423,18 +423,6 @@ const DuplicateDetectionInput = z.object({
   limit: z.number().int().min(1).max(100).default(20),
 });
 
-const DEFAULT_CATEGORIES = [
-  'contract', 'invoice', 'report', 'letter', 'legal_filing',
-  'medical_record', 'academic_paper', 'form', 'memo',
-  'presentation', 'spreadsheet', 'other',
-];
-
-const ClassifyDocumentInput = z.object({
-  document_id: z.string().min(1).describe('Document ID to classify'),
-  custom_categories: z.array(z.string()).optional()
-    .describe('Custom category list (default: contract, invoice, report, letter, legal_filing, medical_record, academic_paper, form, memo, presentation, spreadsheet, other)'),
-});
-
 // ═══════════════════════════════════════════════════════════════════════════════
 // CROSS-DOCUMENT SIMILARITY HANDLER
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -564,105 +552,6 @@ export async function handleFindSimilar(params: Record<string, unknown>): Promis
         source_chunk_count: vectors.length,
         similar_documents: similarDocuments,
         total: similarDocuments.length,
-      })
-    );
-  } catch (error) {
-    return handleError(error);
-  }
-}
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// DOCUMENT CLASSIFICATION HANDLER
-// ═══════════════════════════════════════════════════════════════════════════════
-
-/**
- * Handle ocr_document_classify - Classify a document using Gemini AI
- */
-export async function handleClassifyDocument(params: Record<string, unknown>): Promise<ToolResponse> {
-  try {
-    const input = validateInput(ClassifyDocumentInput, params);
-    const { db } = requireDatabase();
-
-    // Get document and verify status
-    const doc = db.getDocument(input.document_id);
-    if (!doc) {
-      throw documentNotFoundError(input.document_id);
-    }
-
-    if (doc.status !== 'complete') {
-      throw new MCPError(
-        'VALIDATION_ERROR',
-        `Document "${input.document_id}" has status "${doc.status}". Only "complete" documents can be classified.`
-      );
-    }
-
-    // Get OCR result and sample text
-    const ocrResult = db.getOCRResultByDocumentId(doc.id);
-    if (!ocrResult?.extracted_text) {
-      throw new MCPError(
-        'VALIDATION_ERROR',
-        `Document "${input.document_id}" has no extracted text. Process OCR first.`
-      );
-    }
-
-    const sampleText = ocrResult.extracted_text.substring(0, 2000);
-    const categories = input.custom_categories ?? DEFAULT_CATEGORIES;
-
-    // Use Gemini for classification
-    const { getSharedClient } = await import('../services/gemini/index.js');
-    const gemini = getSharedClient();
-
-    const prompt = `Classify the following document text into one of these categories: ${categories.join(', ')}
-
-Analyze the content and determine:
-1. The document type (must be one of the categories listed)
-2. Your confidence (0-1)
-3. Brief reasoning for your classification
-4. The primary language of the document
-5. Key topics covered (up to 5)
-
-Document text (first 2000 chars):
----
-${sampleText}
----
-
-Respond with valid JSON matching the schema.`;
-
-    const schema = {
-      type: 'object' as const,
-      properties: {
-        document_type: { type: 'string' as const, enum: categories },
-        confidence: { type: 'number' as const },
-        reasoning: { type: 'string' as const },
-        language: { type: 'string' as const },
-        key_topics: { type: 'array' as const, items: { type: 'string' as const } },
-      },
-      required: ['document_type', 'confidence', 'reasoning'],
-    };
-
-    const result = await gemini.fast(prompt, schema);
-    const classification = parseGeminiJson<{
-      document_type: string;
-      confidence: number;
-      reasoning: string;
-      language?: string;
-      key_topics?: string[];
-    }>(result.text, 'document_classify');
-
-    // Store classification in doc_subject field
-    db.getConnection()
-      .prepare('UPDATE documents SET doc_subject = ? WHERE id = ?')
-      .run(JSON.stringify(classification), doc.id);
-
-    return formatResponse(
-      successResult({
-        document_id: doc.id,
-        file_name: doc.file_name,
-        document_type: classification.document_type,
-        confidence: classification.confidence,
-        reasoning: classification.reasoning,
-        language: classification.language ?? null,
-        key_topics: classification.key_topics ?? [],
       })
     );
   } catch (error) {
@@ -1883,12 +1772,6 @@ export const documentTools: Record<string, ToolDefinition> = {
       '[ANALYSIS] Use to find documents similar to a given document by content. Returns ranked list with similarity scores. Requires completed embeddings.',
     inputSchema: FindSimilarInput.shape,
     handler: handleFindSimilar,
-  },
-  ocr_document_classify: {
-    description:
-      '[ANALYSIS] Use to classify a document type (contract, invoice, report, etc.) using Gemini AI. Returns category, confidence, and reasoning.',
-    inputSchema: ClassifyDocumentInput.shape,
-    handler: handleClassifyDocument,
   },
   ocr_document_structure: {
     description:

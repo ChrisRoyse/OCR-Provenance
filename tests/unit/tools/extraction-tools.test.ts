@@ -219,8 +219,8 @@ describe('Extraction Tools', () => {
   });
 
   // Verify tool count
-  it('should export 5 tools', () => {
-    expect(Object.keys(structuredExtractionTools)).toHaveLength(5);
+  it('should export 4 tools', () => {
+    expect(Object.keys(structuredExtractionTools)).toHaveLength(4);
     expect(structuredExtractionTools.ocr_extraction_get).toBeDefined();
     expect(structuredExtractionTools.ocr_extraction_search).toBeDefined();
   });

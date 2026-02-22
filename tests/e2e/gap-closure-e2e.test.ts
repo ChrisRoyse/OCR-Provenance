@@ -19,7 +19,6 @@ import { documentTools } from '../../src/tools/documents.js';
 import { searchTools } from '../../src/tools/search.js';
 import { imageTools } from '../../src/tools/images.js';
 import { reportTools } from '../../src/tools/reports.js';
-import { structuredExtractionTools } from '../../src/tools/extraction-structured.js';
 import { ingestionTools } from '../../src/tools/ingestion.js';
 import { classifyQuery } from '../../src/services/search/query-classifier.js';
 
@@ -299,31 +298,6 @@ describe('Gap Closure E2E', () => {
       expect(res.success).toBe(false);
     });
 
-    it('4.2 - ocr_document_classify + DB verify', async () => {
-      const doc = conn.prepare("SELECT id FROM documents WHERE status = 'complete' LIMIT 1").get() as { id: string } | undefined;
-      if (!doc) return;
-
-      const data = ok(await callTool(documentTools, 'ocr_document_classify', { document_id: doc.id }));
-      expect(data.document_type).toBeDefined();
-      expect(data.confidence).toBeDefined();
-      console.error(`[4.2] Type: ${data.document_type}, Confidence: ${data.confidence}`);
-
-      // DB verification - stored as JSON with same keys as response
-      const dbDoc = conn.prepare('SELECT doc_subject FROM documents WHERE id = ?').get(doc.id) as { doc_subject: string | null };
-      expect(dbDoc.doc_subject).toBeTruthy();
-      const stored = JSON.parse(dbDoc.doc_subject!);
-      expect(stored.document_type).toBe(data.document_type);
-      console.error(`[4.2] DB VERIFIED: ${JSON.stringify(stored).slice(0, 100)}`);
-    }, 60_000);
-
-    it('4.2 - custom categories', async () => {
-      const doc = conn.prepare("SELECT id FROM documents WHERE status = 'complete' LIMIT 1").get() as { id: string } | undefined;
-      if (!doc) return;
-      const data = ok(await callTool(documentTools, 'ocr_document_classify', { document_id: doc.id, custom_categories: ['policy', 'contract', 'memo', 'report'] }));
-      expect(['policy', 'contract', 'memo', 'report']).toContain(data.document_type);
-      console.error(`[4.2c] Custom: ${data.document_type}`);
-    }, 60_000);
-
     it('5.1 - ocr_document_structure', async () => {
       const doc = conn.prepare("SELECT id, file_name FROM documents WHERE status = 'complete' LIMIT 1").get() as { id: string; file_name: string } | undefined;
       if (!doc) return;
@@ -383,22 +357,6 @@ describe('Gap Closure E2E', () => {
       expect(data.total_pairs).toBeDefined();
       console.error(`[6.3n] Near dupes: ${data.total_pairs}`);
     });
-  });
-
-  // ═══════════════════════════════════════════════════════════════════════════
-  // PHASE 5: STRUCTURE & INTELLIGENCE
-  // ═══════════════════════════════════════════════════════════════════════════
-
-  describe('Phase 5: Intelligence', () => {
-    it('5.3 - ocr_suggest_extraction_schema', async () => {
-      const doc = conn.prepare("SELECT id FROM documents WHERE status = 'complete' LIMIT 1").get() as { id: string } | undefined;
-      if (!doc) return;
-      const data = ok(await callTool(structuredExtractionTools, 'ocr_suggest_extraction_schema', { document_id: doc.id, extraction_goal: 'Extract policy name, effective date, and key provisions' }));
-      expect(data.suggested_schema).toBeDefined();
-      expect(data.explanation).toBeDefined();
-      console.error(`[5.3] Schema: ${JSON.stringify(data.suggested_schema).slice(0, 200)}`);
-    }, 120_000); // 2 min timeout for Gemini
-
   });
 
   // ═══════════════════════════════════════════════════════════════════════════

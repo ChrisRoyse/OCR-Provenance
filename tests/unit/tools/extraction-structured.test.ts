@@ -41,11 +41,10 @@ const handleExtractionList = structuredExtractionTools['ocr_extraction_list'].ha
 // =============================================================================
 
 describe('structuredExtractionTools exports', () => {
-  it('exports all 5 structured extraction tools', () => {
-    expect(Object.keys(structuredExtractionTools)).toHaveLength(5);
+  it('exports all 4 structured extraction tools', () => {
+    expect(Object.keys(structuredExtractionTools)).toHaveLength(4);
     expect(structuredExtractionTools).toHaveProperty('ocr_extract_structured');
     expect(structuredExtractionTools).toHaveProperty('ocr_extraction_list');
-    expect(structuredExtractionTools).toHaveProperty('ocr_suggest_extraction_schema');
     expect(structuredExtractionTools).toHaveProperty('ocr_extraction_get');
     expect(structuredExtractionTools).toHaveProperty('ocr_extraction_search');
   });
@@ -565,79 +564,5 @@ describe('Edge Cases', () => {
     it('the two handlers are different functions', () => {
       expect(handleExtractStructured).not.toBe(handleExtractionList);
     });
-  });
-});
-
-// =============================================================================
-// handleSuggestSchema TESTS
-// =============================================================================
-
-const handleSuggestSchema = structuredExtractionTools['ocr_suggest_extraction_schema'].handler;
-
-describe('handleSuggestSchema', () => {
-  beforeEach(() => {
-    resetState();
-  });
-
-  afterEach(() => {
-    clearDatabase();
-    resetState();
-  });
-
-  it('returns DATABASE_NOT_SELECTED error when no database selected', async () => {
-    expect(state.currentDatabase).toBeNull();
-
-    const response = await handleSuggestSchema({
-      document_id: 'test-doc-id',
-    });
-    const result = parseResponse(response);
-
-    expect(result.success).toBe(false);
-    expect(result.error?.category).toBe('DATABASE_NOT_SELECTED');
-  });
-
-  it('returns error when document_id is missing', async () => {
-    const response = await handleSuggestSchema({});
-    const result = parseResponse(response);
-
-    expect(result.success).toBe(false);
-    expect(result.error?.message).toBeDefined();
-  });
-
-  it('returns error when document_id is empty string', async () => {
-    const response = await handleSuggestSchema({
-      document_id: '',
-    });
-    const result = parseResponse(response);
-
-    expect(result.success).toBe(false);
-    expect(result.error?.message).toBeDefined();
-  });
-
-  it('accepts valid params with optional extraction_goal (fails on no DB)', async () => {
-    const response = await handleSuggestSchema({
-      document_id: 'some-uuid-value',
-      extraction_goal: 'invoice line items',
-    });
-    const result = parseResponse(response);
-
-    expect(result.success).toBe(false);
-    expect(result.error?.category).toBe('DATABASE_NOT_SELECTED');
-  });
-
-  it('accepts valid params without extraction_goal (fails on no DB)', async () => {
-    const response = await handleSuggestSchema({
-      document_id: 'some-uuid-value',
-    });
-    const result = parseResponse(response);
-
-    expect(result.success).toBe(false);
-    expect(result.error?.category).toBe('DATABASE_NOT_SELECTED');
-  });
-
-  it('ocr_suggest_extraction_schema has expected input schema fields', () => {
-    const schema = structuredExtractionTools['ocr_suggest_extraction_schema'].inputSchema;
-    expect(schema).toHaveProperty('document_id');
-    expect(schema).toHaveProperty('extraction_goal');
   });
 });

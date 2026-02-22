@@ -2763,7 +2763,7 @@ export const searchTools: Record<string, ToolDefinition> = {
       rerank: z
         .boolean()
         .default(false)
-        .describe('Re-rank results using Gemini AI for contextual relevance scoring'),
+        .describe('Re-rank results using local cross-encoder model for relevance scoring'),
       cluster_id: z.string().optional().describe('Filter results to documents in this cluster'),
       include_cluster_context: z
         .boolean()
@@ -2859,7 +2859,7 @@ export const searchTools: Record<string, ToolDefinition> = {
       rerank: z
         .boolean()
         .default(false)
-        .describe('Re-rank results using Gemini AI for contextual relevance scoring'),
+        .describe('Re-rank results using local cross-encoder model for relevance scoring'),
       cluster_id: z.string().optional().describe('Filter results to documents in this cluster'),
       include_cluster_context: z
         .boolean()
@@ -2949,7 +2949,7 @@ export const searchTools: Record<string, ToolDefinition> = {
       rerank: z
         .boolean()
         .default(false)
-        .describe('Re-rank results using Gemini AI for contextual relevance scoring'),
+        .describe('Re-rank results using local cross-encoder model for relevance scoring'),
       cluster_id: z.string().optional().describe('Filter results to documents in this cluster'),
       include_cluster_context: z
         .boolean()

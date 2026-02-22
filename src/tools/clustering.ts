@@ -2,7 +2,7 @@
  * Document Clustering & Auto-Classification MCP Tools
  *
  * Tools: ocr_cluster_documents, ocr_cluster_list, ocr_cluster_get,
- *        ocr_cluster_assign, ocr_cluster_delete
+ *        ocr_cluster_assign, ocr_cluster_delete, ocr_cluster_reassign, ocr_cluster_merge
  *
  * CRITICAL: NEVER use console.log() - stdout is reserved for JSON-RPC protocol.
  *
@@ -15,7 +15,6 @@ import {
   formatResponse,
   handleError,
   fetchProvenanceChain,
-  parseGeminiJson,
   type ToolDefinition,
   type ToolResponse,
 } from './shared.js';
@@ -104,12 +103,6 @@ const ClusterAssignInput = z.object({
 const ClusterDeleteInput = z.object({
   run_id: z.string().min(1).describe('Clustering run ID to delete'),
   confirm: z.literal(true).describe('Must be true to confirm deletion'),
-});
-
-const ClusterLabelInput = z.object({
-  cluster_id: z.string().min(1).describe('Cluster ID to auto-label'),
-  force: z.boolean().default(false)
-    .describe('Overwrite existing label'),
 });
 
 const ClusterReassignInput = z.object({
@@ -449,123 +442,6 @@ async function handleClusterDelete(params: Record<string, unknown>): Promise<Too
 // CLUSTER LABEL HANDLER
 // ═══════════════════════════════════════════════════════════════════════════════
 
-/**
- * Handle ocr_cluster_label - Auto-label a cluster using Gemini AI
- * Analyzes member documents and top terms to generate a descriptive label.
- */
-export async function handleClusterLabel(params: Record<string, unknown>): Promise<ToolResponse> {
-  try {
-    const input = validateInput(ClusterLabelInput, params);
-    const { db } = requireDatabase();
-    const conn = db.getConnection();
-
-    // Get cluster from DB
-    const cluster = getCluster(conn, input.cluster_id);
-    if (!cluster) {
-      throw new MCPError('DOCUMENT_NOT_FOUND', `Cluster "${input.cluster_id}" not found`);
-    }
-
-    // If cluster already has a label and !force, return existing
-    if (cluster.label && !input.force) {
-      return formatResponse(
-        successResult({
-          cluster_id: cluster.id,
-          label: cluster.label,
-          description: cluster.description,
-          classification_tag: cluster.classification_tag,
-          document_count: cluster.document_count,
-          already_labeled: true,
-          message: 'Cluster already has a label. Use force=true to overwrite.',
-        })
-      );
-    }
-
-    // Get member documents (up to 10) with first chunk text
-    const memberDocs = getClusterDocuments(conn, input.cluster_id);
-    const docSummaries: string[] = [];
-    const limitedDocs = memberDocs.slice(0, 10);
-
-    for (const member of limitedDocs) {
-      // Get first chunk text for each document
-      const firstChunk = conn
-        .prepare(
-          'SELECT text FROM chunks WHERE document_id = ? ORDER BY chunk_index ASC LIMIT 1'
-        )
-        .get(member.document_id) as { text: string } | undefined;
-
-      const preview = firstChunk?.text?.substring(0, 300) ?? '[no text]';
-      docSummaries.push(
-        `- File: ${member.file_name} | Preview: ${preview}`
-      );
-    }
-
-    // Parse top_terms from cluster.top_terms_json if available
-    let topTerms: string[] = [];
-    if (cluster.top_terms_json) {
-      try {
-        topTerms = JSON.parse(cluster.top_terms_json) as string[];
-      } catch {
-        // Ignore parse errors for top_terms
-      }
-    }
-
-    // Build Gemini prompt
-    const prompt = `You are analyzing a document cluster to generate a descriptive label.
-
-Cluster info:
-- Algorithm: ${cluster.algorithm}
-- Document count: ${cluster.document_count}
-- Coherence score: ${cluster.coherence_score ?? 'N/A'}
-${topTerms.length > 0 ? `- Top terms: ${topTerms.join(', ')}` : ''}
-
-Member document summaries (up to 10):
-${docSummaries.join('\n')}
-
-Generate:
-1. A concise 2-5 word label for this cluster
-2. A 1-2 sentence description of what these documents have in common
-3. A single-word classification tag (e.g., legal, medical, financial, technical, academic, administrative, correspondence, other)
-
-Respond with valid JSON matching the schema.`;
-
-    const schema = {
-      type: 'object' as const,
-      properties: {
-        label: { type: 'string' as const, description: '2-5 word label' },
-        description: { type: 'string' as const, description: '1-2 sentence description' },
-        classification_tag: { type: 'string' as const, description: 'Single-word category tag' },
-      },
-      required: ['label', 'description', 'classification_tag'],
-    };
-
-    const { getSharedClient } = await import('../services/gemini/index.js');
-    const gemini = getSharedClient();
-    const result = await gemini.fast(prompt, schema);
-    const labeling = parseGeminiJson<{
-      label: string;
-      description: string;
-      classification_tag: string;
-    }>(result.text, 'cluster_label');
-
-    // Update cluster in database
-    conn
-      .prepare('UPDATE clusters SET label = ?, description = ?, classification_tag = ? WHERE id = ?')
-      .run(labeling.label, labeling.description, labeling.classification_tag, cluster.id);
-
-    return formatResponse(
-      successResult({
-        cluster_id: cluster.id,
-        label: labeling.label,
-        description: labeling.description,
-        classification_tag: labeling.classification_tag,
-        document_count: cluster.document_count,
-      })
-    );
-  } catch (error) {
-    return handleError(error);
-  }
-}
-
 // ═══════════════════════════════════════════════════════════════════════════════
 // CLUSTER REASSIGN & MERGE HANDLERS
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -704,12 +580,6 @@ export const clusteringTools: Record<string, ToolDefinition> = {
       '[ANALYSIS] Use to delete all clusters and assignments for a clustering run. Returns deletion count. Requires confirm=true.',
     inputSchema: ClusterDeleteInput.shape,
     handler: handleClusterDelete,
-  },
-  ocr_cluster_label: {
-    description:
-      '[ANALYSIS] Use to auto-label a cluster with a descriptive name using Gemini AI. Returns label, description, and classification tag. Requires GEMINI_API_KEY. Use force=true to overwrite existing label.',
-    inputSchema: ClusterLabelInput.shape,
-    handler: handleClusterLabel,
   },
   ocr_cluster_reassign: {
     description:

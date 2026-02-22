@@ -13,7 +13,7 @@ import { join } from 'path';
 import { tmpdir } from 'os';
 import { v4 as uuidv4 } from 'uuid';
 
-import { clusteringTools, handleClusterLabel } from '../../../src/tools/clustering.js';
+import { clusteringTools } from '../../../src/tools/clustering.js';
 import { state, resetState, updateConfig, clearDatabase } from '../../../src/server/state.js';
 import { DatabaseService } from '../../../src/services/storage/database/index.js';
 import { computeHash } from '../../../src/utils/hash.js';
@@ -333,14 +333,13 @@ function insertMultiClusterRun(db: DatabaseService): {
 // =============================================================================
 
 describe('clusteringTools exports', () => {
-  it('exports all 8 clustering tools', () => {
-    expect(Object.keys(clusteringTools)).toHaveLength(8);
+  it('exports all 7 clustering tools', () => {
+    expect(Object.keys(clusteringTools)).toHaveLength(7);
     expect(clusteringTools).toHaveProperty('ocr_cluster_documents');
     expect(clusteringTools).toHaveProperty('ocr_cluster_list');
     expect(clusteringTools).toHaveProperty('ocr_cluster_get');
     expect(clusteringTools).toHaveProperty('ocr_cluster_assign');
     expect(clusteringTools).toHaveProperty('ocr_cluster_delete');
-    expect(clusteringTools).toHaveProperty('ocr_cluster_label');
     expect(clusteringTools).toHaveProperty('ocr_cluster_reassign');
     expect(clusteringTools).toHaveProperty('ocr_cluster_merge');
   });
@@ -752,71 +751,3 @@ describe.skipIf(!sqliteVecAvailable)('handleClusterDelete', () => {
   });
 });
 
-// =============================================================================
-// handleClusterLabel TESTS
-// =============================================================================
-
-describe('handleClusterLabel', () => {
-  afterEach(() => {
-    clearDatabase();
-    resetState();
-  });
-
-  it('missing database -> DATABASE_NOT_SELECTED', async () => {
-    resetState();
-    const response = await handleClusterLabel({ cluster_id: 'test' });
-    const result = parseResponse(response);
-    expect(result.success).toBe(false);
-    expect(result.error?.category).toBe('DATABASE_NOT_SELECTED');
-  });
-
-  it.skipIf(!sqliteVecAvailable)('nonexistent cluster -> DOCUMENT_NOT_FOUND', async () => {
-    const tempDir = createTempDir('cluster-label-');
-    tempDirs.push(tempDir);
-    resetState();
-    updateConfig({ defaultStoragePath: tempDir });
-    const dbName = createUniqueName('clusterlabel');
-
-    const dbService = DatabaseService.create(dbName, undefined, tempDir);
-    state.currentDatabase = dbService;
-    state.currentDatabaseName = dbName;
-
-    const response = await handleClusterLabel({ cluster_id: 'nonexistent-id' });
-    const result = parseResponse(response);
-    expect(result.success).toBe(false);
-    expect(result.error?.category).toBe('DOCUMENT_NOT_FOUND');
-  });
-
-  it.skipIf(!sqliteVecAvailable)('returns existing label when force=false', async () => {
-    const tempDir = createTempDir('cluster-label-exist-');
-    tempDirs.push(tempDir);
-    resetState();
-    updateConfig({ defaultStoragePath: tempDir });
-    const dbName = createUniqueName('clusterlabelexist');
-
-    const dbService = DatabaseService.create(dbName, undefined, tempDir);
-    state.currentDatabase = dbService;
-    state.currentDatabaseName = dbName;
-
-    // Insert cluster with existing label
-    const { clusterId } = insertTestClusterData(dbService);
-
-    // The test data already has label='Test Cluster'
-    const response = await handleClusterLabel({ cluster_id: clusterId, force: false });
-    const result = parseResponse(response);
-
-    expect(result.success).toBe(true);
-    const data = result.data as Record<string, unknown>;
-    expect(data.cluster_id).toBe(clusterId);
-    expect(data.label).toBe('Test Cluster');
-    expect(data.already_labeled).toBe(true);
-    expect(data.message).toContain('force=true');
-  });
-
-  it('rejects empty cluster_id', async () => {
-    const response = await handleClusterLabel({ cluster_id: '' });
-    const result = parseResponse(response);
-    expect(result.success).toBe(false);
-    expect(result.error?.category).toBe('VALIDATION_ERROR');
-  });
-});

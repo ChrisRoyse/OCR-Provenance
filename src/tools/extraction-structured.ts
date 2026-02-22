@@ -16,7 +16,6 @@ import {
   formatResponse,
   handleError,
   fetchProvenanceChain,
-  parseGeminiJson,
   type ToolResponse,
   type ToolDefinition,
 } from './shared.js';
@@ -32,12 +31,6 @@ import {
   MODEL_VERSION,
   EMBEDDING_DIM,
 } from '../services/embedding/nomic.js';
-
-const SuggestSchemaInput = z.object({
-  document_id: z.string().min(1).describe('Document ID to analyze'),
-  extraction_goal: z.string().optional()
-    .describe('What you want to extract (e.g., "invoice line items", "contract parties and dates")'),
-});
 
 const ExtractStructuredInput = z.object({
   document_id: z.string().min(1).describe('Document ID (must be OCR processed)'),
@@ -395,110 +388,10 @@ async function handleExtractionSearch(params: Record<string, unknown>): Promise<
   }
 }
 
-async function handleSuggestSchema(params: Record<string, unknown>) {
-  try {
-    const input = validateInput(SuggestSchemaInput, params);
-    const { db } = requireDatabase();
-
-    // Get document - must exist and be complete
-    const doc = db.getDocument(input.document_id);
-    if (!doc) {
-      throw new Error(`Document not found: ${input.document_id}`);
-    }
-    if (doc.status !== 'complete') {
-      throw new Error(
-        `Document not OCR processed yet (status: ${doc.status}). Run ocr_process_pending first.`
-      );
-    }
-
-    // Get OCR result and sample text
-    const ocrResult = db.getOCRResultByDocumentId(doc.id);
-    if (!ocrResult?.extracted_text) {
-      throw new Error(`No OCR text found for document ${doc.id}. Process OCR first.`);
-    }
-
-    const sampleText = ocrResult.extracted_text.substring(0, 3000);
-
-    // Build prompt for Gemini
-    const goalClause = input.extraction_goal
-      ? `The user wants to extract: ${input.extraction_goal}\n`
-      : '';
-
-    const prompt = `Analyze the following document text and suggest a JSON schema for structured data extraction.
-
-${goalClause}
-Based on the document content, determine:
-1. A JSON schema (compatible with Datalab page_schema) that captures the key structured data in this document. The schema MUST have a "type" field and "properties" with at least one property. Each property must have a "type" field. Use "type": "object" with nested "properties" for complex structures, and "type": "array" with "items" for lists.
-2. An explanation of what the schema extracts and why
-3. The detected document type
-
-Return the suggested_schema as a JSON string (not an object) in the suggested_schema_json field.
-
-Example suggested_schema_json value: "{\"type\":\"object\",\"properties\":{\"title\":{\"type\":\"string\"},\"items\":{\"type\":\"array\",\"items\":{\"type\":\"object\",\"properties\":{\"name\":{\"type\":\"string\"}}}}}}"
-
-Document text (first 3000 chars):
----
-${sampleText}
----
-
-Respond with valid JSON matching the response schema.`;
-
-    const schemaSchema = {
-      type: 'object' as const,
-      properties: {
-        suggested_schema_json: { type: 'string' as const },
-        explanation: { type: 'string' as const },
-        detected_document_type: { type: 'string' as const },
-      },
-      required: ['suggested_schema_json', 'explanation'] as const,
-    };
-
-    const { getSharedClient } = await import('../services/gemini/index.js');
-    const gemini = getSharedClient();
-    const result = await gemini.fast(prompt, schemaSchema);
-    const suggestion = parseGeminiJson<{
-      suggested_schema_json: string;
-      explanation: string;
-      detected_document_type?: string;
-    }>(result.text, 'suggest_extraction_schema');
-
-    // Parse the schema JSON string back to an object
-    let suggestedSchema: Record<string, unknown>;
-    try {
-      suggestedSchema = JSON.parse(suggestion.suggested_schema_json);
-    } catch {
-      throw new Error(
-        `Gemini returned invalid JSON in suggested_schema_json: ${suggestion.suggested_schema_json.slice(0, 200)}`
-      );
-    }
-
-    // Validate the schema has at minimum a type and properties
-    if (!suggestedSchema.type || !suggestedSchema.properties) {
-      throw new Error(
-        'Gemini returned a schema without required "type" and "properties" fields. ' +
-          `Got: ${JSON.stringify(suggestedSchema).slice(0, 200)}`
-      );
-    }
-
-    return formatResponse(
-      successResult({
-        document_id: doc.id,
-        file_name: doc.file_name,
-        suggested_schema: suggestedSchema,
-        explanation: suggestion.explanation,
-        detected_document_type: suggestion.detected_document_type ?? null,
-        usage_example: `Use this schema with ocr_extract_structured:\n  document_id: "${doc.id}"\n  page_schema: '${JSON.stringify(suggestedSchema)}'`,
-      })
-    );
-  } catch (error) {
-    return handleError(error);
-  }
-}
-
 export const structuredExtractionTools: Record<string, ToolDefinition> = {
   ocr_extract_structured: {
     description:
-      '[PROCESSING] Use to extract structured data from an OCR-processed document using a JSON page_schema. Returns extracted data with embedding. Document must have status "complete". Use ocr_suggest_extraction_schema first if unsure about schema.',
+      '[PROCESSING] Use to extract structured data from an OCR-processed document using a JSON page_schema. Returns extracted data with embedding. Document must have status "complete".',
     inputSchema: ExtractStructuredInput.shape,
     handler: handleExtractStructured,
   },
@@ -507,12 +400,6 @@ export const structuredExtractionTools: Record<string, ToolDefinition> = {
       '[ADMIN] Use to list all structured extractions previously run on a document. Returns extraction IDs, schemas, and results.',
     inputSchema: ExtractionListInput.shape,
     handler: handleExtractionList,
-  },
-  ocr_suggest_extraction_schema: {
-    description:
-      '[ADMIN] Use when you need a JSON schema for structured extraction but do not know the document format. Returns an AI-suggested schema using Gemini. Requires GEMINI_API_KEY. Follow with ocr_extract_structured.',
-    inputSchema: SuggestSchemaInput.shape,
-    handler: handleSuggestSchema,
   },
   ocr_extraction_get: {
     description:
