@@ -49,6 +49,9 @@ async function handleTagCreate(params: Record<string, unknown>): Promise<ToolRes
     return formatResponse(
       successResult({
         tag,
+        next_steps: [
+          { tool: 'ocr_tag_apply', description: 'Apply this tag to a document, chunk, or image' },
+        ],
       })
     );
   } catch (error) {
@@ -114,6 +117,9 @@ async function handleTagApply(params: Record<string, unknown>): Promise<ToolResp
         tag_name: tag.name,
         entity_id: input.entity_id,
         entity_type: input.entity_type,
+        next_steps: [
+          { tool: 'ocr_tag_search', description: 'Find all entities with this tag' },
+        ],
       })
     );
   } catch (error) {

@@ -17,11 +17,13 @@ import { successResult } from '../server/types.js';
 import { requireDatabase } from '../server/state.js';
 import { validateInput } from '../utils/validation.js';
 import { getImage } from '../services/storage/database/image-operations.js';
-import { getEmbeddingService } from '../services/embedding/embedder.js';
+import { getEmbeddingService, EmbeddingService } from '../services/embedding/embedder.js';
 import { getEmbeddingClient } from '../services/embedding/nomic.js';
 import { computeHash } from '../utils/hash.js';
+import { ProvenanceType as ProvType } from '../models/provenance.js';
 import type { ProvenanceRecord, ProvenanceType, SourceType, ProvenanceLocation } from '../models/provenance.js';
 import { EMBEDDING_MODEL } from '../models/embedding.js';
+import { documentNotFoundError } from '../server/errors.js';
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // HELPER: determine source type from FK fields
@@ -272,6 +274,7 @@ const EmbeddingRebuildInput = z.object({
   document_id: z.string().min(1).optional(),
   chunk_id: z.string().min(1).optional(),
   image_id: z.string().min(1).optional(),
+  include_vlm: z.boolean().default(false).optional(),
 });
 
 async function handleEmbeddingRebuild(params: Record<string, unknown>): Promise<ToolResponse> {
@@ -440,47 +443,198 @@ async function handleEmbeddingRebuild(params: Record<string, unknown>): Promise<
       // Rebuild all chunk embeddings for a document
       const doc = db.getDocument(input.document_id);
       if (!doc) {
-        throw new Error(`Document not found: ${input.document_id}`);
+        throw documentNotFoundError(input.document_id);
       }
 
       const chunks = db.getChunksByDocumentId(input.document_id);
-      if (chunks.length === 0) {
+      if (chunks.length === 0 && !input.include_vlm) {
         throw new Error(`No chunks found for document: ${input.document_id}`);
       }
 
       // Delete old embeddings and vectors for all chunks
-      const oldEmbeddings = db.getEmbeddingsByDocumentId(input.document_id);
-      // Only delete chunk-based embeddings, not image/extraction ones
-      const chunkEmbeddings = oldEmbeddings.filter(e => e.chunk_id && !e.image_id && !e.extraction_id);
-      for (const emb of chunkEmbeddings) {
-        vector.deleteVector(emb.id);
-      }
-
-      // Delete chunk embeddings from embeddings table
-      const conn = db.getConnection();
-      conn.prepare(
-        'DELETE FROM embeddings WHERE document_id = ? AND chunk_id IS NOT NULL AND image_id IS NULL AND extraction_id IS NULL'
-      ).run(input.document_id);
-
-      // Reset all chunk embedding statuses
-      for (const chunk of chunks) {
-        db.updateChunkEmbeddingStatus(chunk.id, 'pending');
-      }
-
-      // Regenerate embeddings
-      const result = await embeddingService.embedDocumentChunks(
-        db, vector, chunks,
-        {
-          documentId: input.document_id,
-          filePath: doc.file_path,
-          fileName: doc.file_name,
-          fileHash: doc.file_hash,
-          documentProvenanceId: doc.provenance_id,
+      if (chunks.length > 0) {
+        const oldEmbeddings = db.getEmbeddingsByDocumentId(input.document_id);
+        // Only delete chunk-based embeddings, not image/extraction ones
+        const chunkEmbeddings = oldEmbeddings.filter(e => e.chunk_id && !e.image_id && !e.extraction_id);
+        for (const emb of chunkEmbeddings) {
+          vector.deleteVector(emb.id);
         }
-      );
 
-      rebuiltIds.push(...result.embeddingIds);
-      provenanceIds.push(...result.provenanceIds);
+        // Delete chunk embeddings from embeddings table
+        const conn = db.getConnection();
+        conn.prepare(
+          'DELETE FROM embeddings WHERE document_id = ? AND chunk_id IS NOT NULL AND image_id IS NULL AND extraction_id IS NULL'
+        ).run(input.document_id);
+
+        // Reset all chunk embedding statuses
+        for (const chunk of chunks) {
+          db.updateChunkEmbeddingStatus(chunk.id, 'pending');
+        }
+
+        // Regenerate embeddings
+        const result = await embeddingService.embedDocumentChunks(
+          db, vector, chunks,
+          {
+            documentId: input.document_id,
+            filePath: doc.file_path,
+            fileName: doc.file_name,
+            fileHash: doc.file_hash,
+            documentProvenanceId: doc.provenance_id,
+          }
+        );
+
+        rebuiltIds.push(...result.embeddingIds);
+        provenanceIds.push(...result.provenanceIds);
+      }
+
+      // Rebuild VLM embeddings for images when include_vlm is true
+      if (input.include_vlm) {
+        const conn = db.getConnection();
+        const vlmEmbeddingService = new EmbeddingService();
+        const vlmImages = conn
+          .prepare(
+            `SELECT id, vlm_description, vlm_embedding_id, provenance_id, page_number,
+                    extracted_path, format
+             FROM images
+             WHERE document_id = ? AND vlm_status = 'complete'
+               AND vlm_description IS NOT NULL AND vlm_description != '[SKIPPED]'`
+          )
+          .all(input.document_id) as Array<{
+          id: string;
+          vlm_description: string;
+          vlm_embedding_id: string | null;
+          provenance_id: string | null;
+          page_number: number;
+          extracted_path: string | null;
+          format: string | null;
+        }>;
+
+        for (const img of vlmImages) {
+          try {
+            // Delete old VLM embedding if exists
+            if (img.vlm_embedding_id) {
+              vector.deleteVector(img.vlm_embedding_id);
+              conn
+                .prepare('DELETE FROM embeddings WHERE id = ?')
+                .run(img.vlm_embedding_id);
+              // Null out the reference on the image
+              conn
+                .prepare('UPDATE images SET vlm_embedding_id = NULL WHERE id = ?')
+                .run(img.id);
+            }
+
+            // Generate new embedding for VLM description
+            const vlmEmbedResult = await vlmEmbeddingService.embedSearchQuery(
+              img.vlm_description
+            );
+
+            // Create EMBEDDING provenance (depth 4, parent = VLM_DESCRIPTION provenance)
+            const embProvId = uuidv4();
+            const now = new Date().toISOString();
+
+            // Find VLM description provenance (depth 3) for this image
+            const vlmProvRecords = conn
+              .prepare(
+                `SELECT id, parent_ids FROM provenance
+                 WHERE root_document_id = ? AND type = 'VLM_DESCRIPTION'
+                   AND source_id = ?
+                 ORDER BY created_at DESC LIMIT 1`
+              )
+              .all(doc.provenance_id, img.provenance_id) as Array<{
+              id: string;
+              parent_ids: string;
+            }>;
+
+            const vlmProvId =
+              vlmProvRecords.length > 0 ? vlmProvRecords[0].id : img.provenance_id;
+            const existingParents = vlmProvRecords.length > 0
+              ? (JSON.parse(vlmProvRecords[0].parent_ids) as string[])
+              : [];
+            const parentIds = [...existingParents, vlmProvId];
+
+            db.insertProvenance({
+              id: embProvId,
+              type: ProvType.EMBEDDING,
+              created_at: now,
+              processed_at: now,
+              source_file_created_at: null,
+              source_file_modified_at: null,
+              source_type: 'EMBEDDING',
+              source_path: null,
+              source_id: vlmProvId,
+              root_document_id: doc.provenance_id,
+              location: { page_number: img.page_number },
+              content_hash: computeHash(img.vlm_description),
+              input_hash: computeHash(img.vlm_description),
+              file_hash: doc.file_hash,
+              processor: 'nomic-embed-text-v1.5',
+              processor_version: '1.5.0',
+              processing_params: {
+                task_type: 'search_document',
+                inference_mode: 'local',
+                source: 'vlm_description_reembed',
+              },
+              processing_duration_ms: null,
+              processing_quality_score: null,
+              parent_id: vlmProvId,
+              parent_ids: JSON.stringify(parentIds),
+              chain_depth: 4,
+              chain_path: JSON.stringify([
+                'DOCUMENT',
+                'OCR_RESULT',
+                'IMAGE',
+                'VLM_DESCRIPTION',
+                'EMBEDDING',
+              ]),
+            });
+
+            // Insert embedding record (matches VLM pipeline pattern)
+            const embId = uuidv4();
+            db.insertEmbedding({
+              id: embId,
+              chunk_id: null,
+              image_id: img.id,
+              extraction_id: null,
+              document_id: doc.id,
+              original_text: img.vlm_description,
+              original_text_length: img.vlm_description.length,
+              source_file_path: img.extracted_path ?? 'unknown',
+              source_file_name: img.extracted_path?.split('/').pop() ?? 'vlm_description',
+              source_file_hash: 'vlm_generated',
+              page_number: img.page_number,
+              page_range: null,
+              character_start: 0,
+              character_end: img.vlm_description.length,
+              chunk_index: 0,
+              total_chunks: 1,
+              model_name: 'nomic-embed-text-v1.5',
+              model_version: '1.5.0',
+              task_type: 'search_document',
+              inference_mode: 'local',
+              gpu_device: 'cuda:0',
+              provenance_id: embProvId,
+              content_hash: computeHash(img.vlm_description),
+              generation_duration_ms: null,
+            });
+
+            // Store vector
+            vector.storeVector(embId, vlmEmbedResult);
+
+            // Update image with new VLM embedding ID
+            conn
+              .prepare('UPDATE images SET vlm_embedding_id = ? WHERE id = ?')
+              .run(embId, img.id);
+
+            rebuiltIds.push(embId);
+            provenanceIds.push(embProvId);
+          } catch (vlmError) {
+            console.error(
+              `[WARN] Failed to re-embed VLM description for image ${img.id}: ${vlmError instanceof Error ? vlmError.message : String(vlmError)}`
+            );
+            // Non-fatal: continue with remaining images
+          }
+        }
+      }
     }
 
     let target: { type: string; id: string | undefined };
@@ -538,11 +692,12 @@ export const embeddingTools: Record<string, ToolDefinition> = {
   },
 
   ocr_embedding_rebuild: {
-    description: '[ADMIN] Use to regenerate embeddings after model updates or corruption. Deletes old embeddings and creates new ones with provenance. Specify exactly one of document_id, chunk_id, or image_id.',
+    description: '[ADMIN] Use to regenerate embeddings after model updates or corruption. Deletes old embeddings and creates new ones with provenance. Specify exactly one of document_id, chunk_id, or image_id. Use include_vlm=true with document_id to also rebuild VLM image embeddings.',
     inputSchema: {
-      document_id: z.string().min(1).optional().describe('Rebuild all chunk embeddings for this document'),
+      document_id: z.string().min(1).optional().describe('Rebuild all chunk embeddings for this document (add include_vlm=true for VLM image embeddings too)'),
       chunk_id: z.string().min(1).optional().describe('Rebuild embedding for this specific chunk'),
       image_id: z.string().min(1).optional().describe('Rebuild VLM embedding for this specific image'),
+      include_vlm: z.boolean().default(false).optional().describe('When true with document_id, also rebuild VLM embeddings for images'),
     },
     handler: handleEmbeddingRebuild,
   },

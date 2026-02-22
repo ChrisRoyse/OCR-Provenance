@@ -29,6 +29,8 @@ import { getComparisonSummariesByDocument } from '../services/storage/database/c
 import { getClusterSummariesForDocument } from '../services/storage/database/cluster-operations.js';
 import { getImagesByDocument } from '../services/storage/database/image-operations.js';
 import { extractTableStructures } from '../services/chunking/json-block-analyzer.js';
+import type { DatabaseService } from '../services/storage/database/index.js';
+import type { Document } from '../models/document.js';
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // DOCUMENT STRUCTURE TYPES
@@ -141,7 +143,7 @@ export async function handleDocumentList(params: Record<string, unknown>): Promi
         offset: input.offset,
         next_steps: [
           { tool: 'ocr_document_get', description: 'Get details for a specific document by ID' },
-          { tool: 'ocr_search_hybrid', description: 'Search within the corpus' },
+          { tool: 'ocr_search', description: 'Search within the corpus' },
           { tool: 'ocr_document_structure', description: 'View a document outline (headings, tables)' },
         ],
       })
@@ -324,7 +326,7 @@ export async function handleDocumentGet(params: Record<string, unknown>): Promis
     result.next_steps = [
       { tool: 'ocr_document_page', description: 'Read a specific page of this document' },
       { tool: 'ocr_document_structure', description: 'View document outline and layout' },
-      { tool: 'ocr_search_hybrid', description: 'Search within this document (use document_id filter)' },
+      { tool: 'ocr_search', description: 'Search within this document (use document_id filter)' },
       { tool: 'ocr_chunk_list', description: 'List all chunks with section/heading filtering' },
     ];
 
@@ -388,16 +390,12 @@ export async function handleDocumentDelete(params: Record<string, unknown>): Pro
 
 const DocumentStructureInput = z.object({
   document_id: z.string().min(1).describe('Document ID'),
-});
-
-const DocumentSectionsInput = z.object({
-  document_id: z.string().min(1).describe('Document ID'),
+  format: z.enum(['structure', 'tree', 'outline']).default('structure')
+    .describe('Output format: "structure" (headings/tables/figures/code), "tree" (hierarchical section tree with chunks), "outline" (flat numbered section list)'),
   include_chunk_ids: z.boolean().default(true)
-    .describe('Include chunk IDs in each section node'),
+    .describe('Include chunk IDs in each section node (tree/outline formats only)'),
   include_page_numbers: z.boolean().default(true)
-    .describe('Include page numbers in each section node'),
-  format: z.enum(['tree', 'outline']).default('tree')
-    .describe('Output format: "tree" for nested structure, "outline" for flat numbered list'),
+    .describe('Include page numbers in each section node (tree/outline formats only)'),
 });
 
 const FindSimilarInput = z.object({
@@ -794,7 +792,12 @@ function walkBlocks(
 }
 
 /**
- * Handle ocr_document_structure - Analyze document structure (headings, tables, figures, code)
+ * Handle ocr_document_structure - Analyze document structure
+ *
+ * Supports three formats:
+ * - 'structure' (default): headings, tables, figures, code blocks from json_blocks or chunks
+ * - 'tree': hierarchical section tree with chunk_ids, page_numbers (merged from ocr_document_sections)
+ * - 'outline': flat numbered outline with chunk counts (merged from ocr_document_sections)
  */
 export async function handleDocumentStructure(params: Record<string, unknown>): Promise<ToolResponse> {
   try {
@@ -806,6 +809,12 @@ export async function handleDocumentStructure(params: Record<string, unknown>): 
       throw documentNotFoundError(input.document_id);
     }
 
+    // Delegate to sections logic for tree/outline formats
+    if (input.format === 'tree' || input.format === 'outline') {
+      return handleDocumentSectionsInternal(db, doc, input);
+    }
+
+    // Default 'structure' format: headings, tables, figures, code blocks
     const conn = db.getConnection();
     const outline: OutlineEntry[] = [];
     const tables: TableEntry[] = [];
@@ -893,6 +902,7 @@ export async function handleDocumentStructure(params: Record<string, unknown>): 
       document_id: doc.id,
       file_name: doc.file_name,
       page_count: doc.page_count,
+      format: 'structure',
       source,
       outline,
       tables: { count: tables.length, items: tables },
@@ -946,18 +956,15 @@ function flattenToOutline(nodes: SectionNode[], prefix = ''): string[] {
 }
 
 /**
- * Handle ocr_document_sections - Get tree-view of document section hierarchy
+ * Internal handler for section tree/outline format (merged from ocr_document_sections).
+ * Called by handleDocumentStructure when format='tree' or format='outline'.
  */
-export async function handleDocumentSections(params: Record<string, unknown>): Promise<ToolResponse> {
+async function handleDocumentSectionsInternal(
+  db: DatabaseService,
+  doc: Document,
+  input: { document_id: string; format?: string; include_chunk_ids?: boolean; include_page_numbers?: boolean }
+): Promise<ToolResponse> {
   try {
-    const input = validateInput(DocumentSectionsInput, params);
-    const { db } = requireDatabase();
-
-    const doc = db.getDocument(input.document_id);
-    if (!doc) {
-      throw documentNotFoundError(input.document_id);
-    }
-
     const chunks = db.getChunksByDocumentId(input.document_id);
 
     // Build tree from section_path strings
@@ -1726,7 +1733,7 @@ async function handleDocumentWorkflow(params: Record<string, unknown>): Promise<
 export const documentTools: Record<string, ToolDefinition> = {
   ocr_document_list: {
     description:
-      '[CORE] Use to browse documents in the current database. Returns metadata with structural summaries. Filter by status, date, or file type. Start here after ocr_db_select.',
+      '[ESSENTIAL] Use to browse documents in the current database. Returns metadata with structural summaries. Filter by status, date, or file type. Start here after ocr_db_select.',
     inputSchema: {
       status_filter: z
         .enum(['pending', 'processing', 'complete', 'failed'])
@@ -1745,7 +1752,7 @@ export const documentTools: Record<string, ToolDefinition> = {
   },
   ocr_document_get: {
     description:
-      '[CORE] Use to get full details for a single document. Returns OCR metadata, structure, quality, and memberships. Use ocr_document_page to read specific pages.',
+      '[ESSENTIAL] Use to get full details for a single document. Returns OCR metadata, structure, quality, and memberships. Use ocr_document_page to read specific pages.',
     inputSchema: {
       document_id: z.string().min(1).describe('Document ID'),
       include_text: z.boolean().default(false).describe('Include OCR extracted text'),
@@ -1775,7 +1782,7 @@ export const documentTools: Record<string, ToolDefinition> = {
   },
   ocr_document_structure: {
     description:
-      '[CORE] Use to get the document outline: headings, tables, figures, code blocks with page numbers. Returns structural map. Useful before targeted search.',
+      '[ESSENTIAL] Use to get document structure. Default format="structure" returns headings, tables, figures, code blocks. Use format="tree" for hierarchical section tree with chunk IDs, or format="outline" for flat numbered list.',
     inputSchema: DocumentStructureInput.shape,
     handler: handleDocumentStructure,
   },
@@ -1790,12 +1797,6 @@ export const documentTools: Record<string, ToolDefinition> = {
       '[ANALYSIS] Use to find duplicate documents. Exact mode matches file hashes; near mode uses similarity scores from comparisons. Returns duplicate pairs.',
     inputSchema: DuplicateDetectionInput.shape,
     handler: handleDuplicateDetection,
-  },
-  ocr_document_sections: {
-    description:
-      '[CORE] Use to get a hierarchical table of contents for a document. Returns section headings with page ranges and chunk counts. Use format="outline" for flat list.',
-    inputSchema: DocumentSectionsInput.shape,
-    handler: handleDocumentSections,
   },
   ocr_document_export: {
     description:

@@ -27,9 +27,8 @@ export {
   DEFAULT_FILE_TYPES,
 
   // Search schemas
-  SearchSemanticInput,
-  SearchInput,
-  SearchHybridInput,
+  SearchFilters,
+  SearchUnifiedInput,
   FTSManageInput,
 
   // Document management schemas

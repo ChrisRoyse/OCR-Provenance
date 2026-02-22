@@ -1,7 +1,7 @@
 /**
  * Unit Tests for Analytics Report Tools
  *
- * Tests: handlePipelineAnalytics, handleCorpusProfile, handleErrorAnalytics
+ * Tests: handleReportPerformance, handleReportOverview, handleErrorAnalytics
  * in src/tools/reports.ts using real SQLite databases with synthetic data.
  *
  * @module tests/unit/tools/reports-analytics
@@ -14,8 +14,8 @@ import { tmpdir } from 'os';
 import { v4 as uuidv4 } from 'uuid';
 
 import {
-  handlePipelineAnalytics,
-  handleCorpusProfile,
+  handleReportPerformance,
+  handleReportOverview,
   handleErrorAnalytics,
 } from '../../../src/tools/reports.js';
 import { state, resetState, updateConfig, clearDatabase } from '../../../src/server/state.js';
@@ -273,10 +273,10 @@ function insertChunk(
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// handlePipelineAnalytics TESTS (with real DB)
+// handleReportPerformance TESTS (with real DB)
 // ═══════════════════════════════════════════════════════════════════════════════
 
-describe('Pipeline Analytics (ocr_pipeline_analytics) with DB', () => {
+describe('Pipeline Analytics (ocr_report_performance section=pipeline) with DB', () => {
   let tempDir: string;
   let dbName: string;
 
@@ -300,21 +300,22 @@ describe('Pipeline Analytics (ocr_pipeline_analytics) with DB', () => {
       state.currentDatabase = db;
       state.currentDatabaseName = dbName;
 
-      const response = await handlePipelineAnalytics({});
+      const response = await handleReportPerformance({ section: 'pipeline' });
       const parsed = parseResponse(response);
       expect(parsed.success).toBe(true);
 
-      const ocr = parsed.data!.ocr as Record<string, unknown>;
+      const pipeline = parsed.data!.pipeline as Record<string, unknown>;
+      const ocr = pipeline.ocr as Record<string, unknown>;
       expect(ocr.total_docs).toBe(0);
       expect(ocr.total_pages).toBe(0);
 
-      const embeddings = parsed.data!.embeddings as Record<string, unknown>;
+      const embeddings = pipeline.embeddings as Record<string, unknown>;
       expect(embeddings.total_embeddings).toBe(0);
 
-      const vlm = parsed.data!.vlm as Record<string, unknown>;
+      const vlm = pipeline.vlm as Record<string, unknown>;
       expect(vlm.total_images).toBe(0);
 
-      const throughput = parsed.data!.throughput as Record<string, unknown>;
+      const throughput = pipeline.throughput as Record<string, unknown>;
       expect(throughput.pages_per_minute).toBe(0);
       expect(throughput.embeddings_per_second).toBe(0);
     }
@@ -330,11 +331,12 @@ describe('Pipeline Analytics (ocr_pipeline_analytics) with DB', () => {
       insertDocWithOCR(db, { durationMs: 1000, pageCount: 10, quality: 4.5, mode: 'accurate' });
       insertDocWithOCR(db, { durationMs: 500, pageCount: 5, quality: 3.5, mode: 'fast' });
 
-      const response = await handlePipelineAnalytics({});
+      const response = await handleReportPerformance({ section: 'pipeline' });
       const parsed = parseResponse(response);
       expect(parsed.success).toBe(true);
 
-      const ocr = parsed.data!.ocr as Record<string, unknown>;
+      const pipeline = parsed.data!.pipeline as Record<string, unknown>;
+      const ocr = pipeline.ocr as Record<string, unknown>;
       expect(ocr.total_docs).toBe(2);
       expect(ocr.total_pages).toBe(15);
       expect(ocr.avg_duration_ms).toBe(750);
@@ -358,11 +360,12 @@ describe('Pipeline Analytics (ocr_pipeline_analytics) with DB', () => {
       insertDocWithOCR(db, { mode: 'accurate', costCents: 200 });
       insertDocWithOCR(db, { mode: 'fast', costCents: 20 });
 
-      const response = await handlePipelineAnalytics({ group_by: 'mode' });
+      const response = await handleReportPerformance({ section: 'pipeline', group_by: 'mode' });
       const parsed = parseResponse(response);
       expect(parsed.success).toBe(true);
 
-      const byMode = parsed.data!.by_mode as Array<Record<string, unknown>>;
+      const pipeline = parsed.data!.pipeline as Record<string, unknown>;
+      const byMode = pipeline.by_mode as Array<Record<string, unknown>>;
       expect(byMode).toBeDefined();
       expect(byMode.length).toBe(2);
 
@@ -387,11 +390,12 @@ describe('Pipeline Analytics (ocr_pipeline_analytics) with DB', () => {
       insertDocWithOCR(db, { fileType: 'pdf' });
       insertDocWithOCR(db, { fileType: 'docx' });
 
-      const response = await handlePipelineAnalytics({ group_by: 'file_type' });
+      const response = await handleReportPerformance({ section: 'pipeline', group_by: 'file_type' });
       const parsed = parseResponse(response);
       expect(parsed.success).toBe(true);
 
-      const byFileType = parsed.data!.by_file_type as Array<Record<string, unknown>>;
+      const pipeline = parsed.data!.pipeline as Record<string, unknown>;
+      const byFileType = pipeline.by_file_type as Array<Record<string, unknown>>;
       expect(byFileType).toBeDefined();
       expect(byFileType.length).toBe(2);
 
@@ -419,11 +423,12 @@ describe('Pipeline Analytics (ocr_pipeline_analytics) with DB', () => {
 
       insertDocWithOCR(db, { durationMs: 100, fileName: 'small.pdf' });
 
-      const response = await handlePipelineAnalytics({ group_by: 'document', limit: 10 });
+      const response = await handleReportPerformance({ section: 'pipeline', group_by: 'document', limit: 10 });
       const parsed = parseResponse(response);
       expect(parsed.success).toBe(true);
 
-      const byDoc = parsed.data!.by_document as Array<Record<string, unknown>>;
+      const pipeline = parsed.data!.pipeline as Record<string, unknown>;
+      const byDoc = pipeline.by_document as Array<Record<string, unknown>>;
       expect(byDoc).toBeDefined();
       expect(byDoc.length).toBe(2);
       // Ordered by processing_duration_ms DESC
@@ -445,21 +450,22 @@ describe('Pipeline Analytics (ocr_pipeline_analytics) with DB', () => {
       // 10 pages in 1000ms = 600 pages/min
       insertDocWithOCR(db, { durationMs: 1000, pageCount: 10 });
 
-      const response = await handlePipelineAnalytics({});
+      const response = await handleReportPerformance({ section: 'pipeline' });
       const parsed = parseResponse(response);
       expect(parsed.success).toBe(true);
 
-      const throughput = parsed.data!.throughput as Record<string, unknown>;
+      const pipeline = parsed.data!.pipeline as Record<string, unknown>;
+      const throughput = pipeline.throughput as Record<string, unknown>;
       expect(throughput.pages_per_minute).toBe(600);
     }
   );
 });
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// handleCorpusProfile TESTS (with real DB)
+// handleReportOverview TESTS (with real DB)
 // ═══════════════════════════════════════════════════════════════════════════════
 
-describe('Corpus Profile (ocr_corpus_profile) with DB', () => {
+describe('Corpus Profile (ocr_report_overview section=corpus) with DB', () => {
   let tempDir: string;
   let dbName: string;
 
@@ -483,17 +489,18 @@ describe('Corpus Profile (ocr_corpus_profile) with DB', () => {
       state.currentDatabase = db;
       state.currentDatabaseName = dbName;
 
-      const response = await handleCorpusProfile({});
+      const response = await handleReportOverview({ section: 'corpus' });
       const parsed = parseResponse(response);
       expect(parsed.success).toBe(true);
 
-      const docs = parsed.data!.documents as Record<string, unknown>;
+      const corpus = parsed.data!.corpus as Record<string, unknown>;
+      const docs = corpus.documents as Record<string, unknown>;
       expect(docs.total_complete).toBe(0);
 
-      const chunks = parsed.data!.chunks as Record<string, unknown>;
+      const chunks = corpus.chunks as Record<string, unknown>;
       expect(chunks.total_chunks).toBe(0);
 
-      const fileTypes = parsed.data!.file_types as Array<unknown>;
+      const fileTypes = corpus.file_types as Array<unknown>;
       expect(fileTypes).toEqual([]);
     }
   );
@@ -511,11 +518,12 @@ describe('Corpus Profile (ocr_corpus_profile) with DB', () => {
       // Pending doc should NOT be counted in complete docs
       insertDocWithOCR(db, { pageCount: 100, fileType: 'pdf', status: 'pending' });
 
-      const response = await handleCorpusProfile({});
+      const response = await handleReportOverview({ section: 'corpus' });
       const parsed = parseResponse(response);
       expect(parsed.success).toBe(true);
 
-      const docs = parsed.data!.documents as Record<string, unknown>;
+      const corpus = parsed.data!.corpus as Record<string, unknown>;
+      const docs = corpus.documents as Record<string, unknown>;
       // Only 3 complete docs
       expect(docs.total_complete).toBe(3);
       // avg(10,20,5) ≈ 11.67
@@ -535,11 +543,12 @@ describe('Corpus Profile (ocr_corpus_profile) with DB', () => {
       insertDocWithOCR(db, { fileType: 'pdf' });
       insertDocWithOCR(db, { fileType: 'docx' });
 
-      const response = await handleCorpusProfile({});
+      const response = await handleReportOverview({ section: 'corpus' });
       const parsed = parseResponse(response);
       expect(parsed.success).toBe(true);
 
-      const fileTypes = parsed.data!.file_types as Array<Record<string, unknown>>;
+      const corpus = parsed.data!.corpus as Record<string, unknown>;
+      const fileTypes = corpus.file_types as Array<Record<string, unknown>>;
       expect(fileTypes.length).toBe(2);
       expect(fileTypes[0].file_type).toBe('pdf');
       expect(fileTypes[0].count).toBe(2);
@@ -573,11 +582,12 @@ describe('Corpus Profile (ocr_corpus_profile) with DB', () => {
         chunkIndex: 2,
       });
 
-      const response = await handleCorpusProfile({});
+      const response = await handleReportOverview({ section: 'corpus' });
       const parsed = parseResponse(response);
       expect(parsed.success).toBe(true);
 
-      const chunks = parsed.data!.chunks as Record<string, unknown>;
+      const corpus = parsed.data!.corpus as Record<string, unknown>;
+      const chunks = corpus.chunks as Record<string, unknown>;
       expect(chunks.total_chunks).toBe(3);
       expect(chunks.atomic_chunks).toBe(1);
       expect(chunks.chunks_with_headings).toBe(2);
@@ -608,11 +618,12 @@ describe('Corpus Profile (ocr_corpus_profile) with DB', () => {
         chunkIndex: 1,
       });
 
-      const response = await handleCorpusProfile({ include_section_frequency: true });
+      const response = await handleReportOverview({ section: 'corpus', include_section_frequency: true });
       const parsed = parseResponse(response);
       expect(parsed.success).toBe(true);
 
-      const sections = parsed.data!.section_frequency as Array<Record<string, unknown>>;
+      const corpus = parsed.data!.corpus as Record<string, unknown>;
+      const sections = corpus.section_frequency as Array<Record<string, unknown>>;
       expect(sections).toBeDefined();
       expect(sections.length).toBe(2);
       // Introduction: 2 occurrences across 2 docs
@@ -635,11 +646,12 @@ describe('Corpus Profile (ocr_corpus_profile) with DB', () => {
 
       insertDocWithOCR(db);
 
-      const response = await handleCorpusProfile({ include_section_frequency: false });
+      const response = await handleReportOverview({ section: 'corpus', include_section_frequency: false });
       const parsed = parseResponse(response);
       expect(parsed.success).toBe(true);
 
-      expect(parsed.data!.section_frequency).toBeUndefined();
+      const corpus = parsed.data!.corpus as Record<string, unknown>;
+      expect(corpus.section_frequency).toBeUndefined();
     }
   );
 
@@ -664,11 +676,12 @@ describe('Corpus Profile (ocr_corpus_profile) with DB', () => {
         chunkIndex: 2,
       });
 
-      const response = await handleCorpusProfile({ include_content_type_distribution: true });
+      const response = await handleReportOverview({ section: 'corpus', include_content_type_distribution: true });
       const parsed = parseResponse(response);
       expect(parsed.success).toBe(true);
 
-      const ctDist = parsed.data!.content_type_distribution as Array<Record<string, unknown>>;
+      const corpus = parsed.data!.corpus as Record<string, unknown>;
+      const ctDist = corpus.content_type_distribution as Array<Record<string, unknown>>;
       expect(ctDist).toBeDefined();
       // text appears 3 times, table 1, code 1
       const textEntry = ctDist.find((e) => e.content_type === 'text');
@@ -689,11 +702,12 @@ describe('Corpus Profile (ocr_corpus_profile) with DB', () => {
 
       insertDocWithOCR(db);
 
-      const response = await handleCorpusProfile({ include_content_type_distribution: false });
+      const response = await handleReportOverview({ section: 'corpus', include_content_type_distribution: false });
       const parsed = parseResponse(response);
       expect(parsed.success).toBe(true);
 
-      expect(parsed.data!.content_type_distribution).toBeUndefined();
+      const corpus = parsed.data!.corpus as Record<string, unknown>;
+      expect(corpus.content_type_distribution).toBeUndefined();
     }
   );
 
@@ -712,14 +726,16 @@ describe('Corpus Profile (ocr_corpus_profile) with DB', () => {
         });
       }
 
-      const response = await handleCorpusProfile({
+      const response = await handleReportOverview({
+        section: 'corpus',
         include_section_frequency: true,
         limit: 3,
       });
       const parsed = parseResponse(response);
       expect(parsed.success).toBe(true);
 
-      const sections = parsed.data!.section_frequency as Array<Record<string, unknown>>;
+      const corpus = parsed.data!.corpus as Record<string, unknown>;
+      const sections = corpus.section_frequency as Array<Record<string, unknown>>;
       expect(sections.length).toBe(3);
     }
   );

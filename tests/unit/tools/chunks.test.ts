@@ -635,13 +635,14 @@ describe('Chunk Tools', () => {
   });
 
   // ═══════════════════════════════════════════════════════════════════════════
-  // ocr_document_sections
+  // ocr_document_structure (format='tree') - merged from ocr_document_sections
   // ═══════════════════════════════════════════════════════════════════════════
 
-  describe('ocr_document_sections', () => {
+  describe('ocr_document_structure format=tree (merged from ocr_document_sections)', () => {
     it('should return section tree from chunk section_paths', async () => {
-      const result = await documentTools.ocr_document_sections.handler({
+      const result = await documentTools.ocr_document_structure.handler({
         document_id: docId,
+        format: 'tree',
       });
       const parsed = JSON.parse(result.content[0].text);
 
@@ -670,8 +671,9 @@ describe('Chunk Tools', () => {
     });
 
     it('should include chunk_ids when requested', async () => {
-      const result = await documentTools.ocr_document_sections.handler({
+      const result = await documentTools.ocr_document_structure.handler({
         document_id: docId,
+        format: 'tree',
         include_chunk_ids: true,
       });
       const parsed = JSON.parse(result.content[0].text);
@@ -690,8 +692,9 @@ describe('Chunk Tools', () => {
     });
 
     it('should include page_numbers and page_range when requested', async () => {
-      const result = await documentTools.ocr_document_sections.handler({
+      const result = await documentTools.ocr_document_structure.handler({
         document_id: docId,
+        format: 'tree',
         include_page_numbers: true,
       });
       const parsed = JSON.parse(result.content[0].text);
@@ -753,8 +756,9 @@ describe('Chunk Tools', () => {
         })
       );
 
-      const result = await documentTools.ocr_document_sections.handler({
+      const result = await documentTools.ocr_document_structure.handler({
         document_id: doc2Id,
+        format: 'tree',
       });
       const parsed = JSON.parse(result.content[0].text);
 
@@ -765,8 +769,9 @@ describe('Chunk Tools', () => {
     });
 
     it('should fail for non-existent document', async () => {
-      const result = await documentTools.ocr_document_sections.handler({
+      const result = await documentTools.ocr_document_structure.handler({
         document_id: 'non-existent-doc',
+        format: 'tree',
       });
       const parsed = JSON.parse(result.content[0].text);
 

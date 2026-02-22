@@ -36,10 +36,6 @@ const VLMDescribeInput = z.object({
   use_thinking: z.boolean().default(false),
 });
 
-const VLMClassifyInput = z.object({
-  image_path: z.string().min(1),
-});
-
 const VLMProcessDocumentInput = z.object({
   document_id: z.string().min(1),
   batch_size: z.number().int().min(1).max(20).default(5),
@@ -254,40 +250,6 @@ export async function handleVLMDescribe(params: Record<string, unknown>): Promis
 }
 
 /**
- * Handle ocr_vlm_classify - Quick classification of an image
- */
-export async function handleVLMClassify(params: Record<string, unknown>): Promise<ToolResponse> {
-  try {
-    const input = validateInput(VLMClassifyInput, params);
-    const imagePath = sanitizePath(input.image_path);
-
-    // Validate image path exists
-    if (!fs.existsSync(imagePath)) {
-      throw new MCPError('PATH_NOT_FOUND', `Image file not found: ${imagePath}`, {
-        image_path: imagePath,
-      });
-    }
-
-    const vlm = getVLMService();
-    const classification = await vlm.classifyImage(imagePath);
-
-    return formatResponse(
-      successResult({
-        classification: {
-          type: classification.type,
-          has_text: classification.hasText,
-          text_density: classification.textDensity,
-          complexity: classification.complexity,
-          confidence: classification.confidence,
-        },
-      })
-    );
-  } catch (error) {
-    return handleError(error);
-  }
-}
-
-/**
  * Handle ocr_vlm_process_document - Process all images in a document with Gemini 3 VLM
  */
 export async function handleVLMProcessDocument(
@@ -337,6 +299,9 @@ export async function handleVLMProcessDocument(
         tokens_used: r.tokensUsed,
         error: r.error,
       })),
+      next_steps: [
+        { tool: 'ocr_image_list', description: 'Browse all images for this document' },
+      ],
     };
 
     return formatResponse(successResult(responseData));
@@ -378,6 +343,9 @@ export async function handleVLMProcessPending(
       failed: result.failed,
       total_tokens: result.totalTokens,
       processing_time_ms: result.totalTimeMs,
+      next_steps: [
+        { tool: 'ocr_document_list', description: 'Browse all documents in the database' },
+      ],
     };
 
     return formatResponse(successResult(responseData));
@@ -491,14 +459,6 @@ export const vlmTools: Record<string, ToolDefinition> = {
         .describe('Use extended reasoning (thinking mode) for complex analysis'),
     },
     handler: handleVLMDescribe,
-  },
-
-  ocr_vlm_classify: {
-    description: '[PROCESSING] Use for quick image classification (type, complexity, text density). Returns classification without full description. Faster than ocr_vlm_describe.',
-    inputSchema: {
-      image_path: z.string().min(1).describe('Path to image file'),
-    },
-    handler: handleVLMClassify,
   },
 
   ocr_vlm_process_document: {

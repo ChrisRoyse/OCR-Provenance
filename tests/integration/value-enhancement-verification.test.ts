@@ -511,41 +511,41 @@ describe.skipIf(!sqliteVecAvailable)('VALUE ENHANCEMENT VERIFICATION: Phases 1-5
       }
     });
 
-    it('should validate min_quality_score in search schemas', async () => {
-      const { SearchHybridInput } = await import('../../src/utils/validation.js');
+    it('should validate min_quality_score in search schemas (nested under filters)', async () => {
+      const { SearchUnifiedInput } = await import('../../src/utils/validation.js');
 
-      // Valid: min_quality_score within range
-      const valid = SearchHybridInput.safeParse({
+      // Valid: min_quality_score within range (nested under filters)
+      const valid = SearchUnifiedInput.safeParse({
         query: 'test query',
-        min_quality_score: 3.0,
+        filters: { min_quality_score: 3.0 },
       });
       expect(valid.success).toBe(true);
 
       // Invalid: min_quality_score above max (5)
-      const tooHigh = SearchHybridInput.safeParse({
+      const tooHigh = SearchUnifiedInput.safeParse({
         query: 'test query',
-        min_quality_score: 6.0,
+        filters: { min_quality_score: 6.0 },
       });
       expect(tooHigh.success).toBe(false);
 
       // Invalid: min_quality_score below min (0)
-      const tooLow = SearchHybridInput.safeParse({
+      const tooLow = SearchUnifiedInput.safeParse({
         query: 'test query',
-        min_quality_score: -1.0,
+        filters: { min_quality_score: -1.0 },
       });
       expect(tooLow.success).toBe(false);
     });
 
-    it('should validate expand_query in hybrid search schema', async () => {
-      const { SearchHybridInput } = await import('../../src/utils/validation.js');
+    it('should validate mode parameter in unified search schema', async () => {
+      const { SearchUnifiedInput } = await import('../../src/utils/validation.js');
 
-      const valid = SearchHybridInput.safeParse({
+      const valid = SearchUnifiedInput.safeParse({
         query: 'injury treatment',
-        expand_query: true,
+        mode: 'hybrid',
       });
       expect(valid.success).toBe(true);
       if (valid.success) {
-        expect(valid.data.expand_query).toBe(true);
+        expect(valid.data.mode).toBe('hybrid');
       }
     });
   });

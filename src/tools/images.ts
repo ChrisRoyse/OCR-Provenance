@@ -18,7 +18,6 @@ import { successResult } from '../server/types.js';
 import { MCPError } from '../server/errors.js';
 import { formatResponse, handleError, fetchProvenanceChain, type ToolResponse, type ToolDefinition } from './shared.js';
 import { validateInput } from '../utils/validation.js';
-import { ImageExtractor } from '../services/images/extractor.js';
 import {
   getImage,
   getImagesByDocument,
@@ -28,29 +27,16 @@ import {
   deleteImagesByDocumentCascade,
   resetFailedImages,
   resetProcessingImages,
-  insertImageBatch,
-  updateImageProvenance,
   updateImageVLMResult,
 } from '../services/storage/database/image-operations.js';
-import { getProvenanceTracker } from '../services/provenance/index.js';
 import { ProvenanceType } from '../models/provenance.js';
-import { computeHash, computeFileHashSync } from '../utils/hash.js';
+import { computeHash } from '../utils/hash.js';
 import { getEmbeddingService } from '../services/embedding/embedder.js';
 import { getVLMService } from '../services/vlm/service.js';
-import type { CreateImageReference } from '../models/image.js';
 
 // ===============================================================================
 // VALIDATION SCHEMAS
 // ===============================================================================
-
-const ImageExtractInput = z.object({
-  pdf_path: z.string().min(1),
-  output_dir: z.string().min(1),
-  document_id: z.string().min(1),
-  ocr_result_id: z.string().min(1),
-  min_size: z.number().int().min(1).default(50),
-  max_images: z.number().int().min(1).max(1000).default(100),
-});
 
 const ImageListInput = z.object({
   document_id: z.string().min(1),
@@ -110,128 +96,6 @@ const ImageReanalyzeInput = z.object({
 // ═══════════════════════════════════════════════════════════════════════════════
 // IMAGE TOOL HANDLERS
 // ═══════════════════════════════════════════════════════════════════════════════
-
-/**
- * Handle ocr_image_extract - Extract images from a PDF document
- */
-export async function handleImageExtract(params: Record<string, unknown>): Promise<ToolResponse> {
-  try {
-    const input = validateInput(ImageExtractInput, params);
-    const pdfPath = input.pdf_path;
-    const outputDir = input.output_dir;
-    const documentId = input.document_id;
-    const ocrResultId = input.ocr_result_id;
-    const minSize = input.min_size ?? 50;
-    const maxImages = input.max_images ?? 100;
-
-    // Validate PDF path exists
-    if (!fs.existsSync(pdfPath)) {
-      throw new MCPError('PATH_NOT_FOUND', `PDF file not found: ${pdfPath}`, { pdf_path: pdfPath });
-    }
-
-    const { db } = requireDatabase();
-
-    // Verify document exists
-    const doc = db.getDocument(documentId);
-    if (!doc) {
-      throw new MCPError('DOCUMENT_NOT_FOUND', `Document not found: ${documentId}`, {
-        document_id: documentId,
-      });
-    }
-
-    // Create output directory if needed
-    if (!fs.existsSync(outputDir)) {
-      fs.mkdirSync(outputDir, { recursive: true });
-    }
-
-    // Extract images using PyMuPDF
-    const extractor = new ImageExtractor();
-    const extracted = await extractor.extractFromPDF(pdfPath, {
-      outputDir,
-      minSize,
-      maxImages,
-    });
-
-    // Store image references in database
-    const imageRefs: CreateImageReference[] = extracted.map((img) => ({
-      document_id: documentId,
-      ocr_result_id: ocrResultId,
-      page_number: img.page,
-      bounding_box: img.bbox,
-      image_index: img.index,
-      format: img.format,
-      dimensions: { width: img.width, height: img.height },
-      extracted_path: img.path,
-      file_size: img.size,
-      context_text: null,
-      provenance_id: null,
-      block_type: null,
-      is_header_footer: false,
-      content_hash: img.path && fs.existsSync(img.path) ? computeFileHashSync(img.path) : null,
-    }));
-
-    const stored = insertImageBatch(db.getConnection(), imageRefs);
-
-    // Create IMAGE provenance records
-    const ocrResult = db.getOCRResultByDocumentId(documentId);
-    if (ocrResult && doc.provenance_id) {
-      const tracker = getProvenanceTracker(db);
-      for (const img of stored) {
-        try {
-          const provenanceId = tracker.createProvenance({
-            type: ProvenanceType.IMAGE,
-            source_type: 'IMAGE_EXTRACTION',
-            source_id: ocrResult.provenance_id,
-            root_document_id: doc.provenance_id,
-            content_hash:
-              img.content_hash ??
-              (img.extracted_path && fs.existsSync(img.extracted_path)
-                ? computeFileHashSync(img.extracted_path)
-                : computeHash(img.id)),
-            source_path: img.extracted_path ?? undefined,
-            processor: 'pdf-image-extraction',
-            processor_version: '1.0.0',
-            processing_params: {
-              page_number: img.page_number,
-              image_index: img.image_index,
-              format: img.format,
-            },
-            location: {
-              page_number: img.page_number,
-            },
-          });
-          updateImageProvenance(db.getConnection(), img.id, provenanceId);
-          img.provenance_id = provenanceId;
-        } catch (error) {
-          console.error(
-            `[WARN] Failed to create IMAGE provenance for ${img.id}: ${error instanceof Error ? error.message : String(error)}`
-          );
-          throw error;
-        }
-      }
-    }
-
-    return formatResponse(
-      successResult({
-        document_id: documentId,
-        pdf_path: pdfPath,
-        output_dir: outputDir,
-        extracted: extracted.length,
-        stored: stored.length,
-        images: stored.map((img) => ({
-          id: img.id,
-          page: img.page_number,
-          index: img.image_index,
-          format: img.format,
-          dimensions: img.dimensions,
-          path: img.extracted_path,
-        })),
-      })
-    );
-  } catch (error) {
-    return handleError(error);
-  }
-}
 
 /**
  * Handle ocr_image_list - List all images in a document
@@ -458,7 +322,7 @@ export async function handleImageResetFailed(
 
     return formatResponse(
       successResult({
-        document_id: documentId || 'all',
+        document_id: documentId ?? 'all',
         images_reset: failedCount + processingCount,
         failed_reset: failedCount,
         processing_reset: processingCount,
@@ -900,25 +764,6 @@ export async function handleImageReanalyze(params: Record<string, unknown>): Pro
  * Image tools collection for MCP server registration
  */
 export const imageTools: Record<string, ToolDefinition> = {
-  ocr_image_extract: {
-    description: '[PROCESSING] Use to extract images from a PDF via Datalab OCR pipeline. Returns image records with paths. Prefer ocr_extract_images for file-based extraction.',
-    inputSchema: {
-      pdf_path: z.string().min(1).describe('Path to PDF file'),
-      output_dir: z.string().min(1).describe('Directory to save extracted images'),
-      document_id: z.string().min(1).describe('Document ID'),
-      ocr_result_id: z.string().min(1).describe('OCR result ID'),
-      min_size: z.number().int().min(1).default(50).describe('Minimum image dimension in pixels'),
-      max_images: z
-        .number()
-        .int()
-        .min(1)
-        .max(1000)
-        .default(100)
-        .describe('Maximum images to extract'),
-    },
-    handler: handleImageExtract,
-  },
-
   ocr_image_list: {
     description: '[ANALYSIS] Use to list all images from a document with optional VLM status filter. Returns image metadata and optionally descriptions.',
     inputSchema: {

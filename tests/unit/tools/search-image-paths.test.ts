@@ -16,10 +16,16 @@ import { tmpdir } from 'os';
 import { v4 as uuidv4 } from 'uuid';
 
 import {
-  handleSearchSemantic,
-  handleSearch,
-  handleSearchHybrid,
+  handleSearchUnified,
 } from '../../../src/tools/search.js';
+
+// Wrappers that route through the unified handler with mode parameter
+const handleSearch = (params: Record<string, unknown>) =>
+  handleSearchUnified({ ...params, mode: 'keyword' });
+const handleSearchSemantic = (params: Record<string, unknown>) =>
+  handleSearchUnified({ ...params, mode: 'semantic' });
+const handleSearchHybrid = (params: Record<string, unknown>) =>
+  handleSearchUnified({ ...params, mode: 'hybrid' });
 import { state, resetState, updateConfig, clearDatabase } from '../../../src/server/state.js';
 import { DatabaseService } from '../../../src/services/storage/database/index.js';
 import { VectorService } from '../../../src/services/storage/vector.js';

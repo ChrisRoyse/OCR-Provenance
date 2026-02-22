@@ -1,7 +1,7 @@
 /**
- * Tests for ocr_search_saved_execute MCP Tool
+ * Tests for ocr_search_saved (action='execute') MCP Tool
  *
- * Tests re-execution of saved searches by ID.
+ * Tests re-execution of saved searches by ID via the unified ocr_search_saved tool.
  * Uses real database instances with temp databases - NO MOCKS.
  *
  * @module tests/unit/tools/search-saved-execute
@@ -30,7 +30,7 @@ import { searchTools } from '../../../src/tools/search.js';
 // TEST SETUP
 // ═══════════════════════════════════════════════════════════════════════════════
 
-describe('ocr_search_saved_execute', () => {
+describe('ocr_search_saved action=execute', () => {
   let tempDir: string;
   const dbName = createUniqueName('test-saved-exec');
   let docId: string;
@@ -137,7 +137,8 @@ describe('ocr_search_saved_execute', () => {
   });
 
   it('should re-execute a saved BM25 search', async () => {
-    const result = await searchTools.ocr_search_saved_execute.handler({
+    const result = await searchTools.ocr_search_saved.handler({
+      action: 'execute',
       saved_search_id: savedSearchId,
     });
 
@@ -153,7 +154,8 @@ describe('ocr_search_saved_execute', () => {
   });
 
   it('should apply override_limit', async () => {
-    const result = await searchTools.ocr_search_saved_execute.handler({
+    const result = await searchTools.ocr_search_saved.handler({
+      action: 'execute',
       saved_search_id: savedSearchId,
       override_limit: 5,
     });
@@ -166,7 +168,8 @@ describe('ocr_search_saved_execute', () => {
   });
 
   it('should error for non-existent saved search', async () => {
-    const result = await searchTools.ocr_search_saved_execute.handler({
+    const result = await searchTools.ocr_search_saved.handler({
+      action: 'execute',
       saved_search_id: 'non-existent-id',
     });
 
@@ -176,15 +179,19 @@ describe('ocr_search_saved_execute', () => {
     expect(data.error.message).toContain('Saved search not found');
   });
 
-  it('should validate input - missing saved_search_id', async () => {
-    const result = await searchTools.ocr_search_saved_execute.handler({});
+  it('should validate input - missing saved_search_id for execute', async () => {
+    const result = await searchTools.ocr_search_saved.handler({
+      action: 'execute',
+    });
 
     const data = JSON.parse(result.content[0].text);
     expect(data.success).toBe(false);
+    expect(data.error.message).toContain('saved_search_id is required');
   });
 
   it('should include saved search metadata in response', async () => {
-    const result = await searchTools.ocr_search_saved_execute.handler({
+    const result = await searchTools.ocr_search_saved.handler({
+      action: 'execute',
       saved_search_id: savedSearchId,
     });
 
@@ -198,7 +205,8 @@ describe('ocr_search_saved_execute', () => {
   });
 
   it('should preserve saved search notes in response metadata', async () => {
-    const result = await searchTools.ocr_search_saved_execute.handler({
+    const result = await searchTools.ocr_search_saved.handler({
+      action: 'execute',
       saved_search_id: savedSearchId,
     });
 

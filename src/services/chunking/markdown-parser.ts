@@ -434,8 +434,8 @@ function classifySegment(
 /**
  * Extract page offsets from markdown text by scanning for Datalab page markers.
  *
- * This is used by `handleChunkComplete()` which re-chunks already-OCR'd
- * documents where the original pageOffsets from Datalab are no longer available.
+ * This is used when re-chunking already-OCR'd documents where the original
+ * pageOffsets from Datalab are no longer available.
  * The function reconstructs page boundaries from the `---\n<!-- Page N -->`
  * markers embedded in the markdown text.
  *

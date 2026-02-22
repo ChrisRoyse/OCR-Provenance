@@ -182,7 +182,7 @@ async function handleHealthCheck(params: Record<string, unknown>): Promise<ToolR
       count: embeddingsWithoutVectors.length,
       sample_ids: embeddingsWithoutVectors.slice(0, SAMPLE_LIMIT).map(r => r.id),
       fixable: false,
-      fix_tool: 'ocr_embedding_rebuild or ocr_reembed_document',
+      fix_tool: 'ocr_embedding_rebuild (use include_vlm=true for VLM embeddings)',
     };
 
     // ──────────────────────────────────────────────────────────────
@@ -225,6 +225,21 @@ async function handleHealthCheck(params: Record<string, unknown>): Promise<ToolR
     const totalGaps = Object.values(gaps).reduce((sum, g) => sum + g.count, 0);
     const healthy = totalGaps === 0;
 
+    // Build dynamic next_steps based on gaps found
+    const nextSteps: Array<{ tool: string; description: string }> = [];
+    if (gaps.chunks_without_embeddings?.count > 0 || gaps.pending_documents?.count > 0) {
+      nextSteps.push({ tool: 'ocr_process_pending', description: 'Process pending documents through the OCR pipeline' });
+    }
+    if (gaps.failed_documents?.count > 0) {
+      nextSteps.push({ tool: 'ocr_retry_failed', description: 'Retry failed documents' });
+    }
+    if (gaps.images_without_vlm?.count > 0) {
+      nextSteps.push({ tool: 'ocr_vlm_process_pending', description: 'Generate VLM descriptions for images without them' });
+    }
+    if (nextSteps.length === 0 && healthy) {
+      nextSteps.push({ tool: 'ocr_search', description: 'Search across all documents' });
+    }
+
     return formatResponse(successResult({
       healthy,
       total_gaps: totalGaps,
@@ -236,6 +251,7 @@ async function handleHealthCheck(params: Record<string, unknown>): Promise<ToolR
         total_embeddings: totalEmbeddings,
         total_images: totalImages,
       },
+      next_steps: nextSteps,
     }));
   } catch (error) {
     return handleError(error);
@@ -252,7 +268,7 @@ async function handleHealthCheck(params: Record<string, unknown>): Promise<ToolR
 export const healthTools: Record<string, ToolDefinition> = {
   ocr_health_check: {
     description:
-      '[CORE] Use to diagnose data integrity issues: missing embeddings, orphaned provenance, images without VLM. Returns gap counts with fix suggestions. Set fix=true to auto-repair fixable gaps.',
+      '[ESSENTIAL] Use to diagnose data integrity issues: missing embeddings, orphaned provenance, images without VLM. Returns gap counts with fix suggestions. Set fix=true to auto-repair fixable gaps.',
     inputSchema: HealthCheckInput.shape,
     handler: handleHealthCheck,
   },

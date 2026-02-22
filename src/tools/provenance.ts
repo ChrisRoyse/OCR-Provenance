@@ -165,6 +165,10 @@ export async function handleProvenanceGet(params: Record<string, unknown>): Prom
         item_type: itemType,
         chain: enrichedChain,
         root_document_id: chain[0].root_document_id,
+        next_steps: [
+          { tool: 'ocr_provenance_verify', description: 'Verify content integrity of this provenance chain' },
+          { tool: 'ocr_document_get', description: 'Get details for the root document' },
+        ],
       })
     );
   } catch (error) {

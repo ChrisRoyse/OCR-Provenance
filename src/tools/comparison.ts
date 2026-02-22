@@ -497,6 +497,10 @@ async function handleDocumentCompare(params: Record<string, unknown>): Promise<T
       comparisonResponse.provenance_chain = fetchProvenanceChain(db, provId, 'comparison');
     }
 
+    comparisonResponse.next_steps = [
+      { tool: 'ocr_comparison_list', description: 'View all comparisons in the database' },
+    ];
+
     return formatResponse(successResult(comparisonResponse));
   } catch (error) {
     return handleError(error);
