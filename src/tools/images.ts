@@ -51,12 +51,9 @@ const ImageGetInput = z.object({
 const ImageStatsInput = z.object({});
 
 const ImageDeleteInput = z.object({
-  image_id: z.string().min(1),
-  delete_file: z.boolean().default(false),
-});
-
-const ImageDeleteByDocumentInput = z.object({
-  document_id: z.string().min(1),
+  image_id: z.string().optional(),
+  document_id: z.string().optional(),
+  confirm: z.boolean().default(false),
   delete_files: z.boolean().default(false),
 });
 
@@ -69,6 +66,8 @@ const ImagePendingInput = z.object({
 });
 
 const ImageSearchInput = z.object({
+  mode: z.enum(['keyword', 'semantic']).default('keyword'),
+  // keyword mode params
   image_type: z.string().optional(),
   block_type: z.string().optional(),
   min_confidence: z.number().min(0).max(1).optional(),
@@ -76,15 +75,13 @@ const ImageSearchInput = z.object({
   exclude_headers_footers: z.boolean().default(false),
   page_number: z.number().int().min(1).optional(),
   vlm_description_query: z.string().optional(),
-  limit: z.number().int().min(1).max(100).default(50),
-});
-
-const ImageSemanticSearchInput = z.object({
-  query: z.string().min(1),
+  // semantic mode params
+  query: z.string().optional(),
   document_filter: z.array(z.string().min(1)).optional(),
   similarity_threshold: z.number().min(0).max(1).default(0.5),
-  limit: z.number().int().min(1).max(100).default(10),
   include_provenance: z.boolean().default(false),
+  // shared
+  limit: z.number().int().min(1).max(100).default(50),
 });
 
 const ImageReanalyzeInput = z.object({
@@ -143,7 +140,7 @@ export async function handleImageList(params: Record<string, unknown>): Promise<
         })),
         next_steps: [
           { tool: 'ocr_image_get', description: 'Get full details for a specific image' },
-          { tool: 'ocr_vlm_process_document', description: 'Run VLM analysis on document images' },
+          { tool: 'ocr_vlm_process', description: 'Run VLM analysis on document images' },
         ],
       })
     );
@@ -196,7 +193,7 @@ export async function handleImageGet(params: Record<string, unknown>): Promise<T
         created_at: img.created_at,
       },
       next_steps: [
-        { tool: 'ocr_image_semantic_search', description: 'Find similar images by meaning' },
+        { tool: 'ocr_image_search', description: 'Find similar images (mode=semantic for meaning-based)' },
         { tool: 'ocr_image_reanalyze', description: 'Re-run VLM analysis with custom prompt' },
         { tool: 'ocr_document_page', description: 'View the page containing this image' },
       ],
@@ -232,7 +229,7 @@ export async function handleImageStats(params: Record<string, unknown>): Promise
             stats.total > 0 ? ((stats.processed / stats.total) * 100).toFixed(1) + '%' : '0%',
         },
         next_steps: [
-          { tool: 'ocr_vlm_process_pending', description: 'Process pending VLM images' },
+          { tool: 'ocr_vlm_process', description: 'Process pending VLM images' },
           { tool: 'ocr_image_pending', description: 'List images awaiting processing' },
           { tool: 'ocr_image_search', description: 'Search images by type or filter' },
         ],
@@ -244,83 +241,79 @@ export async function handleImageStats(params: Record<string, unknown>): Promise
 }
 
 /**
- * Handle ocr_image_delete - Delete a specific image
+ * Handle ocr_image_delete - Delete images by image_id (single) or document_id (all for document)
+ *
+ * Must provide exactly one of image_id or document_id. Requires confirm=true.
  */
 export async function handleImageDelete(params: Record<string, unknown>): Promise<ToolResponse> {
   try {
     const input = validateInput(ImageDeleteInput, params);
-    const imageId = input.image_id;
-    const deleteFile = input.delete_file ?? false;
+    const { image_id: imageId, document_id: documentId, confirm, delete_files: deleteFiles } = input;
+
+    if (!imageId && !documentId) {
+      throw new MCPError('VALIDATION_ERROR', 'Must provide either image_id or document_id', {});
+    }
+    if (imageId && documentId) {
+      throw new MCPError('VALIDATION_ERROR', 'Provide only one of image_id or document_id, not both', {});
+    }
+    if (!confirm) {
+      throw new MCPError('VALIDATION_ERROR', 'Destructive operation requires confirm=true', {});
+    }
 
     const { db } = requireDatabase();
 
-    const img = getImage(db.getConnection(), imageId);
-    if (!img) {
-      throw new MCPError('VALIDATION_ERROR', `Image not found: ${imageId}`, { image_id: imageId });
-    }
+    if (imageId) {
+      // ── Single image delete ──
+      const img = getImage(db.getConnection(), imageId);
+      if (!img) {
+        throw new MCPError('VALIDATION_ERROR', `Image not found: ${imageId}`, { image_id: imageId });
+      }
 
-    // Delete the file if requested
-    if (deleteFile && img.extracted_path && fs.existsSync(img.extracted_path)) {
-      fs.unlinkSync(img.extracted_path);
-    }
+      if (deleteFiles && img.extracted_path && fs.existsSync(img.extracted_path)) {
+        fs.unlinkSync(img.extracted_path);
+      }
 
-    // Delete from database with full cascade (embeddings, vectors, provenance)
-    deleteImageCascade(db.getConnection(), imageId);
+      deleteImageCascade(db.getConnection(), imageId);
 
-    return formatResponse(
-      successResult({
-        image_id: imageId,
-        deleted: true,
-        file_deleted: !!(deleteFile && img.extracted_path),
-        next_steps: [
-          { tool: 'ocr_image_list', description: 'List remaining images for the document' },
-        ],
-      })
-    );
-  } catch (error) {
-    return handleError(error);
-  }
-}
-
-/**
- * Handle ocr_image_delete_by_document - Delete all images for a document
- */
-export async function handleImageDeleteByDocument(
-  params: Record<string, unknown>
-): Promise<ToolResponse> {
-  try {
-    const input = validateInput(ImageDeleteByDocumentInput, params);
-    const documentId = input.document_id;
-    const deleteFiles = input.delete_files ?? false;
-
-    const { db } = requireDatabase();
-
-    // Get images first if we need to delete files
-    let filesDeleted = 0;
-    if (deleteFiles) {
-      const images = getImagesByDocument(db.getConnection(), documentId);
-      for (const img of images) {
-        if (img.extracted_path && fs.existsSync(img.extracted_path)) {
-          fs.unlinkSync(img.extracted_path);
-          filesDeleted++;
+      return formatResponse(
+        successResult({
+          mode: 'single',
+          image_id: imageId,
+          deleted: true,
+          file_deleted: !!(deleteFiles && img.extracted_path),
+          next_steps: [
+            { tool: 'ocr_image_list', description: 'List remaining images for the document' },
+          ],
+        })
+      );
+    } else {
+      // ── Delete all images for document ──
+      let filesDeleted = 0;
+      if (deleteFiles) {
+        const images = getImagesByDocument(db.getConnection(), documentId!);
+        for (const img of images) {
+          if (img.extracted_path && fs.existsSync(img.extracted_path)) {
+            fs.unlinkSync(img.extracted_path);
+            filesDeleted++;
+          }
         }
       }
+
+      const count = deleteImagesByDocumentCascade(db.getConnection(), documentId!);
+
+      return formatResponse(
+        successResult({
+          mode: 'document',
+          document_id: documentId,
+          images_deleted: count,
+          files_deleted: filesDeleted,
+          next_steps: [
+            { tool: 'ocr_extract_images', description: 'Re-extract images for the document' },
+            { tool: 'ocr_document_get', description: 'View the document after image cleanup' },
+          ],
+        })
+      );
     }
-
-    // Delete from database with full cascade (embeddings, vectors, provenance)
-    const count = deleteImagesByDocumentCascade(db.getConnection(), documentId);
-
-    return formatResponse(
-      successResult({
-        document_id: documentId,
-        images_deleted: count,
-        files_deleted: filesDeleted,
-        next_steps: [
-          { tool: 'ocr_extract_images', description: 'Re-extract images for the document' },
-          { tool: 'ocr_document_get', description: 'View the document after image cleanup' },
-        ],
-      })
-    );
   } catch (error) {
     return handleError(error);
   }
@@ -348,7 +341,7 @@ export async function handleImageResetFailed(
         failed_reset: failedCount,
         processing_reset: processingCount,
         next_steps: [
-          { tool: 'ocr_vlm_process_pending', description: 'Process the reset images' },
+          { tool: 'ocr_vlm_process', description: 'Process the reset images' },
           { tool: 'ocr_image_pending', description: 'Check pending images after reset' },
         ],
       })
@@ -359,111 +352,191 @@ export async function handleImageResetFailed(
 }
 
 /**
- * Handle ocr_image_search - Search images by VLM classification type, block type, and other filters
+ * Handle ocr_image_search - Search images by keyword filters or semantic similarity
+ *
+ * mode=keyword: SQL LIKE search on VLM descriptions and metadata filters
+ * mode=semantic: Vector similarity search on VLM embeddings
  */
 export async function handleImageSearch(params: Record<string, unknown>): Promise<ToolResponse> {
   try {
     const input = validateInput(ImageSearchInput, params);
-    const { db } = requireDatabase();
-    const conn = db.getConnection();
+    const mode = input.mode ?? 'keyword';
 
-    let sql = `SELECT id, document_id, page_number, image_index, format, width, height,
-      vlm_confidence, vlm_description, vlm_structured_data, block_type,
-      is_header_footer, extracted_path, file_size
-      FROM images WHERE vlm_status = 'complete'`;
-    const sqlParams: unknown[] = [];
+    if (mode === 'semantic') {
+      // ── Semantic search mode ──
+      if (!input.query) {
+        throw new MCPError('VALIDATION_ERROR', 'query is required for mode=semantic', {});
+      }
 
-    if (input.image_type) {
-      sql += ` AND json_extract(vlm_structured_data, '$.imageType') = ?`;
-      sqlParams.push(input.image_type);
-    }
-    if (input.block_type) {
-      sql += ` AND block_type = ?`;
-      sqlParams.push(input.block_type);
-    }
-    if (input.min_confidence !== undefined) {
-      sql += ` AND vlm_confidence >= ?`;
-      sqlParams.push(input.min_confidence);
-    }
-    if (input.document_id) {
-      sql += ` AND document_id = ?`;
-      sqlParams.push(input.document_id);
-    }
-    if (input.exclude_headers_footers) {
-      sql += ` AND is_header_footer = 0`;
-    }
-    if (input.page_number !== undefined) {
-      sql += ` AND page_number = ?`;
-      sqlParams.push(input.page_number);
-    }
-    if (input.vlm_description_query) {
-      sql += ` AND vlm_description LIKE '%' || ? || '%'`;
-      sqlParams.push(input.vlm_description_query);
-    }
+      const { db, vector } = requireDatabase();
 
-    sql += ` ORDER BY document_id, page_number, image_index LIMIT ?`;
-    sqlParams.push(input.limit);
+      const embeddingService = getEmbeddingService();
+      const queryVector = await embeddingService.embedSearchQuery(input.query);
 
-    const rows = conn.prepare(sql).all(...sqlParams) as Record<string, unknown>[];
+      const limit = input.limit ?? 10;
+      const searchResults = vector.searchSimilar(queryVector, {
+        limit: limit * 3,
+        threshold: input.similarity_threshold,
+        documentFilter: input.document_filter,
+      });
 
-    const results = rows.map(r => {
-      // Parse vlm_structured_data once and reuse for both the raw field and surfaced fields
-      let structured: Record<string, unknown> | null = null;
-      if (r.vlm_structured_data) {
-        try {
-          structured = JSON.parse(r.vlm_structured_data as string);
-        } catch {
-          console.error(`[T1.1] Failed to parse vlm_structured_data for image ${r.id}: malformed JSON`);
+      const vlmResults = searchResults.filter(r => r.image_id !== null);
+
+      const results = [];
+      for (const r of vlmResults) {
+        if (results.length >= limit) break;
+
+        const img = getImage(db.getConnection(), r.image_id as string);
+        if (!img) continue;
+
+        const doc = db.getDocument(r.document_id);
+
+        const result: Record<string, unknown> = {
+          image_id: img.id,
+          document_id: img.document_id,
+          document_file_path: doc?.file_path ?? null,
+          document_file_name: doc?.file_name ?? null,
+          extracted_path: img.extracted_path,
+          page_number: img.page_number,
+          image_index: img.image_index,
+          format: img.format,
+          dimensions: img.dimensions,
+          block_type: img.block_type,
+          vlm_description: img.vlm_description,
+          vlm_confidence: img.vlm_confidence,
+          similarity_score: r.similarity_score,
+          embedding_id: r.embedding_id,
+        };
+
+        if (img.vlm_structured_data) {
+          const structured = img.vlm_structured_data;
+          result.image_type = structured.imageType ?? null;
+          result.vlm_extracted_text = structured.extractedText ?? [];
+          result.vlm_dates = structured.dates ?? [];
+          result.vlm_names = structured.names ?? [];
+          result.vlm_numbers = structured.numbers ?? [];
+          result.vlm_primary_subject = structured.primarySubject ?? null;
         }
+
+        if (input.include_provenance && img.provenance_id) {
+          result.provenance_chain = fetchProvenanceChain(db, img.provenance_id, '[image_search_semantic]');
+        }
+
+        results.push(result);
       }
 
-      const base: Record<string, unknown> = {
-        id: r.id,
-        document_id: r.document_id,
-        page_number: r.page_number,
-        image_index: r.image_index,
-        format: r.format,
-        dimensions: { width: r.width, height: r.height },
-        vlm_confidence: r.vlm_confidence,
-        vlm_description: r.vlm_description,
-        vlm_structured_data: structured,
-        block_type: r.block_type,
-        is_header_footer: r.is_header_footer === 1,
-        extracted_path: r.extracted_path,
-        file_size: r.file_size,
-      };
-
-      // T1.1: Surface VLM structured data fields at top level
-      if (structured) {
-        base.image_type = structured.imageType ?? null;
-        base.vlm_extracted_text = structured.extractedText ?? [];
-        base.vlm_dates = structured.dates ?? [];
-        base.vlm_names = structured.names ?? [];
-        base.vlm_numbers = structured.numbers ?? [];
-        base.vlm_primary_subject = structured.primarySubject ?? null;
-      }
-
-      return base;
-    });
-
-    // Aggregate type counts
-    const typeCounts: Record<string, number> = {};
-    for (const r of results) {
-      const type = (r.image_type as string) || 'unknown';
-      typeCounts[type] = (typeCounts[type] || 0) + 1;
-    }
-
-    return formatResponse(
-      successResult({
-        images: results,
+      return formatResponse(successResult({
+        mode: 'semantic',
+        query: input.query,
         total: results.length,
-        type_distribution: typeCounts,
+        similarity_threshold: input.similarity_threshold,
+        results,
         next_steps: [
-          { tool: 'ocr_image_get', description: 'Get full details for a specific image' },
-          { tool: 'ocr_image_semantic_search', description: 'Search images by meaning instead of filters' },
+          { tool: 'ocr_image_get', description: 'Get full details for a matched image' },
+          { tool: 'ocr_document_page', description: 'View the page containing a matched image' },
         ],
-      })
-    );
+      }));
+    } else {
+      // ── Keyword search mode ──
+      const { db } = requireDatabase();
+      const conn = db.getConnection();
+
+      let sql = `SELECT id, document_id, page_number, image_index, format, width, height,
+        vlm_confidence, vlm_description, vlm_structured_data, block_type,
+        is_header_footer, extracted_path, file_size
+        FROM images WHERE vlm_status = 'complete'`;
+      const sqlParams: unknown[] = [];
+
+      if (input.image_type) {
+        sql += ` AND json_extract(vlm_structured_data, '$.imageType') = ?`;
+        sqlParams.push(input.image_type);
+      }
+      if (input.block_type) {
+        sql += ` AND block_type = ?`;
+        sqlParams.push(input.block_type);
+      }
+      if (input.min_confidence !== undefined) {
+        sql += ` AND vlm_confidence >= ?`;
+        sqlParams.push(input.min_confidence);
+      }
+      if (input.document_id) {
+        sql += ` AND document_id = ?`;
+        sqlParams.push(input.document_id);
+      }
+      if (input.exclude_headers_footers) {
+        sql += ` AND is_header_footer = 0`;
+      }
+      if (input.page_number !== undefined) {
+        sql += ` AND page_number = ?`;
+        sqlParams.push(input.page_number);
+      }
+      if (input.vlm_description_query) {
+        sql += ` AND vlm_description LIKE '%' || ? || '%'`;
+        sqlParams.push(input.vlm_description_query);
+      }
+
+      sql += ` ORDER BY document_id, page_number, image_index LIMIT ?`;
+      sqlParams.push(input.limit);
+
+      const rows = conn.prepare(sql).all(...sqlParams) as Record<string, unknown>[];
+
+      const results = rows.map(r => {
+        let structured: Record<string, unknown> | null = null;
+        if (r.vlm_structured_data) {
+          try {
+            structured = JSON.parse(r.vlm_structured_data as string);
+          } catch {
+            console.error(`[T1.1] Failed to parse vlm_structured_data for image ${r.id}: malformed JSON`);
+          }
+        }
+
+        const base: Record<string, unknown> = {
+          id: r.id,
+          document_id: r.document_id,
+          page_number: r.page_number,
+          image_index: r.image_index,
+          format: r.format,
+          dimensions: { width: r.width, height: r.height },
+          vlm_confidence: r.vlm_confidence,
+          vlm_description: r.vlm_description,
+          vlm_structured_data: structured,
+          block_type: r.block_type,
+          is_header_footer: r.is_header_footer === 1,
+          extracted_path: r.extracted_path,
+          file_size: r.file_size,
+        };
+
+        if (structured) {
+          base.image_type = structured.imageType ?? null;
+          base.vlm_extracted_text = structured.extractedText ?? [];
+          base.vlm_dates = structured.dates ?? [];
+          base.vlm_names = structured.names ?? [];
+          base.vlm_numbers = structured.numbers ?? [];
+          base.vlm_primary_subject = structured.primarySubject ?? null;
+        }
+
+        return base;
+      });
+
+      const typeCounts: Record<string, number> = {};
+      for (const r of results) {
+        const type = (r.image_type as string) || 'unknown';
+        typeCounts[type] = (typeCounts[type] || 0) + 1;
+      }
+
+      return formatResponse(
+        successResult({
+          mode: 'keyword',
+          images: results,
+          total: results.length,
+          type_distribution: typeCounts,
+          next_steps: [
+            { tool: 'ocr_image_get', description: 'Get full details for a specific image' },
+            { tool: 'ocr_image_search', description: 'Try mode=semantic for meaning-based search' },
+          ],
+        })
+      );
+    }
   } catch (error) {
     return handleError(error);
   }
@@ -495,99 +568,11 @@ export async function handleImagePending(params: Record<string, unknown>): Promi
           created_at: img.created_at,
         })),
         next_steps: [
-          { tool: 'ocr_vlm_process_pending', description: 'Process all pending VLM images' },
-          { tool: 'ocr_vlm_process_document', description: 'Process images for a specific document' },
+          { tool: 'ocr_vlm_process', description: 'Process all pending VLM images' },
+          { tool: 'ocr_vlm_process', description: 'Process images for a specific document' },
         ],
       })
     );
-  } catch (error) {
-    return handleError(error);
-  }
-}
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// IMAGE SEMANTIC SEARCH & REANALYSIS HANDLERS
-// ═══════════════════════════════════════════════════════════════════════════════
-
-/**
- * Handle ocr_image_semantic_search - Search images by semantic similarity of VLM descriptions
- */
-export async function handleImageSemanticSearch(params: Record<string, unknown>): Promise<ToolResponse> {
-  try {
-    const input = validateInput(ImageSemanticSearchInput, params);
-    const { db, vector } = requireDatabase();
-
-    // Generate query embedding
-    const embeddingService = getEmbeddingService();
-    const queryVector = await embeddingService.embedSearchQuery(input.query);
-
-    // Search for similar vectors
-    const limit = input.limit ?? 10;
-    const searchResults = vector.searchSimilar(queryVector, {
-      limit: limit * 3, // Overfetch since we filter to image_id only
-      threshold: input.similarity_threshold,
-      documentFilter: input.document_filter,
-    });
-
-    // Filter to VLM embeddings only (image_id IS NOT NULL)
-    const vlmResults = searchResults.filter(r => r.image_id !== null);
-
-    // Enrich with image metadata and cap at requested limit
-    const results = [];
-    for (const r of vlmResults) {
-      if (results.length >= limit) break;
-
-      const img = getImage(db.getConnection(), r.image_id as string);
-      if (!img) continue;
-
-      // Get document context
-      const doc = db.getDocument(r.document_id);
-
-      const result: Record<string, unknown> = {
-        image_id: img.id,
-        document_id: img.document_id,
-        document_file_path: doc?.file_path ?? null,
-        document_file_name: doc?.file_name ?? null,
-        extracted_path: img.extracted_path,
-        page_number: img.page_number,
-        image_index: img.image_index,
-        format: img.format,
-        dimensions: img.dimensions,
-        block_type: img.block_type,
-        vlm_description: img.vlm_description,
-        vlm_confidence: img.vlm_confidence,
-        similarity_score: r.similarity_score,
-        embedding_id: r.embedding_id,
-      };
-
-      // T1.1: Surface VLM structured data fields at top level
-      if (img.vlm_structured_data) {
-        const structured = img.vlm_structured_data;
-        result.image_type = structured.imageType ?? null;
-        result.vlm_extracted_text = structured.extractedText ?? [];
-        result.vlm_dates = structured.dates ?? [];
-        result.vlm_names = structured.names ?? [];
-        result.vlm_numbers = structured.numbers ?? [];
-        result.vlm_primary_subject = structured.primarySubject ?? null;
-      }
-
-      if (input.include_provenance && img.provenance_id) {
-        result.provenance_chain = fetchProvenanceChain(db, img.provenance_id, '[image_semantic_search]');
-      }
-
-      results.push(result);
-    }
-
-    return formatResponse(successResult({
-      query: input.query,
-      total: results.length,
-      similarity_threshold: input.similarity_threshold,
-      results,
-      next_steps: [
-        { tool: 'ocr_image_get', description: 'Get full details for a matched image' },
-        { tool: 'ocr_document_page', description: 'View the page containing a matched image' },
-      ],
-    }));
   } catch (error) {
     return handleError(error);
   }
@@ -789,7 +774,7 @@ export async function handleImageReanalyze(params: Record<string, unknown>): Pro
       tokens_used: vlmResult.tokensUsed,
       next_steps: [
         { tool: 'ocr_image_get', description: 'View the updated image details' },
-        { tool: 'ocr_image_semantic_search', description: 'Search for similar images using new description' },
+        { tool: 'ocr_image_search', description: 'Search for similar images (mode=semantic for meaning-based)' },
       ],
     }));
   } catch (error) {
@@ -833,25 +818,18 @@ export const imageTools: Record<string, ToolDefinition> = {
   },
 
   ocr_image_delete: {
-    description: '[DESTRUCTIVE] Use to delete a single image record and optionally the file on disk. Returns deletion confirmation.',
+    description: '[DESTRUCTIVE] Use to delete images. Pass image_id for one image, or document_id for all document images. Requires confirm=true.',
     inputSchema: {
-      image_id: z.string().min(1).describe('Image ID'),
-      delete_file: z.boolean().default(false).describe('Also delete the extracted image file'),
+      image_id: z.string().optional().describe('Image ID (for single image delete)'),
+      document_id: z.string().optional().describe('Document ID (to delete all images for document)'),
+      confirm: z.boolean().default(false).describe('Must be true to confirm deletion'),
+      delete_files: z.boolean().default(false).describe('Also delete the extracted image files from disk'),
     },
     handler: handleImageDelete,
   },
 
-  ocr_image_delete_by_document: {
-    description: '[DESTRUCTIVE] Use to delete all image records for a document and optionally the files. Returns deletion count.',
-    inputSchema: {
-      document_id: z.string().min(1).describe('Document ID'),
-      delete_files: z.boolean().default(false).describe('Also delete the extracted image files'),
-    },
-    handler: handleImageDeleteByDocument,
-  },
-
   ocr_image_reset_failed: {
-    description: '[PROCESSING] Use to reset failed VLM images back to pending for retry. Returns reset count. Follow with ocr_vlm_process_pending.',
+    description: '[PROCESSING] Use to reset failed VLM images back to pending for retry. Returns reset count. Follow with ocr_vlm_process.',
     inputSchema: {
       document_id: z.string().optional().describe('Document ID (omit for all documents)'),
     },
@@ -859,7 +837,7 @@ export const imageTools: Record<string, ToolDefinition> = {
   },
 
   ocr_image_pending: {
-    description: '[STATUS] Use to list images that still need VLM processing. Returns pending image IDs and metadata. Check before running ocr_vlm_process_pending.',
+    description: '[STATUS] Use to list images that still need VLM processing. Returns pending image IDs and metadata. Check before running ocr_vlm_process.',
     inputSchema: {
       limit: z.number().int().min(1).max(1000).default(100).describe('Maximum images to return'),
     },
@@ -867,41 +845,38 @@ export const imageTools: Record<string, ToolDefinition> = {
   },
 
   ocr_image_search: {
-    description: '[ANALYSIS] Use to search images by type (chart/diagram/photo), block type, confidence, or page. Returns filtered image list with VLM metadata.',
+    description: '[SEARCH] Use to find images by keyword in descriptions (mode=keyword) or by semantic similarity (mode=semantic). Returns image metadata with VLM data.',
     inputSchema: {
+      mode: z.enum(['keyword', 'semantic']).default('keyword')
+        .describe('Search mode: keyword for SQL filters, semantic for vector similarity'),
+      // keyword mode params
       image_type: z.string().optional()
-        .describe('Filter by VLM image type (e.g., "chart", "diagram", "photograph", "table", "signature")'),
+        .describe('Filter by VLM image type (keyword mode, e.g., "chart", "diagram", "photograph")'),
       block_type: z.string().optional()
-        .describe('Filter by Datalab block type (e.g., "Figure", "Picture", "PageHeader")'),
+        .describe('Filter by Datalab block type (keyword mode)'),
       min_confidence: z.number().min(0).max(1).optional()
-        .describe('Minimum VLM confidence score'),
+        .describe('Minimum VLM confidence score (keyword mode)'),
       document_id: z.string().optional()
-        .describe('Filter to specific document'),
+        .describe('Filter to specific document (keyword mode)'),
       exclude_headers_footers: z.boolean().default(false)
-        .describe('Exclude header/footer images'),
+        .describe('Exclude header/footer images (keyword mode)'),
       page_number: z.number().int().min(1).optional()
-        .describe('Filter to specific page'),
+        .describe('Filter to specific page (keyword mode)'),
       vlm_description_query: z.string().optional()
-        .describe('Filter by VLM description text (LIKE match)'),
+        .describe('Filter by VLM description text LIKE match (keyword mode)'),
+      // semantic mode params
+      query: z.string().optional()
+        .describe('Search query (required for semantic mode)'),
+      document_filter: z.array(z.string().min(1)).optional()
+        .describe('Filter to specific document IDs (semantic mode)'),
+      similarity_threshold: z.number().min(0).max(1).default(0.5)
+        .describe('Minimum similarity score (semantic mode)'),
+      include_provenance: z.boolean().default(false)
+        .describe('Include provenance chain (semantic mode)'),
+      // shared
       limit: z.number().int().min(1).max(100).default(50).describe('Maximum results'),
     },
     handler: handleImageSearch,
-  },
-
-  ocr_image_semantic_search: {
-    description: '[ANALYSIS] Use to find images by meaning (e.g., "bar chart showing revenue"). Returns images ranked by semantic similarity of VLM descriptions to your query.',
-    inputSchema: {
-      query: z.string().min(1).describe('Search query to match against VLM image descriptions'),
-      document_filter: z.array(z.string().min(1)).optional()
-        .describe('Filter results to specific document IDs'),
-      similarity_threshold: z.number().min(0).max(1).default(0.5)
-        .describe('Minimum similarity score (0-1)'),
-      limit: z.number().int().min(1).max(100).default(10)
-        .describe('Maximum results to return'),
-      include_provenance: z.boolean().default(false)
-        .describe('Include provenance chain for each result'),
-    },
-    handler: handleImageSemanticSearch,
   },
 
   ocr_image_reanalyze: {

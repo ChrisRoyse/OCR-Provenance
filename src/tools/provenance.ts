@@ -280,7 +280,7 @@ export async function handleProvenanceVerify(
       result.hashes_failed = chainResult.hashes_failed;
     }
 
-    result.next_steps = [{ tool: 'ocr_provenance_get', description: 'View the full provenance chain' }, { tool: 'ocr_reprocess', description: 'Reprocess the document if integrity failed' }];
+    result.next_steps = [{ tool: 'ocr_provenance_get', description: 'View the full provenance chain' }, { tool: 'ocr_document_get', description: 'Get details for the root document' }, { tool: 'ocr_reprocess', description: 'Reprocess the document if integrity failed' }];
     return formatResponse(successResult(result));
   } catch (error) {
     return handleError(error);

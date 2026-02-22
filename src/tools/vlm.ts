@@ -36,12 +36,9 @@ const VLMDescribeInput = z.object({
   use_thinking: z.boolean().default(false),
 });
 
-const VLMProcessDocumentInput = z.object({
-  document_id: z.string().min(1),
+const VLMProcessInput = z.object({
+  document_id: z.string().optional(),
   batch_size: z.number().int().min(1).max(20).default(5),
-});
-
-const VLMProcessPendingInput = z.object({
   limit: z.number().int().min(1).max(500).default(50),
 });
 
@@ -244,7 +241,7 @@ export async function handleVLMDescribe(params: Record<string, unknown>): Promis
         embedding_generated: embeddingGenerated,
         next_steps: [
           { tool: 'ocr_image_get', description: 'View image details including the new description' },
-          { tool: 'ocr_image_semantic_search', description: 'Search for similar images by meaning' },
+          { tool: 'ocr_image_search', description: 'Search for similar images (mode=semantic for meaning-based)' },
         ],
       })
     );
@@ -254,105 +251,99 @@ export async function handleVLMDescribe(params: Record<string, unknown>): Promis
 }
 
 /**
- * Handle ocr_vlm_process_document - Process all images in a document with Gemini 3 VLM
+ * Handle ocr_vlm_process - Process VLM on a single document or all pending images
+ *
+ * If document_id is provided, processes all images in that document.
+ * If document_id is omitted, processes all pending images across all documents.
  */
-export async function handleVLMProcessDocument(
+export async function handleVLMProcess(
   params: Record<string, unknown>
 ): Promise<ToolResponse> {
   try {
-    const input = validateInput(VLMProcessDocumentInput, params);
+    const input = validateInput(VLMProcessInput, params);
     const documentId = input.document_id;
     const batchSize = input.batch_size ?? 5;
-
-    const { db, vector } = requireDatabase();
-
-    // Verify document exists
-    const doc = db.getDocument(documentId);
-    if (!doc) {
-      throw new MCPError('DOCUMENT_NOT_FOUND', `Document not found: ${documentId}`, {
-        document_id: documentId,
-      });
-    }
-
-    const conn = db.getConnection();
-    const pipeline = new VLMPipeline(conn, {
-      config: {
-        batchSize,
-        concurrency: 5,
-        minConfidence: 0.5,
-        skipEmbeddings: false,
-        skipProvenance: false,
-      },
-      dbService: db,
-      vectorService: vector,
-    });
-
-    const result = await pipeline.processDocument(documentId);
-
-    const responseData: Record<string, unknown> = {
-      document_id: documentId,
-      total: result.total,
-      successful: result.successful,
-      failed: result.failed,
-      total_tokens: result.totalTokens,
-      processing_time_ms: result.totalTimeMs,
-      results: result.results.map((r) => ({
-        image_id: r.imageId,
-        success: r.success,
-        confidence: r.confidence,
-        tokens_used: r.tokensUsed,
-        error: r.error,
-      })),
-      next_steps: [
-        { tool: 'ocr_image_list', description: 'Browse all images for this document' },
-      ],
-    };
-
-    return formatResponse(successResult(responseData));
-  } catch (error) {
-    return handleError(error);
-  }
-}
-
-/**
- * Handle ocr_vlm_process_pending - Process all images pending VLM description
- */
-export async function handleVLMProcessPending(
-  params: Record<string, unknown>
-): Promise<ToolResponse> {
-  try {
-    const input = validateInput(VLMProcessPendingInput, params);
     const limit = input.limit ?? 50;
 
     const { db, vector } = requireDatabase();
     const conn = db.getConnection();
 
-    const pipeline = new VLMPipeline(conn, {
-      config: {
-        batchSize: 10,
-        concurrency: 5,
-        minConfidence: 0.5,
-        skipEmbeddings: false,
-        skipProvenance: false,
-      },
-      dbService: db,
-      vectorService: vector,
-    });
+    if (documentId) {
+      // Single document mode
+      const doc = db.getDocument(documentId);
+      if (!doc) {
+        throw new MCPError('DOCUMENT_NOT_FOUND', `Document not found: ${documentId}`, {
+          document_id: documentId,
+        });
+      }
 
-    const result = await pipeline.processPending(limit);
+      const pipeline = new VLMPipeline(conn, {
+        config: {
+          batchSize,
+          concurrency: 5,
+          minConfidence: 0.5,
+          skipEmbeddings: false,
+          skipProvenance: false,
+        },
+        dbService: db,
+        vectorService: vector,
+      });
 
-    const responseData: Record<string, unknown> = {
-      processed: result.total,
-      successful: result.successful,
-      failed: result.failed,
-      total_tokens: result.totalTokens,
-      processing_time_ms: result.totalTimeMs,
-      next_steps: [
-        { tool: 'ocr_document_list', description: 'Browse all documents in the database' },
-      ],
-    };
+      const result = await pipeline.processDocument(documentId);
 
-    return formatResponse(successResult(responseData));
+      const responseData: Record<string, unknown> = {
+        mode: 'document',
+        document_id: documentId,
+        total: result.total,
+        successful: result.successful,
+        failed: result.failed,
+        total_tokens: result.totalTokens,
+        processing_time_ms: result.totalTimeMs,
+        results: result.results.map((r) => ({
+          image_id: r.imageId,
+          success: r.success,
+          confidence: r.confidence,
+          tokens_used: r.tokensUsed,
+          error: r.error,
+        })),
+        next_steps: [
+          { tool: 'ocr_image_list', description: 'Browse all images for this document' },
+          { tool: 'ocr_vlm_status', description: 'Check VLM service health' },
+        ],
+      };
+
+      return formatResponse(successResult(responseData));
+    } else {
+      // All pending mode
+      const pipeline = new VLMPipeline(conn, {
+        config: {
+          batchSize,
+          concurrency: 5,
+          minConfidence: 0.5,
+          skipEmbeddings: false,
+          skipProvenance: false,
+        },
+        dbService: db,
+        vectorService: vector,
+      });
+
+      const result = await pipeline.processPending(limit);
+
+      const responseData: Record<string, unknown> = {
+        mode: 'pending',
+        processed: result.total,
+        successful: result.successful,
+        failed: result.failed,
+        total_tokens: result.totalTokens,
+        processing_time_ms: result.totalTimeMs,
+        next_steps: [
+          { tool: 'ocr_document_list', description: 'Browse all documents in the database' },
+          { tool: 'ocr_vlm_status', description: 'Check VLM service health' },
+        ],
+      };
+
+      return formatResponse(successResult(responseData));
+    }
   } catch (error) {
     return handleError(error);
   }
@@ -441,8 +432,9 @@ export async function handleVLMStatus(params: Record<string, unknown>): Promise<
           time_to_recovery: status.circuitBreaker.timeToRecovery,
         },
         next_steps: [
-          { tool: 'ocr_vlm_process_pending', description: 'Process pending VLM images' },
+          { tool: 'ocr_vlm_process', description: 'Process pending VLM images' },
           { tool: 'ocr_image_pending', description: 'List images awaiting VLM processing' },
+          { tool: 'ocr_vlm_analyze_pdf', description: 'Analyze a PDF directly with Gemini AI' },
         ],
       })
     );
@@ -472,22 +464,15 @@ export const vlmTools: Record<string, ToolDefinition> = {
     handler: handleVLMDescribe,
   },
 
-  ocr_vlm_process_document: {
+  ocr_vlm_process: {
     description:
-      '[PROCESSING] Use to run VLM analysis on all images in a single document. Returns per-image results with descriptions and embeddings. Use ocr_vlm_process_pending for bulk.',
+      '[PROCESSING] Use to run VLM analysis on document images. Pass document_id for one document, omit for all pending. Requires GEMINI_API_KEY.',
     inputSchema: {
-      document_id: z.string().min(1).describe('Document ID'),
+      document_id: z.string().optional().describe('Document ID (omit to process all pending)'),
       batch_size: z.number().int().min(1).max(20).default(5).describe('Images per batch'),
+      limit: z.number().int().min(1).max(500).default(50).describe('Maximum images to process (pending mode only)'),
     },
-    handler: handleVLMProcessDocument,
-  },
-
-  ocr_vlm_process_pending: {
-    description: '[PROCESSING] Use to bulk-process all images pending VLM descriptions across all documents. Returns processed/failed counts. Requires GEMINI_API_KEY.',
-    inputSchema: {
-      limit: z.number().int().min(1).max(500).default(50).describe('Maximum images to process'),
-    },
-    handler: handleVLMProcessPending,
+    handler: handleVLMProcess,
   },
 
   ocr_vlm_analyze_pdf: {

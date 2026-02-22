@@ -210,7 +210,7 @@ async function handleClusterList(params: Record<string, unknown>): Promise<ToolR
         clusters: items,
         total: items.length,
         offset: input.offset,
-        next_steps: [{ tool: 'ocr_cluster_get', description: 'Inspect a specific cluster' }, { tool: 'ocr_cluster_documents', description: 'Run a new clustering' }],
+        next_steps: [{ tool: 'ocr_cluster_get', description: 'Inspect a specific cluster' }, { tool: 'ocr_cluster_documents', description: 'Run a new clustering' }, { tool: 'ocr_comparison_matrix', description: 'View NxN document similarity matrix' }],
       })
     );
   } catch (error) {

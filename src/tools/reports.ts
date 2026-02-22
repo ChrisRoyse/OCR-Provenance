@@ -269,7 +269,7 @@ export async function handleEvaluationReport(
         report: outputPath ? null : report, // Only include report in response if not saved to file
         next_steps: [
           { tool: 'ocr_report_overview', description: 'Get quality and corpus overview' },
-          { tool: 'ocr_evaluate_pending', description: 'Evaluate more images' },
+          { tool: 'ocr_evaluate', description: 'Evaluate more images' },
         ],
       })
     );
