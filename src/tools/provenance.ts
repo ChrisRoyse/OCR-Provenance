@@ -280,6 +280,7 @@ export async function handleProvenanceVerify(
       result.hashes_failed = chainResult.hashes_failed;
     }
 
+    result.next_steps = [{ tool: 'ocr_provenance_get', description: 'View the full provenance chain' }, { tool: 'ocr_reprocess', description: 'Reprocess the document if integrity failed' }];
     return formatResponse(successResult(result));
   } catch (error) {
     return handleError(error);
@@ -447,6 +448,7 @@ export async function handleProvenanceExport(
         document_id: input.document_id,
         record_count: records.length,
         data,
+        next_steps: [{ tool: 'ocr_provenance_query', description: 'Query provenance with filters' }],
       })
     );
   } catch (error) {
@@ -552,6 +554,7 @@ export async function handleProvenanceQuery(
         limit: input.limit,
         offset: input.offset,
         filters_applied: filtersApplied,
+        next_steps: [{ tool: 'ocr_provenance_get', description: 'View full chain for a specific record' }, { tool: 'ocr_document_get', description: 'Get document details for a provenance record' }],
       })
     );
   } catch (error) {
@@ -598,6 +601,7 @@ export async function handleProvenanceTimeline(
           total_processing_time_ms: 0,
           steps_count: 0,
           timeline: [],
+          next_steps: [{ tool: 'ocr_provenance_query', description: 'Query specific provenance records' }, { tool: 'ocr_timeline_analytics', description: 'View processing volume trends' }],
         })
       );
     }
@@ -645,6 +649,7 @@ export async function handleProvenanceTimeline(
         total_processing_time_ms: totalProcessingTimeMs,
         steps_count: timeline.length,
         timeline,
+        next_steps: [{ tool: 'ocr_provenance_query', description: 'Query specific provenance records' }, { tool: 'ocr_timeline_analytics', description: 'View processing volume trends' }],
       })
     );
   } catch (error) {
@@ -683,6 +688,7 @@ export async function handleProvenanceProcessorStats(
       successResult({
         stats,
         total_processors: stats.length,
+        next_steps: [{ tool: 'ocr_report_performance', description: 'Get detailed pipeline performance analytics' }, { tool: 'ocr_provenance_query', description: 'Query provenance by processor' }],
       })
     );
   } catch (error) {
@@ -738,7 +744,7 @@ export const provenanceTools: Record<string, ToolDefinition> = {
   },
   ocr_provenance_export: {
     description:
-      '[ADMIN] Use to export provenance records to JSON, W3C PROV-JSON, or CSV. Scope to a document or entire database.',
+      '[STATUS] Use to export provenance records to JSON, W3C PROV-JSON, or CSV. Scope to a document or entire database.',
     inputSchema: {
       scope: z.enum(['document', 'database']).describe('Export scope'),
       document_id: z.string().optional().describe('Document ID (required when scope is document)'),
@@ -796,7 +802,7 @@ export const provenanceTools: Record<string, ToolDefinition> = {
   },
   ocr_provenance_processor_stats: {
     description:
-      '[ADMIN] Use to get aggregate performance stats per processor (operation counts, durations, quality). Returns processor-level analytics.',
+      '[STATUS] Use to get aggregate performance stats per processor (operation counts, durations, quality). Returns processor-level analytics.',
     inputSchema: {
       processor: z.string().optional().describe('Filter by specific processor name'),
       created_after: z.string().optional().describe('Filter records created after this ISO 8601 timestamp'),

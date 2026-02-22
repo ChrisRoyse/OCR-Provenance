@@ -267,6 +267,10 @@ export async function handleEvaluationReport(
         image_type_distribution: imageTypeDistribution,
         output_path: outputPath ?? null,
         report: outputPath ? null : report, // Only include report in response if not saved to file
+        next_steps: [
+          { tool: 'ocr_report_overview', description: 'Get quality and corpus overview' },
+          { tool: 'ocr_evaluate_pending', description: 'Evaluate more images' },
+        ],
       })
     );
   } catch (error) {
@@ -404,6 +408,10 @@ export async function handleDocumentReport(params: Record<string, unknown>): Pro
             coherence_score: c.coherence_score,
           })),
         },
+        next_steps: [
+          { tool: 'ocr_document_get', description: 'Get document metadata' },
+          { tool: 'ocr_search', description: 'Search within this document' },
+        ],
       })
     );
   } catch (error) {
@@ -753,6 +761,12 @@ export async function handleReportOverview(params: Record<string, unknown>): Pro
       result.corpus = corpusData;
     }
 
+    result.next_steps = [
+      { tool: 'ocr_report_performance', description: 'Get pipeline performance analytics' },
+      { tool: 'ocr_error_analytics', description: 'Analyze errors and failures' },
+      { tool: 'ocr_quality_trends', description: 'View quality trends over time' },
+    ];
+
     return formatResponse(successResult(result));
   } catch (error) {
     return handleError(error);
@@ -870,6 +884,11 @@ async function handleCostSummary(params: Record<string, unknown>): Promise<ToolR
       total_duration_ms: clusterDurations.total_ms,
       avg_duration_ms: clusterDurations.avg_ms,
     };
+
+    result.next_steps = [
+      { tool: 'ocr_report_performance', description: 'Get pipeline performance analytics' },
+      { tool: 'ocr_db_stats', description: 'Get database overview statistics' },
+    ];
 
     return formatResponse(successResult(result));
   } catch (error) {
@@ -1266,6 +1285,11 @@ export async function handleReportPerformance(
       };
     }
 
+    result.next_steps = [
+      { tool: 'ocr_report_overview', description: 'Get quality and corpus overview' },
+      { tool: 'ocr_error_analytics', description: 'Analyze error patterns' },
+    ];
+
     return formatResponse(successResult(result));
   } catch (error) {
     return handleError(error);
@@ -1438,6 +1462,12 @@ export async function handleErrorAnalytics(
         .all(input.limit) as Array<{ error_message: string; count: number }>;
     }
 
+    result.next_steps = [
+      { tool: 'ocr_retry_failed', description: 'Retry failed documents' },
+      { tool: 'ocr_image_reset_failed', description: 'Reset failed VLM images' },
+      { tool: 'ocr_health_check', description: 'Run a full health check' },
+    ];
+
     return formatResponse(successResult(result));
   } catch (error) {
     return handleError(error);
@@ -1477,6 +1507,10 @@ async function handleQualityTrends(params: Record<string, unknown>): Promise<Too
           created_before: input.created_before ?? null,
         },
         data,
+        next_steps: [
+          { tool: 'ocr_report_overview', description: 'Get aggregate quality summary' },
+          { tool: 'ocr_timeline_analytics', description: 'View processing volume trends' },
+        ],
       })
     );
   } catch (error) {
@@ -1628,7 +1662,7 @@ ${imageStats.total > 0 ? `Processed: ${'█'.repeat(Math.round((imageStats.proce
 export const reportTools: Record<string, ToolDefinition> = {
   ocr_evaluation_report: {
     description:
-      '[ADMIN] Use to generate a comprehensive evaluation report with OCR and VLM metrics. Saves as markdown file. Returns report path and summary.',
+      '[STATUS] Use to generate a comprehensive evaluation report with OCR and VLM metrics. Saves as markdown file. Returns report path and summary.',
     inputSchema: {
       output_path: z.string().optional().describe('Path to save markdown report (optional)'),
       confidence_threshold: z
@@ -1643,7 +1677,7 @@ export const reportTools: Record<string, ToolDefinition> = {
 
   ocr_document_report: {
     description:
-      '[ADMIN] Use to get a detailed report for a single document (images, extractions, comparisons, clusters). Returns comprehensive document analysis.',
+      '[STATUS] Use to get a detailed report for a single document (images, extractions, comparisons, clusters). Returns comprehensive document analysis.',
     inputSchema: {
       document_id: z.string().min(1).describe('Document ID'),
     },
@@ -1652,7 +1686,7 @@ export const reportTools: Record<string, ToolDefinition> = {
 
   ocr_report_overview: {
     description:
-      '[ADMIN] Use to get quality summary and/or corpus profile. section="quality" for aggregate quality scores, "corpus" for document/chunk/content type stats, "all" for both combined. Replaces former ocr_quality_summary and ocr_corpus_profile.',
+      '[STATUS] Use to get quality summary and/or corpus profile. section="quality" for aggregate quality scores, "corpus" for document/chunk/content type stats, "all" for both combined. Replaces former ocr_quality_summary and ocr_corpus_profile.',
     inputSchema: {
       section: z
         .enum(['quality', 'corpus', 'all'])
@@ -1672,7 +1706,7 @@ export const reportTools: Record<string, ToolDefinition> = {
   },
 
   ocr_cost_summary: {
-    description: '[ADMIN] Use to get cost analytics for OCR and form fill operations. Returns costs grouped by document, mode, month, or total.',
+    description: '[STATUS] Use to get cost analytics for OCR and form fill operations. Returns costs grouped by document, mode, month, or total.',
     inputSchema: {
       group_by: z
         .enum(['document', 'mode', 'month', 'total'])
@@ -1684,7 +1718,7 @@ export const reportTools: Record<string, ToolDefinition> = {
 
   ocr_report_performance: {
     description:
-      '[ADMIN] Use to get pipeline performance, throughput, and/or bottleneck analytics. section="pipeline" for OCR/embedding/VLM durations, "throughput" for time-bucketed processing speed, "bottlenecks" for provenance duration analysis, "all" for everything. Replaces former ocr_pipeline_analytics, ocr_throughput_analytics, and ocr_provenance_bottlenecks.',
+      '[STATUS] Use to get pipeline performance, throughput, and/or bottleneck analytics. section="pipeline" for OCR/embedding/VLM durations, "throughput" for time-bucketed processing speed, "bottlenecks" for provenance duration analysis, "all" for everything. Replaces former ocr_pipeline_analytics, ocr_throughput_analytics, and ocr_provenance_bottlenecks.',
     inputSchema: {
       section: z
         .enum(['pipeline', 'throughput', 'bottlenecks', 'all'])
@@ -1713,7 +1747,7 @@ export const reportTools: Record<string, ToolDefinition> = {
 
   ocr_error_analytics: {
     description:
-      '[ADMIN] Use to get error and recovery analytics (failure rates, common error messages). Returns error breakdown for documents, VLM, and embeddings.',
+      '[STATUS] Use to get error and recovery analytics (failure rates, common error messages). Returns error breakdown for documents, VLM, and embeddings.',
     inputSchema: {
       include_error_messages: z
         .boolean()
@@ -1726,7 +1760,7 @@ export const reportTools: Record<string, ToolDefinition> = {
 
   ocr_quality_trends: {
     description:
-      '[ADMIN] Use to view quality score trends over time. Returns avg/min/max quality per time bucket, optionally grouped by OCR mode or processor.',
+      '[STATUS] Use to view quality score trends over time. Returns avg/min/max quality per time bucket, optionally grouped by OCR mode or processor.',
     inputSchema: {
       bucket: z
         .enum(['hourly', 'daily', 'weekly', 'monthly'])

@@ -160,7 +160,7 @@ describe('ocr_convert_raw validation', () => {
 describe('ocr_convert_raw tool definition', () => {
   it('should be registered in ingestionTools', async () => {
     expect(ingestionTools).toHaveProperty('ocr_convert_raw');
-    expect(ingestionTools['ocr_convert_raw'].description).toContain('one-off OCR');
+    expect(ingestionTools['ocr_convert_raw'].description).toContain('quick OCR preview');
     expect(ingestionTools['ocr_convert_raw'].handler).toBeDefined();
     expect(typeof ingestionTools['ocr_convert_raw'].handler).toBe('function');
   });

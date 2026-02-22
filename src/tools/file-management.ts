@@ -102,6 +102,7 @@ async function handleFileUpload(params: Record<string, unknown>) {
             created_at: existing.created_at,
           },
           message: 'File with identical hash already uploaded',
+          next_steps: [{ tool: 'ocr_file_get', description: 'View details of the existing upload' }],
         })
       );
     }
@@ -167,11 +168,6 @@ async function handleFileUpload(params: Record<string, unknown>) {
       updateUploadedFileDatalabInfo(conn, uploadId, result.fileId, result.reference);
       updateUploadedFileStatus(conn, uploadId, 'complete');
 
-      const nextSteps: string[] = [
-        'Use ocr_ingest_document to create a document record and start OCR processing',
-        'Use ocr_process_pending to OCR process the ingested document',
-      ];
-
       return formatResponse(
         successResult({
           id: uploadId,
@@ -184,7 +180,7 @@ async function handleFileUpload(params: Record<string, unknown>) {
           upload_status: 'complete',
           provenance_id: provId,
           processing_duration_ms: result.processingDurationMs,
-          next_steps: nextSteps,
+          next_steps: [{ tool: 'ocr_file_ingest_uploaded', description: 'Convert uploaded file into a document record for OCR' }, { tool: 'ocr_process_pending', description: 'Process ingested documents through OCR pipeline' }],
         })
       );
     } catch (uploadError) {
@@ -283,7 +279,10 @@ async function handleFileList(params: Record<string, unknown>) {
       }
     }
 
-    return formatResponse(successResult(response));
+    return formatResponse(successResult({
+      ...response,
+      next_steps: [{ tool: 'ocr_file_get', description: 'Get details for a specific uploaded file' }, { tool: 'ocr_file_ingest_uploaded', description: 'Ingest uploaded files for OCR processing' }],
+    }));
   } catch (error) {
     return handleError(error);
   }
@@ -306,7 +305,10 @@ async function handleFileGet(params: Record<string, unknown>) {
       response.provenance_chain = fetchProvenanceChain(db, file.provenance_id, 'file-management');
     }
 
-    return formatResponse(successResult(response));
+    return formatResponse(successResult({
+      ...response,
+      next_steps: [{ tool: 'ocr_file_ingest_uploaded', description: 'Ingest this file for OCR processing' }, { tool: 'ocr_file_download', description: 'Get a download URL for this file' }],
+    }));
   } catch (error) {
     return handleError(error);
   }
@@ -336,6 +338,7 @@ async function handleFileDownload(params: Record<string, unknown>) {
         datalab_file_id: file.datalab_file_id,
         file_name: file.file_name,
         download_url: downloadUrl,
+        next_steps: [{ tool: 'ocr_file_get', description: 'View file metadata' }],
       })
     );
   } catch (error) {
@@ -382,7 +385,10 @@ async function handleFileDelete(params: Record<string, unknown>) {
     if (datalabDeleteError) {
       response.datalab_delete_error = datalabDeleteError;
     }
-    return formatResponse(successResult(response));
+    return formatResponse(successResult({
+      ...response,
+      next_steps: [{ tool: 'ocr_file_list', description: 'List remaining uploaded files' }],
+    }));
   } catch (error) {
     return handleError(error);
   }
@@ -461,6 +467,7 @@ async function handleFileIngestUploaded(params: Record<string, unknown>) {
           files: [],
           message:
             'No action taken. Provide file_ids or set ingest_all_pending=true.',
+          next_steps: [{ tool: 'ocr_file_list', description: 'List uploaded files to select for ingestion' }],
         })
       );
     }
@@ -572,8 +579,8 @@ async function handleFileIngestUploaded(params: Record<string, unknown>) {
         files: fileDetails,
         next_steps:
           ingestedCount > 0
-            ? ['Use ocr_process_pending to OCR process the ingested documents']
-            : undefined,
+            ? [{ tool: 'ocr_process_pending', description: 'Process ingested documents through OCR pipeline' }]
+            : [{ tool: 'ocr_file_list', description: 'List uploaded files' }],
       })
     );
   } catch (error) {
@@ -588,31 +595,31 @@ async function handleFileIngestUploaded(params: Record<string, unknown>) {
 export const fileManagementTools: Record<string, ToolDefinition> = {
   ocr_file_upload: {
     description:
-      '[ADMIN] Use to upload a file to Datalab cloud storage. Returns upload ID and Datalab reference. Deduplicates by file hash. Follow with ocr_file_ingest_uploaded.',
+      '[SETUP] Use to upload a file to Datalab cloud storage. Returns upload ID and Datalab reference. Deduplicates by file hash. Follow with ocr_file_ingest_uploaded.',
     inputSchema: FileUploadInput.shape,
     handler: handleFileUpload,
   },
   ocr_file_list: {
     description:
-      '[ADMIN] Use to list uploaded files with optional status filter. Returns file names, sizes, and upload status. Set include_duplicate_check=true to detect potential duplicates.',
+      '[STATUS] Use to list uploaded files with optional status filter. Returns file names, sizes, and upload status. Set include_duplicate_check=true to detect potential duplicates.',
     inputSchema: FileListInput.shape,
     handler: handleFileList,
   },
   ocr_file_get: {
     description:
-      '[ADMIN] Use to get metadata for a specific uploaded file by ID. Returns file details, Datalab info, and optional provenance chain.',
+      '[STATUS] Use to get metadata for a specific uploaded file by ID. Returns file details, Datalab info, and optional provenance chain.',
     inputSchema: FileGetInput.shape,
     handler: handleFileGet,
   },
   ocr_file_download: {
     description:
-      '[ADMIN] Use to get a download URL for a file previously uploaded to Datalab cloud. Returns a temporary download URL.',
+      '[STATUS] Use to get a download URL for a file previously uploaded to Datalab cloud. Returns a temporary download URL.',
     inputSchema: FileDownloadInput.shape,
     handler: handleFileDownload,
   },
   ocr_file_delete: {
     description:
-      '[ADMIN] Use to delete an uploaded file record. Returns confirmation. Set delete_from_datalab=true to also remove from Datalab cloud.',
+      '[DESTRUCTIVE] Use to delete an uploaded file record. Returns confirmation. Set delete_from_datalab=true to also remove from Datalab cloud.',
     inputSchema: FileDeleteInput.shape,
     handler: handleFileDelete,
   },

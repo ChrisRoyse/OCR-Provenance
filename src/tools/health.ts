@@ -227,10 +227,10 @@ async function handleHealthCheck(params: Record<string, unknown>): Promise<ToolR
 
     // Build dynamic next_steps based on gaps found
     const nextSteps: Array<{ tool: string; description: string }> = [];
-    if (gaps.chunks_without_embeddings?.count > 0 || gaps.pending_documents?.count > 0) {
+    if (gaps.chunks_without_embeddings?.count > 0 || gaps.documents_without_ocr?.count > 0) {
       nextSteps.push({ tool: 'ocr_process_pending', description: 'Process pending documents through the OCR pipeline' });
     }
-    if (gaps.failed_documents?.count > 0) {
+    if (gaps.documents_without_ocr?.count > 0) {
       nextSteps.push({ tool: 'ocr_retry_failed', description: 'Retry failed documents' });
     }
     if (gaps.images_without_vlm?.count > 0) {

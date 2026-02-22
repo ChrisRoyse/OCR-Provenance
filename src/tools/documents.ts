@@ -377,6 +377,7 @@ export async function handleDocumentDelete(params: Record<string, unknown>): Pro
         vectors_deleted: vectorsDeleted,
         provenance_deleted: provenance.length,
         images_directory_cleaned: imagesCleanedUp,
+        next_steps: [{ tool: 'ocr_document_list', description: 'Browse remaining documents' }],
       })
     );
   } catch (error) {
@@ -550,6 +551,7 @@ export async function handleFindSimilar(params: Record<string, unknown>): Promis
         source_chunk_count: vectors.length,
         similar_documents: similarDocuments,
         total: similarDocuments.length,
+        next_steps: [{ tool: 'ocr_document_get', description: 'Get details for a similar document' }, { tool: 'ocr_document_compare', description: 'Compare two similar documents' }],
       })
     );
   } catch (error) {
@@ -611,6 +613,7 @@ export async function handleUpdateMetadata(params: Record<string, unknown>): Pro
         updated_count: updatedCount,
         not_found_ids: notFoundIds,
         total_requested: input.document_ids.length,
+        next_steps: [{ tool: 'ocr_document_get', description: 'Verify the updated metadata' }],
       })
     );
   } catch (error) {
@@ -665,6 +668,7 @@ export async function handleDuplicateDetection(params: Record<string, unknown>):
           total_groups: duplicateGroups.length,
           total_duplicate_documents: duplicateGroups.reduce((sum, g) => sum + g.count, 0),
           groups: duplicateGroups,
+          next_steps: [{ tool: 'ocr_document_compare', description: 'Compare a duplicate pair in detail' }, { tool: 'ocr_document_delete', description: 'Delete a confirmed duplicate' }],
         })
       );
     } else {
@@ -707,6 +711,7 @@ export async function handleDuplicateDetection(params: Record<string, unknown>):
             similarity_ratio: c.similarity_ratio,
             summary: c.summary,
           })),
+          next_steps: [{ tool: 'ocr_document_compare', description: 'Compare a duplicate pair in detail' }, { tool: 'ocr_document_delete', description: 'Delete a confirmed duplicate' }],
         })
       );
     }
@@ -909,6 +914,7 @@ export async function handleDocumentStructure(params: Record<string, unknown>): 
       figures: { count: figures.length, items: figures },
       code_blocks: { count: codeBlocks.length, items: codeBlocks },
       total_structural_elements: outline.length + tables.length + figures.length + codeBlocks.length,
+      next_steps: [{ tool: 'ocr_document_page', description: 'Read a specific page from the document' }, { tool: 'ocr_search', description: 'Search within the document' }, { tool: 'ocr_document_tables', description: 'Extract table data from the document' }],
     };
     if (documentMap) {
       responseData.document_map = documentMap;
@@ -1098,6 +1104,7 @@ async function handleDocumentSectionsInternal(
           total_sections: totalSections,
           root_chunks: root.chunk_count,
           outline,
+          next_steps: [{ tool: 'ocr_document_page', description: 'Read a specific page from the document' }, { tool: 'ocr_search', description: 'Search within the document' }, { tool: 'ocr_document_tables', description: 'Extract table data from the document' }],
         })
       );
     }
@@ -1114,6 +1121,7 @@ async function handleDocumentSectionsInternal(
         total_sections: totalSections,
         sections: root.children,
         root_chunks: root.chunk_count,
+        next_steps: [{ tool: 'ocr_document_page', description: 'Read a specific page from the document' }, { tool: 'ocr_search', description: 'Search within the document' }, { tool: 'ocr_document_tables', description: 'Extract table data from the document' }],
       })
     );
   } catch (error) {
@@ -1371,6 +1379,7 @@ export async function handleDocumentExport(params: Record<string, unknown>): Pro
           image_count: images.length,
           extraction_count: extractions.length,
         },
+        next_steps: [{ tool: 'ocr_document_list', description: 'Export another document' }],
       })
     );
   } catch (error) {
@@ -1508,6 +1517,7 @@ export async function handleCorpusExport(params: Record<string, unknown>): Promi
         document_count: documents.length,
         total_chunks: totalChunks,
         total_images: totalImages,
+        next_steps: [{ tool: 'ocr_report_overview', description: 'Get quality and corpus analytics' }],
       })
     );
   } catch (error) {
@@ -1567,6 +1577,7 @@ async function handleDocumentVersions(params: Record<string, unknown>): Promise<
           ocr_completed_at: v.ocr_completed_at,
         })),
         total_versions: versions.length,
+        next_steps: [{ tool: 'ocr_document_get', description: 'Get details for a specific version' }, { tool: 'ocr_document_compare', description: 'Compare two versions' }],
       })
     );
   } catch (error) {
@@ -1635,6 +1646,7 @@ async function handleDocumentWorkflow(params: Record<string, unknown>): Promise<
         successResult({
           document_id: input.document_id,
           current_state: getCurrentWorkflowState(conn, input.document_id),
+          next_steps: [{ tool: 'ocr_document_get', description: 'View document details after workflow change' }, { tool: 'ocr_tag_search', description: 'Find other documents in the same workflow state' }],
         })
       );
     }
@@ -1687,6 +1699,7 @@ async function handleDocumentWorkflow(params: Record<string, unknown>): Promise<
           new_state: input.state,
           transitioned_at: now,
           note: input.note ?? null,
+          next_steps: [{ tool: 'ocr_document_get', description: 'View document details after workflow change' }, { tool: 'ocr_tag_search', description: 'Find other documents in the same workflow state' }],
         })
       );
     }
@@ -1716,6 +1729,7 @@ async function handleDocumentWorkflow(params: Record<string, unknown>): Promise<
           state: r.name.replace(WORKFLOW_PREFIX, ''),
           applied_at: r.created_at,
         })),
+        next_steps: [{ tool: 'ocr_document_get', description: 'View document details after workflow change' }, { tool: 'ocr_tag_search', description: 'Find other documents in the same workflow state' }],
       })
     );
   } catch (error) {
@@ -1767,7 +1781,7 @@ export const documentTools: Record<string, ToolDefinition> = {
   },
   ocr_document_delete: {
     description:
-      '[ADMIN] Use to permanently delete a document and all derived data (chunks, embeddings, images, provenance). Requires confirm=true.',
+      '[DESTRUCTIVE] Use to permanently delete a document and all derived data (chunks, embeddings, images, provenance). Requires confirm=true.',
     inputSchema: {
       document_id: z.string().min(1).describe('Document ID to delete'),
       confirm: z.literal(true).describe('Must be true to confirm deletion'),
@@ -1788,7 +1802,7 @@ export const documentTools: Record<string, ToolDefinition> = {
   },
   ocr_document_update_metadata: {
     description:
-      '[ANALYSIS] Use to update title, author, or subject metadata on one or more documents. Returns updated document IDs.',
+      '[MANAGE] Use to update title, author, or subject metadata on one or more documents. Returns updated document IDs.',
     inputSchema: UpdateMetadataInput.shape,
     handler: handleUpdateMetadata,
   },
@@ -1800,13 +1814,13 @@ export const documentTools: Record<string, ToolDefinition> = {
   },
   ocr_document_export: {
     description:
-      '[ADMIN] Use to export all data for a document to JSON or markdown file. Returns complete document data including chunks, images, and extractions.',
+      '[STATUS] Use to export all data for a document to JSON or markdown file. Returns complete document data including chunks, images, and extractions.',
     inputSchema: DocumentExportInput.shape,
     handler: handleDocumentExport,
   },
   ocr_corpus_export: {
     description:
-      '[ADMIN] Use to export entire corpus metadata to JSON or CSV. Returns all document summaries with statistics. Use for backup or external analysis.',
+      '[STATUS] Use to export entire corpus metadata to JSON or CSV. Returns all document summaries with statistics. Use for backup or external analysis.',
     inputSchema: CorpusExportInput.shape,
     handler: handleCorpusExport,
   },
@@ -1818,7 +1832,7 @@ export const documentTools: Record<string, ToolDefinition> = {
   },
   ocr_document_workflow: {
     description:
-      '[ANALYSIS] Use to manage document workflow states (draft/review/approved/rejected/archived). Supports get, set, and history actions via tags.',
+      '[MANAGE] Use to track document review progress. action="get" shows current state, action="set" changes state (draft/review/approved/rejected/archived), action="history" shows all state transitions. States are stored as tags.',
     inputSchema: DocumentWorkflowInput.shape,
     handler: handleDocumentWorkflow,
   },

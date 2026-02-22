@@ -64,6 +64,7 @@ async function handleTimelineAnalytics(
           created_before: input.created_before ?? null,
         },
         data,
+        next_steps: [{ tool: 'ocr_report_performance', description: 'Get detailed pipeline performance' }, { tool: 'ocr_quality_trends', description: 'View quality trends over the same period' }],
       })
     );
   } catch (error) {
@@ -81,7 +82,7 @@ async function handleTimelineAnalytics(
 export const timelineTools: Record<string, ToolDefinition> = {
   ocr_timeline_analytics: {
     description:
-      '[ADMIN] Use to view processing volume trends over time. Returns counts bucketed by hour/day/week/month for documents, pages, chunks, embeddings, images, or cost.',
+      '[STATUS] Use to view processing volume trends over time. Returns counts bucketed by hour/day/week/month for documents, pages, chunks, embeddings, images, or cost.',
     inputSchema: {
       bucket: z
         .enum(['hourly', 'daily', 'weekly', 'monthly'])

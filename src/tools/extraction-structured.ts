@@ -237,6 +237,7 @@ async function handleExtractStructured(params: Record<string, unknown>) {
         provenance_id: extractionProvId,
         embedding_id: embeddingId,
         embedding_provenance_id: embeddingProvId,
+        next_steps: [{ tool: 'ocr_extraction_list', description: 'List all extractions for the document' }, { tool: 'ocr_extraction_get', description: 'View the extraction results in detail' }],
       })
     );
   } catch (error) {
@@ -263,6 +264,7 @@ async function handleExtractionList(params: Record<string, unknown>) {
           provenance_id: ext.provenance_id,
           created_at: ext.created_at,
         })),
+        next_steps: [{ tool: 'ocr_extraction_get', description: 'View a specific extraction in detail' }, { tool: 'ocr_extract_structured', description: 'Run a new structured extraction' }],
       })
     );
   } catch (error) {
@@ -323,6 +325,7 @@ async function handleExtractionGet(params: Record<string, unknown>): Promise<Too
         has_embedding: hasEmbedding,
         embedding_id: embedding?.id ?? null,
         provenance_chain: provenanceChain,
+        next_steps: [{ tool: 'ocr_extraction_search', description: 'Search across all extractions' }, { tool: 'ocr_document_get', description: 'View the source document' }],
       })
     );
   } catch (error) {
@@ -381,6 +384,7 @@ async function handleExtractionSearch(params: Record<string, unknown>): Promise<
         query: input.query,
         total: enrichedResults.length,
         results: enrichedResults,
+        next_steps: [{ tool: 'ocr_extraction_get', description: 'View a specific matched extraction' }, { tool: 'ocr_extract_structured', description: 'Run a new extraction with different schema' }],
       })
     );
   } catch (error) {
@@ -391,25 +395,25 @@ async function handleExtractionSearch(params: Record<string, unknown>): Promise<
 export const structuredExtractionTools: Record<string, ToolDefinition> = {
   ocr_extract_structured: {
     description:
-      '[PROCESSING] Use to extract structured data from an OCR-processed document using a JSON page_schema. Returns extracted data with embedding. Document must have status "complete".',
+      '[PROCESSING] Use when you need custom structured data from document pages (tables, lists, specific fields). Provide a JSON page_schema defining the expected structure. Different from ocr_form_fill which handles key-value form filling. Document must have status "complete".',
     inputSchema: ExtractStructuredInput.shape,
     handler: handleExtractStructured,
   },
   ocr_extraction_list: {
     description:
-      '[ADMIN] Use to list all structured extractions previously run on a document. Returns extraction IDs, schemas, and results.',
+      '[STATUS] Use to list all structured extractions previously run on a document. Returns extraction IDs, schemas, and results.',
     inputSchema: ExtractionListInput.shape,
     handler: handleExtractionList,
   },
   ocr_extraction_get: {
     description:
-      '[ADMIN] Use to retrieve full results of a specific structured extraction by ID. Returns parsed extraction JSON, schema, embedding status, and optional provenance chain.',
+      '[STATUS] Use to retrieve full results of a specific structured extraction by ID. Returns parsed extraction JSON, schema, embedding status, and optional provenance chain.',
     inputSchema: ExtractionGetInput.shape,
     handler: handleExtractionGet,
   },
   ocr_extraction_search: {
     description:
-      '[ADMIN] Use to search across structured extraction results by text matching within JSON content. Returns matching extractions with document context.',
+      '[STATUS] Use to search across structured extraction results by text matching within JSON content. Returns matching extractions with document context.',
     inputSchema: ExtractionSearchInput.shape,
     handler: handleExtractionSearch,
   },

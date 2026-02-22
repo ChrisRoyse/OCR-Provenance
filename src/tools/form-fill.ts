@@ -173,7 +173,10 @@ async function handleFormFill(params: Record<string, unknown>) {
       processing_duration_ms: result.processingDurationMs,
     };
 
-    return formatResponse(successResult(response));
+    return formatResponse(successResult({
+      ...response,
+      next_steps: [{ tool: 'ocr_form_fill_status', description: 'Check the form fill result' }],
+    }));
   } catch (error) {
     return handleError(error);
   }
@@ -209,7 +212,10 @@ async function handleFormFillStatus(params: Record<string, unknown>) {
         );
       }
 
-      return formatResponse(successResult(formFillResponse));
+      return formatResponse(successResult({
+        ...formFillResponse,
+        next_steps: [{ tool: 'ocr_form_fill', description: 'Submit another form fill operation' }, { tool: 'ocr_document_get', description: 'View the source document' }],
+      }));
     }
 
     // If search_query is provided, use search instead of list
@@ -232,6 +238,7 @@ async function handleFormFillStatus(params: Record<string, unknown>) {
             created_at: ff.created_at,
             error_message: ff.error_message,
           })),
+          next_steps: [{ tool: 'ocr_form_fill', description: 'Submit another form fill operation' }, { tool: 'ocr_document_get', description: 'View the source document' }],
         })
       );
     }
@@ -256,6 +263,7 @@ async function handleFormFillStatus(params: Record<string, unknown>) {
           created_at: ff.created_at,
           error_message: ff.error_message,
         })),
+        next_steps: [{ tool: 'ocr_form_fill', description: 'Submit another form fill operation' }, { tool: 'ocr_document_get', description: 'View the source document' }],
       })
     );
   } catch (error) {
@@ -266,13 +274,13 @@ async function handleFormFillStatus(params: Record<string, unknown>) {
 export const formFillTools: Record<string, ToolDefinition> = {
   ocr_form_fill: {
     description:
-      '[ADMIN] Use to fill a PDF or image form with field values via Datalab API. Returns filled fields, unfound fields, and optionally saves the output PDF. Requires DATALAB_API_KEY.',
+      '[PROCESSING] Use when extracting or filling structured key-value data from form-type documents (applications, invoices, questionnaires). Sends form fields to Datalab API for filling. Different from ocr_extract_structured which extracts data by page schema.',
     inputSchema: FormFillInput.shape,
     handler: handleFormFill,
   },
   ocr_form_fill_status: {
     description:
-      '[ADMIN] Use to check status or retrieve details of past form fill operations. Returns form fill records with field data and status. Use after ocr_form_fill.',
+      '[STATUS] Use to check status or retrieve details of past form fill operations. Returns form fill records with field data and status. Use after ocr_form_fill.',
     inputSchema: FormFillStatusInput.shape,
     handler: handleFormFillStatus,
   },

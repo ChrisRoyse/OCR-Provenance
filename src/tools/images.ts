@@ -141,6 +141,10 @@ export async function handleImageList(params: Record<string, unknown>): Promise<
               description: img.vlm_description,
             }),
         })),
+        next_steps: [
+          { tool: 'ocr_image_get', description: 'Get full details for a specific image' },
+          { tool: 'ocr_vlm_process_document', description: 'Run VLM analysis on document images' },
+        ],
       })
     );
   } catch (error) {
@@ -191,6 +195,11 @@ export async function handleImageGet(params: Record<string, unknown>): Promise<T
         error_message: img.error_message,
         created_at: img.created_at,
       },
+      next_steps: [
+        { tool: 'ocr_image_semantic_search', description: 'Find similar images by meaning' },
+        { tool: 'ocr_image_reanalyze', description: 'Re-run VLM analysis with custom prompt' },
+        { tool: 'ocr_document_page', description: 'View the page containing this image' },
+      ],
     };
 
     return formatResponse(successResult(responseData));
@@ -222,6 +231,11 @@ export async function handleImageStats(params: Record<string, unknown>): Promise
           processing_rate:
             stats.total > 0 ? ((stats.processed / stats.total) * 100).toFixed(1) + '%' : '0%',
         },
+        next_steps: [
+          { tool: 'ocr_vlm_process_pending', description: 'Process pending VLM images' },
+          { tool: 'ocr_image_pending', description: 'List images awaiting processing' },
+          { tool: 'ocr_image_search', description: 'Search images by type or filter' },
+        ],
       })
     );
   } catch (error) {
@@ -258,6 +272,9 @@ export async function handleImageDelete(params: Record<string, unknown>): Promis
         image_id: imageId,
         deleted: true,
         file_deleted: !!(deleteFile && img.extracted_path),
+        next_steps: [
+          { tool: 'ocr_image_list', description: 'List remaining images for the document' },
+        ],
       })
     );
   } catch (error) {
@@ -298,6 +315,10 @@ export async function handleImageDeleteByDocument(
         document_id: documentId,
         images_deleted: count,
         files_deleted: filesDeleted,
+        next_steps: [
+          { tool: 'ocr_extract_images', description: 'Re-extract images for the document' },
+          { tool: 'ocr_document_get', description: 'View the document after image cleanup' },
+        ],
       })
     );
   } catch (error) {
@@ -326,6 +347,10 @@ export async function handleImageResetFailed(
         images_reset: failedCount + processingCount,
         failed_reset: failedCount,
         processing_reset: processingCount,
+        next_steps: [
+          { tool: 'ocr_vlm_process_pending', description: 'Process the reset images' },
+          { tool: 'ocr_image_pending', description: 'Check pending images after reset' },
+        ],
       })
     );
   } catch (error) {
@@ -433,6 +458,10 @@ export async function handleImageSearch(params: Record<string, unknown>): Promis
         images: results,
         total: results.length,
         type_distribution: typeCounts,
+        next_steps: [
+          { tool: 'ocr_image_get', description: 'Get full details for a specific image' },
+          { tool: 'ocr_image_semantic_search', description: 'Search images by meaning instead of filters' },
+        ],
       })
     );
   } catch (error) {
@@ -465,6 +494,10 @@ export async function handleImagePending(params: Record<string, unknown>): Promi
           path: img.extracted_path,
           created_at: img.created_at,
         })),
+        next_steps: [
+          { tool: 'ocr_vlm_process_pending', description: 'Process all pending VLM images' },
+          { tool: 'ocr_vlm_process_document', description: 'Process images for a specific document' },
+        ],
       })
     );
   } catch (error) {
@@ -550,6 +583,10 @@ export async function handleImageSemanticSearch(params: Record<string, unknown>)
       total: results.length,
       similarity_threshold: input.similarity_threshold,
       results,
+      next_steps: [
+        { tool: 'ocr_image_get', description: 'Get full details for a matched image' },
+        { tool: 'ocr_document_page', description: 'View the page containing a matched image' },
+      ],
     }));
   } catch (error) {
     return handleError(error);
@@ -750,6 +787,10 @@ export async function handleImageReanalyze(params: Record<string, unknown>): Pro
       provenance_id: vlmDescProvId,
       processing_time_ms: processingDurationMs,
       tokens_used: vlmResult.tokensUsed,
+      next_steps: [
+        { tool: 'ocr_image_get', description: 'View the updated image details' },
+        { tool: 'ocr_image_semantic_search', description: 'Search for similar images using new description' },
+      ],
     }));
   } catch (error) {
     return handleError(error);
@@ -786,13 +827,13 @@ export const imageTools: Record<string, ToolDefinition> = {
   },
 
   ocr_image_stats: {
-    description: '[ADMIN] Use to get image processing statistics (total, by status, by type). Returns aggregate counts across all documents.',
+    description: '[STATUS] Use to get image processing statistics (total, by status, by type). Returns aggregate counts across all documents.',
     inputSchema: {},
     handler: handleImageStats,
   },
 
   ocr_image_delete: {
-    description: '[ADMIN] Use to delete a single image record and optionally the file on disk. Returns deletion confirmation.',
+    description: '[DESTRUCTIVE] Use to delete a single image record and optionally the file on disk. Returns deletion confirmation.',
     inputSchema: {
       image_id: z.string().min(1).describe('Image ID'),
       delete_file: z.boolean().default(false).describe('Also delete the extracted image file'),
@@ -801,7 +842,7 @@ export const imageTools: Record<string, ToolDefinition> = {
   },
 
   ocr_image_delete_by_document: {
-    description: '[ADMIN] Use to delete all image records for a document and optionally the files. Returns deletion count.',
+    description: '[DESTRUCTIVE] Use to delete all image records for a document and optionally the files. Returns deletion count.',
     inputSchema: {
       document_id: z.string().min(1).describe('Document ID'),
       delete_files: z.boolean().default(false).describe('Also delete the extracted image files'),
@@ -818,7 +859,7 @@ export const imageTools: Record<string, ToolDefinition> = {
   },
 
   ocr_image_pending: {
-    description: '[ADMIN] Use to list images that still need VLM processing. Returns pending image IDs and metadata. Check before running ocr_vlm_process_pending.',
+    description: '[STATUS] Use to list images that still need VLM processing. Returns pending image IDs and metadata. Check before running ocr_vlm_process_pending.',
     inputSchema: {
       limit: z.number().int().min(1).max(1000).default(100).describe('Maximum images to return'),
     },

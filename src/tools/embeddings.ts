@@ -123,6 +123,7 @@ async function handleEmbeddingList(params: Record<string, unknown>): Promise<Too
         source_type: input.source_type ?? null,
         model_name: input.model_name ?? null,
       },
+      next_steps: [{ tool: 'ocr_embedding_get', description: 'Inspect a specific embedding' }, { tool: 'ocr_embedding_stats', description: 'Check overall embedding coverage' }],
     }));
   } catch (error) {
     return handleError(error);
@@ -147,6 +148,7 @@ async function handleEmbeddingStats(params: Record<string, unknown>): Promise<To
     return formatResponse(successResult({
       document_id: input.document_id ?? null,
       ...stats,
+      next_steps: [{ tool: 'ocr_embedding_rebuild', description: 'Rebuild embeddings for items with gaps' }, { tool: 'ocr_embedding_list', description: 'Browse individual embeddings' }],
     }));
   } catch (error) {
     return handleError(error);
@@ -259,6 +261,8 @@ async function handleEmbeddingGet(params: Record<string, unknown>): Promise<Tool
     if (input.include_provenance) {
       result.provenance_chain = fetchProvenanceChain(db, embedding.provenance_id, '[embedding_get]');
     }
+
+    result.next_steps = [{ tool: 'ocr_chunk_context', description: 'View the source chunk with surrounding text' }, { tool: 'ocr_embedding_rebuild', description: 'Regenerate this embedding' }];
 
     return formatResponse(successResult(result));
   } catch (error) {
@@ -651,6 +655,7 @@ async function handleEmbeddingRebuild(params: Record<string, unknown>): Promise<
       new_embedding_ids: rebuiltIds,
       provenance_ids: provenanceIds,
       target,
+      next_steps: [{ tool: 'ocr_embedding_stats', description: 'Verify embedding coverage after rebuild' }, { tool: 'ocr_search', description: 'Search using the rebuilt embeddings' }],
     }));
   } catch (error) {
     return handleError(error);
@@ -663,7 +668,7 @@ async function handleEmbeddingRebuild(params: Record<string, unknown>): Promise<
 
 export const embeddingTools: Record<string, ToolDefinition> = {
   ocr_embedding_list: {
-    description: '[ADMIN] Use to browse embeddings with filtering by document, source type (chunk/image/extraction), and model. Returns embedding metadata with source context.',
+    description: '[STATUS] Use to browse embeddings with filtering by document, source type (chunk/image/extraction), and model. Returns embedding metadata with source context.',
     inputSchema: {
       document_id: z.string().min(1).optional().describe('Filter by document ID'),
       source_type: z.enum(['chunk', 'image', 'extraction']).optional().describe('Filter by source type'),
@@ -675,7 +680,7 @@ export const embeddingTools: Record<string, ToolDefinition> = {
   },
 
   ocr_embedding_stats: {
-    description: '[ADMIN] Use to check embedding coverage and performance. Returns total count, breakdown by source type, device stats, and counts of unembedded chunks/images.',
+    description: '[STATUS] Use to check embedding coverage and performance. Returns total count, breakdown by source type, device stats, and counts of unembedded chunks/images.',
     inputSchema: {
       document_id: z.string().min(1).optional().describe('Scope stats to a specific document'),
     },
@@ -683,7 +688,7 @@ export const embeddingTools: Record<string, ToolDefinition> = {
   },
 
   ocr_embedding_get: {
-    description: '[ADMIN] Use to inspect a specific embedding by ID. Returns source context (chunk, image, or extraction), document context, model info, and optional provenance chain.',
+    description: '[STATUS] Use to inspect a specific embedding by ID. Returns source context (chunk, image, or extraction), document context, model info, and optional provenance chain.',
     inputSchema: {
       embedding_id: z.string().min(1).describe('Embedding ID to retrieve'),
       include_provenance: z.boolean().default(false).describe('Include full provenance chain'),
@@ -692,7 +697,7 @@ export const embeddingTools: Record<string, ToolDefinition> = {
   },
 
   ocr_embedding_rebuild: {
-    description: '[ADMIN] Use to regenerate embeddings after model updates or corruption. Deletes old embeddings and creates new ones with provenance. Specify exactly one of document_id, chunk_id, or image_id. Use include_vlm=true with document_id to also rebuild VLM image embeddings.',
+    description: '[SETUP] Use after changing embedding configuration, fixing corrupted vectors, or after VLM re-analysis (ocr_image_reanalyze). Specify exactly one of document_id, chunk_id, or image_id. Set include_vlm=true with document_id to also rebuild VLM image embeddings.',
     inputSchema: {
       document_id: z.string().min(1).optional().describe('Rebuild all chunk embeddings for this document (add include_vlm=true for VLM image embeddings too)'),
       chunk_id: z.string().min(1).optional().describe('Rebuild embedding for this specific chunk'),

@@ -124,10 +124,15 @@ export async function handleConfigGet(params: Record<string, unknown>): Promise<
     const input = validateInput(ConfigGetInput, params);
     const config = getConfig();
 
+    const configNextSteps = [
+      { tool: 'ocr_config_set', description: 'Change a configuration setting' },
+      { tool: 'ocr_db_stats', description: 'Check database statistics' },
+    ];
+
     // Return specific key if requested
     if (input.key) {
       const value = getConfigValue(input.key);
-      return formatResponse(successResult({ key: input.key, value }));
+      return formatResponse(successResult({ key: input.key, value, next_steps: configNextSteps }));
     }
 
     // Return full configuration
@@ -155,6 +160,8 @@ export async function handleConfigGet(params: Record<string, unknown>): Promise<
         auto_cluster_enabled: config.autoClusterEnabled ?? false,
         auto_cluster_threshold: config.autoClusterThreshold ?? 10,
         auto_cluster_algorithm: config.autoClusterAlgorithm ?? 'hdbscan',
+
+        next_steps: configNextSteps,
       })
     );
   } catch (error) {
@@ -174,6 +181,10 @@ export async function handleConfigSet(params: Record<string, unknown>): Promise<
         key: input.key,
         value: input.value,
         updated: true,
+        next_steps: [
+          { tool: 'ocr_config_get', description: 'Verify the updated configuration' },
+          { tool: 'ocr_process_pending', description: 'Process documents with new settings' },
+        ],
       })
     );
   } catch (error) {
@@ -190,14 +201,14 @@ export async function handleConfigSet(params: Record<string, unknown>): Promise<
  */
 export const configTools: Record<string, ToolDefinition> = {
   ocr_config_get: {
-    description: '[ADMIN] Use to view current system configuration (OCR mode, chunk size, embedding settings, auto-clustering). Returns all or one specific key.',
+    description: '[STATUS] Use to view current system configuration (OCR mode, chunk size, embedding settings, auto-clustering). Returns all or one specific key.',
     inputSchema: {
       key: ConfigKey.optional().describe('Specific config key to retrieve'),
     },
     handler: handleConfigGet,
   },
   ocr_config_set: {
-    description: '[ADMIN] Use to change a system configuration setting (OCR mode, chunk size, concurrency, auto-clustering). Returns updated value.',
+    description: '[SETUP] Use to change a system configuration setting (OCR mode, chunk size, concurrency, auto-clustering). Returns updated value.',
     inputSchema: {
       key: ConfigKey.describe('Configuration key to update'),
       value: z.union([z.string(), z.number(), z.boolean()]).describe('New value'),

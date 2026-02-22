@@ -505,6 +505,11 @@ async function handleDocumentTables(params: Record<string, unknown>): Promise<To
       .prepare('SELECT json_blocks FROM ocr_results WHERE document_id = ?')
       .get(input.document_id) as { json_blocks: string | null } | undefined;
 
+    const tableNextSteps = [
+      { tool: 'ocr_document_page', description: 'Read the page containing a table' },
+      { tool: 'ocr_search', description: 'Search for related content' },
+    ];
+
     if (!ocrRow?.json_blocks) {
       return formatResponse(successResult({
         document_id: input.document_id,
@@ -512,6 +517,7 @@ async function handleDocumentTables(params: Record<string, unknown>): Promise<To
         tables: [],
         total_tables: 0,
         source: 'no_ocr_results_or_blocks',
+        next_steps: tableNextSteps,
       }));
     }
 
@@ -526,6 +532,7 @@ async function handleDocumentTables(params: Record<string, unknown>): Promise<To
         tables: [],
         total_tables: 0,
         source: 'json_blocks_parse_error',
+        next_steps: tableNextSteps,
       }));
     }
 
@@ -536,6 +543,7 @@ async function handleDocumentTables(params: Record<string, unknown>): Promise<To
         tables: [],
         total_tables: 0,
         source: 'empty_json_blocks',
+        next_steps: tableNextSteps,
       }));
     }
 
@@ -552,6 +560,7 @@ async function handleDocumentTables(params: Record<string, unknown>): Promise<To
           total_tables: allTables.length,
           requested_index: input.table_index,
           message: `Table index ${input.table_index} out of range. Document has ${allTables.length} table(s).`,
+          next_steps: tableNextSteps,
         }));
       }
       tables = [allTables[input.table_index]];
@@ -565,6 +574,7 @@ async function handleDocumentTables(params: Record<string, unknown>): Promise<To
       tables,
       total_tables: allTables.length,
       source: 'json_blocks',
+      next_steps: tableNextSteps,
     }));
   } catch (error) {
     return handleError(error);
@@ -737,6 +747,7 @@ async function handleDocumentRecommend(params: Record<string, unknown>): Promise
       recommendations: topRanked,
       total_candidates: ranked.length,
       returned: topRanked.length,
+      next_steps: [{ tool: 'ocr_document_get', description: 'Get details for a recommended document' }, { tool: 'ocr_document_compare', description: 'Compare the source document with a recommendation' }],
     }));
   } catch (error) {
     return handleError(error);
@@ -776,6 +787,7 @@ async function handleDocumentExtras(params: Record<string, unknown>): Promise<To
         extras: {},
         available_sections: [],
         message: 'No extras data available for this document.',
+        next_steps: [{ tool: 'ocr_document_get', description: 'View document details' }],
       }));
     }
 
@@ -808,6 +820,7 @@ async function handleDocumentExtras(params: Record<string, unknown>): Promise<To
         section: input.section,
         data: sectionData ?? null,
         available_sections: availableSections,
+        next_steps: [{ tool: 'ocr_document_tables', description: 'Extract table data from the document' }, { tool: 'ocr_document_get', description: 'View core document metadata' }],
       }));
     }
 
@@ -831,6 +844,7 @@ async function handleDocumentExtras(params: Record<string, unknown>): Promise<To
       file_name: doc.file_name,
       extras: organized,
       available_sections: availableSections,
+      next_steps: [{ tool: 'ocr_document_tables', description: 'Extract table data from the document' }, { tool: 'ocr_document_get', description: 'View core document metadata' }],
     }));
   } catch (error) {
     return handleError(error);
