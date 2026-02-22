@@ -532,6 +532,7 @@ async function handleComparisonList(params: Record<string, unknown>): Promise<To
         count: results.length,
         offset: input.offset,
         limit: input.limit,
+        next_steps: [{ tool: 'ocr_comparison_get', description: 'View full diff data for a comparison' }, { tool: 'ocr_document_compare', description: 'Compare two new documents' }],
       })
     );
   } catch (error) {
@@ -564,6 +565,7 @@ async function handleComparisonGet(params: Record<string, unknown>): Promise<Too
           'structural_diff_json',
           input.comparison_id
         ),
+        next_steps: [{ tool: 'ocr_document_get', description: 'View one of the compared documents' }, { tool: 'ocr_comparison_list', description: 'Browse other comparisons' }],
       })
     );
   } catch (error) {
@@ -606,6 +608,7 @@ async function handleComparisonDiscover(params: Record<string, unknown>): Promis
             docEmbeddings.length === 0
               ? 'No documents with embeddings found'
               : 'At least 2 documents with embeddings required for comparison discovery',
+          next_steps: [{ tool: 'ocr_process_pending', description: 'Process more documents to enable comparison' }],
         })
       );
     }
@@ -674,6 +677,7 @@ async function handleComparisonDiscover(params: Record<string, unknown>): Promis
         documents_analyzed: docEmbeddings.length,
         min_similarity: minSimilarity,
         exclude_existing: excludeExisting,
+        next_steps: [{ tool: 'ocr_document_compare', description: 'Compare a discovered similar pair' }, { tool: 'ocr_comparison_batch', description: 'Compare all discovered pairs at once' }],
       })
     );
   } catch (error) {
@@ -708,6 +712,7 @@ async function handleComparisonBatch(params: Record<string, unknown>): Promise<T
             results: [],
             total_compared: 0,
             message: `Cluster has ${members.length} document(s), need at least 2 for comparison`,
+            next_steps: [{ tool: 'ocr_cluster_list', description: 'Find a cluster with more documents' }],
           })
         );
       }
@@ -735,6 +740,7 @@ async function handleComparisonBatch(params: Record<string, unknown>): Promise<T
           results: [],
           total_compared: 0,
           message: 'No pairs to compare',
+          next_steps: [{ tool: 'ocr_comparison_list', description: 'View existing comparisons' }],
         })
       );
     }
@@ -790,6 +796,7 @@ async function handleComparisonBatch(params: Record<string, unknown>): Promise<T
         total_compared: results.length,
         total_errors: errors.length,
         total_pairs_requested: pairsToCompare.length,
+        next_steps: [{ tool: 'ocr_comparison_list', description: 'List all comparison results' }, { tool: 'ocr_comparison_get', description: 'View details for a specific comparison' }],
       })
     );
   } catch (error) {
@@ -886,6 +893,7 @@ async function handleComparisonMatrix(params: Record<string, unknown>): Promise<
         least_similar_pair: leastSimilarPair,
         average_similarity: averageSimilarity,
         documents_analyzed: n,
+        next_steps: [{ tool: 'ocr_document_compare', description: 'Compare the most similar pair in detail' }, { tool: 'ocr_cluster_documents', description: 'Cluster documents by similarity' }],
       })
     );
   } catch (error) {

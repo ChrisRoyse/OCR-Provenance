@@ -1969,7 +1969,7 @@ export async function handleFTSManage(params: Record<string, unknown>): Promise<
 
     if (input.action === 'rebuild') {
       const result = bm25.rebuildIndex();
-      return formatResponse(successResult({ operation: 'fts_rebuild', ...result }));
+      return formatResponse(successResult({ operation: 'fts_rebuild', ...result, next_steps: [{ tool: 'ocr_search', description: 'Search using the rebuilt index' }, { tool: 'ocr_db_stats', description: 'Check database statistics' }] }));
     }
 
     const status = bm25.getStatus();
@@ -1989,6 +1989,7 @@ export async function handleFTSManage(params: Record<string, unknown>): Promise<
       console.error(`[Search] Failed to query chunks without embeddings: ${String(error)}`);
     }
 
+    (status as Record<string, unknown>).next_steps = [{ tool: 'ocr_search', description: 'Search using the rebuilt index' }, { tool: 'ocr_db_stats', description: 'Check database statistics' }];
     return formatResponse(successResult(status));
   } catch (error) {
     return handleError(error);
@@ -2164,6 +2165,7 @@ async function handleRagContext(params: Record<string, unknown>): Promise<ToolRe
           sources: [],
           deduplication: { before: 0, after: 0, removed: 0 },
           source_diversity: { max_per_document: input.max_results_per_document ?? 3, before: 0, after: 0 },
+          next_steps: [{ tool: 'ocr_search', description: 'Try a broader search query' }],
         })
       );
     }
@@ -2250,6 +2252,7 @@ async function handleRagContext(params: Record<string, unknown>): Promise<ToolRe
       deduplication: dedupStats,
       source_diversity: diversityStats,
     };
+    ragResponse.next_steps = [{ tool: 'ocr_search', description: 'Run a more detailed search with filters' }, { tool: 'ocr_document_get', description: 'Get full details for a source document' }, { tool: 'ocr_chunk_context', description: 'Expand a specific chunk with surrounding text' }];
     return formatResponse(successResult(ragResponse));
   } catch (error) {
     return handleError(error);
@@ -2363,6 +2366,7 @@ async function handleBenchmarkCompare(params: Record<string, unknown>): Promise<
           overlap_count: Object.keys(overlapping).length,
           total_unique_documents: allDocIds.size,
         },
+        next_steps: [{ tool: 'ocr_search', description: 'Search in the current database' }, { tool: 'ocr_db_select', description: 'Switch to a different database' }],
       })
     );
   } catch (error) {
@@ -2479,6 +2483,7 @@ async function handleSearchExport(params: Record<string, unknown>): Promise<Tool
         result_count: results.length,
         search_type: input.search_type,
         query: input.query,
+        next_steps: [{ tool: 'ocr_search', description: 'Run another search with different parameters' }, { tool: 'ocr_document_get', description: 'Get details for a document from the results' }],
       })
     );
   } catch (error) {
@@ -2544,6 +2549,7 @@ async function handleSearchSave(params: Record<string, unknown>): Promise<ToolRe
       search_type: input.search_type,
       result_count: input.result_count,
       created_at: now,
+      next_steps: [{ tool: 'ocr_search_saved', description: 'List or re-execute saved searches' }],
     }));
   } catch (error) {
     return handleError(error);
@@ -2594,6 +2600,7 @@ async function handleSearchSaved(params: Record<string, unknown>): Promise<ToolR
         total: totalRow.count,
         limit: input.limit,
         offset: input.offset,
+        next_steps: [{ tool: 'ocr_search', description: 'Run a new search' }, { tool: 'ocr_search_save', description: 'Save a new search for later' }],
       }));
     }
 
@@ -2626,6 +2633,7 @@ async function handleSearchSaved(params: Record<string, unknown>): Promise<ToolR
         result_ids: JSON.parse(row.result_ids),
         created_at: row.created_at,
         notes: row.notes,
+        next_steps: [{ tool: 'ocr_search', description: 'Run a new search' }, { tool: 'ocr_search_save', description: 'Save a new search for later' }],
       }));
     }
 
@@ -2696,6 +2704,7 @@ async function handleSearchSaved(params: Record<string, unknown>): Promise<ToolR
       },
       re_executed_at: new Date().toISOString(),
       search_results: searchResultData,
+      next_steps: [{ tool: 'ocr_search', description: 'Run a new search' }, { tool: 'ocr_search_save', description: 'Save a new search for later' }],
     }));
   } catch (error) {
     return handleError(error);
@@ -2819,6 +2828,7 @@ async function handleCrossDbSearch(params: Record<string, unknown>): Promise<Too
         total_results: allResults.length,
         results: allResults,
         databases_skipped: skippedDbs.length > 0 ? skippedDbs : undefined,
+        next_steps: [{ tool: 'ocr_db_select', description: 'Switch to a specific database for deeper search' }, { tool: 'ocr_search', description: 'Search within the current database with full features' }],
       })
     );
   } catch (error) {
@@ -2840,14 +2850,14 @@ export const searchTools: Record<string, ToolDefinition> = {
     handler: handleSearchUnified,
   },
   ocr_fts_manage: {
-    description: '[ADMIN] Use to rebuild or check status of the FTS5 full-text index. Returns index health. Use after bulk ingestion if search results seem stale.',
+    description: '[SETUP] Use after bulk document deletion or when keyword search returns unexpected zero results. action="status" checks index health; action="rebuild" recreates the FTS5 index. Only affects keyword/hybrid search modes.',
     inputSchema: {
       action: z.enum(['rebuild', 'status']).describe('Action: rebuild index or check status'),
     },
     handler: handleFTSManage,
   },
   ocr_search_export: {
-    description: '[SEARCH] Use to export search results to a CSV or JSON file on disk. Returns file path and result count.',
+    description: '[STATUS] Use to export search results to a CSV or JSON file on disk. Returns file path and result count.',
     inputSchema: {
       query: z.string().min(1).max(1000).describe('Search query'),
       search_type: z
@@ -2862,7 +2872,7 @@ export const searchTools: Record<string, ToolDefinition> = {
     handler: handleSearchExport,
   },
   ocr_benchmark_compare: {
-    description: '[SEARCH] Use to compare search results across multiple databases side-by-side. Returns per-database results for benchmarking. Requires 2+ database names.',
+    description: '[SEARCH] Use when you have the same documents in separate databases and want to compare search quality. Returns per-database results for the same query.',
     inputSchema: {
       query: z.string().min(1).max(1000).describe('Search query'),
       database_names: z

@@ -242,6 +242,10 @@ export async function handleVLMDescribe(params: Record<string, unknown>): Promis
         confidence: result.analysis.confidence,
         embedding_id: embeddingId,
         embedding_generated: embeddingGenerated,
+        next_steps: [
+          { tool: 'ocr_image_get', description: 'View image details including the new description' },
+          { tool: 'ocr_image_semantic_search', description: 'Search for similar images by meaning' },
+        ],
       })
     );
   } catch (error) {
@@ -400,6 +404,9 @@ Return as JSON with fields: documentType, summary, keyDates, keyNames, findings`
         tokens_used: response.usage.totalTokens,
         input_tokens: response.usage.inputTokens,
         output_tokens: response.usage.outputTokens,
+        next_steps: [
+          { tool: 'ocr_ingest_files', description: 'Ingest the PDF for full OCR pipeline processing' },
+        ],
       })
     );
   } catch (error) {
@@ -433,6 +440,10 @@ export async function handleVLMStatus(params: Record<string, unknown>): Promise<
           failure_count: status.circuitBreaker.failureCount,
           time_to_recovery: status.circuitBreaker.timeToRecovery,
         },
+        next_steps: [
+          { tool: 'ocr_vlm_process_pending', description: 'Process pending VLM images' },
+          { tool: 'ocr_image_pending', description: 'List images awaiting VLM processing' },
+        ],
       })
     );
   } catch (error) {
@@ -493,7 +504,7 @@ export const vlmTools: Record<string, ToolDefinition> = {
 
   ocr_vlm_status: {
     description:
-      '[ADMIN] Use to check VLM service health (API config, rate limits, circuit breaker state). Returns service status. Use to diagnose VLM failures.',
+      '[STATUS] Use to check VLM service health (API config, rate limits, circuit breaker state). Returns service status. Use to diagnose VLM failures.',
     inputSchema: {},
     handler: handleVLMStatus,
   },

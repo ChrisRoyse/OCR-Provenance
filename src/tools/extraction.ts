@@ -292,6 +292,10 @@ export async function handleExtractImagesBatch(
           total_images: 0,
           message:
             'No documents with supported image extraction types found (supported: pdf, docx)',
+          next_steps: [
+            { tool: 'ocr_vlm_process_pending', description: 'Run VLM analysis on extracted images' },
+            { tool: 'ocr_image_stats', description: 'Check image extraction statistics' },
+          ],
         })
       );
     }
@@ -464,6 +468,10 @@ export async function handleExtractImagesBatch(
         total_images: totalImages,
         results,
         ...(batchVlmResults ? { vlm_processing: batchVlmResults } : {}),
+        next_steps: [
+          { tool: 'ocr_vlm_process_pending', description: 'Run VLM analysis on extracted images' },
+          { tool: 'ocr_image_stats', description: 'Check image extraction statistics' },
+        ],
       })
     );
   } catch (error) {

@@ -213,6 +213,7 @@ async function handleChunkList(params: Record<string, unknown>): Promise<ToolRes
         total,
         limit: input.limit,
         offset: input.offset,
+        next_steps: [{ tool: 'ocr_chunk_get', description: 'Get details for a specific chunk' }, { tool: 'ocr_chunk_context', description: 'Expand a chunk with surrounding text' }, { tool: 'ocr_document_page', description: 'Read a specific page of the document' }],
       })
     );
   } catch (error) {

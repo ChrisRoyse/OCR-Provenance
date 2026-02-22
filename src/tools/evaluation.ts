@@ -167,6 +167,10 @@ export async function handleEvaluateSingle(params: Record<string, unknown>): Pro
             names_count: analysis.names.length,
             numbers_count: analysis.numbers.length,
           },
+          next_steps: [
+            { tool: 'ocr_image_get', description: 'View the evaluated image details' },
+            { tool: 'ocr_evaluate_document', description: 'Evaluate all images in the document' },
+          ],
         })
       );
     } catch (error) {
@@ -218,6 +222,10 @@ export async function handleEvaluateDocument(
           processed: images.filter((i) => i.vlm_status === 'complete').length,
           failed: images.filter((i) => i.vlm_status === 'failed').length,
           message: 'No pending images to evaluate',
+          next_steps: [
+            { tool: 'ocr_evaluation_report', description: 'Generate a full evaluation report' },
+            { tool: 'ocr_evaluate_pending', description: 'Evaluate remaining images across all documents' },
+          ],
         })
       );
     }
@@ -303,6 +311,10 @@ export async function handleEvaluateDocument(
         processing_time_ms: Date.now() - startTime,
         average_confidence: avgConfidence,
         results: results.slice(0, 20), // Limit results in response
+        next_steps: [
+          { tool: 'ocr_evaluation_report', description: 'Generate a full evaluation report' },
+          { tool: 'ocr_evaluate_pending', description: 'Evaluate remaining images across all documents' },
+        ],
       })
     );
   } catch (error) {
@@ -333,6 +345,10 @@ export async function handleEvaluatePending(
           processed: 0,
           stats,
           message: 'No pending images to evaluate',
+          next_steps: [
+            { tool: 'ocr_evaluation_report', description: 'Generate a comprehensive evaluation report' },
+            { tool: 'ocr_image_stats', description: 'Check image processing statistics' },
+          ],
         })
       );
     }
@@ -406,6 +422,10 @@ export async function handleEvaluatePending(
         total_tokens: totalTokens,
         processing_time_ms: Date.now() - startTime,
         stats,
+        next_steps: [
+          { tool: 'ocr_evaluation_report', description: 'Generate a comprehensive evaluation report' },
+          { tool: 'ocr_image_stats', description: 'Check image processing statistics' },
+        ],
       })
     );
   } catch (error) {
@@ -624,7 +644,7 @@ async function generateAndStoreEmbedding(
 export const evaluationTools: Record<string, ToolDefinition> = {
   ocr_evaluate_single: {
     description:
-      '[ADMIN] Use to evaluate a single image with the universal prompt (no context). Returns description and quality metrics. For benchmarking VLM accuracy.',
+      '[STATUS] Use to evaluate a single image with the universal prompt (no context). Returns description and quality metrics. For benchmarking VLM accuracy.',
     inputSchema: {
       image_id: z.string().min(1).describe('Image ID to evaluate'),
       save_to_db: z.boolean().default(true).describe('Save results to database'),
@@ -634,7 +654,7 @@ export const evaluationTools: Record<string, ToolDefinition> = {
 
   ocr_evaluate_document: {
     description:
-      '[ADMIN] Use to evaluate all pending images in a single document. Returns per-image evaluation results. For benchmarking VLM accuracy at document level.',
+      '[STATUS] Use to evaluate all pending images in a single document. Returns per-image evaluation results. For benchmarking VLM accuracy at document level.',
     inputSchema: {
       document_id: z.string().min(1).describe('Document ID'),
       batch_size: z.number().int().min(1).max(20).default(5).describe('Images per batch'),
@@ -643,7 +663,7 @@ export const evaluationTools: Record<string, ToolDefinition> = {
   },
 
   ocr_evaluate_pending: {
-    description: '[ADMIN] Use to bulk-evaluate all pending images across all documents. Returns aggregate evaluation results. For benchmarking VLM accuracy at corpus level.',
+    description: '[STATUS] Use to bulk-evaluate all pending images across all documents. Returns aggregate evaluation results. For benchmarking VLM accuracy at corpus level.',
     inputSchema: {
       limit: z.number().int().min(1).max(500).default(100).describe('Maximum images to process'),
       batch_size: z.number().int().min(1).max(50).default(10).describe('Images per batch'),

@@ -53,6 +53,10 @@ export async function handleDatabaseCreate(
         path,
         created: true,
         description: input.description,
+        next_steps: [
+          { tool: 'ocr_db_select', description: 'Select this database to start using it' },
+          { tool: 'ocr_ingest_files', description: 'Ingest files into the new database' },
+        ],
       })
     );
   } catch (error) {
@@ -103,6 +107,10 @@ export async function handleDatabaseList(
         databases: items,
         total: items.length,
         storage_path: storagePath,
+        next_steps: [
+          { tool: 'ocr_db_select', description: 'Select a database to work with' },
+          { tool: 'ocr_db_create', description: 'Create a new database' },
+        ],
       })
     );
   } catch (error) {
@@ -236,6 +244,12 @@ export async function handleDatabaseStats(
   try {
     const input = validateInput(DatabaseStatsInput, params);
 
+    const statsNextSteps = [
+      { tool: 'ocr_document_list', description: 'Browse documents in this database' },
+      { tool: 'ocr_search', description: 'Search for content across documents' },
+      { tool: 'ocr_report_overview', description: 'Get quality and corpus analytics' },
+    ];
+
     // If database_name is provided, temporarily open that database
     if (input.database_name && input.database_name !== state.currentDatabaseName) {
       const storagePath = getDefaultStoragePath();
@@ -243,7 +257,7 @@ export async function handleDatabaseStats(
       try {
         const vector = new VectorService(db.getConnection());
         const result = buildStatsResponse(db, vector);
-        return formatResponse(successResult(result));
+        return formatResponse(successResult({ ...result, next_steps: statsNextSteps }));
       } finally {
         db.close();
       }
@@ -251,7 +265,8 @@ export async function handleDatabaseStats(
 
     // Use current database
     const { db, vector } = requireDatabase();
-    return formatResponse(successResult(buildStatsResponse(db, vector)));
+    const result = buildStatsResponse(db, vector);
+    return formatResponse(successResult({ ...result, next_steps: statsNextSteps }));
   } catch (error) {
     return handleError(error);
   }
@@ -271,6 +286,9 @@ export async function handleDatabaseDelete(
       successResult({
         name: input.database_name,
         deleted: true,
+        next_steps: [
+          { tool: 'ocr_db_list', description: 'List remaining databases' },
+        ],
       })
     );
   } catch (error) {
@@ -287,7 +305,7 @@ export async function handleDatabaseDelete(
  */
 export const databaseTools: Record<string, ToolDefinition> = {
   ocr_db_create: {
-    description: '[ADMIN] Use to create a new database before ingesting documents. Returns database name and path. Follow with ocr_db_select, then ocr_ingest_files or ocr_ingest_directory.',
+    description: '[SETUP] Use to create a new database before ingesting documents. Returns database name and path. Follow with ocr_db_select, then ocr_ingest_files or ocr_ingest_directory.',
     inputSchema: {
       name: z
         .string()
@@ -326,7 +344,7 @@ export const databaseTools: Record<string, ToolDefinition> = {
     handler: handleDatabaseStats,
   },
   ocr_db_delete: {
-    description: '[ADMIN] Use to permanently delete a database and all its data. Returns confirmation. Requires confirm=true.',
+    description: '[DESTRUCTIVE] Use to permanently delete a database and all its data. Returns confirmation. Requires confirm=true.',
     inputSchema: {
       database_name: z.string().min(1).describe('Name of the database to delete'),
       confirm: z.literal(true).describe('Must be true to confirm deletion'),

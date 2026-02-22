@@ -74,6 +74,7 @@ async function handleTagList(params: Record<string, unknown>): Promise<ToolRespo
       successResult({
         tags,
         total: tags.length,
+        next_steps: [{ tool: 'ocr_tag_apply', description: 'Apply a tag to an entity' }, { tool: 'ocr_tag_search', description: 'Find entities by tag' }, { tool: 'ocr_tag_create', description: 'Create a new tag' }],
       })
     );
   } catch (error) {
@@ -163,6 +164,7 @@ async function handleTagRemove(params: Record<string, unknown>): Promise<ToolRes
         tag_name: input.tag_name,
         entity_id: input.entity_id,
         entity_type: input.entity_type,
+        next_steps: [{ tool: 'ocr_tag_list', description: 'View remaining tags and their usage' }, { tool: 'ocr_tag_search', description: 'Find other entities with this tag' }],
       })
     );
   } catch (error) {
@@ -198,6 +200,7 @@ async function handleTagSearch(params: Record<string, unknown>): Promise<ToolRes
           entity_type: input.entity_type ?? null,
           match_all: input.match_all,
         },
+        next_steps: [{ tool: 'ocr_document_get', description: 'Get details for a tagged document' }, { tool: 'ocr_tag_apply', description: 'Apply another tag to results' }],
       })
     );
   } catch (error) {
@@ -235,6 +238,7 @@ async function handleTagDelete(params: Record<string, unknown>): Promise<ToolRes
         tag_name: input.tag_name,
         tag_id: tag.id,
         associations_removed: deletedCount,
+        next_steps: [{ tool: 'ocr_tag_list', description: 'List remaining tags' }],
       })
     );
   } catch (error) {
@@ -300,7 +304,7 @@ export const tagTools: Record<string, ToolDefinition> = {
 
   ocr_tag_apply: {
     description:
-      '[ANALYSIS] Use to attach a tag to an entity (document, chunk, image, extraction, or cluster). Returns the association ID. Tag must exist (use ocr_tag_create first).',
+      '[MANAGE] Use to attach a tag to an entity (document, chunk, image, extraction, or cluster). Returns the association ID. Tag must exist (use ocr_tag_create first).',
     inputSchema: {
       tag_name: z.string().min(1).describe('Name of the tag to apply'),
       entity_id: z.string().min(1).describe('ID of the entity to tag'),
@@ -312,7 +316,7 @@ export const tagTools: Record<string, ToolDefinition> = {
   },
 
   ocr_tag_remove: {
-    description: '[ANALYSIS] Use to detach a tag from an entity. Returns confirmation. Does not delete the tag itself.',
+    description: '[MANAGE] Use to detach a tag from an entity. Returns confirmation. Does not delete the tag itself.',
     inputSchema: {
       tag_name: z.string().min(1).describe('Name of the tag to remove'),
       entity_id: z.string().min(1).describe('ID of the entity to untag'),

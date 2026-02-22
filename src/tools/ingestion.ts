@@ -1404,6 +1404,7 @@ export async function handleProcessPending(
           failed: 0,
           remaining: 0,
           message: 'No pending documents to process',
+          next_steps: [{ tool: 'ocr_status', description: 'Check overall processing status' }],
         })
       );
     }
@@ -1596,6 +1597,10 @@ export async function handleOCRStatus(
             complete: doc.status === 'complete' ? 1 : 0,
             failed: doc.status === 'failed' ? 1 : 0,
           },
+          next_steps: [
+            { tool: 'ocr_document_get', description: 'View full document details and metadata' },
+            { tool: 'ocr_process_pending', description: 'Process documents still pending OCR' },
+          ],
         })
       );
     }
@@ -1643,6 +1648,10 @@ export async function handleOCRStatus(
           ocr_quality: stats.ocr_quality,
           costs: stats.costs,
         },
+        next_steps: [
+          { tool: 'ocr_process_pending', description: 'Process documents still pending OCR' },
+          { tool: 'ocr_retry_failed', description: 'Reset failed documents for reprocessing' },
+        ],
       })
     );
   } catch (error) {
@@ -1675,6 +1684,7 @@ export async function handleRetryFailed(
           successResult({
             reset: 0,
             message: `Document ${input.document_id} is not in failed state (current: ${doc.status})`,
+            next_steps: [{ tool: 'ocr_status', description: 'Check document processing status' }],
           })
         );
       }
@@ -1696,6 +1706,10 @@ export async function handleRetryFailed(
       successResult({
         reset: resetCount,
         message: `Reset ${resetCount} failed document(s) to pending (derived data cleaned)`,
+        next_steps: [
+          { tool: 'ocr_process_pending', description: 'Process the reset documents' },
+          { tool: 'ocr_status', description: 'Check processing status after retry' },
+        ],
       })
     );
   } catch (error) {
@@ -1752,6 +1766,9 @@ async function handleConvertRaw(
         quality_score: result.qualityScore,
         cost_cents: result.costCents,
         processing_duration_ms: result.durationMs,
+        next_steps: [
+          { tool: 'ocr_ingest_files', description: 'Ingest the file for full pipeline processing' },
+        ],
       })
     );
   } catch (error) {
@@ -1859,6 +1876,10 @@ async function handleReprocess(
             ? (newOCR.parse_quality_score - previousQuality).toFixed(2)
             : null,
         processing_duration_ms: Date.now() - startTime,
+        next_steps: [
+          { tool: 'ocr_status', description: 'Check processing status' },
+          { tool: 'ocr_document_get', description: 'View updated document details' },
+        ],
       })
     );
   } catch (error) {
@@ -1953,7 +1974,7 @@ export const ingestionTools: Record<string, ToolDefinition> = {
     handler: handleProcessPending,
   },
   ocr_status: {
-    description: '[ADMIN] Use to check processing status of documents (pending/processing/complete/failed). Returns per-document status and summary counts.',
+    description: '[STATUS] Use to check processing status of documents (pending/processing/complete/failed). Returns per-document status and summary counts.',
     inputSchema: {
       document_id: z.string().optional().describe('Specific document ID to check'),
       status_filter: z
@@ -1987,7 +2008,7 @@ export const ingestionTools: Record<string, ToolDefinition> = {
   },
   ocr_convert_raw: {
     description:
-      '[PROCESSING] Use for quick one-off OCR conversion without storing in database. Returns raw markdown text and metadata. No database required.',
+      '[PROCESSING] Use when you need a quick OCR preview of a file without creating database records. Converts a file to markdown text via Datalab API and returns the raw result. Use ocr_ingest_files + ocr_process_pending instead for full pipeline processing.',
     inputSchema: {
       file_path: z.string().min(1).describe('Path to file to convert'),
       ocr_mode: z

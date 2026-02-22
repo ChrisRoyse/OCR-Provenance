@@ -210,6 +210,7 @@ async function handleClusterList(params: Record<string, unknown>): Promise<ToolR
         clusters: items,
         total: items.length,
         offset: input.offset,
+        next_steps: [{ tool: 'ocr_cluster_get', description: 'Inspect a specific cluster' }, { tool: 'ocr_cluster_documents', description: 'Run a new clustering' }],
       })
     );
   } catch (error) {
@@ -394,6 +395,7 @@ async function handleClusterAssign(params: Record<string, unknown>): Promise<Too
         run_id: input.run_id,
         assigned: true,
         provenance_id: assignProvId,
+        next_steps: [{ tool: 'ocr_cluster_get', description: 'Inspect the assigned cluster' }, { tool: 'ocr_document_get', description: 'View the classified document' }],
       })
     );
   } catch (error) {
@@ -438,6 +440,7 @@ async function handleClusterDelete(params: Record<string, unknown>): Promise<Too
         run_id: input.run_id,
         clusters_deleted: deletedCount,
         deleted: true,
+        next_steps: [{ tool: 'ocr_cluster_documents', description: 'Run a new clustering' }, { tool: 'ocr_cluster_list', description: 'List remaining clusters' }],
       })
     );
   } catch (error) {
@@ -486,6 +489,7 @@ async function handleClusterReassign(params: Record<string, unknown>): Promise<T
             : result.old_cluster_id
               ? `Document moved from cluster "${result.old_cluster_id}" to "${input.target_cluster_id}"`
               : `Document assigned to cluster "${input.target_cluster_id}"`,
+        next_steps: [{ tool: 'ocr_cluster_get', description: 'Inspect the target cluster' }, { tool: 'ocr_cluster_list', description: 'Browse all clusters' }],
       })
     );
   } catch (error) {
@@ -542,6 +546,7 @@ async function handleClusterMerge(params: Record<string, unknown>): Promise<Tool
         new_document_count: updatedCluster?.document_count ?? 0,
         run_id: cluster1.run_id,
         message: `Merged cluster "${input.cluster_id_2}" into "${input.cluster_id_1}". ${result.documents_moved} document(s) moved.`,
+        next_steps: [{ tool: 'ocr_cluster_get', description: 'Inspect the merged cluster' }, { tool: 'ocr_cluster_list', description: 'Browse all clusters' }],
       })
     );
   } catch (error) {
@@ -580,19 +585,19 @@ export const clusteringTools: Record<string, ToolDefinition> = {
   },
   ocr_cluster_delete: {
     description:
-      '[ANALYSIS] Use to delete all clusters and assignments for a clustering run. Returns deletion count. Requires confirm=true.',
+      '[DESTRUCTIVE] Use to delete all clusters and assignments for a clustering run. Returns deletion count. Requires confirm=true.',
     inputSchema: ClusterDeleteInput.shape,
     handler: handleClusterDelete,
   },
   ocr_cluster_reassign: {
     description:
-      '[ANALYSIS] Use to move a document from one cluster to another within the same run. Returns old and new cluster IDs.',
+      '[MANAGE] Use to move a document from one cluster to another within the same run. Returns old and new cluster IDs.',
     inputSchema: ClusterReassignInput.shape,
     handler: handleClusterReassign,
   },
   ocr_cluster_merge: {
     description:
-      '[ANALYSIS] Use to merge two clusters into one within the same run. All documents from the second cluster move to the first. Returns merged cluster details.',
+      '[MANAGE] Use to merge two clusters into one within the same run. All documents from the second cluster move to the first. Returns merged cluster details.',
     inputSchema: ClusterMergeInput.shape,
     handler: handleClusterMerge,
   },
