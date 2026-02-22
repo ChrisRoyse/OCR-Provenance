@@ -29,12 +29,6 @@ const TimelineAnalyticsInput = z.object({
   created_before: z.string().optional(),
 });
 
-const ThroughputAnalyticsInput = z.object({
-  bucket: z.enum(['hourly', 'daily', 'weekly', 'monthly']).default('daily'),
-  created_after: z.string().optional(),
-  created_before: z.string().optional(),
-});
-
 // ===============================================================================
 // TOOL HANDLERS
 // ===============================================================================
@@ -77,60 +71,6 @@ async function handleTimelineAnalytics(
   }
 }
 
-/**
- * Handle ocr_throughput_analytics - Processing throughput metrics per time bucket
- */
-async function handleThroughputAnalytics(
-  params: Record<string, unknown>
-): Promise<ToolResponse> {
-  try {
-    const input = validateInput(ThroughputAnalyticsInput, params);
-    const { db } = requireDatabase();
-
-    const bucket = input.bucket ?? 'daily';
-
-    const data = db.getThroughputAnalytics({
-      bucket,
-      created_after: input.created_after,
-      created_before: input.created_before,
-    });
-
-    // Compute overall summary
-    const totalPages = data.reduce((sum, d) => sum + d.pages_processed, 0);
-    const totalEmbeddings = data.reduce((sum, d) => sum + d.embeddings_generated, 0);
-    const totalImages = data.reduce((sum, d) => sum + d.images_processed, 0);
-    const totalOcrMs = data.reduce((sum, d) => sum + d.total_ocr_duration_ms, 0);
-    const totalEmbMs = data.reduce((sum, d) => sum + d.total_embedding_duration_ms, 0);
-
-    return formatResponse(
-      successResult({
-        bucket,
-        total_periods: data.length,
-        filters: {
-          created_after: input.created_after ?? null,
-          created_before: input.created_before ?? null,
-        },
-        summary: {
-          total_pages_processed: totalPages,
-          total_embeddings_generated: totalEmbeddings,
-          total_images_processed: totalImages,
-          total_ocr_duration_ms: totalOcrMs,
-          total_embedding_duration_ms: totalEmbMs,
-          overall_avg_ms_per_page: totalPages > 0
-            ? Math.round((totalOcrMs / totalPages) * 100) / 100
-            : 0,
-          overall_avg_ms_per_embedding: totalEmbeddings > 0
-            ? Math.round((totalEmbMs / totalEmbeddings) * 100) / 100
-            : 0,
-        },
-        data,
-      })
-    );
-  } catch (error) {
-    return handleError(error);
-  }
-}
-
 // ===============================================================================
 // TOOL DEFINITIONS
 // ===============================================================================
@@ -161,25 +101,5 @@ export const timelineTools: Record<string, ToolDefinition> = {
         .describe('Filter data created before this ISO 8601 timestamp'),
     },
     handler: handleTimelineAnalytics,
-  },
-
-  ocr_throughput_analytics: {
-    description:
-      '[ADMIN] Use to measure processing speed and throughput over time. Returns pages processed, embeddings generated, images processed, and average durations per time bucket.',
-    inputSchema: {
-      bucket: z
-        .enum(['hourly', 'daily', 'weekly', 'monthly'])
-        .default('daily')
-        .describe('Time bucket granularity'),
-      created_after: z
-        .string()
-        .optional()
-        .describe('Filter data created after this ISO 8601 timestamp'),
-      created_before: z
-        .string()
-        .optional()
-        .describe('Filter data created before this ISO 8601 timestamp'),
-    },
-    handler: handleThroughputAnalytics,
   },
 };

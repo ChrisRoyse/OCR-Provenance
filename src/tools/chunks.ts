@@ -142,6 +142,11 @@ async function handleChunkGet(params: Record<string, unknown>): Promise<ToolResp
       result.provenance_chain = fetchProvenanceChain(db, chunk.provenance_id, '[ChunkGet]');
     }
 
+    result.next_steps = [
+      { tool: 'ocr_chunk_context', description: 'Get surrounding chunks for more context' },
+      { tool: 'ocr_document_page', description: 'Read the full page this chunk came from' },
+    ];
+
     return formatResponse(successResult(result));
   } catch (error) {
     return handleError(error);
@@ -291,6 +296,10 @@ async function handleChunkContext(params: Record<string, unknown>): Promise<Tool
         combined_text_length: combinedText.length,
         combined_page_range: combinedPageRange,
         total_chunks: allChunks.length,
+        next_steps: [
+          { tool: 'ocr_document_get', description: 'Get full document details' },
+          { tool: 'ocr_search', description: 'Search for related content' },
+        ],
       })
     );
   } catch (error) {
@@ -393,6 +402,11 @@ async function handleDocumentPage(params: Record<string, unknown>): Promise<Tool
       result.image_count = imageData.length;
     }
 
+    result.next_steps = [
+      { tool: 'ocr_document_structure', description: 'View document outline (headings, tables)' },
+      { tool: 'ocr_search', description: 'Search for related content' },
+    ];
+
     return formatResponse(successResult(result));
   } catch (error) {
     return handleError(error);
@@ -409,25 +423,25 @@ async function handleDocumentPage(params: Record<string, unknown>): Promise<Tool
 export const chunkTools: Record<string, ToolDefinition> = {
   ocr_chunk_get: {
     description:
-      '[CORE] Use to inspect a specific chunk by ID: full text, section path, heading, quality score, and embedding status. Returns complete chunk metadata. Use after search results return a chunk_id.',
+      '[ESSENTIAL] Use to inspect a specific chunk by ID: full text, section path, heading, quality score, and embedding status. Returns complete chunk metadata. Use after search results return a chunk_id.',
     inputSchema: ChunkGetInput.shape,
     handler: handleChunkGet,
   },
   ocr_chunk_list: {
     description:
-      '[CORE] Use to browse all chunks in a document with filtering by section, heading, content type, page range, and quality. Returns chunk metadata list. Set include_text=true for full text.',
+      '[ESSENTIAL] Use to browse all chunks in a document with filtering by section, heading, content type, page range, and quality. Returns chunk metadata list. Set include_text=true for full text.',
     inputSchema: ChunkListInput.shape,
     handler: handleChunkList,
   },
   ocr_chunk_context: {
     description:
-      '[CORE] Use after search to expand a result with surrounding text. Provide a chunk_id and number of neighbors. Returns the center chunk plus before/after chunks with combined text.',
+      '[ESSENTIAL] Use after search to expand a result with surrounding text. Provide a chunk_id and number of neighbors. Returns the center chunk plus before/after chunks with combined text.',
     inputSchema: ChunkContextInput.shape,
     handler: handleChunkContext,
   },
   ocr_document_page: {
     description:
-      '[CORE] Use to read a specific page of a document. Returns all chunks on that page with navigation (previous/next). Set include_images=true for page images.',
+      '[ESSENTIAL] Use to read a specific page of a document. Returns all chunks on that page with navigation (previous/next). Set include_images=true for page images.',
     inputSchema: DocumentPageInput.shape,
     handler: handleDocumentPage,
   },

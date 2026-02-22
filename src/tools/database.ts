@@ -136,7 +136,7 @@ export async function handleDatabaseSelect(
         },
         next_steps: [
           { tool: 'ocr_document_list', description: 'Browse documents in this database' },
-          { tool: 'ocr_search_hybrid', description: 'Search for content across all documents' },
+          { tool: 'ocr_search', description: 'Search for content across all documents' },
           { tool: 'ocr_db_stats', description: 'Get detailed statistics for this database' },
         ],
       })
@@ -301,14 +301,14 @@ export const databaseTools: Record<string, ToolDefinition> = {
     handler: handleDatabaseCreate,
   },
   ocr_db_list: {
-    description: '[CORE] Use first to discover available databases. Returns names, sizes, and document counts. Follow with ocr_db_select to choose one.',
+    description: '[ESSENTIAL] Use first to discover available databases. Returns names, sizes, and document counts. Follow with ocr_db_select to choose one.',
     inputSchema: {
       include_stats: z.boolean().default(false).describe('Include document/chunk/embedding counts'),
     },
     handler: handleDatabaseList,
   },
   ocr_db_select: {
-    description: '[CORE] Use to switch active database. All subsequent tools operate on the selected database. Returns basic stats. Prerequisite for most tools.',
+    description: '[ESSENTIAL] Use to switch active database. All subsequent tools operate on the selected database. Returns basic stats. Prerequisite for most tools.',
     inputSchema: {
       database_name: z.string().min(1).describe('Name of the database to select'),
     },
@@ -316,7 +316,7 @@ export const databaseTools: Record<string, ToolDefinition> = {
   },
   ocr_db_stats: {
     description:
-      '[CORE] Use to check database size, document counts, quality stats, and recent activity. Returns comprehensive overview including file types, clusters, and costs.',
+      '[ESSENTIAL] Use to check database size, document counts, quality stats, and recent activity. Returns comprehensive overview including file types, clusters, and costs.',
     inputSchema: {
       database_name: z
         .string()

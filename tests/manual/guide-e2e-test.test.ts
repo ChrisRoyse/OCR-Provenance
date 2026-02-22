@@ -190,7 +190,7 @@ describe('Test 3: ocr_guide with intent=search', () => {
     clearDatabase();
   });
 
-  it('should suggest ocr_search_hybrid in next_steps', async () => {
+  it('should suggest ocr_search in next_steps', async () => {
     console.log('[Test 3] State BEFORE: currentDatabaseName =', state.currentDatabaseName);
 
     const result = await callTool(intelligenceTools as ToolModule, 'ocr_guide', { intent: 'search' });
@@ -200,7 +200,7 @@ describe('Test 3: ocr_guide with intent=search', () => {
 
     const nextSteps = data.next_steps as Array<{ tool: string }>;
     const suggestedTools = nextSteps.map(s => s.tool);
-    expect(suggestedTools).toContain('ocr_search_hybrid');
+    expect(suggestedTools).toContain('ocr_search');
 
     console.log('[Test 3] PASSED');
   });

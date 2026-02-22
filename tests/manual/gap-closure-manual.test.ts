@@ -252,10 +252,11 @@ describe('Gap Closure Phases 0-10: Manual E2E Test', () => {
   // PHASE 1 (documents.ts): DOCUMENT SECTIONS
   // =============================================================================
 
-  describe('Phase 1: Document Sections', () => {
-    it('ocr_document_sections - returns section tree', async () => {
-      const data = ok(await callTool(documentTools, 'ocr_document_sections', {
+  describe('Phase 1: Document Structure (format=tree, merged from ocr_document_sections)', () => {
+    it('ocr_document_structure format=tree - returns section tree', async () => {
+      const data = ok(await callTool(documentTools, 'ocr_document_structure', {
         document_id: DOC_ID_1,
+        format: 'tree',
       }));
       expect(data.document_id).toBe(DOC_ID_1);
       expect(data.total_chunks).toBe(4);
@@ -264,9 +265,10 @@ describe('Gap Closure Phases 0-10: Manual E2E Test', () => {
       expect(Array.isArray(sections)).toBe(true);
     });
 
-    it('ocr_document_sections - with chunk IDs and page numbers', async () => {
-      const data = ok(await callTool(documentTools, 'ocr_document_sections', {
+    it('ocr_document_structure format=tree - with chunk IDs and page numbers', async () => {
+      const data = ok(await callTool(documentTools, 'ocr_document_structure', {
         document_id: DOC_ID_1,
+        format: 'tree',
         include_chunk_ids: true,
         include_page_numbers: true,
       }));
@@ -278,9 +280,10 @@ describe('Gap Closure Phases 0-10: Manual E2E Test', () => {
       }
     });
 
-    it('ocr_document_sections - error on missing doc', async () => {
-      fail(await callTool(documentTools, 'ocr_document_sections', {
+    it('ocr_document_structure format=tree - error on missing doc', async () => {
+      fail(await callTool(documentTools, 'ocr_document_structure', {
         document_id: 'nonexistent-doc-id',
+        format: 'tree',
       }));
     });
   });
@@ -609,13 +612,15 @@ describe('Gap Closure Phases 0-10: Manual E2E Test', () => {
       expect(data.total_count).toBe(0);
     });
 
-    it('ocr_throughput_analytics - returns throughput data', async () => {
-      const data = ok(await callTool(timelineTools, 'ocr_throughput_analytics', {
+    it('ocr_report_performance section=throughput - returns throughput data', async () => {
+      const data = ok(await callTool(reportTools, 'ocr_report_performance', {
+        section: 'throughput',
         bucket: 'daily',
       }));
-      expect(data.bucket).toBe('daily');
-      expect(data.summary).toBeDefined();
-      const summary = data.summary as Record<string, unknown>;
+      const throughput = data.throughput as Record<string, unknown>;
+      expect(throughput.bucket).toBe('daily');
+      expect(throughput.summary).toBeDefined();
+      const summary = throughput.summary as Record<string, unknown>;
       expect(summary.total_pages_processed).toBeDefined();
       expect(summary.total_embeddings_generated).toBeDefined();
     });
@@ -770,13 +775,14 @@ describe('Gap Closure Phases 0-10: Manual E2E Test', () => {
       }));
     });
 
-    it('ocr_reembed_document - error on missing document', async () => {
-      fail(await callTool(ingestionTools, 'ocr_reembed_document', {
+    it('ocr_embedding_rebuild (include_vlm) - error on missing document', async () => {
+      fail(await callTool(embeddingTools, 'ocr_embedding_rebuild', {
         document_id: 'nonexistent-doc',
+        include_vlm: true,
       }));
     });
 
-    it('ocr_reembed_document - error on non-complete document', async () => {
+    it('ocr_embedding_rebuild (include_vlm) - error on non-complete document', async () => {
       // Insert a pending doc to test
       const pendingDocId = randomUUID();
       const pendingProvId = randomUUID();
@@ -784,8 +790,9 @@ describe('Gap Closure Phases 0-10: Manual E2E Test', () => {
       conn.prepare(`INSERT INTO provenance (id, type, created_at, processed_at, source_type, root_document_id, content_hash, processor, processor_version, processing_params, chain_depth, chain_path, parent_ids) VALUES (?, 'DOCUMENT', ?, ?, 'FILE', ?, ?, 'test', '1.0', '{}', 0, '["DOCUMENT"]', '[]')`).run(pendingProvId, now, now, pendingProvId, randomUUID());
       conn.prepare(`INSERT INTO documents (id, file_path, file_name, file_hash, file_size, file_type, status, page_count, provenance_id, created_at) VALUES (?, '/tmp/pending.pdf', 'pending.pdf', ?, 1000, 'pdf', 'pending', NULL, ?, ?)`).run(pendingDocId, randomUUID(), pendingProvId, now);
 
-      fail(await callTool(ingestionTools, 'ocr_reembed_document', {
+      fail(await callTool(embeddingTools, 'ocr_embedding_rebuild', {
         document_id: pendingDocId,
+        include_vlm: true,
       }));
     });
   });

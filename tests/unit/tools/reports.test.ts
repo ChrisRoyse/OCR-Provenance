@@ -19,11 +19,9 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import {
   handleEvaluationReport,
   handleDocumentReport,
-  handleQualitySummary,
-  handlePipelineAnalytics,
-  handleCorpusProfile,
+  handleReportOverview,
+  handleReportPerformance,
   handleErrorAnalytics,
-  handleProvenanceBottlenecks,
   reportTools,
 } from '../../../src/tools/reports.js';
 import { state, resetState, clearDatabase } from '../../../src/server/state.js';
@@ -51,16 +49,14 @@ function parseResponse(response: { content: Array<{ type: string; text: string }
 // ===============================================================================
 
 describe('reportTools exports', () => {
-  it('exports all 9 report tools', () => {
-    expect(Object.keys(reportTools)).toHaveLength(9);
+  it('exports all 7 report tools', () => {
+    expect(Object.keys(reportTools)).toHaveLength(7);
     expect(reportTools).toHaveProperty('ocr_evaluation_report');
     expect(reportTools).toHaveProperty('ocr_document_report');
-    expect(reportTools).toHaveProperty('ocr_quality_summary');
+    expect(reportTools).toHaveProperty('ocr_report_overview');
     expect(reportTools).toHaveProperty('ocr_cost_summary');
-    expect(reportTools).toHaveProperty('ocr_pipeline_analytics');
-    expect(reportTools).toHaveProperty('ocr_corpus_profile');
+    expect(reportTools).toHaveProperty('ocr_report_performance');
     expect(reportTools).toHaveProperty('ocr_error_analytics');
-    expect(reportTools).toHaveProperty('ocr_provenance_bottlenecks');
     expect(reportTools).toHaveProperty('ocr_quality_trends');
   });
 
@@ -78,12 +74,12 @@ describe('reportTools exports', () => {
   it('tool descriptions contain relevant keywords', () => {
     expect(reportTools['ocr_evaluation_report'].description).toContain('evaluation');
     expect(reportTools['ocr_document_report'].description).toContain('document');
-    expect(reportTools['ocr_quality_summary'].description).toContain('quality');
+    expect(reportTools['ocr_report_overview'].description).toContain('quality');
+    expect(reportTools['ocr_report_overview'].description).toContain('corpus');
     expect(reportTools['ocr_cost_summary'].description).toContain('cost');
-    expect(reportTools['ocr_pipeline_analytics'].description).toContain('pipeline');
-    expect(reportTools['ocr_corpus_profile'].description).toContain('corpus');
+    expect(reportTools['ocr_report_performance'].description).toContain('pipeline');
+    expect(reportTools['ocr_report_performance'].description).toContain('bottleneck');
     expect(reportTools['ocr_error_analytics'].description).toContain('error');
-    expect(reportTools['ocr_provenance_bottlenecks'].description).toContain('bottleneck');
   });
 
   it('ocr_evaluation_report has correct inputSchema keys', () => {
@@ -97,9 +93,12 @@ describe('reportTools exports', () => {
     expect(schema).toHaveProperty('document_id');
   });
 
-  it('ocr_quality_summary has empty inputSchema', () => {
-    const schema = reportTools['ocr_quality_summary'].inputSchema;
-    expect(Object.keys(schema)).toHaveLength(0);
+  it('ocr_report_overview has correct inputSchema keys', () => {
+    const schema = reportTools['ocr_report_overview'].inputSchema;
+    expect(schema).toHaveProperty('section');
+    expect(schema).toHaveProperty('include_section_frequency');
+    expect(schema).toHaveProperty('include_content_type_distribution');
+    expect(schema).toHaveProperty('limit');
   });
 
   it('ocr_cost_summary has correct inputSchema keys', () => {
@@ -107,17 +106,12 @@ describe('reportTools exports', () => {
     expect(schema).toHaveProperty('group_by');
   });
 
-  it('ocr_pipeline_analytics has correct inputSchema keys', () => {
-    const schema = reportTools['ocr_pipeline_analytics'].inputSchema;
+  it('ocr_report_performance has correct inputSchema keys', () => {
+    const schema = reportTools['ocr_report_performance'].inputSchema;
+    expect(schema).toHaveProperty('section');
     expect(schema).toHaveProperty('group_by');
     expect(schema).toHaveProperty('limit');
-  });
-
-  it('ocr_corpus_profile has correct inputSchema keys', () => {
-    const schema = reportTools['ocr_corpus_profile'].inputSchema;
-    expect(schema).toHaveProperty('include_section_frequency');
-    expect(schema).toHaveProperty('include_content_type_distribution');
-    expect(schema).toHaveProperty('limit');
+    expect(schema).toHaveProperty('bucket');
   });
 
   it('ocr_error_analytics has correct inputSchema keys', () => {
@@ -330,10 +324,10 @@ describe('handleDocumentReport', () => {
 });
 
 // ===============================================================================
-// handleQualitySummary TESTS
+// handleReportOverview TESTS
 // ===============================================================================
 
-describe('handleQualitySummary', () => {
+describe('handleReportOverview', () => {
   beforeEach(() => {
     resetState();
   });
@@ -344,36 +338,59 @@ describe('handleQualitySummary', () => {
   });
 
   it('returns DATABASE_NOT_SELECTED when no database', async () => {
-    const response = await handleQualitySummary({});
+    const response = await handleReportOverview({});
     const result = parseResponse(response);
 
     expect(result.success).toBe(false);
     expect(result.error?.category).toBe('DATABASE_NOT_SELECTED');
   });
 
-  it('returns DATABASE_NOT_SELECTED with extra params (ignored by z.object({}))', async () => {
-    // QualitySummaryInput is z.object({}) which strips extra keys
-    const response = await handleQualitySummary({ extra_param: 'ignored' });
+  it('returns DATABASE_NOT_SELECTED with section=quality when no database', async () => {
+    const response = await handleReportOverview({ section: 'quality' });
     const result = parseResponse(response);
 
     expect(result.success).toBe(false);
     expect(result.error?.category).toBe('DATABASE_NOT_SELECTED');
   });
 
-  it('returns DATABASE_NOT_SELECTED with null param values', async () => {
-    const response = await handleQualitySummary({ something: null });
+  it('returns DATABASE_NOT_SELECTED with section=corpus when no database', async () => {
+    const response = await handleReportOverview({ section: 'corpus' });
     const result = parseResponse(response);
 
     expect(result.success).toBe(false);
     expect(result.error?.category).toBe('DATABASE_NOT_SELECTED');
   });
 
-  it('returns DATABASE_NOT_SELECTED with numeric param values (ignored)', async () => {
-    const response = await handleQualitySummary({ count: 42 });
+  it('returns DATABASE_NOT_SELECTED with extra params (ignored)', async () => {
+    const response = await handleReportOverview({ extra_param: 'ignored' });
     const result = parseResponse(response);
 
     expect(result.success).toBe(false);
     expect(result.error?.category).toBe('DATABASE_NOT_SELECTED');
+  });
+
+  it('returns VALIDATION_ERROR for invalid section', async () => {
+    const response = await handleReportOverview({ section: 'invalid' });
+    const result = parseResponse(response);
+
+    expect(result.success).toBe(false);
+    expect(result.error?.category).toBe('VALIDATION_ERROR');
+  });
+
+  it('returns VALIDATION_ERROR for limit below 1', async () => {
+    const response = await handleReportOverview({ section: 'corpus', limit: 0 });
+    const result = parseResponse(response);
+
+    expect(result.success).toBe(false);
+    expect(result.error?.category).toBe('VALIDATION_ERROR');
+  });
+
+  it('returns VALIDATION_ERROR for non-boolean include_section_frequency', async () => {
+    const response = await handleReportOverview({ section: 'corpus', include_section_frequency: 'yes' });
+    const result = parseResponse(response);
+
+    expect(result.success).toBe(false);
+    expect(result.error?.category).toBe('VALIDATION_ERROR');
   });
 });
 
@@ -390,8 +407,8 @@ describe('handler-tool wiring', () => {
     expect(reportTools['ocr_document_report'].handler).toBe(handleDocumentReport);
   });
 
-  it('ocr_quality_summary handler is handleQualitySummary', () => {
-    expect(reportTools['ocr_quality_summary'].handler).toBe(handleQualitySummary);
+  it('ocr_report_overview handler is handleReportOverview', () => {
+    expect(reportTools['ocr_report_overview'].handler).toBe(handleReportOverview);
   });
 
   it('ocr_cost_summary handler exists and is a function', () => {
@@ -399,12 +416,8 @@ describe('handler-tool wiring', () => {
     expect(typeof reportTools['ocr_cost_summary'].handler).toBe('function');
   });
 
-  it('ocr_pipeline_analytics handler is handlePipelineAnalytics', () => {
-    expect(reportTools['ocr_pipeline_analytics'].handler).toBe(handlePipelineAnalytics);
-  });
-
-  it('ocr_corpus_profile handler is handleCorpusProfile', () => {
-    expect(reportTools['ocr_corpus_profile'].handler).toBe(handleCorpusProfile);
+  it('ocr_report_performance handler is handleReportPerformance', () => {
+    expect(reportTools['ocr_report_performance'].handler).toBe(handleReportPerformance);
   });
 
   it('ocr_error_analytics handler is handleErrorAnalytics', () => {
@@ -413,10 +426,10 @@ describe('handler-tool wiring', () => {
 });
 
 // ===============================================================================
-// handlePipelineAnalytics TESTS
+// handleReportPerformance TESTS
 // ===============================================================================
 
-describe('handlePipelineAnalytics', () => {
+describe('handleReportPerformance', () => {
   beforeEach(() => {
     resetState();
   });
@@ -427,23 +440,47 @@ describe('handlePipelineAnalytics', () => {
   });
 
   it('returns DATABASE_NOT_SELECTED when no database', async () => {
-    const response = await handlePipelineAnalytics({});
+    const response = await handleReportPerformance({});
     const result = parseResponse(response);
 
     expect(result.success).toBe(false);
     expect(result.error?.category).toBe('DATABASE_NOT_SELECTED');
   });
 
-  it('returns DATABASE_NOT_SELECTED with valid params when no database', async () => {
-    const response = await handlePipelineAnalytics({ group_by: 'mode', limit: 10 });
+  it('returns DATABASE_NOT_SELECTED with section=pipeline when no database', async () => {
+    const response = await handleReportPerformance({ section: 'pipeline', group_by: 'mode', limit: 10 });
     const result = parseResponse(response);
 
     expect(result.success).toBe(false);
     expect(result.error?.category).toBe('DATABASE_NOT_SELECTED');
+  });
+
+  it('returns DATABASE_NOT_SELECTED with section=throughput when no database', async () => {
+    const response = await handleReportPerformance({ section: 'throughput' });
+    const result = parseResponse(response);
+
+    expect(result.success).toBe(false);
+    expect(result.error?.category).toBe('DATABASE_NOT_SELECTED');
+  });
+
+  it('returns DATABASE_NOT_SELECTED with section=bottlenecks when no database', async () => {
+    const response = await handleReportPerformance({ section: 'bottlenecks' });
+    const result = parseResponse(response);
+
+    expect(result.success).toBe(false);
+    expect(result.error?.category).toBe('DATABASE_NOT_SELECTED');
+  });
+
+  it('returns VALIDATION_ERROR for invalid section', async () => {
+    const response = await handleReportPerformance({ section: 'invalid' });
+    const result = parseResponse(response);
+
+    expect(result.success).toBe(false);
+    expect(result.error?.category).toBe('VALIDATION_ERROR');
   });
 
   it('returns VALIDATION_ERROR for invalid group_by', async () => {
-    const response = await handlePipelineAnalytics({ group_by: 'invalid' });
+    const response = await handleReportPerformance({ section: 'pipeline', group_by: 'invalid' });
     const result = parseResponse(response);
 
     expect(result.success).toBe(false);
@@ -451,7 +488,7 @@ describe('handlePipelineAnalytics', () => {
   });
 
   it('returns VALIDATION_ERROR for limit below 1', async () => {
-    const response = await handlePipelineAnalytics({ limit: 0 });
+    const response = await handleReportPerformance({ limit: 0 });
     const result = parseResponse(response);
 
     expect(result.success).toBe(false);
@@ -459,58 +496,7 @@ describe('handlePipelineAnalytics', () => {
   });
 
   it('returns VALIDATION_ERROR for limit above 100', async () => {
-    const response = await handlePipelineAnalytics({ limit: 101 });
-    const result = parseResponse(response);
-
-    expect(result.success).toBe(false);
-    expect(result.error?.category).toBe('VALIDATION_ERROR');
-  });
-});
-
-// ===============================================================================
-// handleCorpusProfile TESTS
-// ===============================================================================
-
-describe('handleCorpusProfile', () => {
-  beforeEach(() => {
-    resetState();
-  });
-
-  afterEach(() => {
-    clearDatabase();
-    resetState();
-  });
-
-  it('returns DATABASE_NOT_SELECTED when no database', async () => {
-    const response = await handleCorpusProfile({});
-    const result = parseResponse(response);
-
-    expect(result.success).toBe(false);
-    expect(result.error?.category).toBe('DATABASE_NOT_SELECTED');
-  });
-
-  it('returns DATABASE_NOT_SELECTED with valid params when no database', async () => {
-    const response = await handleCorpusProfile({
-      include_section_frequency: false,
-      include_content_type_distribution: false,
-      limit: 5,
-    });
-    const result = parseResponse(response);
-
-    expect(result.success).toBe(false);
-    expect(result.error?.category).toBe('DATABASE_NOT_SELECTED');
-  });
-
-  it('returns VALIDATION_ERROR for limit below 1', async () => {
-    const response = await handleCorpusProfile({ limit: 0 });
-    const result = parseResponse(response);
-
-    expect(result.success).toBe(false);
-    expect(result.error?.category).toBe('VALIDATION_ERROR');
-  });
-
-  it('returns VALIDATION_ERROR for non-boolean include_section_frequency', async () => {
-    const response = await handleCorpusProfile({ include_section_frequency: 'yes' });
+    const response = await handleReportPerformance({ limit: 101 });
     const result = parseResponse(response);
 
     expect(result.success).toBe(false);
@@ -610,7 +596,7 @@ describe('response format', () => {
     const responses = await Promise.all([
       handleEvaluationReport({}),
       handleDocumentReport({ document_id: 'test-id' }),
-      handleQualitySummary({}),
+      handleReportOverview({}),
     ]);
 
     for (const response of responses) {
@@ -675,8 +661,8 @@ describe('edge cases', () => {
     expect(result.success).toBe(false);
   });
 
-  it('handleQualitySummary handles undefined params gracefully', async () => {
-    const response = await handleQualitySummary(undefined as unknown as Record<string, unknown>);
+  it('handleReportOverview handles undefined params gracefully', async () => {
+    const response = await handleReportOverview(undefined as unknown as Record<string, unknown>);
     const result = parseResponse(response);
 
     expect(result.success).toBe(false);
@@ -743,10 +729,10 @@ describe('edge cases', () => {
 });
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// handleProvenanceBottlenecks TESTS
+// handleReportPerformance bottlenecks section TESTS
 // ═══════════════════════════════════════════════════════════════════════════════
 
-describe('handleProvenanceBottlenecks', () => {
+describe('handleReportPerformance bottlenecks section', () => {
   beforeEach(() => {
     resetState();
   });
@@ -759,16 +745,15 @@ describe('handleProvenanceBottlenecks', () => {
   it('returns DATABASE_NOT_SELECTED when no database', async () => {
     expect(state.currentDatabase).toBeNull();
 
-    const response = await handleProvenanceBottlenecks({});
+    const response = await handleReportPerformance({ section: 'bottlenecks' });
     const result = parseResponse(response);
 
     expect(result.success).toBe(false);
     expect(result.error?.category).toBe('DATABASE_NOT_SELECTED');
   });
 
-  it('accepts empty params (no required fields)', async () => {
-    // Should pass validation and fail only on database not selected
-    const response = await handleProvenanceBottlenecks({});
+  it('accepts default params (no required fields)', async () => {
+    const response = await handleReportPerformance({});
     const result = parseResponse(response);
 
     expect(result.success).toBe(false);
@@ -776,7 +761,7 @@ describe('handleProvenanceBottlenecks', () => {
   });
 
   it('ignores unknown extra parameters', async () => {
-    const response = await handleProvenanceBottlenecks({ unknown_param: 42 });
+    const response = await handleReportPerformance({ section: 'bottlenecks', unknown_param: 42 });
     const result = parseResponse(response);
 
     expect(result.success).toBe(false);

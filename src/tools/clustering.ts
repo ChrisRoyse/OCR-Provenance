@@ -165,6 +165,9 @@ async function handleClusterDocuments(params: Record<string, unknown>): Promise<
             document_ids: c.document_ids,
           })
         ),
+        next_steps: [
+          { tool: 'ocr_cluster_list', description: 'Browse all clusters and their documents' },
+        ],
       })
     );
   } catch (error) {
@@ -256,6 +259,10 @@ async function handleClusterGet(params: Record<string, unknown>): Promise<ToolRe
       result.provenance_chain =
         fetchProvenanceChain(db, cluster.provenance_id, 'clustering') ?? null;
     }
+
+    result.next_steps = [
+      { tool: 'ocr_document_compare', description: 'Compare two documents from this cluster' },
+    ];
 
     return formatResponse(successResult(result));
   } catch (error) {
@@ -437,10 +444,6 @@ async function handleClusterDelete(params: Record<string, unknown>): Promise<Too
     return handleError(error);
   }
 }
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// CLUSTER LABEL HANDLER
-// ═══════════════════════════════════════════════════════════════════════════════
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // CLUSTER REASSIGN & MERGE HANDLERS

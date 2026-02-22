@@ -13,7 +13,11 @@ import { join } from 'path';
 import { tmpdir } from 'os';
 import { v4 as uuidv4 } from 'uuid';
 
-import { handleSearch } from '../../../../src/tools/search.js';
+import { handleSearchUnified } from '../../../../src/tools/search.js';
+
+// Wrapper that routes through the unified handler with keyword mode
+const handleSearch = (params: Record<string, unknown>) =>
+  handleSearchUnified({ ...params, mode: 'keyword' });
 import { state, resetState, updateConfig, clearDatabase } from '../../../../src/server/state.js';
 import { DatabaseService } from '../../../../src/services/storage/database/index.js';
 import { BM25SearchService } from '../../../../src/services/search/bm25.js';
@@ -270,7 +274,7 @@ describe('QW-2: Quality-Filtered Search', () => {
       const bm25 = new BM25SearchService(db.getConnection());
       bm25.rebuildIndex();
 
-      const response = await handleSearch({ query: 'bananas', limit: 10, min_quality_score: 3.0 });
+      const response = await handleSearch({ query: 'bananas', limit: 10, filters: { min_quality_score: 3.0 } });
       const parsed = parseResponse(response);
       expect(parsed.success).toBe(true);
       expect(parsed.data!.total).toBe(1);
@@ -292,7 +296,7 @@ describe('QW-2: Quality-Filtered Search', () => {
       const bm25 = new BM25SearchService(db.getConnection());
       bm25.rebuildIndex();
 
-      const response = await handleSearch({ query: 'oranges', limit: 10, min_quality_score: 4.0 });
+      const response = await handleSearch({ query: 'oranges', limit: 10, filters: { min_quality_score: 4.0 } });
       const parsed = parseResponse(response);
       expect(parsed.success).toBe(true);
       expect(parsed.data!.total).toBe(0);
@@ -314,7 +318,7 @@ describe('QW-2: Quality-Filtered Search', () => {
     const bm25 = new BM25SearchService(db.getConnection());
     bm25.rebuildIndex();
 
-    const response = await handleSearch({ query: 'grapes', limit: 10, min_quality_score: 3.0 });
+    const response = await handleSearch({ query: 'grapes', limit: 10, filters: { min_quality_score: 3.0 } });
     const parsed = parseResponse(response);
     expect(parsed.success).toBe(true);
     expect(parsed.data!.total).toBe(1);
@@ -335,7 +339,7 @@ describe('QW-2: Quality-Filtered Search', () => {
       const bm25 = new BM25SearchService(db.getConnection());
       bm25.rebuildIndex();
 
-      const response = await handleSearch({ query: 'pears', limit: 10, min_quality_score: 0 });
+      const response = await handleSearch({ query: 'pears', limit: 10, filters: { min_quality_score: 0 } });
       const parsed = parseResponse(response);
       expect(parsed.success).toBe(true);
       expect(parsed.data!.total).toBe(2);
@@ -358,8 +362,10 @@ describe('QW-2: Quality-Filtered Search', () => {
       const response = await handleSearch({
         query: 'cherry',
         limit: 10,
-        min_quality_score: 3.0,
-        document_filter: [doc1],
+        filters: {
+          min_quality_score: 3.0,
+          document_filter: [doc1],
+        },
       });
       const parsed = parseResponse(response);
       expect(parsed.success).toBe(true);
@@ -382,7 +388,7 @@ describe('QW-2: Quality-Filtered Search', () => {
       const bm25 = new BM25SearchService(db.getConnection());
       bm25.rebuildIndex();
 
-      const response = await handleSearch({ query: 'mangos', limit: 10, min_quality_score: 1.0 });
+      const response = await handleSearch({ query: 'mangos', limit: 10, filters: { min_quality_score: 1.0 } });
       const parsed = parseResponse(response);
       expect(parsed.success).toBe(true);
       // NULL quality score excluded by WHERE >= ? (NULL comparisons return false)

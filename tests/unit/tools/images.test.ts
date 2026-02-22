@@ -2,7 +2,7 @@
  * Unit Tests for Image MCP Tools
  *
  * Tests the extracted image tool handlers in src/tools/images.ts
- * Tools: handleImageExtract, handleImageList, handleImageGet, handleImageStats,
+ * Tools: handleImageList, handleImageGet, handleImageStats,
  *        handleImageDelete, handleImageDeleteByDocument, handleImageResetFailed,
  *        handleImagePending
  *
@@ -14,7 +14,6 @@
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import {
-  handleImageExtract,
   handleImageList,
   handleImageGet,
   handleImageStats,
@@ -52,9 +51,8 @@ function parseResponse(response: { content: Array<{ type: string; text: string }
 // ===============================================================================
 
 describe('imageTools exports', () => {
-  it('exports all 11 image tools', () => {
-    expect(Object.keys(imageTools)).toHaveLength(11);
-    expect(imageTools).toHaveProperty('ocr_image_extract');
+  it('exports all 10 image tools', () => {
+    expect(Object.keys(imageTools)).toHaveLength(10);
     expect(imageTools).toHaveProperty('ocr_image_list');
     expect(imageTools).toHaveProperty('ocr_image_get');
     expect(imageTools).toHaveProperty('ocr_image_stats');
@@ -79,7 +77,6 @@ describe('imageTools exports', () => {
   });
 
   it('tools map to the correct handlers', () => {
-    expect(imageTools.ocr_image_extract.handler).toBe(handleImageExtract);
     expect(imageTools.ocr_image_list.handler).toBe(handleImageList);
     expect(imageTools.ocr_image_get.handler).toBe(handleImageGet);
     expect(imageTools.ocr_image_stats.handler).toBe(handleImageStats);
@@ -90,219 +87,6 @@ describe('imageTools exports', () => {
     expect(imageTools.ocr_image_search.handler).toBe(handleImageSearch);
     expect(imageTools.ocr_image_semantic_search.handler).toBe(handleImageSemanticSearch);
     expect(imageTools.ocr_image_reanalyze.handler).toBe(handleImageReanalyze);
-  });
-});
-
-// ===============================================================================
-// handleImageExtract TESTS
-// ===============================================================================
-
-describe('handleImageExtract', () => {
-  beforeEach(() => {
-    resetState();
-  });
-
-  afterEach(() => {
-    clearDatabase();
-    resetState();
-  });
-
-  it('returns INTERNAL_ERROR when pdf_path is missing', async () => {
-    const response = await handleImageExtract({
-      output_dir: '/tmp/out',
-      document_id: 'doc-1',
-      ocr_result_id: 'ocr-1',
-    });
-    const result = parseResponse(response);
-
-    expect(result.success).toBe(false);
-    expect(result.error?.category).toBe('VALIDATION_ERROR');
-  });
-
-  it('returns INTERNAL_ERROR when pdf_path is empty string', async () => {
-    const response = await handleImageExtract({
-      pdf_path: '',
-      output_dir: '/tmp/out',
-      document_id: 'doc-1',
-      ocr_result_id: 'ocr-1',
-    });
-    const result = parseResponse(response);
-
-    expect(result.success).toBe(false);
-    expect(result.error?.category).toBe('VALIDATION_ERROR');
-  });
-
-  it('returns INTERNAL_ERROR when output_dir is missing', async () => {
-    const response = await handleImageExtract({
-      pdf_path: '/tmp/test.pdf',
-      document_id: 'doc-1',
-      ocr_result_id: 'ocr-1',
-    });
-    const result = parseResponse(response);
-
-    expect(result.success).toBe(false);
-    expect(result.error?.category).toBe('VALIDATION_ERROR');
-  });
-
-  it('returns INTERNAL_ERROR when output_dir is empty string', async () => {
-    const response = await handleImageExtract({
-      pdf_path: '/tmp/test.pdf',
-      output_dir: '',
-      document_id: 'doc-1',
-      ocr_result_id: 'ocr-1',
-    });
-    const result = parseResponse(response);
-
-    expect(result.success).toBe(false);
-    expect(result.error?.category).toBe('VALIDATION_ERROR');
-  });
-
-  it('returns INTERNAL_ERROR when document_id is missing', async () => {
-    const response = await handleImageExtract({
-      pdf_path: '/tmp/test.pdf',
-      output_dir: '/tmp/out',
-      ocr_result_id: 'ocr-1',
-    });
-    const result = parseResponse(response);
-
-    expect(result.success).toBe(false);
-    expect(result.error?.category).toBe('VALIDATION_ERROR');
-  });
-
-  it('returns INTERNAL_ERROR when document_id is empty string', async () => {
-    const response = await handleImageExtract({
-      pdf_path: '/tmp/test.pdf',
-      output_dir: '/tmp/out',
-      document_id: '',
-      ocr_result_id: 'ocr-1',
-    });
-    const result = parseResponse(response);
-
-    expect(result.success).toBe(false);
-    expect(result.error?.category).toBe('VALIDATION_ERROR');
-  });
-
-  it('returns INTERNAL_ERROR when ocr_result_id is missing', async () => {
-    const response = await handleImageExtract({
-      pdf_path: '/tmp/test.pdf',
-      output_dir: '/tmp/out',
-      document_id: 'doc-1',
-    });
-    const result = parseResponse(response);
-
-    expect(result.success).toBe(false);
-    expect(result.error?.category).toBe('VALIDATION_ERROR');
-  });
-
-  it('returns INTERNAL_ERROR when ocr_result_id is empty string', async () => {
-    const response = await handleImageExtract({
-      pdf_path: '/tmp/test.pdf',
-      output_dir: '/tmp/out',
-      document_id: 'doc-1',
-      ocr_result_id: '',
-    });
-    const result = parseResponse(response);
-
-    expect(result.success).toBe(false);
-    expect(result.error?.category).toBe('VALIDATION_ERROR');
-  });
-
-  it('returns PATH_NOT_FOUND when pdf_path does not exist on disk', async () => {
-    const response = await handleImageExtract({
-      pdf_path: '/tmp/nonexistent-file-abc123.pdf',
-      output_dir: '/tmp/out',
-      document_id: 'doc-1',
-      ocr_result_id: 'ocr-1',
-    });
-    const result = parseResponse(response);
-
-    expect(result.success).toBe(false);
-    expect(result.error?.category).toBe('PATH_NOT_FOUND');
-    expect(result.error?.message).toContain('PDF file not found');
-  });
-
-  it('returns INTERNAL_ERROR when min_size is zero', async () => {
-    const response = await handleImageExtract({
-      pdf_path: '/tmp/test.pdf',
-      output_dir: '/tmp/out',
-      document_id: 'doc-1',
-      ocr_result_id: 'ocr-1',
-      min_size: 0,
-    });
-    const result = parseResponse(response);
-
-    expect(result.success).toBe(false);
-    expect(result.error?.category).toBe('VALIDATION_ERROR');
-  });
-
-  it('returns INTERNAL_ERROR when min_size is negative', async () => {
-    const response = await handleImageExtract({
-      pdf_path: '/tmp/test.pdf',
-      output_dir: '/tmp/out',
-      document_id: 'doc-1',
-      ocr_result_id: 'ocr-1',
-      min_size: -10,
-    });
-    const result = parseResponse(response);
-
-    expect(result.success).toBe(false);
-    expect(result.error?.category).toBe('VALIDATION_ERROR');
-  });
-
-  it('returns INTERNAL_ERROR when max_images is zero', async () => {
-    const response = await handleImageExtract({
-      pdf_path: '/tmp/test.pdf',
-      output_dir: '/tmp/out',
-      document_id: 'doc-1',
-      ocr_result_id: 'ocr-1',
-      max_images: 0,
-    });
-    const result = parseResponse(response);
-
-    expect(result.success).toBe(false);
-    expect(result.error?.category).toBe('VALIDATION_ERROR');
-  });
-
-  it('returns INTERNAL_ERROR when max_images exceeds 1000', async () => {
-    const response = await handleImageExtract({
-      pdf_path: '/tmp/test.pdf',
-      output_dir: '/tmp/out',
-      document_id: 'doc-1',
-      ocr_result_id: 'ocr-1',
-      max_images: 1001,
-    });
-    const result = parseResponse(response);
-
-    expect(result.success).toBe(false);
-    expect(result.error?.category).toBe('VALIDATION_ERROR');
-  });
-
-  it('returns INTERNAL_ERROR when min_size is not an integer', async () => {
-    const response = await handleImageExtract({
-      pdf_path: '/tmp/test.pdf',
-      output_dir: '/tmp/out',
-      document_id: 'doc-1',
-      ocr_result_id: 'ocr-1',
-      min_size: 50.5,
-    });
-    const result = parseResponse(response);
-
-    expect(result.success).toBe(false);
-    expect(result.error?.category).toBe('VALIDATION_ERROR');
-  });
-
-  it('returns INTERNAL_ERROR when max_images is not an integer', async () => {
-    const response = await handleImageExtract({
-      pdf_path: '/tmp/test.pdf',
-      output_dir: '/tmp/out',
-      document_id: 'doc-1',
-      ocr_result_id: 'ocr-1',
-      max_images: 10.5,
-    });
-    const result = parseResponse(response);
-
-    expect(result.success).toBe(false);
-    expect(result.error?.category).toBe('VALIDATION_ERROR');
   });
 });
 
@@ -963,7 +747,7 @@ describe('Edge Cases', () => {
     });
 
     it('validation error responses include descriptive messages', async () => {
-      const response = await handleImageExtract({});
+      const response = await handleImageList({});
       const result = parseResponse(response);
 
       expect(result.success).toBe(false);
@@ -1051,32 +835,6 @@ describe('Edge Cases', () => {
   });
 
   describe('type coercion edge cases', () => {
-    it('image_extract rejects non-string pdf_path', async () => {
-      const response = await handleImageExtract({
-        pdf_path: 123,
-        output_dir: '/tmp/out',
-        document_id: 'doc-1',
-        ocr_result_id: 'ocr-1',
-      });
-      const result = parseResponse(response);
-
-      expect(result.success).toBe(false);
-      expect(result.error?.category).toBe('VALIDATION_ERROR');
-    });
-
-    it('image_extract rejects non-string document_id', async () => {
-      const response = await handleImageExtract({
-        pdf_path: '/tmp/test.pdf',
-        output_dir: '/tmp/out',
-        document_id: 42,
-        ocr_result_id: 'ocr-1',
-      });
-      const result = parseResponse(response);
-
-      expect(result.success).toBe(false);
-      expect(result.error?.category).toBe('VALIDATION_ERROR');
-    });
-
     it('image_list rejects non-string document_id', async () => {
       const response = await handleImageList({ document_id: 123 });
       const result = parseResponse(response);
@@ -1117,14 +875,8 @@ describe('Edge Cases', () => {
       expect(result.error?.category).toBe('VALIDATION_ERROR');
     });
 
-    it('image_extract rejects string min_size', async () => {
-      const response = await handleImageExtract({
-        pdf_path: '/tmp/test.pdf',
-        output_dir: '/tmp/out',
-        document_id: 'doc-1',
-        ocr_result_id: 'ocr-1',
-        min_size: 'large',
-      });
+    it('image_search rejects string limit', async () => {
+      const response = await handleImageSearch({ limit: 'large' });
       const result = parseResponse(response);
 
       expect(result.success).toBe(false);
@@ -1132,56 +884,9 @@ describe('Edge Cases', () => {
     });
   });
 
-  describe('boundary values for image_extract', () => {
-    it('accepts min_size of 1 (minimum boundary)', async () => {
-      // Passes validation but fails on PATH_NOT_FOUND
-      const response = await handleImageExtract({
-        pdf_path: '/tmp/nonexistent-boundary-test.pdf',
-        output_dir: '/tmp/out',
-        document_id: 'doc-1',
-        ocr_result_id: 'ocr-1',
-        min_size: 1,
-      });
-      const result = parseResponse(response);
-
-      expect(result.success).toBe(false);
-      // Should get past validation to PATH_NOT_FOUND
-      expect(result.error?.category).toBe('PATH_NOT_FOUND');
-    });
-
-    it('accepts max_images of 1 (minimum boundary)', async () => {
-      const response = await handleImageExtract({
-        pdf_path: '/tmp/nonexistent-boundary-test.pdf',
-        output_dir: '/tmp/out',
-        document_id: 'doc-1',
-        ocr_result_id: 'ocr-1',
-        max_images: 1,
-      });
-      const result = parseResponse(response);
-
-      expect(result.success).toBe(false);
-      expect(result.error?.category).toBe('PATH_NOT_FOUND');
-    });
-
-    it('accepts max_images of 1000 (maximum boundary)', async () => {
-      const response = await handleImageExtract({
-        pdf_path: '/tmp/nonexistent-boundary-test.pdf',
-        output_dir: '/tmp/out',
-        document_id: 'doc-1',
-        ocr_result_id: 'ocr-1',
-        max_images: 1000,
-      });
-      const result = parseResponse(response);
-
-      expect(result.success).toBe(false);
-      expect(result.error?.category).toBe('PATH_NOT_FOUND');
-    });
-  });
-
   describe('all handlers return ToolResponse shape', () => {
     it('every handler returns {content: [{type, text}]} even on error', async () => {
       const handlers = [
-        () => handleImageExtract({}),
         () => handleImageList({}),
         () => handleImageGet({}),
         () => handleImageStats({}),

@@ -95,7 +95,7 @@ describe('Gap Closure E2E', () => {
     });
 
     it('1.1 - Semantic search returns chunk metadata fields', async () => {
-      const data = ok(await callTool(searchTools, 'ocr_search_semantic', { query: 'whistleblower protection', limit: 5 }));
+      const data = ok(await callTool(searchTools, 'ocr_search', { query: 'whistleblower protection', mode: 'semantic', limit: 5 }));
       const results = data.results as Array<Record<string, unknown>>;
       expect(results.length).toBeGreaterThan(0);
       expect('heading_context' in results[0]).toBe(true);
@@ -106,7 +106,7 @@ describe('Gap Closure E2E', () => {
       const types = conn.prepare(`SELECT DISTINCT j.value as ct FROM chunks, json_each(COALESCE(content_types, '[]')) j LIMIT 20`).all() as Array<{ ct: string }>;
       console.error('[1.2] Content types in DB:', types.map(c => c.ct));
       if (types.length > 0) {
-        ok(await callTool(searchTools, 'ocr_search', { query: 'policy', content_type_filter: [types[0].ct], limit: 10 }));
+        ok(await callTool(searchTools, 'ocr_search', { query: 'policy', filters: { content_type_filter: [types[0].ct] }, limit: 10 }));
       }
     });
 
@@ -114,12 +114,12 @@ describe('Gap Closure E2E', () => {
       const sections = conn.prepare(`SELECT DISTINCT section_path FROM chunks WHERE section_path IS NOT NULL LIMIT 10`).all() as Array<{ section_path: string }>;
       if (sections.length > 0) {
         const prefix = sections[0].section_path.split(' > ')[0];
-        ok(await callTool(searchTools, 'ocr_search_semantic', { query: 'policy', section_path_filter: prefix, limit: 10 }));
+        ok(await callTool(searchTools, 'ocr_search', { query: 'policy', mode: 'semantic', filters: { section_path_filter: prefix }, limit: 10 }));
       }
     });
 
     it('1.2 - page_range_filter works', async () => {
-      ok(await callTool(searchTools, 'ocr_search', { query: 'policy', page_range_filter: { min_page: 1, max_page: 2 }, limit: 10 }));
+      ok(await callTool(searchTools, 'ocr_search', { query: 'policy', filters: { page_range_filter: { min_page: 1, max_page: 2 } }, limit: 10 }));
     });
 
     it('1.3 - quality_boost accepted (no SQL error)', async () => {
@@ -128,11 +128,11 @@ describe('Gap Closure E2E', () => {
     });
 
     it('1.3 - quality_boost on semantic search', async () => {
-      ok(await callTool(searchTools, 'ocr_search_semantic', { query: 'policy', quality_boost: true, limit: 5 }));
+      ok(await callTool(searchTools, 'ocr_search', { query: 'policy', mode: 'semantic', limit: 5 }));
     });
 
     it('1.4 - hybrid auto_route returns query_classification', async () => {
-      const data = ok(await callTool(searchTools, 'ocr_search_hybrid', { query: 'what documents discuss whistleblower protection?', auto_route: true, limit: 5 }));
+      const data = ok(await callTool(searchTools, 'ocr_search', { query: 'what documents discuss whistleblower protection?', mode: 'hybrid', auto_route: true, limit: 5 }));
       expect(data.query_classification).toBeDefined();
       const cls = data.query_classification as Record<string, unknown>;
       expect(cls.query_type).toBeDefined();
@@ -177,73 +177,73 @@ describe('Gap Closure E2E', () => {
   // ═══════════════════════════════════════════════════════════════════════════
 
   describe('Phase 3: Analytics', () => {
-    it('3.1 - ocr_pipeline_analytics group_by=total + DB verify', async () => {
-      const data = ok(await callTool(reportTools, 'ocr_pipeline_analytics', { group_by: 'total' }));
-      // Response keys: ocr, embeddings, vlm, comparisons, clustering, throughput
-      expect(data.ocr).toBeDefined();
-      expect(data.embeddings).toBeDefined(); // Note: 'embeddings' not 'embedding'
-      expect(data.vlm).toBeDefined();
-      expect(data.throughput).toBeDefined();
+    it('3.1 - ocr_report_performance section=pipeline group_by=total + DB verify', async () => {
+      const data = ok(await callTool(reportTools, 'ocr_report_performance', { section: 'pipeline', group_by: 'total' }));
+      const pipeline = data.pipeline as Record<string, unknown>;
+      expect(pipeline.ocr).toBeDefined();
+      expect(pipeline.embeddings).toBeDefined();
+      expect(pipeline.vlm).toBeDefined();
+      expect(pipeline.throughput).toBeDefined();
 
-      const ocr = data.ocr as Record<string, unknown>;
+      const ocr = pipeline.ocr as Record<string, unknown>;
       const dbOcr = (conn.prepare('SELECT COUNT(*) as cnt FROM ocr_results').get() as { cnt: number }).cnt;
       expect(ocr.total_docs).toBe(dbOcr);
       console.error(`[3.1] OCR: DB=${dbOcr}, tool=${ocr.total_docs}`);
 
-      const emb = data.embeddings as Record<string, unknown>;
-      // Tool counts ALL embeddings (no WHERE filter)
+      const emb = pipeline.embeddings as Record<string, unknown>;
       const dbEmb = (conn.prepare('SELECT COUNT(*) as cnt FROM embeddings').get() as { cnt: number }).cnt;
       expect(emb.total_embeddings).toBe(dbEmb);
       console.error(`[3.1] Embeddings: DB=${dbEmb}, tool=${emb.total_embeddings}`);
     });
 
     it('3.1 - group_by=document', async () => {
-      const data = ok(await callTool(reportTools, 'ocr_pipeline_analytics', { group_by: 'document', limit: 10 }));
-      // Key is 'by_document' not 'breakdown'
-      expect(data.by_document).toBeDefined();
-      expect(Array.isArray(data.by_document)).toBe(true);
-      console.error('[3.1d] Documents:', (data.by_document as unknown[]).length);
+      const data = ok(await callTool(reportTools, 'ocr_report_performance', { section: 'pipeline', group_by: 'document', limit: 10 }));
+      const pipeline = data.pipeline as Record<string, unknown>;
+      expect(pipeline.by_document).toBeDefined();
+      expect(Array.isArray(pipeline.by_document)).toBe(true);
+      console.error('[3.1d] Documents:', (pipeline.by_document as unknown[]).length);
     });
 
     it('3.1 - group_by=file_type', async () => {
-      const data = ok(await callTool(reportTools, 'ocr_pipeline_analytics', { group_by: 'file_type', limit: 10 }));
-      expect(data.by_file_type).toBeDefined();
+      const data = ok(await callTool(reportTools, 'ocr_report_performance', { section: 'pipeline', group_by: 'file_type', limit: 10 }));
+      const pipeline = data.pipeline as Record<string, unknown>;
+      expect(pipeline.by_file_type).toBeDefined();
     });
 
     it('3.1 - group_by=mode', async () => {
-      const data = ok(await callTool(reportTools, 'ocr_pipeline_analytics', { group_by: 'mode' }));
-      expect(data.by_mode).toBeDefined();
+      const data = ok(await callTool(reportTools, 'ocr_report_performance', { section: 'pipeline', group_by: 'mode' }));
+      const pipeline = data.pipeline as Record<string, unknown>;
+      expect(pipeline.by_mode).toBeDefined();
     });
 
-    it('3.2 - ocr_corpus_profile + DB verify', async () => {
-      const data = ok(await callTool(reportTools, 'ocr_corpus_profile', { include_section_frequency: true, include_content_type_distribution: true, limit: 20 }));
-      expect(data.documents).toBeDefined();
-      expect(data.chunks).toBeDefined();
+    it('3.2 - ocr_report_overview section=corpus + DB verify', async () => {
+      const data = ok(await callTool(reportTools, 'ocr_report_overview', { section: 'corpus', include_section_frequency: true, include_content_type_distribution: true, limit: 20 }));
+      const corpus = data.corpus as Record<string, unknown>;
+      expect(corpus.documents).toBeDefined();
+      expect(corpus.chunks).toBeDefined();
 
-      // Note: field is 'total_complete' not 'total_documents'
-      const docs = data.documents as Record<string, unknown>;
+      const docs = corpus.documents as Record<string, unknown>;
       const dbDocs = (conn.prepare("SELECT COUNT(*) as cnt FROM documents WHERE status = 'complete'").get() as { cnt: number }).cnt;
       expect(docs.total_complete).toBe(dbDocs);
 
-      const chunks = data.chunks as Record<string, unknown>;
+      const chunks = corpus.chunks as Record<string, unknown>;
       const dbChunks = (conn.prepare('SELECT COUNT(*) as cnt FROM chunks').get() as { cnt: number }).cnt;
       expect(chunks.total_chunks).toBe(dbChunks);
       console.error(`[3.2] Docs: DB=${dbDocs}, Chunks: DB=${dbChunks}`);
 
-      // Note: key is 'content_type_distribution' not 'content_types'
-      if (data.content_type_distribution) {
-        console.error('[3.2] Content types:', JSON.stringify(data.content_type_distribution));
+      if (corpus.content_type_distribution) {
+        console.error('[3.2] Content types:', JSON.stringify(corpus.content_type_distribution));
       }
-      if (data.section_frequency) {
-        console.error('[3.2] Top sections:', (data.section_frequency as unknown[]).slice(0, 3));
+      if (corpus.section_frequency) {
+        console.error('[3.2] Top sections:', (corpus.section_frequency as unknown[]).slice(0, 3));
       }
     });
 
     it('3.2 - corpus profile booleans disabled omit keys', async () => {
-      const data = ok(await callTool(reportTools, 'ocr_corpus_profile', { include_section_frequency: false, include_content_type_distribution: false }));
-      // When disabled, keys are not set at all (undefined)
-      expect(data.section_frequency).toBeUndefined();
-      expect(data.content_type_distribution).toBeUndefined();
+      const data = ok(await callTool(reportTools, 'ocr_report_overview', { section: 'corpus', include_section_frequency: false, include_content_type_distribution: false }));
+      const corpus = data.corpus as Record<string, unknown>;
+      expect(corpus.section_frequency).toBeUndefined();
+      expect(corpus.content_type_distribution).toBeUndefined();
     });
 
     it('3.3 - ocr_error_analytics + DB verify', async () => {
@@ -252,21 +252,20 @@ describe('Gap Closure E2E', () => {
       expect(data.vlm).toBeDefined();
       expect(data.embeddings).toBeDefined();
 
-      // Note: field is 'total' not 'total_documents'
       const docStats = data.documents as Record<string, unknown>;
       const dbTotal = (conn.prepare('SELECT COUNT(*) as cnt FROM documents').get() as { cnt: number }).cnt;
       expect(docStats.total).toBe(dbTotal);
       console.error(`[3.3] Total docs: DB=${dbTotal}, tool=${docStats.total}`);
     });
 
-    it('3.4 - ocr_provenance_bottlenecks + DB verify', async () => {
-      const data = ok(await callTool(reportTools, 'ocr_provenance_bottlenecks', {}));
-      // Response keys: grand_total_duration_ms, by_processor, by_chain_depth, slowest_operations
-      expect(data.by_processor).toBeDefined();
-      expect(data.by_chain_depth).toBeDefined(); // Note: 'by_chain_depth' not 'by_pipeline_stage'
-      expect(data.slowest_operations).toBeDefined();
+    it('3.4 - ocr_report_performance section=bottlenecks + DB verify', async () => {
+      const data = ok(await callTool(reportTools, 'ocr_report_performance', { section: 'bottlenecks' }));
+      const bottlenecks = data.bottlenecks as Record<string, unknown>;
+      expect(bottlenecks.by_processor).toBeDefined();
+      expect(bottlenecks.by_chain_depth).toBeDefined();
+      expect(bottlenecks.slowest_operations).toBeDefined();
 
-      const procs = data.by_processor as Array<Record<string, unknown>>;
+      const procs = bottlenecks.by_processor as Array<Record<string, unknown>>;
       const dbProvCount = (conn.prepare('SELECT COUNT(*) as cnt FROM provenance WHERE processing_duration_ms IS NOT NULL').get() as { cnt: number }).cnt;
       const toolTotal = procs.reduce((s, p) => s + (p.count as number), 0);
       expect(toolTotal).toBe(dbProvCount);

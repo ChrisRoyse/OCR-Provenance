@@ -362,7 +362,7 @@ async function handleGuide(params: Record<string, unknown>): Promise<ToolRespons
       }
     } else if (intent === 'search' || (!intent && completeCount > 0)) {
       next_steps.push({
-        tool: 'ocr_search_hybrid',
+        tool: 'ocr_search',
         description: 'Search across all documents. Default and recommended search tool.',
         priority: 'recommended',
       });
@@ -385,8 +385,8 @@ async function handleGuide(params: Record<string, unknown>): Promise<ToolRespons
         priority: 'recommended',
       });
       next_steps.push({
-        tool: 'ocr_corpus_profile',
-        description: 'Get corpus overview with content type distribution.',
+        tool: 'ocr_report_overview',
+        description: 'Get corpus overview with content type distribution (section="corpus").',
         priority: 'optional',
       });
     } else if (intent === 'analyze') {
@@ -451,7 +451,7 @@ async function handleGuide(params: Record<string, unknown>): Promise<ToolRespons
       }
       if (completeCount > 0) {
         next_steps.push({
-          tool: 'ocr_search_hybrid',
+          tool: 'ocr_search',
           description: 'Search across all documents.',
           priority: 'recommended',
         });
@@ -847,7 +847,7 @@ async function handleDocumentExtras(params: Record<string, unknown>): Promise<To
 export const intelligenceTools: Record<string, ToolDefinition> = {
   ocr_guide: {
     description:
-      '[CORE] Use first to understand the system state and get guidance on what to do next. ' +
+      '[ESSENTIAL] Use first to understand the system state and get guidance on what to do next. ' +
       'Returns available databases, selected database stats, and prioritized next_steps with tool recommendations. ' +
       'Optional intent parameter narrows guidance: explore, search, ingest, analyze, or status.',
     inputSchema: GuideInput.shape,

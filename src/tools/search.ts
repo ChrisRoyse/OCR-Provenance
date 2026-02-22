@@ -1,9 +1,9 @@
 /**
  * Search MCP Tools
  *
- * Tools: ocr_search, ocr_search_semantic, ocr_search_hybrid, ocr_fts_manage,
+ * Tools: ocr_search (unified: keyword/semantic/hybrid), ocr_fts_manage,
  *        ocr_search_export, ocr_benchmark_compare, ocr_rag_context,
- *        ocr_search_save, ocr_search_saved_list, ocr_search_saved_get
+ *        ocr_search_save, ocr_search_saved (unified: list/get/execute)
  *
  * CRITICAL: NEVER use console.log() - stdout is reserved for JSON-RPC protocol.
  * Use console.error() for all logging.
@@ -24,9 +24,7 @@ import {
   validateInput,
   sanitizePath,
   escapeLikePattern,
-  SearchSemanticInput,
-  SearchInput,
-  SearchHybridInput,
+  SearchUnifiedInput,
   FTSManageInput,
 } from '../utils/validation.js';
 import { MCPError } from '../server/errors.js';
@@ -59,6 +57,50 @@ interface QueryExpansionInfo {
   expanded: string[];
   synonyms_found: Record<string, string[]>;
   corpus_terms?: Record<string, string[]>;
+}
+
+/**
+ * Internal search params type used by the internal handlers.
+ * Includes all unified schema fields plus always-on fields injected by handleSearchUnified.
+ */
+interface InternalSearchParams {
+  query: string;
+  mode: 'keyword' | 'semantic' | 'hybrid';
+  limit: number;
+  include_provenance: boolean;
+  document_filter?: string[];
+  metadata_filter?: { doc_title?: string; doc_author?: string; doc_subject?: string };
+  min_quality_score?: number;
+  rerank: boolean;
+  cluster_id?: string;
+  content_type_filter?: string[];
+  section_path_filter?: string;
+  heading_filter?: string;
+  page_range_filter?: { min_page?: number; max_page?: number };
+  is_atomic_filter?: boolean;
+  heading_level_filter?: { min_level?: number; max_level?: number };
+  min_page_count?: number;
+  max_page_count?: number;
+  include_context_chunks: number;
+  table_columns_contain?: string;
+  group_by_document: boolean;
+  // Keyword-mode specific
+  phrase_search: boolean;
+  include_highlight: boolean;
+  // Semantic-mode specific
+  similarity_threshold: number;
+  // Hybrid-mode specific
+  bm25_weight: number;
+  semantic_weight: number;
+  rrf_k: number;
+  auto_route: boolean;
+  // Always-on fields injected by unified handler
+  quality_boost: boolean;
+  expand_query: boolean;
+  exclude_duplicate_chunks: boolean;
+  include_headers_footers: boolean;
+  include_cluster_context: boolean;
+  include_document_context: boolean;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -174,13 +216,13 @@ function resolveQualityFilter(
   minQualityScore: number | undefined,
   existingDocFilter: string[] | undefined
 ): string[] | undefined {
-  if (minQualityScore === undefined) return existingDocFilter;
+  if (minQualityScore === undefined || minQualityScore === 0) return existingDocFilter;
   const rows = db
     .getConnection()
     .prepare(
       `SELECT DISTINCT d.id FROM documents d
      JOIN ocr_results o ON o.document_id = d.id
-     WHERE o.parse_quality_score >= ?`
+     WHERE o.parse_quality_score IS NOT NULL AND o.parse_quality_score >= ?`
     )
     .all(minQualityScore) as { id: string }[];
   const qualityIds = new Set(rows.map((r) => r.id));
@@ -432,8 +474,6 @@ function attachContextChunks(
  * Attach table metadata to search results for table chunks.
  * For each result where content_types contains "table",
  * queries provenance processing_params to extract table_columns, table_row_count, table_column_count.
- * Sets both top-level fields (table_columns, table_row_count, table_column_count) and
- * a nested table_metadata object for backward compatibility.
  * Batches queries by chunk_id.
  */
 function attachTableMetadata(
@@ -476,14 +516,13 @@ function attachTableMetadata(
     }
   }
 
-  // Attach to results: top-level fields + nested table_metadata for backward compat
+  // Attach to results as top-level fields
   for (const r of results) {
     const meta = r.chunk_id ? metadataMap.get(r.chunk_id as string) : undefined;
     if (meta) {
       r.table_columns = meta.table_columns;
       r.table_row_count = meta.table_row_count;
       r.table_column_count = meta.table_column_count;
-      r.table_metadata = meta;
     }
   }
 }
@@ -1013,11 +1052,12 @@ function toSemanticRanked(
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /**
- * Handle ocr_search_semantic - Semantic vector search
+ * Internal: Semantic vector search logic (called by unified handler)
  */
-export async function handleSearchSemantic(params: Record<string, unknown>): Promise<ToolResponse> {
+async function handleSearchSemanticInternal(params: Record<string, unknown>): Promise<ToolResponse> {
   try {
-    const input = validateInput(SearchSemanticInput, params);
+    // Params already validated and enriched by handleSearchUnified
+    const input = params as unknown as InternalSearchParams;
     const { db, vector } = requireDatabase();
     const conn = db.getConnection();
 
@@ -1293,6 +1333,11 @@ export async function handleSearchSemantic(params: Record<string, unknown>): Pro
       threshold_info: thresholdInfo,
       metadata_boosts_applied: true,
       cluster_context_included: clusterContextIncluded,
+      next_steps: [
+        { tool: 'ocr_chunk_context', description: 'Expand a result with neighboring chunks for more context' },
+        { tool: 'ocr_document_get', description: 'Deep-dive into a specific source document' },
+        { tool: 'ocr_document_page', description: 'Read the full page a result came from' },
+      ],
     };
 
     // Task 3.2: Standardized query expansion details
@@ -1330,12 +1375,12 @@ export async function handleSearchSemantic(params: Record<string, unknown>): Pro
 }
 
 /**
- * Handle ocr_search - BM25 full-text keyword search
- * Searches both chunks (text) and VLM descriptions (images)
+ * Internal: BM25 full-text keyword search logic (called by unified handler)
  */
-export async function handleSearch(params: Record<string, unknown>): Promise<ToolResponse> {
+async function handleSearchKeywordInternal(params: Record<string, unknown>): Promise<ToolResponse> {
   try {
-    const input = validateInput(SearchInput, params);
+    // Params already validated and enriched by handleSearchUnified
+    const input = params as unknown as InternalSearchParams;
     const { db } = requireDatabase();
     const conn = db.getConnection();
 
@@ -1524,6 +1569,11 @@ export async function handleSearch(params: Record<string, unknown>): Promise<Too
       },
       metadata_boosts_applied: true,
       cluster_context_included: clusterContextIncluded,
+      next_steps: [
+        { tool: 'ocr_chunk_context', description: 'Expand a result with neighboring chunks for more context' },
+        { tool: 'ocr_document_get', description: 'Deep-dive into a specific source document' },
+        { tool: 'ocr_document_page', description: 'Read the full page a result came from' },
+      ],
     };
 
     if (documentMetadataMatches) {
@@ -1565,14 +1615,14 @@ export async function handleSearch(params: Record<string, unknown>): Promise<Too
 }
 
 /**
- * Handle ocr_search_hybrid - Hybrid search using Reciprocal Rank Fusion
- * BM25 side now includes both chunk and VLM results
+ * Internal: Hybrid search using Reciprocal Rank Fusion (called by unified handler)
  */
-export async function handleSearchHybrid(params: Record<string, unknown>): Promise<ToolResponse> {
+async function handleSearchHybridInternal(params: Record<string, unknown>): Promise<ToolResponse> {
   try {
-    const input = validateInput(SearchHybridInput, params);
+    // Params already validated and enriched by handleSearchUnified
+    const input = params as unknown as InternalSearchParams;
     const { db, vector } = requireDatabase();
-    const limit = input.limit ?? 10;
+    const limit = (input.limit as number) ?? 10;
     const conn = db.getConnection();
 
     // Auto-route: classify query and adjust weights
@@ -1822,6 +1872,86 @@ export async function handleSearchHybrid(params: Record<string, unknown>): Promi
     }
 
     return formatResponse(successResult(responseData));
+  } catch (error) {
+    return handleError(error);
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// UNIFIED SEARCH HANDLER
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/**
+ * Handle ocr_search - Unified search across keyword (BM25), semantic (vector),
+ * and hybrid (BM25+semantic RRF fusion) modes.
+ *
+ * Always-on optimizations (hardcoded, no parameters needed):
+ * - quality_boost: true (quality-weighted ranking)
+ * - expand_query: true (domain synonym + corpus term expansion)
+ * - exclude_duplicate_chunks: true (deduplicate by content hash)
+ * - exclude headers/footers: true (filter repeated header/footer chunks)
+ * - include_cluster_context: true (cluster membership in results)
+ */
+export async function handleSearchUnified(params: Record<string, unknown>): Promise<ToolResponse> {
+  try {
+    const input = validateInput(SearchUnifiedInput, params);
+
+    // Flatten filters from nested object into top-level params for internal handlers.
+    // Internal handlers (InternalSearchParams) expect flat params, not nested filters.
+    const filters = input.filters ?? {};
+    // Only pass similarity_threshold if the user explicitly provided it.
+    // The internal semantic handler uses adaptive threshold when it's undefined.
+    const userSetThreshold = 'similarity_threshold' in (params as Record<string, unknown>);
+
+    const enrichedParams: Record<string, unknown> = {
+      // Spread validated top-level params
+      query: input.query,
+      mode: input.mode,
+      limit: input.limit,
+      include_provenance: input.include_provenance,
+      rerank: input.rerank,
+      include_context_chunks: input.include_context_chunks,
+      group_by_document: input.group_by_document,
+      phrase_search: input.phrase_search,
+      include_highlight: input.include_highlight,
+      ...(userSetThreshold ? { similarity_threshold: input.similarity_threshold } : {}),
+      bm25_weight: input.bm25_weight,
+      semantic_weight: input.semantic_weight,
+      rrf_k: input.rrf_k,
+      auto_route: input.auto_route,
+      // Flatten nested filters to top-level for internal handlers
+      document_filter: filters.document_filter,
+      metadata_filter: filters.metadata_filter,
+      min_quality_score: filters.min_quality_score,
+      cluster_id: filters.cluster_id,
+      content_type_filter: filters.content_type_filter,
+      section_path_filter: filters.section_path_filter,
+      heading_filter: filters.heading_filter,
+      page_range_filter: filters.page_range_filter,
+      is_atomic_filter: filters.is_atomic_filter,
+      heading_level_filter: filters.heading_level_filter,
+      min_page_count: filters.min_page_count,
+      max_page_count: filters.max_page_count,
+      table_columns_contain: filters.table_columns_contain,
+      // Hardcode always-on defaults
+      quality_boost: true,
+      expand_query: true,
+      exclude_duplicate_chunks: true,
+      include_headers_footers: false,
+      include_cluster_context: true,
+      include_document_context: true,
+    };
+
+    // Route to internal handler based on mode
+    switch (input.mode) {
+      case 'keyword':
+        return await handleSearchKeywordInternal(enrichedParams);
+      case 'semantic':
+        return await handleSearchSemanticInternal(enrichedParams);
+      case 'hybrid':
+      default:
+        return await handleSearchHybridInternal(enrichedParams);
+    }
   } catch (error) {
     return handleError(error);
   }
@@ -2269,13 +2399,9 @@ async function handleSearchExport(params: Record<string, unknown>): Promise<Tool
       include_provenance: false,
     };
 
-    if (input.search_type === 'bm25') {
-      searchResult = await handleSearch(searchParams);
-    } else if (input.search_type === 'semantic') {
-      searchResult = await handleSearchSemantic(searchParams);
-    } else {
-      searchResult = await handleSearchHybrid(searchParams);
-    }
+    // Route through unified handler with appropriate mode
+    searchParams.mode = input.search_type === 'bm25' ? 'keyword' : input.search_type;
+    searchResult = await handleSearchUnified(searchParams);
 
     // Parse search results from the ToolResponse
     if (!searchResult.content || searchResult.content.length === 0) {
@@ -2374,20 +2500,14 @@ const SearchSaveInput = z.object({
   notes: z.string().optional().describe('Optional notes about this search'),
 });
 
-const SearchSavedListInput = z.object({
-  search_type: z.enum(['bm25', 'semantic', 'hybrid']).optional().describe('Filter by search type'),
-  limit: z.number().int().min(1).max(100).default(50),
-  offset: z.number().int().min(0).default(0),
-});
-
-const SearchSavedGetInput = z.object({
-  saved_search_id: z.string().min(1).describe('ID of the saved search to retrieve'),
-});
-
-const SearchSavedExecuteInput = z.object({
-  saved_search_id: z.string().min(1).describe('ID of the saved search to re-execute'),
+const SearchSavedInput = z.object({
+  action: z.enum(['list', 'get', 'execute']).describe('Action: list all saved searches, get one by ID, or execute a saved search'),
+  saved_search_id: z.string().min(1).optional().describe('ID of the saved search (required for get and execute actions)'),
+  search_type: z.enum(['bm25', 'semantic', 'hybrid']).optional().describe('Filter by search type (list action only)'),
+  limit: z.number().int().min(1).max(100).default(50).describe('Max results for list action'),
+  offset: z.number().int().min(0).default(0).describe('Pagination offset for list action'),
   override_limit: z.number().int().min(1).max(100).optional()
-    .describe('Override the original result limit'),
+    .describe('Override the original result limit (execute action only)'),
 });
 
 /**
@@ -2431,98 +2551,85 @@ async function handleSearchSave(params: Record<string, unknown>): Promise<ToolRe
 }
 
 /**
- * Handle ocr_search_saved_list - List saved searches with optional type filtering
- */
-async function handleSearchSavedList(params: Record<string, unknown>): Promise<ToolResponse> {
-  try {
-    const input = validateInput(SearchSavedListInput, params);
-    const { db } = requireDatabase();
-    const conn = db.getConnection();
-
-    let sql = 'SELECT id, name, query, search_type, result_count, created_at, notes, last_executed_at, execution_count FROM saved_searches';
-    const sqlParams: unknown[] = [];
-
-    if (input.search_type) {
-      sql += ' WHERE search_type = ?';
-      sqlParams.push(input.search_type);
-    }
-
-    sql += ' ORDER BY created_at DESC LIMIT ? OFFSET ?';
-    sqlParams.push(input.limit, input.offset);
-
-    const rows = conn.prepare(sql).all(...sqlParams) as Array<{
-      id: string; name: string; query: string; search_type: string;
-      result_count: number; created_at: string; notes: string | null;
-      last_executed_at: string | null; execution_count: number | null;
-    }>;
-
-    const totalRow = conn.prepare(
-      input.search_type
-        ? 'SELECT COUNT(*) as count FROM saved_searches WHERE search_type = ?'
-        : 'SELECT COUNT(*) as count FROM saved_searches'
-    ).get(...(input.search_type ? [input.search_type] : [])) as { count: number };
-
-    return formatResponse(successResult({
-      saved_searches: rows,
-      total: totalRow.count,
-      limit: input.limit,
-      offset: input.offset,
-    }));
-  } catch (error) {
-    return handleError(error);
-  }
-}
-
-/**
- * Handle ocr_search_saved_get - Retrieve a saved search by ID including all parameters and result IDs
- */
-async function handleSearchSavedGet(params: Record<string, unknown>): Promise<ToolResponse> {
-  try {
-    const input = validateInput(SearchSavedGetInput, params);
-    const { db } = requireDatabase();
-    const conn = db.getConnection();
-
-    const row = conn.prepare(
-      'SELECT * FROM saved_searches WHERE id = ?'
-    ).get(input.saved_search_id) as {
-      id: string; name: string; query: string; search_type: string;
-      search_params: string; result_count: number; result_ids: string;
-      created_at: string; notes: string | null;
-    } | undefined;
-
-    if (!row) {
-      throw new Error(`Saved search not found: ${input.saved_search_id}`);
-    }
-
-    return formatResponse(successResult({
-      id: row.id,
-      name: row.name,
-      query: row.query,
-      search_type: row.search_type,
-      search_params: JSON.parse(row.search_params),
-      result_count: row.result_count,
-      result_ids: JSON.parse(row.result_ids),
-      created_at: row.created_at,
-      notes: row.notes,
-    }));
-  } catch (error) {
-    return handleError(error);
-  }
-}
-
-/**
- * Handle ocr_search_saved_execute - Re-execute a saved search with current data
+ * Handle ocr_search_saved - Unified saved search management
  *
- * Reads the saved search parameters and dispatches to the appropriate search handler
- * (handleSearch, handleSearchSemantic, or handleSearchHybrid) based on the saved search_type.
+ * Actions:
+ * - list: List saved searches with optional type filtering
+ * - get: Retrieve a saved search by ID including all parameters and result IDs
+ * - execute: Re-execute a saved search with current data via handleSearchUnified
  */
-async function handleSearchSavedExecute(params: Record<string, unknown>): Promise<ToolResponse> {
+async function handleSearchSaved(params: Record<string, unknown>): Promise<ToolResponse> {
   try {
-    const input = validateInput(SearchSavedExecuteInput, params);
+    const input = validateInput(SearchSavedInput, params);
     const { db } = requireDatabase();
     const conn = db.getConnection();
 
-    // Retrieve saved search
+    if (input.action === 'list') {
+      let sql = 'SELECT id, name, query, search_type, result_count, created_at, notes, last_executed_at, execution_count FROM saved_searches';
+      const sqlParams: unknown[] = [];
+
+      if (input.search_type) {
+        sql += ' WHERE search_type = ?';
+        sqlParams.push(input.search_type);
+      }
+
+      sql += ' ORDER BY created_at DESC LIMIT ? OFFSET ?';
+      sqlParams.push(input.limit, input.offset);
+
+      const rows = conn.prepare(sql).all(...sqlParams) as Array<{
+        id: string; name: string; query: string; search_type: string;
+        result_count: number; created_at: string; notes: string | null;
+        last_executed_at: string | null; execution_count: number | null;
+      }>;
+
+      const totalRow = conn.prepare(
+        input.search_type
+          ? 'SELECT COUNT(*) as count FROM saved_searches WHERE search_type = ?'
+          : 'SELECT COUNT(*) as count FROM saved_searches'
+      ).get(...(input.search_type ? [input.search_type] : [])) as { count: number };
+
+      return formatResponse(successResult({
+        action: 'list',
+        saved_searches: rows,
+        total: totalRow.count,
+        limit: input.limit,
+        offset: input.offset,
+      }));
+    }
+
+    // Both 'get' and 'execute' require saved_search_id
+    if (!input.saved_search_id) {
+      throw new MCPError('VALIDATION_ERROR', 'saved_search_id is required for get and execute actions');
+    }
+
+    if (input.action === 'get') {
+      const row = conn.prepare(
+        'SELECT * FROM saved_searches WHERE id = ?'
+      ).get(input.saved_search_id) as {
+        id: string; name: string; query: string; search_type: string;
+        search_params: string; result_count: number; result_ids: string;
+        created_at: string; notes: string | null;
+      } | undefined;
+
+      if (!row) {
+        throw new Error(`Saved search not found: ${input.saved_search_id}`);
+      }
+
+      return formatResponse(successResult({
+        action: 'get',
+        id: row.id,
+        name: row.name,
+        query: row.query,
+        search_type: row.search_type,
+        search_params: JSON.parse(row.search_params),
+        result_count: row.result_count,
+        result_ids: JSON.parse(row.result_ids),
+        created_at: row.created_at,
+        notes: row.notes,
+      }));
+    }
+
+    // action === 'execute'
     const row = conn.prepare(
       'SELECT * FROM saved_searches WHERE id = ?'
     ).get(input.saved_search_id) as {
@@ -2551,21 +2658,14 @@ async function handleSearchSavedExecute(params: Record<string, unknown>): Promis
     // Ensure query is set in params
     searchParams.query = row.query;
 
-    // Dispatch to appropriate handler based on search_type
-    let searchResult: ToolResponse;
-    switch (row.search_type) {
-      case 'bm25':
-        searchResult = await handleSearch(searchParams as Record<string, unknown>);
-        break;
-      case 'semantic':
-        searchResult = await handleSearchSemantic(searchParams as Record<string, unknown>);
-        break;
-      case 'hybrid':
-        searchResult = await handleSearchHybrid(searchParams as Record<string, unknown>);
-        break;
-      default:
-        throw new MCPError('VALIDATION_ERROR', `Unknown search type: ${row.search_type}`);
+    // Dispatch through unified handler with appropriate mode
+    const modeMap: Record<string, string> = { bm25: 'keyword', semantic: 'semantic', hybrid: 'hybrid' };
+    const mode = modeMap[row.search_type];
+    if (!mode) {
+      throw new MCPError('VALIDATION_ERROR', `Unknown search type: ${row.search_type}`);
     }
+    searchParams.mode = mode;
+    const searchResult: ToolResponse = await handleSearchUnified(searchParams as Record<string, unknown>);
 
     // Parse the search result to wrap with saved search metadata
     const searchResultData = JSON.parse(searchResult.content[0].text) as Record<string, unknown>;
@@ -2584,6 +2684,7 @@ async function handleSearchSavedExecute(params: Record<string, unknown>): Promis
     }
 
     return formatResponse(successResult({
+      action: 'execute',
       saved_search: {
         id: row.id,
         name: row.name,
@@ -2734,283 +2835,9 @@ async function handleCrossDbSearch(params: Record<string, unknown>): Promise<Too
  */
 export const searchTools: Record<string, ToolDefinition> = {
   ocr_search: {
-    description: '[SEARCH] Use for exact keyword/phrase matching (IDs, codes, names, quoted phrases). Returns chunks ranked by term frequency. For general questions, use ocr_search_hybrid instead.',
-    inputSchema: {
-      query: z.string().min(1).max(1000).describe('Search query'),
-      limit: z.number().int().min(1).max(100).default(10).describe('Maximum results'),
-      phrase_search: z.boolean().default(false).describe('Treat as exact phrase'),
-      include_highlight: z.boolean().default(true).describe('Include highlighted snippets'),
-      include_provenance: z.boolean().default(false).describe('Include provenance chain'),
-      document_filter: z.array(z.string()).optional().describe('Filter by document IDs'),
-      metadata_filter: z
-        .object({
-          doc_title: z.string().optional(),
-          doc_author: z.string().optional(),
-          doc_subject: z.string().optional(),
-        })
-        .optional()
-        .describe('Filter by document metadata (LIKE match)'),
-      min_quality_score: z
-        .number()
-        .min(0)
-        .max(5)
-        .optional()
-        .describe('Minimum OCR quality score (0-5)'),
-      expand_query: z
-        .boolean()
-        .default(false)
-        .describe('Expand query with domain-specific legal/medical synonyms'),
-      rerank: z
-        .boolean()
-        .default(false)
-        .describe('Re-rank results using local cross-encoder model for relevance scoring'),
-      cluster_id: z.string().optional().describe('Filter results to documents in this cluster'),
-      include_cluster_context: z
-        .boolean()
-        .default(true)
-        .describe('Include cluster membership info for each result (default: true)'),
-      content_type_filter: z
-        .array(z.string())
-        .optional()
-        .describe('Filter by chunk content types (e.g., ["table", "code", "heading"])'),
-      section_path_filter: z
-        .string()
-        .optional()
-        .describe('Filter by section path prefix (e.g., "Section 3" matches "Section 3 > 3.1 > Definitions")'),
-      heading_filter: z
-        .string()
-        .optional()
-        .describe('Filter by heading context text (LIKE match)'),
-      page_range_filter: z
-        .object({
-          min_page: z.number().int().min(1).optional(),
-          max_page: z.number().int().min(1).optional(),
-        })
-        .optional()
-        .describe('Filter results to specific page range'),
-      quality_boost: z
-        .boolean()
-        .default(false)
-        .describe('Boost results from higher-quality OCR pages in ranking'),
-      exclude_duplicate_chunks: z
-        .boolean()
-        .default(false)
-        .describe('Remove duplicate chunks (same text_hash) from results'),
-      is_atomic_filter: z.boolean().optional()
-        .describe('When true, return only atomic chunks (tables, figures, code). When false, exclude them.'),
-      heading_level_filter: z
-        .object({
-          min_level: z.number().int().min(1).max(6).optional(),
-          max_level: z.number().int().min(1).max(6).optional(),
-        })
-        .optional()
-        .describe('Filter by heading level (1=h1, 6=h6)'),
-      min_page_count: z.number().int().min(1).optional()
-        .describe('Only results from documents with at least this many pages'),
-      max_page_count: z.number().int().min(1).optional()
-        .describe('Only results from documents with at most this many pages'),
-      include_context_chunks: z.number().int().min(0).max(3).default(0)
-        .describe('Number of neighboring chunks before/after each result (0=none, max 3)'),
-      table_columns_contain: z.string().optional()
-        .describe('Filter to table chunks whose column headers contain this text (case-insensitive match on stored table_columns in processing_params)'),
-      include_headers_footers: z.boolean().default(false)
-        .describe('Include repeated page headers/footers in search results (excluded by default)'),
-      group_by_document: z.boolean().default(false)
-        .describe('Group results by source document with document-level statistics'),
-      include_document_context: z.boolean().default(false)
-        .describe('Include cluster membership and related document comparisons for each source document (first result per doc)'),
-    },
-    handler: handleSearch,
-  },
-  ocr_search_semantic: {
-    description: '[SEARCH] Use for conceptual/meaning-based queries where exact terms may not appear. Returns chunks ranked by vector similarity. For general questions, use ocr_search_hybrid instead.',
-    inputSchema: {
-      query: z.string().min(1).max(1000).describe('Search query'),
-      limit: z.number().int().min(1).max(100).default(10).describe('Maximum results to return'),
-      similarity_threshold: z
-        .number()
-        .min(0)
-        .max(1)
-        .default(0.7)
-        .describe('Minimum similarity score (0-1)'),
-      include_provenance: z
-        .boolean()
-        .default(false)
-        .describe('Include provenance chain in results'),
-      document_filter: z.array(z.string()).optional().describe('Filter by document IDs'),
-      metadata_filter: z
-        .object({
-          doc_title: z.string().optional(),
-          doc_author: z.string().optional(),
-          doc_subject: z.string().optional(),
-        })
-        .optional()
-        .describe('Filter by document metadata (LIKE match)'),
-      min_quality_score: z
-        .number()
-        .min(0)
-        .max(5)
-        .optional()
-        .describe('Minimum OCR quality score (0-5)'),
-      expand_query: z
-        .boolean()
-        .default(false)
-        .describe('Expand query with domain-specific legal/medical synonyms'),
-      rerank: z
-        .boolean()
-        .default(false)
-        .describe('Re-rank results using local cross-encoder model for relevance scoring'),
-      cluster_id: z.string().optional().describe('Filter results to documents in this cluster'),
-      include_cluster_context: z
-        .boolean()
-        .default(true)
-        .describe('Include cluster membership info for each result (default: true)'),
-      content_type_filter: z
-        .array(z.string())
-        .optional()
-        .describe('Filter by chunk content types (e.g., ["table", "code", "heading"])'),
-      section_path_filter: z
-        .string()
-        .optional()
-        .describe('Filter by section path prefix (e.g., "Section 3" matches "Section 3 > 3.1 > Definitions")'),
-      heading_filter: z
-        .string()
-        .optional()
-        .describe('Filter by heading context text (LIKE match)'),
-      page_range_filter: z
-        .object({
-          min_page: z.number().int().min(1).optional(),
-          max_page: z.number().int().min(1).optional(),
-        })
-        .optional()
-        .describe('Filter results to specific page range'),
-      quality_boost: z
-        .boolean()
-        .default(false)
-        .describe('Boost results from higher-quality OCR pages in ranking'),
-      exclude_duplicate_chunks: z
-        .boolean()
-        .default(false)
-        .describe('Remove duplicate chunks (same text_hash) from results'),
-      is_atomic_filter: z.boolean().optional()
-        .describe('When true, return only atomic chunks (tables, figures, code). When false, exclude them.'),
-      heading_level_filter: z
-        .object({
-          min_level: z.number().int().min(1).max(6).optional(),
-          max_level: z.number().int().min(1).max(6).optional(),
-        })
-        .optional()
-        .describe('Filter by heading level (1=h1, 6=h6)'),
-      min_page_count: z.number().int().min(1).optional()
-        .describe('Only results from documents with at least this many pages'),
-      max_page_count: z.number().int().min(1).optional()
-        .describe('Only results from documents with at most this many pages'),
-      include_context_chunks: z.number().int().min(0).max(3).default(0)
-        .describe('Number of neighboring chunks before/after each result (0=none, max 3)'),
-      table_columns_contain: z.string().optional()
-        .describe('Filter to table chunks whose column headers contain this text (case-insensitive match on stored table_columns in processing_params)'),
-      include_headers_footers: z.boolean().default(false)
-        .describe('Include repeated page headers/footers in search results (excluded by default)'),
-      group_by_document: z.boolean().default(false)
-        .describe('Group results by source document with document-level statistics'),
-      include_document_context: z.boolean().default(false)
-        .describe('Include cluster membership and related document comparisons for each source document (first result per doc)'),
-    },
-    handler: handleSearchSemantic,
-  },
-  ocr_search_hybrid: {
-    description: '[CORE] Default search tool. Use for any search query -- combines keyword and semantic matching. Returns ranked chunks with metadata. Prefer this over ocr_search or ocr_search_semantic.',
-    inputSchema: {
-      query: z.string().min(1).max(1000).describe('Search query'),
-      limit: z.number().int().min(1).max(100).default(10).describe('Maximum results'),
-      bm25_weight: z.number().min(0).max(2).default(1.0).describe('BM25 result weight'),
-      semantic_weight: z.number().min(0).max(2).default(1.0).describe('Semantic result weight'),
-      rrf_k: z.number().int().min(1).max(100).default(60).describe('RRF smoothing constant'),
-      include_provenance: z.boolean().default(false).describe('Include provenance chain'),
-      document_filter: z.array(z.string()).optional().describe('Filter by document IDs'),
-      metadata_filter: z
-        .object({
-          doc_title: z.string().optional(),
-          doc_author: z.string().optional(),
-          doc_subject: z.string().optional(),
-        })
-        .optional()
-        .describe('Filter by document metadata (LIKE match)'),
-      min_quality_score: z
-        .number()
-        .min(0)
-        .max(5)
-        .optional()
-        .describe('Minimum OCR quality score (0-5)'),
-      expand_query: z
-        .boolean()
-        .default(true)
-        .describe('Expand query with domain-specific legal/medical synonyms (default: true for hybrid search)'),
-      rerank: z
-        .boolean()
-        .default(false)
-        .describe('Re-rank results using local cross-encoder model for relevance scoring'),
-      cluster_id: z.string().optional().describe('Filter results to documents in this cluster'),
-      include_cluster_context: z
-        .boolean()
-        .default(true)
-        .describe('Include cluster membership info for each result (default: true)'),
-      content_type_filter: z
-        .array(z.string())
-        .optional()
-        .describe('Filter by chunk content types (e.g., ["table", "code", "heading"])'),
-      section_path_filter: z
-        .string()
-        .optional()
-        .describe('Filter by section path prefix (e.g., "Section 3" matches "Section 3 > 3.1 > Definitions")'),
-      heading_filter: z
-        .string()
-        .optional()
-        .describe('Filter by heading context text (LIKE match)'),
-      page_range_filter: z
-        .object({
-          min_page: z.number().int().min(1).optional(),
-          max_page: z.number().int().min(1).optional(),
-        })
-        .optional()
-        .describe('Filter results to specific page range'),
-      quality_boost: z
-        .boolean()
-        .default(false)
-        .describe('Boost results from higher-quality OCR pages in ranking'),
-      auto_route: z
-        .boolean()
-        .default(false)
-        .describe('Auto-adjust BM25/semantic weights based on query classification'),
-      exclude_duplicate_chunks: z
-        .boolean()
-        .default(false)
-        .describe('Remove duplicate chunks (same text_hash) from results'),
-      is_atomic_filter: z.boolean().optional()
-        .describe('When true, return only atomic chunks (tables, figures, code). When false, exclude them.'),
-      heading_level_filter: z
-        .object({
-          min_level: z.number().int().min(1).max(6).optional(),
-          max_level: z.number().int().min(1).max(6).optional(),
-        })
-        .optional()
-        .describe('Filter by heading level (1=h1, 6=h6)'),
-      min_page_count: z.number().int().min(1).optional()
-        .describe('Only results from documents with at least this many pages'),
-      max_page_count: z.number().int().min(1).optional()
-        .describe('Only results from documents with at most this many pages'),
-      include_context_chunks: z.number().int().min(0).max(3).default(0)
-        .describe('Number of neighboring chunks before/after each result (0=none, max 3)'),
-      table_columns_contain: z.string().optional()
-        .describe('Filter to table chunks whose column headers contain this text (case-insensitive match on stored table_columns in processing_params)'),
-      include_headers_footers: z.boolean().default(false)
-        .describe('Include repeated page headers/footers in search results (excluded by default)'),
-      group_by_document: z.boolean().default(false)
-        .describe('Group results by source document with document-level statistics'),
-      include_document_context: z.boolean().default(false)
-        .describe('Include cluster membership and related document comparisons for each source document (first result per doc)'),
-    },
-    handler: handleSearchHybrid,
+    description: '[ESSENTIAL] Primary search tool. Searches across all documents using keyword (BM25), semantic (vector), or hybrid (BM25+semantic fusion) modes. Default mode is hybrid which combines both for best results. Always quality-weighted, always expands queries, always deduplicates. Set mode to "keyword" for exact text matching or "semantic" for meaning-based search.',
+    inputSchema: SearchUnifiedInput.shape,
+    handler: handleSearchUnified,
   },
   ocr_fts_manage: {
     description: '[ADMIN] Use to rebuild or check status of the FTS5 full-text index. Returns index health. Use after bulk ingestion if search results seem stale.',
@@ -3049,7 +2876,7 @@ export const searchTools: Record<string, ToolDefinition> = {
   },
   ocr_rag_context: {
     description:
-      '[CORE] Use when answering a user question about document content. Returns pre-assembled, deduplicated markdown context from hybrid search. Best for RAG workflows.',
+      '[ESSENTIAL] Use when answering a user question about document content. Returns pre-assembled, deduplicated markdown context from hybrid search. Best for RAG workflows.',
     inputSchema: {
       question: z.string().min(1).max(2000).describe('The question to build context for'),
       limit: z
@@ -3078,24 +2905,14 @@ export const searchTools: Record<string, ToolDefinition> = {
     handler: handleRagContext,
   },
   ocr_search_save: {
-    description: '[SEARCH] Use to save search results for later retrieval or re-execution. Returns saved search ID. Retrieve with ocr_search_saved_get.',
+    description: '[SEARCH] Use to save search results for later retrieval or re-execution. Returns saved search ID. Manage saved searches with ocr_search_saved.',
     inputSchema: SearchSaveInput.shape,
     handler: handleSearchSave,
   },
-  ocr_search_saved_list: {
-    description: '[SEARCH] Use to list all saved searches with optional type filtering. Returns saved search names, types, and IDs.',
-    inputSchema: SearchSavedListInput.shape,
-    handler: handleSearchSavedList,
-  },
-  ocr_search_saved_get: {
-    description: '[SEARCH] Use to retrieve a saved search by ID. Returns original parameters and result IDs. Use ocr_search_saved_execute to re-run it.',
-    inputSchema: SearchSavedGetInput.shape,
-    handler: handleSearchSavedGet,
-  },
-  ocr_search_saved_execute: {
-    description: '[SEARCH] Use to re-run a previously saved search against current data. Returns fresh results using the saved parameters.',
-    inputSchema: SearchSavedExecuteInput.shape,
-    handler: handleSearchSavedExecute,
+  ocr_search_saved: {
+    description: '[SEARCH] Manage saved searches. action="list" lists all saved searches (optional search_type filter). action="get" retrieves a saved search by ID with full parameters. action="execute" re-runs a saved search against current data.',
+    inputSchema: SearchSavedInput.shape,
+    handler: handleSearchSaved,
   },
   ocr_search_cross_db: {
     description:

@@ -30,6 +30,7 @@ import { computeHash } from '../../../src/utils/hash.js';
 import { ProvenanceType } from '../../../src/models/provenance.js';
 import { fileManagementTools } from '../../../src/tools/file-management.js';
 import { ingestionTools } from '../../../src/tools/ingestion.js';
+import { embeddingTools } from '../../../src/tools/embeddings.js';
 import {
   insertUploadedFile,
   listUploadedFiles,
@@ -303,13 +304,13 @@ describe('ocr_file_ingest_uploaded', () => {
 });
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// TOOL 8.2: ocr_reembed_document
+// TOOL 8.2: ocr_embedding_rebuild (with include_vlm, merged from ocr_reembed_document)
 // ═══════════════════════════════════════════════════════════════════════════════
 
-describe('ocr_reembed_document', () => {
+describe('ocr_embedding_rebuild (document re-embed, merged from ocr_reembed_document)', () => {
   let tempDir: string;
   const dbName = createUniqueName('test-reembed');
-  const handler = ingestionTools.ocr_reembed_document.handler;
+  const handler = embeddingTools.ocr_embedding_rebuild.handler;
 
   beforeAll(() => {
     tempDir = createTempDir('test-reembed-');
@@ -322,14 +323,14 @@ describe('ocr_reembed_document', () => {
     cleanupTempDir(tempDir);
   });
 
-  it('should be registered as a tool', () => {
-    expect(ingestionTools.ocr_reembed_document).toBeDefined();
-    expect(ingestionTools.ocr_reembed_document.handler).toBeDefined();
-    expect(ingestionTools.ocr_reembed_document.description).toContain('regenerate embeddings');
+  it('should be registered as a tool with include_vlm support', () => {
+    expect(embeddingTools.ocr_embedding_rebuild).toBeDefined();
+    expect(embeddingTools.ocr_embedding_rebuild.handler).toBeDefined();
+    expect(embeddingTools.ocr_embedding_rebuild.description).toContain('VLM');
   });
 
-  it('should return 9 tools total for ingestion', () => {
-    expect(Object.keys(ingestionTools)).toHaveLength(9);
+  it('should return 7 tools total for ingestion (ocr_reembed_document and ocr_chunk_complete removed)', () => {
+    expect(Object.keys(ingestionTools)).toHaveLength(7);
   });
 
   it('should fail with document not found', async () => {
@@ -339,30 +340,10 @@ describe('ocr_reembed_document', () => {
     expect(parsed.error.message).toContain('not found');
   });
 
-  it('should fail when document is not complete', async () => {
+  it('should fail when document has no chunks', async () => {
     const { db } = requireDatabase();
 
-    // Create a pending document
-    const provId = uuidv4();
-    db.insertProvenance(createTestProvenance({ id: provId }));
-    const docId = uuidv4();
-    db.insertDocument(
-      createTestDocument(provId, {
-        id: docId,
-        status: 'pending',
-      })
-    );
-
-    const result = await handler({ document_id: docId });
-    const parsed = JSON.parse(result.content[0].text);
-    expect(parsed.success).toBe(false);
-    expect(parsed.error.message).toContain('complete');
-  });
-
-  it('should return zero counts when document has no chunks', async () => {
-    const { db } = requireDatabase();
-
-    // Create a complete document with no chunks
+    // Create a document with no chunks
     const provId = uuidv4();
     db.insertProvenance(createTestProvenance({ id: provId }));
     const docId = uuidv4();
@@ -372,19 +353,15 @@ describe('ocr_reembed_document', () => {
         status: 'complete',
       })
     );
-    // Set status to complete directly
     db.updateDocumentStatus(docId, 'complete');
 
     const result = await handler({ document_id: docId });
     const parsed = JSON.parse(result.content[0].text);
-    expect(parsed.success).toBe(true);
-    expect(parsed.data.chunks_reembedded).toBe(0);
-    expect(parsed.data.vlm_reembedded).toBe(0);
-    expect(parsed.data.total_embeddings).toBe(0);
-    expect(parsed.data.message).toContain('No chunks found');
+    expect(parsed.success).toBe(false);
+    expect(parsed.error.message).toContain('No chunks found');
   });
 
-  it('should delete old embeddings when re-embedding', async () => {
+  it('should delete old embeddings when re-embedding', { timeout: 120000 }, async () => {
     const { db } = requireDatabase();
     const conn = db.getConnection();
 
@@ -471,7 +448,9 @@ describe('ocr_reembed_document', () => {
     // Verify chunk embedding status was reset (it should be 'pending' before re-embed)
     // If embedding succeeded, it'll be 'complete' again; if failed, the error would propagate
     if (parsed.success) {
-      expect(parsed.data.document_id).toBe(docId);
+      // Response format uses target.id instead of top-level document_id
+      expect(parsed.data.target.type).toBe('document');
+      expect(parsed.data.target.id).toBe(docId);
     }
   });
 

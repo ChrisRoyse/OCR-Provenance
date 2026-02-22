@@ -36,7 +36,6 @@ import { reportTools } from '../../../src/tools/reports.js';
 
 // Extract handlers from exported tool definitions
 const handleTimelineAnalytics = timelineTools.ocr_timeline_analytics.handler;
-const handleThroughputAnalytics = timelineTools.ocr_throughput_analytics.handler;
 const handleQualityTrends = reportTools.ocr_quality_trends.handler;
 
 describe('Phase 6: Temporal Analytics Tools', () => {
@@ -406,10 +405,9 @@ describe('Phase 6: Temporal Analytics Tools', () => {
   // =====================================================================
 
   describe('Tool exports', () => {
-    it('should export 2 timeline tools', () => {
-      expect(Object.keys(timelineTools)).toHaveLength(2);
+    it('should export 1 timeline tool', () => {
+      expect(Object.keys(timelineTools)).toHaveLength(1);
       expect(timelineTools.ocr_timeline_analytics).toBeDefined();
-      expect(timelineTools.ocr_throughput_analytics).toBeDefined();
     });
 
     it('should have ocr_quality_trends in reportTools', () => {
@@ -585,106 +583,6 @@ describe('Phase 6: Temporal Analytics Tools', () => {
       expect(parsed.error.category).toBe('DATABASE_NOT_SELECTED');
 
       // Re-select for remaining tests
-      selectDatabase(dbName, tempDir);
-    });
-  });
-
-  // =====================================================================
-  // ocr_throughput_analytics
-  // =====================================================================
-
-  describe('ocr_throughput_analytics', () => {
-    it('should return daily throughput data', async () => {
-      const result = await handleThroughputAnalytics({});
-      const parsed = JSON.parse(result.content[0].text);
-
-      expect(parsed.success).toBe(true);
-      expect(parsed.data.bucket).toBe('daily');
-      expect(parsed.data.data.length).toBeGreaterThanOrEqual(2);
-
-      // Summary should have totals
-      expect(parsed.data.summary.total_pages_processed).toBeGreaterThan(0);
-      expect(parsed.data.summary.total_embeddings_generated).toBeGreaterThan(0);
-    });
-
-    it('should show correct throughput breakdown per bucket', async () => {
-      const result = await handleThroughputAnalytics({ bucket: 'monthly' });
-      const parsed = JSON.parse(result.content[0].text);
-
-      expect(parsed.success).toBe(true);
-
-      // Check Jan has OCR_RESULTs (pages_processed)
-      const jan = parsed.data.data.find((d: { period: string }) => d.period === '2026-01');
-      expect(jan).toBeDefined();
-      // 2 OCR_RESULT provenance records in Jan
-      expect(jan.pages_processed).toBe(2);
-      // 2 EMBEDDING provenance records in Jan
-      expect(jan.embeddings_generated).toBe(2);
-      // No IMAGE provenance in Jan
-      expect(jan.images_processed).toBe(0);
-
-      // Feb should have IMAGE provenance
-      const feb = parsed.data.data.find((d: { period: string }) => d.period === '2026-02');
-      expect(feb).toBeDefined();
-      expect(feb.images_processed).toBe(1);
-      expect(feb.embeddings_generated).toBe(2);
-    });
-
-    it('should compute avg_ms_per_page correctly', async () => {
-      const result = await handleThroughputAnalytics({ bucket: 'monthly' });
-      const parsed = JSON.parse(result.content[0].text);
-
-      const jan = parsed.data.data.find((d: { period: string }) => d.period === '2026-01');
-      // Jan: 2 OCR_RESULT provenance with 3000ms + 2000ms = 5000ms total, 2 pages_processed
-      expect(jan.avg_ms_per_page).toBe(2500);
-    });
-
-    it('should compute summary totals', async () => {
-      const result = await handleThroughputAnalytics({});
-      const parsed = JSON.parse(result.content[0].text);
-
-      const summary = parsed.data.summary;
-      // 3 OCR_RESULT provenance records total
-      expect(summary.total_pages_processed).toBe(3);
-      // 4 EMBEDDING provenance records total
-      expect(summary.total_embeddings_generated).toBe(4);
-      // 1 IMAGE provenance record total
-      expect(summary.total_images_processed).toBe(1);
-      expect(summary.total_ocr_duration_ms).toBe(10000); // 3000 + 2000 + 5000
-      expect(summary.total_embedding_duration_ms).toBe(185); // 45 + 40 + 50 + 50
-    });
-
-    it('should filter by date range', async () => {
-      const result = await handleThroughputAnalytics({
-        created_after: '2026-02-01T00:00:00.000Z',
-      });
-      const parsed = JSON.parse(result.content[0].text);
-
-      expect(parsed.success).toBe(true);
-      // Only Feb data
-      expect(parsed.data.summary.total_pages_processed).toBe(1); // 1 OCR_RESULT in Feb
-      expect(parsed.data.summary.total_images_processed).toBe(1);
-    });
-
-    it('should return empty data for no matches', async () => {
-      const result = await handleThroughputAnalytics({
-        created_after: '2030-01-01T00:00:00.000Z',
-      });
-      const parsed = JSON.parse(result.content[0].text);
-
-      expect(parsed.success).toBe(true);
-      expect(parsed.data.data).toHaveLength(0);
-      expect(parsed.data.summary.total_pages_processed).toBe(0);
-    });
-
-    it('should fail with database not selected', async () => {
-      resetState();
-      const result = await handleThroughputAnalytics({});
-      const parsed = JSON.parse(result.content[0].text);
-
-      expect(parsed.success).toBe(false);
-      expect(parsed.error.category).toBe('DATABASE_NOT_SELECTED');
-
       selectDatabase(dbName, tempDir);
     });
   });

@@ -18,12 +18,18 @@ import { tmpdir } from 'os';
 import { v4 as uuidv4 } from 'uuid';
 
 import {
-  handleSearchSemantic,
-  handleSearch,
-  handleSearchHybrid,
+  handleSearchUnified,
   handleFTSManage,
   searchTools,
 } from '../../../src/tools/search.js';
+
+// Wrappers that route through the unified handler with mode parameter
+const handleSearch = (params: Record<string, unknown>) =>
+  handleSearchUnified({ ...params, mode: 'keyword' });
+const handleSearchSemantic = (params: Record<string, unknown>) =>
+  handleSearchUnified({ ...params, mode: 'semantic' });
+const handleSearchHybrid = (params: Record<string, unknown>) =>
+  handleSearchUnified({ ...params, mode: 'hybrid' });
 import { state, resetState, updateConfig, clearDatabase } from '../../../src/server/state.js';
 import { DatabaseService } from '../../../src/services/storage/database/index.js';
 import { VectorService } from '../../../src/services/storage/vector.js';
@@ -269,19 +275,15 @@ function insertTestChunk(
 // ═══════════════════════════════════════════════════════════════════════════════
 
 describe('searchTools exports', () => {
-  it('exports all 12 search tools', () => {
-    expect(Object.keys(searchTools)).toHaveLength(12);
+  it('exports all 8 search tools (unified ocr_search + unified ocr_search_saved)', () => {
+    expect(Object.keys(searchTools)).toHaveLength(8);
     expect(searchTools).toHaveProperty('ocr_search');
-    expect(searchTools).toHaveProperty('ocr_search_semantic');
-    expect(searchTools).toHaveProperty('ocr_search_hybrid');
     expect(searchTools).toHaveProperty('ocr_fts_manage');
     expect(searchTools).toHaveProperty('ocr_search_export');
     expect(searchTools).toHaveProperty('ocr_benchmark_compare');
     expect(searchTools).toHaveProperty('ocr_rag_context');
     expect(searchTools).toHaveProperty('ocr_search_save');
-    expect(searchTools).toHaveProperty('ocr_search_saved_list');
-    expect(searchTools).toHaveProperty('ocr_search_saved_get');
-    expect(searchTools).toHaveProperty('ocr_search_saved_execute');
+    expect(searchTools).toHaveProperty('ocr_search_saved');
     expect(searchTools).toHaveProperty('ocr_search_cross_db');
   });
 

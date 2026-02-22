@@ -216,18 +216,72 @@ export class MCPError extends Error {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
+// RECOVERY HINTS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/**
+ * Recovery hint for AI agents to self-correct after errors.
+ * Every ErrorCategory maps to a suggested tool and human-readable hint.
+ */
+export interface RecoveryHint {
+  tool: string;
+  hint: string;
+}
+
+/**
+ * Recovery hints for every error category.
+ * Agents use these to determine the next action after a failure.
+ */
+const RECOVERY_HINTS: Record<ErrorCategory, RecoveryHint> = {
+  VALIDATION_ERROR: { tool: 'ocr_guide', hint: 'Check parameter types and required fields' },
+  DATABASE_NOT_FOUND: { tool: 'ocr_db_list', hint: 'Use ocr_db_list to see available databases' },
+  DATABASE_NOT_SELECTED: { tool: 'ocr_db_select', hint: 'Use ocr_db_list to find database names, then ocr_db_select' },
+  DATABASE_ALREADY_EXISTS: { tool: 'ocr_db_list', hint: 'Choose a unique database name' },
+  DOCUMENT_NOT_FOUND: { tool: 'ocr_document_list', hint: 'Use ocr_document_list to browse available documents' },
+  PROVENANCE_NOT_FOUND: { tool: 'ocr_provenance_get', hint: 'Verify the item_id exists using ocr_document_get first' },
+  PROVENANCE_CHAIN_BROKEN: { tool: 'ocr_provenance_verify', hint: 'Re-ingest the document to rebuild provenance chain' },
+  INTEGRITY_VERIFICATION_FAILED: { tool: 'ocr_provenance_verify', hint: 'Compare content_hash against stored hash; re-ingest if tampered' },
+  OCR_API_ERROR: { tool: 'ocr_health_check', hint: 'Check DATALAB_API_KEY env var and Datalab API status' },
+  OCR_RATE_LIMIT: { tool: 'ocr_process_pending', hint: 'Wait and retry with lower max_concurrent' },
+  OCR_TIMEOUT: { tool: 'ocr_process_pending', hint: 'Retry with smaller documents or fewer pages' },
+  GPU_NOT_AVAILABLE: { tool: 'ocr_health_check', hint: 'Check CUDA/MPS availability; system will fall back to CPU' },
+  GPU_OUT_OF_MEMORY: { tool: 'ocr_config_set', hint: 'Reduce embedding_batch_size via ocr_config_set' },
+  EMBEDDING_FAILED: { tool: 'ocr_health_check', hint: 'Check Python embedding worker and GPU memory' },
+  EMBEDDING_MODEL_ERROR: { tool: 'ocr_health_check', hint: 'Verify nomic-embed-text model is downloaded' },
+  VLM_API_ERROR: { tool: 'ocr_vlm_status', hint: 'Check GEMINI_API_KEY and circuit breaker state' },
+  VLM_RATE_LIMIT: { tool: 'ocr_vlm_status', hint: 'Wait for rate limit reset; check rate_limiter.reset_in_ms' },
+  IMAGE_EXTRACTION_FAILED: { tool: 'ocr_health_check', hint: 'Check PyMuPDF/Pillow installation' },
+  FORM_FILL_API_ERROR: { tool: 'ocr_health_check', hint: 'Check DATALAB_API_KEY and form fill endpoint' },
+  CLUSTERING_ERROR: { tool: 'ocr_health_check', hint: 'Check Python clustering worker (scikit-learn)' },
+  PATH_NOT_FOUND: { tool: 'ocr_guide', hint: 'Verify the file path exists on the filesystem' },
+  PATH_NOT_DIRECTORY: { tool: 'ocr_guide', hint: 'Provide a directory path, not a file path' },
+  PERMISSION_DENIED: { tool: 'ocr_guide', hint: 'Check filesystem permissions on the target path' },
+  INTERNAL_ERROR: { tool: 'ocr_health_check', hint: 'Run ocr_health_check for diagnostics' },
+};
+
+/**
+ * Get recovery hint for an error category.
+ * Exported for testing and direct use.
+ */
+export function getRecoveryHint(category: ErrorCategory): RecoveryHint {
+  return RECOVERY_HINTS[category];
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
 // ERROR RESPONSE FORMATTING
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /**
  * Format MCPError for tool response
- * ALWAYS includes category, message, and details
+ * ALWAYS includes category, message, recovery hint, and optional details.
+ * The recovery field tells AI agents which tool to call next and how to fix the issue.
  */
 export function formatErrorResponse(error: MCPError): {
   success: false;
   error: {
     category: ErrorCategory;
     message: string;
+    recovery: RecoveryHint;
     details?: Record<string, unknown>;
   };
 } {
@@ -236,6 +290,7 @@ export function formatErrorResponse(error: MCPError): {
     error: {
       category: error.category,
       message: error.message,
+      recovery: RECOVERY_HINTS[error.category],
       details: error.details,
     },
   };

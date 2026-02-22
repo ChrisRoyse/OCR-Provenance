@@ -60,8 +60,6 @@ const ExtractImagesBatchInput = z.object({
     .describe('Automatically run VLM processing on extracted images'),
 });
 
-const ExtractionCheckInput = z.object({});
-
 // ═══════════════════════════════════════════════════════════════════════════════
 // EXTRACTION TOOL HANDLERS
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -248,6 +246,9 @@ export async function handleExtractImages(params: Record<string, unknown>): Prom
         })),
         ...(vlmResult ? { vlm_processing: vlmResult } : {}),
         ...(provenanceChains ? { provenance_chains: provenanceChains } : {}),
+        next_steps: [
+          { tool: 'ocr_vlm_process_pending', description: 'Generate AI descriptions for the extracted images' },
+        ],
       })
     );
   } catch (error) {
@@ -470,34 +471,6 @@ export async function handleExtractImagesBatch(
   }
 }
 
-/**
- * Handle ocr_extraction_check - Check Python environment for image extraction
- */
-export async function handleExtractionCheck(
-  params: Record<string, unknown>
-): Promise<ToolResponse> {
-  try {
-    validateInput(ExtractionCheckInput, params);
-
-    const extractor = new ImageExtractor();
-    const envCheck = await extractor.checkEnvironment();
-
-    return formatResponse(
-      successResult({
-        available: envCheck.available,
-        python_version: envCheck.pythonVersion,
-        missing_dependencies: envCheck.missingDependencies,
-        recommendations:
-          envCheck.missingDependencies.length > 0
-            ? envCheck.missingDependencies.map((dep) => `pip install ${dep}`)
-            : [],
-      })
-    );
-  } catch (error) {
-    return handleError(error);
-  }
-}
-
 // ═══════════════════════════════════════════════════════════════════════════════
 // TOOL DEFINITIONS FOR MCP REGISTRATION
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -572,9 +545,4 @@ export const extractionTools: Record<string, ToolDefinition> = {
     handler: handleExtractImagesBatch,
   },
 
-  ocr_extraction_check: {
-    description: '[ADMIN] Use to check if Python dependencies for image extraction are installed (PyMuPDF, Pillow). Run before ocr_extract_images if extraction fails.',
-    inputSchema: {},
-    handler: handleExtractionCheck,
-  },
 };

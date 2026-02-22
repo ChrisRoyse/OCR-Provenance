@@ -11,6 +11,7 @@ import { describe, it, expect } from 'vitest';
 import {
   MCPError,
   formatErrorResponse,
+  getRecoveryHint,
   validationError,
   databaseNotSelectedError,
   databaseNotFoundError,
@@ -20,6 +21,7 @@ import {
   pathNotFoundError,
   pathNotDirectoryError,
   type ErrorCategory,
+  type RecoveryHint,
 } from '../../../src/server/errors.js';
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -234,17 +236,21 @@ describe('MCPError', () => {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 describe('formatErrorResponse', () => {
-  it('should format basic error', () => {
+  it('should format basic error with recovery hint', () => {
     const error = new MCPError('VALIDATION_ERROR', 'Invalid');
     const response = formatErrorResponse(error);
 
     expect(response.success).toBe(false);
     expect(response.error.category).toBe('VALIDATION_ERROR');
     expect(response.error.message).toBe('Invalid');
+    expect(response.error.recovery).toEqual({
+      tool: 'ocr_guide',
+      hint: 'Check parameter types and required fields',
+    });
     expect(response.error.details).toBeUndefined();
   });
 
-  it('should format error with details', () => {
+  it('should format error with details and recovery', () => {
     const error = new MCPError('DATABASE_NOT_FOUND', 'Not found', {
       databaseName: 'mydb',
     });
@@ -252,17 +258,23 @@ describe('formatErrorResponse', () => {
 
     expect(response.success).toBe(false);
     expect(response.error.details).toEqual({ databaseName: 'mydb' });
+    expect(response.error.recovery).toEqual({
+      tool: 'ocr_db_list',
+      hint: 'Use ocr_db_list to see available databases',
+    });
   });
 
-  it('should always return success: false', () => {
+  it('should always return success: false with recovery', () => {
     const error = new MCPError('INTERNAL_ERROR', 'Test');
     const response = formatErrorResponse(error);
 
     expect(response.success).toBe(false);
     expect(response).toHaveProperty('error');
+    expect(response.error.recovery).toBeDefined();
+    expect(response.error.recovery.tool).toBe('ocr_health_check');
   });
 
-  it('should preserve complex details', () => {
+  it('should preserve complex details alongside recovery', () => {
     const details = {
       path: '/some/path',
       expected: ['a', 'b'],
@@ -272,6 +284,79 @@ describe('formatErrorResponse', () => {
     const response = formatErrorResponse(error);
 
     expect(response.error.details).toEqual(details);
+    expect(response.error.recovery).toBeDefined();
+  });
+
+  it('should include recovery for every error category', () => {
+    const allCategories: ErrorCategory[] = [
+      'VALIDATION_ERROR', 'DATABASE_NOT_FOUND', 'DATABASE_NOT_SELECTED',
+      'DATABASE_ALREADY_EXISTS', 'DOCUMENT_NOT_FOUND', 'PROVENANCE_NOT_FOUND',
+      'PROVENANCE_CHAIN_BROKEN', 'INTEGRITY_VERIFICATION_FAILED',
+      'OCR_API_ERROR', 'OCR_RATE_LIMIT', 'OCR_TIMEOUT',
+      'GPU_NOT_AVAILABLE', 'GPU_OUT_OF_MEMORY', 'EMBEDDING_FAILED', 'EMBEDDING_MODEL_ERROR',
+      'VLM_API_ERROR', 'VLM_RATE_LIMIT',
+      'IMAGE_EXTRACTION_FAILED', 'FORM_FILL_API_ERROR', 'CLUSTERING_ERROR',
+      'PATH_NOT_FOUND', 'PATH_NOT_DIRECTORY', 'PERMISSION_DENIED',
+      'INTERNAL_ERROR',
+    ];
+
+    for (const category of allCategories) {
+      const error = new MCPError(category, `Test ${category}`);
+      const response = formatErrorResponse(error);
+
+      expect(response.error.recovery).toBeDefined();
+      expect(response.error.recovery.tool).toBeTruthy();
+      expect(response.error.recovery.hint).toBeTruthy();
+    }
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// RECOVERY HINTS TESTS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+describe('getRecoveryHint', () => {
+  it('should return correct hint for each category', () => {
+    const expectedHints: Record<string, RecoveryHint> = {
+      VALIDATION_ERROR: { tool: 'ocr_guide', hint: 'Check parameter types and required fields' },
+      DATABASE_NOT_FOUND: { tool: 'ocr_db_list', hint: 'Use ocr_db_list to see available databases' },
+      DATABASE_NOT_SELECTED: { tool: 'ocr_db_select', hint: 'Use ocr_db_list to find database names, then ocr_db_select' },
+      DATABASE_ALREADY_EXISTS: { tool: 'ocr_db_list', hint: 'Choose a unique database name' },
+      DOCUMENT_NOT_FOUND: { tool: 'ocr_document_list', hint: 'Use ocr_document_list to browse available documents' },
+      PROVENANCE_NOT_FOUND: { tool: 'ocr_provenance_get', hint: 'Verify the item_id exists using ocr_document_get first' },
+      PROVENANCE_CHAIN_BROKEN: { tool: 'ocr_provenance_verify', hint: 'Re-ingest the document to rebuild provenance chain' },
+      INTEGRITY_VERIFICATION_FAILED: { tool: 'ocr_provenance_verify', hint: 'Compare content_hash against stored hash; re-ingest if tampered' },
+      OCR_API_ERROR: { tool: 'ocr_health_check', hint: 'Check DATALAB_API_KEY env var and Datalab API status' },
+      OCR_RATE_LIMIT: { tool: 'ocr_process_pending', hint: 'Wait and retry with lower max_concurrent' },
+      OCR_TIMEOUT: { tool: 'ocr_process_pending', hint: 'Retry with smaller documents or fewer pages' },
+      GPU_NOT_AVAILABLE: { tool: 'ocr_health_check', hint: 'Check CUDA/MPS availability; system will fall back to CPU' },
+      GPU_OUT_OF_MEMORY: { tool: 'ocr_config_set', hint: 'Reduce embedding_batch_size via ocr_config_set' },
+      EMBEDDING_FAILED: { tool: 'ocr_health_check', hint: 'Check Python embedding worker and GPU memory' },
+      EMBEDDING_MODEL_ERROR: { tool: 'ocr_health_check', hint: 'Verify nomic-embed-text model is downloaded' },
+      VLM_API_ERROR: { tool: 'ocr_vlm_status', hint: 'Check GEMINI_API_KEY and circuit breaker state' },
+      VLM_RATE_LIMIT: { tool: 'ocr_vlm_status', hint: 'Wait for rate limit reset; check rate_limiter.reset_in_ms' },
+      IMAGE_EXTRACTION_FAILED: { tool: 'ocr_health_check', hint: 'Check PyMuPDF/Pillow installation' },
+      FORM_FILL_API_ERROR: { tool: 'ocr_health_check', hint: 'Check DATALAB_API_KEY and form fill endpoint' },
+      CLUSTERING_ERROR: { tool: 'ocr_health_check', hint: 'Check Python clustering worker (scikit-learn)' },
+      PATH_NOT_FOUND: { tool: 'ocr_guide', hint: 'Verify the file path exists on the filesystem' },
+      PATH_NOT_DIRECTORY: { tool: 'ocr_guide', hint: 'Provide a directory path, not a file path' },
+      PERMISSION_DENIED: { tool: 'ocr_guide', hint: 'Check filesystem permissions on the target path' },
+      INTERNAL_ERROR: { tool: 'ocr_health_check', hint: 'Run ocr_health_check for diagnostics' },
+    };
+
+    for (const [category, expected] of Object.entries(expectedHints)) {
+      const hint = getRecoveryHint(category as ErrorCategory);
+      expect(hint).toEqual(expected);
+    }
+  });
+
+  it('should return hint with tool and hint fields', () => {
+    const hint = getRecoveryHint('DATABASE_NOT_SELECTED');
+
+    expect(hint).toHaveProperty('tool');
+    expect(hint).toHaveProperty('hint');
+    expect(typeof hint.tool).toBe('string');
+    expect(typeof hint.hint).toBe('string');
   });
 });
 

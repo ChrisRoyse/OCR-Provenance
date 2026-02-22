@@ -977,15 +977,16 @@ describe.skipIf(!sqliteVecAvailable)('Clustering Manual Verification', () => {
       expect(clusters![0]).toHaveProperty('coherence_score');
     }, 60000);
 
-    it('ocr_quality_summary includes clustering metrics', async () => {
-      const handler = reportTools['ocr_quality_summary'].handler;
-      const response = await handler({});
+    it('ocr_report_overview includes clustering metrics', async () => {
+      const handler = reportTools['ocr_report_overview'].handler;
+      const response = await handler({ section: 'quality' });
       const parsed = parseResponse(response);
       expect(parsed.success).toBe(true);
       const data = parsed.data as Record<string, unknown>;
+      const quality = data.quality as Record<string, unknown>;
       console.error('=== QUALITY SUMMARY INTEGRATION ===');
-      console.error(`  clustering: ${JSON.stringify(data.clustering)}`);
-      const clustering = data.clustering as Record<string, unknown>;
+      console.error(`  clustering: ${JSON.stringify(quality.clustering)}`);
+      const clustering = quality.clustering as Record<string, unknown>;
       expect(clustering).toBeDefined();
       expect(clustering.total_clusters).toBeGreaterThanOrEqual(2);
       expect(clustering.total_runs).toBe(1);

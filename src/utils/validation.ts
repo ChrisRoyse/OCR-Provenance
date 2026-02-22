@@ -290,34 +290,17 @@ export const PageRangeFilter = z
   .optional();
 
 /**
- * Schema for semantic search
+ * Search filters sub-object schema.
+ * Groups all filter parameters into a single `filters` object to reduce
+ * the top-level parameter count and improve schema clarity.
  */
-export const SearchSemanticInput = z.object({
-  query: z.string().min(1, 'Query is required').max(1000, 'Query must be 1000 characters or less'),
-  limit: z.number().int().min(1).max(100).default(10),
-  similarity_threshold: z.number().min(0).max(1).default(0.7),
-  include_provenance: z.boolean().default(false),
-  document_filter: z.array(z.string()).optional(),
-  metadata_filter: MetadataFilter,
-  min_quality_score: z
-    .number()
-    .min(0)
-    .max(5)
-    .optional()
-    .describe('Minimum OCR quality score (0-5). Filters documents with low-quality OCR results.'),
-  expand_query: z
-    .boolean()
-    .default(false)
-    .describe('Expand query with domain-specific legal/medical synonyms'),
-  rerank: z
-    .boolean()
-    .default(false)
-    .describe('Re-rank results using local cross-encoder model for contextual relevance scoring'),
-  cluster_id: z.string().optional().describe('Filter results to documents in this cluster'),
-  include_cluster_context: z
-    .boolean()
-    .default(true)
-    .describe('Include cluster membership info for each result (default: true)'),
+export const SearchFilters = z.object({
+  document_filter: z.array(z.string()).optional()
+    .describe('Restrict results to specific document IDs'),
+  metadata_filter: MetadataFilter
+    .describe('Filter by document metadata (doc_title, doc_author, doc_subject)'),
+  cluster_id: z.string().optional()
+    .describe('Filter results to documents in this cluster'),
   content_type_filter: z
     .array(z.string())
     .optional()
@@ -331,14 +314,6 @@ export const SearchSemanticInput = z.object({
     .optional()
     .describe('Filter by heading context text (LIKE match)'),
   page_range_filter: PageRangeFilter.describe('Filter results to specific page range'),
-  quality_boost: z
-    .boolean()
-    .default(false)
-    .describe('Boost results from higher-quality OCR pages in ranking'),
-  exclude_duplicate_chunks: z
-    .boolean()
-    .default(false)
-    .describe('Remove duplicate chunks (same text_hash) from results, keeping only the first occurrence'),
   is_atomic_filter: z.boolean().optional()
     .describe('When true, return only atomic chunks (complete tables, figures, code blocks). When false, exclude atomic chunks.'),
   heading_level_filter: z.object({
@@ -349,167 +324,62 @@ export const SearchSemanticInput = z.object({
     .describe('Only include results from documents with at least this many pages'),
   max_page_count: z.number().int().min(1).optional()
     .describe('Only include results from documents with at most this many pages'),
-  include_context_chunks: z.number().int().min(0).max(3).default(0)
-    .describe('Number of neighboring chunks to include before and after each result (0=none, max 3). Adds context_before and context_after arrays.'),
   table_columns_contain: z.string().optional()
     .describe('Filter to table chunks whose column headers contain this text (case-insensitive match on stored table_columns in processing_params)'),
-  include_headers_footers: z.boolean().default(false)
-    .describe('Include repeated page headers/footers in search results (excluded by default)'),
-  group_by_document: z.boolean().default(false)
-    .describe('Group results by source document with document-level statistics'),
-  include_document_context: z.boolean().default(false)
-    .describe('Include cluster membership and related document info for each source document'),
-});
+  min_quality_score: z
+    .number()
+    .min(0)
+    .max(5)
+    .optional()
+    .describe('Minimum OCR quality score (0-5). Filters documents with low-quality OCR results.'),
+}).optional().default({});
 
 /**
- * Schema for keyword search (BM25 full-text)
+ * Unified search schema - single schema for keyword, semantic, and hybrid search.
+ * Mode parameter selects the search strategy. Defaults that are always-on are
+ * hardcoded in the handler (quality_boost, expand_query, exclude_duplicate_chunks,
+ * exclude headers/footers, include cluster context).
+ *
+ * Filter parameters are grouped under `filters` to reduce top-level parameter count.
  */
-export const SearchInput = z.object({
+export const SearchUnifiedInput = z.object({
+  // ── Core parameters ─────────────────────────────────────────────────────
   query: z.string().min(1, 'Query is required').max(1000, 'Query must be 1000 characters or less'),
+  mode: z.enum(['keyword', 'semantic', 'hybrid']).default('hybrid')
+    .describe('Search mode: keyword (BM25), semantic (vector), or hybrid (BM25+semantic fusion). Default: hybrid.'),
   limit: z.number().int().min(1).max(100).default(10),
-  phrase_search: z.boolean().default(false),
-  include_highlight: z.boolean().default(true),
   include_provenance: z.boolean().default(false),
-  document_filter: z.array(z.string()).optional(),
-  metadata_filter: MetadataFilter,
-  min_quality_score: z
-    .number()
-    .min(0)
-    .max(5)
-    .optional()
-    .describe('Minimum OCR quality score (0-5). Filters documents with low-quality OCR results.'),
-  expand_query: z
-    .boolean()
-    .default(false)
-    .describe('Expand query with domain-specific legal/medical synonyms'),
   rerank: z
     .boolean()
     .default(false)
     .describe('Re-rank results using local cross-encoder model for contextual relevance scoring'),
-  cluster_id: z.string().optional().describe('Filter results to documents in this cluster'),
-  include_cluster_context: z
-    .boolean()
-    .default(true)
-    .describe('Include cluster membership info for each result (default: true)'),
-  content_type_filter: z
-    .array(z.string())
-    .optional()
-    .describe('Filter by chunk content types (e.g., ["table", "code", "heading"])'),
-  section_path_filter: z
-    .string()
-    .optional()
-    .describe('Filter by section path prefix (e.g., "Section 3" matches "Section 3 > 3.1 > Definitions")'),
-  heading_filter: z
-    .string()
-    .optional()
-    .describe('Filter by heading context text (LIKE match)'),
-  page_range_filter: PageRangeFilter.describe('Filter results to specific page range'),
-  quality_boost: z
-    .boolean()
-    .default(false)
-    .describe('Boost results from higher-quality OCR pages in ranking'),
-  exclude_duplicate_chunks: z
-    .boolean()
-    .default(false)
-    .describe('Remove duplicate chunks (same text_hash) from results, keeping only the first occurrence'),
-  is_atomic_filter: z.boolean().optional()
-    .describe('When true, return only atomic chunks (complete tables, figures, code blocks). When false, exclude atomic chunks.'),
-  heading_level_filter: z.object({
-    min_level: z.number().int().min(1).max(6).optional(),
-    max_level: z.number().int().min(1).max(6).optional(),
-  }).optional().describe('Filter by heading level (1=h1 top-level, 6=h6 deepest)'),
-  min_page_count: z.number().int().min(1).optional()
-    .describe('Only include results from documents with at least this many pages'),
-  max_page_count: z.number().int().min(1).optional()
-    .describe('Only include results from documents with at most this many pages'),
   include_context_chunks: z.number().int().min(0).max(3).default(0)
     .describe('Number of neighboring chunks to include before and after each result (0=none, max 3). Adds context_before and context_after arrays.'),
-  table_columns_contain: z.string().optional()
-    .describe('Filter to table chunks whose column headers contain this text (case-insensitive match on stored table_columns in processing_params)'),
-  include_headers_footers: z.boolean().default(false)
-    .describe('Include repeated page headers/footers in search results (excluded by default)'),
   group_by_document: z.boolean().default(false)
     .describe('Group results by source document with document-level statistics'),
-  include_document_context: z.boolean().default(false)
-    .describe('Include cluster membership and related document info for each source document'),
-});
 
-/**
- * Schema for hybrid search (RRF fusion of BM25 + semantic)
- */
-export const SearchHybridInput = z.object({
-  query: z.string().min(1, 'Query is required').max(1000, 'Query must be 1000 characters or less'),
-  limit: z.number().int().min(1).max(100).default(10),
-  bm25_weight: z.number().min(0).max(2).default(1.0),
-  semantic_weight: z.number().min(0).max(2).default(1.0),
-  rrf_k: z.number().int().min(1).max(100).default(60),
-  include_provenance: z.boolean().default(false),
-  document_filter: z.array(z.string()).optional(),
-  metadata_filter: MetadataFilter,
-  min_quality_score: z
-    .number()
-    .min(0)
-    .max(5)
-    .optional()
-    .describe('Minimum OCR quality score (0-5). Filters documents with low-quality OCR results.'),
-  expand_query: z
-    .boolean()
-    .default(true)
-    .describe('Expand query with domain-specific legal/medical synonyms (default: true for hybrid search)'),
-  rerank: z
-    .boolean()
-    .default(false)
-    .describe('Re-rank results using local cross-encoder model for contextual relevance scoring'),
-  cluster_id: z.string().optional().describe('Filter results to documents in this cluster'),
-  include_cluster_context: z
-    .boolean()
-    .default(true)
-    .describe('Include cluster membership info for each result (default: true)'),
-  content_type_filter: z
-    .array(z.string())
-    .optional()
-    .describe('Filter by chunk content types (e.g., ["table", "code", "heading"])'),
-  section_path_filter: z
-    .string()
-    .optional()
-    .describe('Filter by section path prefix (e.g., "Section 3" matches "Section 3 > 3.1 > Definitions")'),
-  heading_filter: z
-    .string()
-    .optional()
-    .describe('Filter by heading context text (LIKE match)'),
-  page_range_filter: PageRangeFilter.describe('Filter results to specific page range'),
-  quality_boost: z
-    .boolean()
-    .default(false)
-    .describe('Boost results from higher-quality OCR pages in ranking'),
-  auto_route: z
-    .boolean()
-    .default(false)
-    .describe('Auto-adjust BM25/semantic weights based on query classification'),
-  exclude_duplicate_chunks: z
-    .boolean()
-    .default(false)
-    .describe('Remove duplicate chunks (same text_hash) from results, keeping only the first occurrence'),
-  is_atomic_filter: z.boolean().optional()
-    .describe('When true, return only atomic chunks (complete tables, figures, code blocks). When false, exclude atomic chunks.'),
-  heading_level_filter: z.object({
-    min_level: z.number().int().min(1).max(6).optional(),
-    max_level: z.number().int().min(1).max(6).optional(),
-  }).optional().describe('Filter by heading level (1=h1 top-level, 6=h6 deepest)'),
-  min_page_count: z.number().int().min(1).optional()
-    .describe('Only include results from documents with at least this many pages'),
-  max_page_count: z.number().int().min(1).optional()
-    .describe('Only include results from documents with at most this many pages'),
-  include_context_chunks: z.number().int().min(0).max(3).default(0)
-    .describe('Number of neighboring chunks to include before and after each result (0=none, max 3). Adds context_before and context_after arrays.'),
-  table_columns_contain: z.string().optional()
-    .describe('Filter to table chunks whose column headers contain this text (case-insensitive match on stored table_columns in processing_params)'),
-  include_headers_footers: z.boolean().default(false)
-    .describe('Include repeated page headers/footers in search results (excluded by default)'),
-  group_by_document: z.boolean().default(false)
-    .describe('Group results by source document with document-level statistics'),
-  include_document_context: z.boolean().default(false)
-    .describe('Include cluster membership and related document info for each source document'),
+  // ── Filters (grouped) ──────────────────────────────────────────────────
+  filters: SearchFilters,
+
+  // ── Keyword-mode specific ───────────────────────────────────────────────
+  phrase_search: z.boolean().default(false)
+    .describe('(keyword mode) Treat query as exact phrase'),
+  include_highlight: z.boolean().default(true)
+    .describe('(keyword mode) Include highlighted snippets'),
+
+  // ── Semantic-mode specific ──────────────────────────────────────────────
+  similarity_threshold: z.number().min(0).max(1).default(0.7)
+    .describe('(semantic mode) Minimum similarity score (0-1)'),
+
+  // ── Hybrid-mode specific ────────────────────────────────────────────────
+  bm25_weight: z.number().min(0).max(2).default(1.0)
+    .describe('(hybrid mode) BM25 result weight'),
+  semantic_weight: z.number().min(0).max(2).default(1.0)
+    .describe('(hybrid mode) Semantic result weight'),
+  rrf_k: z.number().int().min(1).max(100).default(60)
+    .describe('(hybrid mode) RRF smoothing constant'),
+  auto_route: z.boolean().default(false)
+    .describe('(hybrid mode) Auto-adjust BM25/semantic weights based on query classification'),
 });
 
 /**
