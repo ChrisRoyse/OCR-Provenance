@@ -3083,7 +3083,7 @@ function migrateV25ToV26(db: Database.Database): void {
 
     console.error('[Migration] v25 -> v26: Removed entity extraction and knowledge graph tables');
   } catch (error) {
-    try { db.exec('ROLLBACK'); } catch { /* rollback best-effort */ }
+    try { db.exec('ROLLBACK'); } catch (rollbackError) { console.error(`[migrations] CRITICAL: Failed to rollback v25->v26 migration: ${rollbackError instanceof Error ? rollbackError.message : String(rollbackError)}`); }
     db.exec('PRAGMA foreign_keys = ON');
     const cause = error instanceof Error ? error.message : String(error);
     throw new MigrationError(

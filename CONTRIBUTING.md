@@ -84,7 +84,7 @@ src/
     provenance/         # Provenance chain tracking
     storage/            # SQLite database + vector storage
     vlm/                # Vision-language model pipeline
-  tools/                # MCP tool handlers (104 tools)
+  tools/                # MCP tool handlers (102 tools)
   utils/                # Shared utilities
 python/                 # Python workers
 tests/

@@ -149,7 +149,7 @@ CREATE TABLE IF NOT EXISTS chunks (
   id TEXT PRIMARY KEY,
   document_id TEXT NOT NULL,
   ocr_result_id TEXT NOT NULL,
-  text TEXT NOT NULL,
+  text TEXT NOT NULL CHECK(length(trim(text)) > 0),
   text_hash TEXT NOT NULL,
   chunk_index INTEGER NOT NULL,
   character_start INTEGER NOT NULL,

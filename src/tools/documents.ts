@@ -136,7 +136,7 @@ export async function handleDocumentList(params: Record<string, unknown>): Promi
                 heading_count: headingDepths ? Object.values(headingDepths).reduce((a: number, b: number) => a + b, 0) : 0,
                 content_types: fp.content_type_distribution ?? null,
               };
-            } catch { return null; }
+            } catch (error) { console.error(`[documents] Failed to parse structural fingerprint for document ${d.id}: ${error instanceof Error ? error.message : String(error)}`); return null; }
           })(),
         })),
         total,
@@ -540,8 +540,8 @@ export async function handleFindSimilar(params: Record<string, unknown>): Promis
             structuralFingerprint = extras.structural_fingerprint;
           }
         }
-      } catch {
-        // Non-fatal: skip fingerprint enrichment
+      } catch (error) {
+        console.error(`[documents] Failed to enrich structural fingerprint for document ${r.document_id}: ${error instanceof Error ? error.message : String(error)}`);
       }
 
       return {

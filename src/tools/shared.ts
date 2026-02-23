@@ -80,8 +80,8 @@ export function parseGeminiJson<T = Record<string, unknown>>(text: string, label
   // Step 2: Try parsing the full cleaned text
   try {
     return JSON.parse(clean) as T;
-  } catch {
-    // Not valid JSON as-is, continue to extraction
+  } catch (error) {
+    console.error(`[shared] Failed to parse full cleaned text as JSON for ${label}: ${error instanceof Error ? error.message : String(error)}`);
   }
 
   // Step 3: Extract JSON object from mixed text (reasoning preamble + JSON)
@@ -92,8 +92,8 @@ export function parseGeminiJson<T = Record<string, unknown>>(text: string, label
     const jsonCandidate = clean.slice(firstBrace, lastBrace + 1);
     try {
       return JSON.parse(jsonCandidate) as T;
-    } catch {
-      // Extracted substring is not valid JSON either, fall through to error
+    } catch (error) {
+      console.error(`[shared] Failed to parse extracted JSON substring for ${label}: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
 

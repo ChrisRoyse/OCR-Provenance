@@ -282,7 +282,8 @@ function getBlockTypeStats(
     const blockTypeStats = extras.block_type_stats as Record<string, number> | undefined;
     if (!blockTypeStats || typeof blockTypeStats !== 'object') return null;
     return blockTypeStats;
-  } catch {
+  } catch (error) {
+    console.error(`[comparison] Failed to parse extras_json for block_type_stats of document ${docId}: ${error instanceof Error ? error.message : String(error)}`);
     return null;
   }
 }

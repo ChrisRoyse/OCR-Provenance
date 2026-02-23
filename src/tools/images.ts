@@ -490,8 +490,8 @@ export async function handleImageSearch(params: Record<string, unknown>): Promis
         if (r.vlm_structured_data) {
           try {
             structured = JSON.parse(r.vlm_structured_data as string);
-          } catch {
-            console.error(`[T1.1] Failed to parse vlm_structured_data for image ${r.id}: malformed JSON`);
+          } catch (error) {
+            console.error(`[images] Failed to parse vlm_structured_data for image ${r.id}: ${error instanceof Error ? error.message : String(error)}`);
           }
         }
 

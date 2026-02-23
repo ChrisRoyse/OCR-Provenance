@@ -102,7 +102,7 @@ export async function handleVLMDescribe(params: Record<string, unknown>): Promis
               const part = summary ?? `Table with columns: ${cols.join(', ')}`;
               tableContextParts.push(part);
             }
-          } catch { /* skip malformed */ }
+          } catch (error) { console.error(`[vlm] Failed to parse table processing_params for row: ${error instanceof Error ? error.message : String(error)}`); }
         }
 
         if (tableContextParts.length > 0) {
@@ -112,8 +112,8 @@ export async function handleVLMDescribe(params: Record<string, unknown>): Promis
             : tableContext;
         }
       }
-    } catch {
-      // No database selected or query failed — proceed without enrichment
+    } catch (error) {
+      console.error(`[vlm] Failed to enrich VLM context from database for image ${imagePath}: ${error instanceof Error ? error.message : String(error)}`);
     }
 
     let result;

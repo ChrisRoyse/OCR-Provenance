@@ -382,6 +382,15 @@ export function chunkHybridSectionAware(
    * For table blocks, prepends column header context if available (Task 7.2).
    */
   function emitAtomicChunk(block: MarkdownBlock): void {
+    // Guard: reject empty blocks (same as flushAccumulator's accumulatorHasContent)
+    if (block.text.trim().length === 0) {
+      console.error(
+        `[chunker] Skipping empty atomic block at offset ${block.startOffset}-${block.endOffset} ` +
+        `(type=${block.type}, raw length=${block.text.length})`
+      );
+      return;
+    }
+
     const startOff = block.startOffset;
     const endOff = block.endOffset;
     const pageInfo = determinePageInfoForSpan(startOff, endOff, pageOffsets);
@@ -398,6 +407,15 @@ export function chunkHybridSectionAware(
           chunkText = prefix + chunkText;
         }
       }
+    }
+
+    // Post-processing guard: HTML stripping or prefix may leave empty text
+    if (chunkText.trim().length === 0) {
+      console.error(
+        `[chunker] Atomic chunk became empty after processing at offset ${startOff}-${endOff} ` +
+        `(type=${block.type}, original length=${block.text.length})`
+      );
+      return;
     }
 
     const tableMetaForAtomicChunk = block.type === 'table'

@@ -149,7 +149,7 @@ Each database is fully isolated. Create one per case, project, or client.
 ┌─────────────────────────────────────────────────────────────┐
 │                    MCP Server (stdio)                        │
 │  TypeScript + @modelcontextprotocol/sdk                     │
-│  124 tools across 22 tool modules                           │
+│  102 tools across 22 tool modules                           │
 ├─────────────────────────────────────────────────────────────┤
 │                                                              │
 │  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐   │
@@ -189,7 +189,7 @@ Each database is fully isolated. Create one per case, project, or client.
 └─────────────────────────────────────────────────────────────┘
 ```
 
-- **TypeScript MCP Server** -- 124 tools across 22 modules, Zod validation, provenance tracking
+- **TypeScript MCP Server** -- 102 tools across 22 modules, Zod validation, provenance tracking
 - **Python Workers** (9) -- OCR, GPU embedding, image extraction, clustering, form fill, file management, local reranking
 - **SQLite + sqlite-vec** -- 18 tables, FTS5 full-text search, vector similarity search, WAL mode
 - **Gemini 3 Flash** -- vision analysis (image description, classification, PDF analysis)
@@ -431,7 +431,7 @@ STORAGE_DATABASES_PATH=~/.ocr-provenance/databases/
 
 ---
 
-## Tool Reference (124 Tools)
+## Tool Reference (102 Tools)
 
 <details>
 <summary><strong>Database Management (5)</strong></summary>

@@ -73,8 +73,8 @@ export function getTableColumnExpansionTerms(
             }
           }
         }
-      } catch {
-        // Skip malformed JSON
+      } catch (error) {
+        console.error(`[query-expander] Failed to parse table_columns from processing_params: ${error instanceof Error ? error.message : String(error)}`);
       }
     }
 
@@ -133,8 +133,8 @@ export function getCorpusExpansionTerms(
         if (Array.isArray(terms) && terms.length > 0) {
           clusterTermSets.push(terms.map((t: unknown) => String(t).toLowerCase()));
         }
-      } catch {
-        // Skip malformed JSON
+      } catch (error) {
+        console.error(`[query-expander] Failed to parse cluster top_terms_json: ${error instanceof Error ? error.message : String(error)}`);
       }
     }
 

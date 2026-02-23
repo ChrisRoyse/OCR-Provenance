@@ -5,7 +5,7 @@
 1. [What This System Is](#what-this-system-is)
 2. [What It Can Do](#what-it-can-do)
 3. [Setup & Connection](#setup--connection)
-4. [Tool Inventory (111 Tools)](#tool-inventory-111-tools)
+4. [Tool Inventory (102 Tools)](#tool-inventory-111-tools)
 5. [Controlling the AI Agent](#controlling-the-ai-agent)
 6. [Core Workflows](#core-workflows)
 7. [Use Cases](#use-cases)
@@ -21,7 +21,7 @@ OCR Provenance is a **Model Context Protocol (MCP) server** that gives AI agents
 
 | Attribute | Value |
 |-----------|-------|
-| **MCP Tools** | 111 |
+| **MCP Tools** | 102 |
 | **Schema Version** | 31 |
 | **Architecture** | TypeScript MCP server + 9 Python workers |
 | **Storage** | SQLite + sqlite-vec (vectors) + FTS5 (full-text) |
@@ -188,11 +188,11 @@ The server communicates via JSON-RPC over stdin/stdout (stdio transport). Any MC
 
 ---
 
-## Tool Inventory (111 Tools)
+## Tool Inventory (102 Tools)
 
-> **Note**: The tool count was reduced from 122 to 111 via V3 Agent Optimization (2026-02-22):
-> removed 4 redundant tools, consolidated 7 tools into 3 (unified action params),
-> consolidated 5 report tools into 2 (section params), and added nested `filters` object for search.
+> **Note**: The tool count was reduced from 122 to 102 through V3-V7 Agent Optimizations (2026-02-22):
+> removed redundant tools, consolidated overlapping tools via unified action/section params,
+> merged export/trend tools, and added nested `filters` object for search.
 
 ### Tier 1: Essential Tools (17) -- Start Here
 
@@ -436,7 +436,7 @@ The server communicates via JSON-RPC over stdin/stdout (stdio transport). Any MC
 
 ### The Agent-Tool Relationship
 
-When you connect this MCP server to Claude (or any MCP-compatible AI), the agent gains access to all 111 tools. The agent can call any tool by name with the right parameters. **You control the agent through natural language instructions.**
+When you connect this MCP server to Claude (or any MCP-compatible AI), the agent gains access to all 102 tools. The agent can call any tool by name with the right parameters. **You control the agent through natural language instructions.**
 
 ### How to Give Effective Instructions
 

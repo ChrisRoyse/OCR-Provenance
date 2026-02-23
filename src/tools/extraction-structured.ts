@@ -263,14 +263,16 @@ async function handleExtractionList(params: Record<string, unknown>) {
         let parsedExtractionJson: unknown;
         try {
           parsedExtractionJson = JSON.parse(ext.extraction_json);
-        } catch {
+        } catch (error) {
+          console.error(`[extraction-structured] Failed to parse extraction_json for extraction ${ext.id}: ${error instanceof Error ? error.message : String(error)}`);
           parsedExtractionJson = ext.extraction_json;
         }
 
         let parsedSchemaJson: unknown;
         try {
           parsedSchemaJson = JSON.parse(ext.schema_json);
-        } catch {
+        } catch (error) {
+          console.error(`[extraction-structured] Failed to parse schema_json for extraction ${ext.id}: ${error instanceof Error ? error.message : String(error)}`);
           parsedSchemaJson = ext.schema_json;
         }
 
@@ -365,7 +367,8 @@ async function handleExtractionGet(params: Record<string, unknown>): Promise<Too
     let parsedExtractionJson: unknown;
     try {
       parsedExtractionJson = JSON.parse(extraction.extraction_json);
-    } catch {
+    } catch (error) {
+      console.error(`[extraction-structured] Failed to parse extraction_json for extraction ${extraction.id}: ${error instanceof Error ? error.message : String(error)}`);
       parsedExtractionJson = extraction.extraction_json;
     }
 
@@ -373,7 +376,8 @@ async function handleExtractionGet(params: Record<string, unknown>): Promise<Too
     let parsedSchemaJson: unknown;
     try {
       parsedSchemaJson = JSON.parse(extraction.schema_json);
-    } catch {
+    } catch (error) {
+      console.error(`[extraction-structured] Failed to parse schema_json for extraction ${extraction.id}: ${error instanceof Error ? error.message : String(error)}`);
       parsedSchemaJson = extraction.schema_json;
     }
 

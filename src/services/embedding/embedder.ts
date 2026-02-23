@@ -77,8 +77,8 @@ export function buildSectionPrefix(chunk: Chunk): string {
       const types = JSON.parse(chunk.content_types) as string[];
       if (types.includes('table')) parts.push('[Table]');
       if (types.includes('code')) parts.push('[Code]');
-    } catch {
-      // Skip malformed content_types JSON
+    } catch (error) {
+      console.error(`[embedder] Failed to parse content_types JSON for chunk ${chunk.id}: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
 

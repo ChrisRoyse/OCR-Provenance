@@ -521,8 +521,8 @@ function getDefaultAllowedBaseDirs(): string[] {
     // Reads DEFAULT_STORAGE_PATH from helpers module which has no circular deps.
     const { DEFAULT_STORAGE_PATH } = require('../services/storage/database/helpers.js');
     storagePath = DEFAULT_STORAGE_PATH;
-  } catch {
-    // Fallback if helpers not available (e.g., during early init)
+  } catch (error) {
+    console.error(`[validation] Failed to load DEFAULT_STORAGE_PATH from helpers module: ${error instanceof Error ? error.message : String(error)}`);
     storagePath = path.join(homedir(), '.ocr-provenance', 'databases');
   }
 

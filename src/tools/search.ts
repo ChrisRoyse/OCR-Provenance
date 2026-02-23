@@ -515,8 +515,8 @@ function attachTableMetadata(
           table_column_count: params.table_column_count ?? 0,
         });
       }
-    } catch {
-      // Skip unparseable processing_params
+    } catch (error) {
+      console.error(`[search] Failed to parse processing_params for chunk ${row.chunk_id}: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
 
@@ -845,7 +845,9 @@ function applyMetadataBoosts(
           boost *= 0.8 + (0.4 * blockConf); // range: 0.8x to 1.16x
         }
       }
-    } catch { /* ignore parse errors */ }
+    } catch (error) {
+      console.error(`[search] Failed to parse content_types for chunk ${r.chunk_id ?? 'unknown'} during quality boost: ${error instanceof Error ? error.message : String(error)}`);
+    }
 
     // Task 7.1: Header/footer penalty - demote chunks matching repeated headers/footers
     // Two-tier detection:
@@ -1663,17 +1665,13 @@ async function handleSearchKeywordInternal(params: Record<string, unknown>): Pro
 
     // Document metadata matches (v30 FTS5 on doc_title/author/subject)
     let documentMetadataMatches: Array<Record<string, unknown>> | undefined;
-    try {
-      const metadataResults = bm25.searchDocumentMetadata({
-        query: input.query,
-        limit: 5,
-        phraseSearch: input.phrase_search,
-      });
-      if (metadataResults.length > 0) {
-        documentMetadataMatches = metadataResults;
-      }
-    } catch {
-      // documents_fts may not exist on older schema versions - silently skip
+    const metadataResults = bm25.searchDocumentMetadata({
+      query: input.query,
+      limit: 5,
+      phraseSearch: input.phrase_search,
+    });
+    if (metadataResults.length > 0) {
+      documentMetadataMatches = metadataResults;
     }
 
     const responseData: Record<string, unknown> = {

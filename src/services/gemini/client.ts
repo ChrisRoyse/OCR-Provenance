@@ -324,12 +324,12 @@ export class GeminiClient {
           const cleaned = text.replace(/```json\n?|\n?```/g, '').trim();
           try {
             JSON.parse(cleaned);
-          } catch {
+          } catch (parseError) {
             const delay = Math.min(baseDelayMs * Math.pow(2, attempt), maxDelayMs);
             console.error(
               `[GeminiClient] Malformed JSON response from Gemini (attempt ${attempt + 1}/${maxAttempts}, ` +
               `inputTokens=${usage.inputTokens}, outputTokens=${usage.outputTokens}, ` +
-              `responseLength=${text.length}). Retrying in ${delay}ms...`
+              `responseLength=${text.length}, parseError=${parseError instanceof Error ? parseError.message : String(parseError)}). Retrying in ${delay}ms...`
             );
             await this.sleep(delay);
             continue;
