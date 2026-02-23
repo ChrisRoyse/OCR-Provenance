@@ -322,10 +322,12 @@ export function getChunksFiltered(
   }
 
   if (filters.content_type_filter && filters.content_type_filter.length > 0) {
-    // Each content type must be present in the JSON array string
+    // Each content type must be present in the JSON array string.
+    // Wrap value in JSON quotes to prevent substring false positives
+    // (e.g. "text" matching "context_text"). Matches search.ts resolveChunkFilter.
     for (const ct of filters.content_type_filter) {
       conditions.push("content_types LIKE '%' || ? || '%'");
-      params.push(ct);
+      params.push('"' + ct + '"');
     }
   }
 

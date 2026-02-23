@@ -37,6 +37,7 @@ interface GapCategory {
   sample_ids: string[];
   fixable: boolean;
   fix_tool: string | null;
+  fix_hint: string | null;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -76,7 +77,8 @@ async function handleHealthCheck(params: Record<string, unknown>): Promise<ToolR
       count: chunksWithoutEmbeddings.length,
       sample_ids: chunksWithoutEmbeddings.slice(0, SAMPLE_LIMIT).map(r => r.id),
       fixable: true,
-      fix_tool: 'ocr_process_pending (or set fix=true to trigger embedding generation)',
+      fix_tool: 'ocr_process_pending',
+      fix_hint: 'Set fix=true to trigger embedding generation',
     };
 
     // Fix: Generate embeddings for chunks missing them
@@ -151,7 +153,8 @@ async function handleHealthCheck(params: Record<string, unknown>): Promise<ToolR
       count: docsWithoutOCR.length,
       sample_ids: docsWithoutOCR.slice(0, SAMPLE_LIMIT).map(r => r.id),
       fixable: false,
-      fix_tool: 'ocr_process_pending or ocr_retry_failed',
+      fix_tool: 'ocr_retry_failed',
+      fix_hint: 'Use ocr_process_pending to process pending docs, or ocr_retry_failed for failed ones',
     };
 
     // ──────────────────────────────────────────────────────────────
@@ -167,6 +170,7 @@ async function handleHealthCheck(params: Record<string, unknown>): Promise<ToolR
       sample_ids: imagesWithoutVLM.slice(0, SAMPLE_LIMIT).map(r => r.id),
       fixable: false,
       fix_tool: 'ocr_vlm_process',
+      fix_hint: null,
     };
 
     // ──────────────────────────────────────────────────────────────
@@ -182,7 +186,8 @@ async function handleHealthCheck(params: Record<string, unknown>): Promise<ToolR
       count: embeddingsWithoutVectors.length,
       sample_ids: embeddingsWithoutVectors.slice(0, SAMPLE_LIMIT).map(r => r.id),
       fixable: false,
-      fix_tool: 'ocr_embedding_rebuild (use include_vlm=true for VLM embeddings)',
+      fix_tool: 'ocr_embedding_rebuild',
+      fix_hint: 'Use include_vlm=true for VLM embeddings',
     };
 
     // ──────────────────────────────────────────────────────────────
@@ -212,6 +217,7 @@ async function handleHealthCheck(params: Record<string, unknown>): Promise<ToolR
       sample_ids: orphanedProvenance.slice(0, SAMPLE_LIMIT).map(r => r.id),
       fixable: false,
       fix_tool: null,
+      fix_hint: null,
     };
 
     // ──────────────────────────────────────────────────────────────

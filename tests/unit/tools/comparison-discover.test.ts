@@ -436,7 +436,7 @@ describe.skipIf(!sqliteVecAvailable)('ocr_comparison_batch', () => {
     expect(parsed.success).toBe(false);
   });
 
-  it('should handle errors in individual pairs gracefully', async () => {
+  it('should throw error when all pairs fail (M-4)', async () => {
     const doc1 = createDocumentWithEmbedding('Error test doc for batch.');
 
     const result = await comparisonTools.ocr_comparison_batch.handler({
@@ -445,11 +445,12 @@ describe.skipIf(!sqliteVecAvailable)('ocr_comparison_batch', () => {
       ],
     });
 
+    // M-4: When ALL comparisons fail, the handler now returns an error
+    // instead of a misleading successResult with total_compared: 0
     const parsed = parseResult(result);
-    expect(parsed.success).toBe(true);
-    expect(parsed.data!.total_compared).toBe(0);
-    expect(parsed.data!.total_errors).toBe(1);
-    expect(parsed.data!.errors).toBeDefined();
+    expect(parsed.success).toBe(false);
+    expect(parsed.error).toBeDefined();
+    expect(parsed.error!.message).toContain('All 1 comparison(s) failed');
   });
 
   it('should fail when database is not selected', async () => {

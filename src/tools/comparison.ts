@@ -790,6 +790,17 @@ async function handleComparisonBatch(params: Record<string, unknown>): Promise<T
       }
     }
 
+    // M-4: If every comparison failed, throw an error instead of returning success
+    if (results.length === 0 && errors.length > 0) {
+      const errorDetails = errors
+        .map((e) => `  ${e.doc1} <-> ${e.doc2}: ${e.error}`)
+        .join('\n');
+      throw new MCPError(
+        'INTERNAL_ERROR',
+        `All ${errors.length} comparison(s) failed:\n${errorDetails}`
+      );
+    }
+
     return formatResponse(
       successResult({
         results,

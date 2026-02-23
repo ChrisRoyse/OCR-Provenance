@@ -65,16 +65,15 @@ describe('GeminiRateLimiter', () => {
   });
 
   it('should allow acquiring tokens', async () => {
-    const acquired = limiter.tryAcquire(1000);
-    expect(acquired).toBe(true);
+    await limiter.acquire(1000);
 
     const status = limiter.getStatus();
     expect(status.requestsRemaining).toBe(999);
     expect(status.tokensRemaining).toBe(3_999_000);
   });
 
-  it('should track token usage accurately', () => {
-    limiter.tryAcquire(1000);
+  it('should track token usage accurately', async () => {
+    await limiter.acquire(1000);
     limiter.recordUsage(1000, 1500); // Actual was 500 more
 
     const status = limiter.getStatus();
@@ -85,8 +84,8 @@ describe('GeminiRateLimiter', () => {
     expect(limiter.isLimited()).toBe(false);
   });
 
-  it('should reset correctly', () => {
-    limiter.tryAcquire(1000);
+  it('should reset correctly', async () => {
+    await limiter.acquire(1000);
     limiter.reset();
 
     const status = limiter.getStatus();

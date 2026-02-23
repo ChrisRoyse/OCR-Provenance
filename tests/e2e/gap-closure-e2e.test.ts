@@ -277,7 +277,7 @@ describe('Gap Closure E2E', () => {
       expect(bottlenecks.slowest_operations).toBeDefined();
 
       const procs = bottlenecks.by_processor as Array<Record<string, unknown>>;
-      const dbProvCount = (conn.prepare('SELECT COUNT(*) as cnt FROM provenance WHERE processing_duration_ms IS NOT NULL').get() as { cnt: number }).cnt;
+      const dbProvCount = (conn.prepare('SELECT COUNT(*) as cnt FROM provenance WHERE processing_duration_ms IS NOT NULL AND processing_duration_ms > 0').get() as { cnt: number }).cnt;
       const toolTotal = procs.reduce((s, p) => s + (p.count as number), 0);
       expect(toolTotal).toBe(dbProvCount);
       console.error(`[3.4] Provenance with duration: DB=${dbProvCount}, tool=${toolTotal}`);

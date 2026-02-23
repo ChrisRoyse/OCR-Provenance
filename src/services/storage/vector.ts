@@ -381,7 +381,12 @@ export class VectorService {
     if (options.chunkFilter?.conditions.length) {
       for (const condition of options.chunkFilter.conditions) {
         // Replace c. with ch. since vector.ts uses 'ch' alias for chunks table
-        sql += ` AND ${condition.replace(/\bc\./g, 'ch.')}`;
+        const translated = condition.replace(/\bc\./g, 'ch.');
+        // Wrap each condition to permit VLM/extraction results through.
+        // VLM results have e.chunk_id IS NULL so all ch.* columns are NULL,
+        // which would cause any chunk filter to exclude them. The post-query
+        // pageRangeFilter in mapAndFilterResults handles VLM page filtering.
+        sql += ` AND (${translated} OR e.chunk_id IS NULL)`;
       }
       params.push(...options.chunkFilter.params);
     }
@@ -466,7 +471,7 @@ export class VectorService {
       ORDER BY distance ASC
       LIMIT ?
     `;
-    params.push(limit * 2);
+    params.push(limit * 3);
 
     try {
       const stmt = this.db.prepare(sql);
@@ -549,7 +554,7 @@ export class VectorService {
         ORDER BY distance ASC
         LIMIT ?
       `;
-      params.push(limit * 2);
+      params.push(limit * 3);
 
       const rows = this.db.prepare(sql).all(...params) as SearchRow[];
       return this.mapAndFilterResults(rows, maxDistance, limit, options);
@@ -609,7 +614,7 @@ export class VectorService {
         heading_context: row.heading_context ?? null,
         section_path: row.section_path ?? null,
         content_types: row.content_types ?? null,
-        is_atomic: !!row.is_atomic,
+        is_atomic: !!(row.is_atomic as number),
         chunk_page_range: row.chunk_page_range ?? null,
         heading_level: row.heading_level ?? null,
         ocr_quality_score: row.ocr_quality_score ?? null,
@@ -638,15 +643,16 @@ export class VectorService {
       });
     }
 
-    // Apply limit after all filtering (VLM filter may have removed results)
-    results = results.slice(0, limit);
-
-    // Always apply quality-weighted scoring (soft signal, not opt-in filter)
+    // Apply quality-weighted scoring BEFORE limit slice so high-quality results
+    // beyond the initial limit can be promoted into the final result set
     for (const r of results) {
       r.similarity_score *= computeQualityMultiplier(r.ocr_quality_score);
     }
     // Re-sort by quality-adjusted similarity score
     results.sort((a, b) => b.similarity_score - a.similarity_score);
+
+    // Apply limit after quality reranking
+    results = results.slice(0, limit);
 
     return results;
   }

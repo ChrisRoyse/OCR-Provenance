@@ -308,5 +308,11 @@ export function expandQuery(query: string, db?: DatabaseService, isTableQuery?: 
     }
   }
 
-  return [...expanded].join(' OR ');
+  const terms = [...expanded];
+  if (terms.length > 20) {
+    // Cap expanded terms to prevent query dilution
+    // Keep the first 20 terms (original words come first, then synonyms, then corpus terms)
+    return terms.slice(0, 20).join(' OR ');
+  }
+  return terms.join(' OR ');
 }

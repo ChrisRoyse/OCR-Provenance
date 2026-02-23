@@ -122,7 +122,13 @@ export class BM25SearchService {
     if (phraseSearch) {
       ftsQuery = `"${query.replace(/"/g, '""')}"`;
     } else if (preSanitized) {
-      ftsQuery = query;
+      // M-7: Defense-in-depth: verify the pre-sanitized query is actually safe
+      if (/["'()]/.test(query)) {
+        console.error(`[WARN] preSanitized query contains FTS5 metacharacters, falling back to sanitization: "${query}"`);
+        ftsQuery = sanitizeFTS5Query(query);
+      } else {
+        ftsQuery = query;
+      }
     } else {
       ftsQuery = sanitizeFTS5Query(query);
     }
@@ -264,7 +270,13 @@ export class BM25SearchService {
     if (phraseSearch) {
       ftsQuery = `"${query.replace(/"/g, '""')}"`;
     } else if (preSanitized) {
-      ftsQuery = query;
+      // M-7: Defense-in-depth: verify the pre-sanitized query is actually safe
+      if (/["'()]/.test(query)) {
+        console.error(`[WARN] preSanitized query contains FTS5 metacharacters, falling back to sanitization: "${query}"`);
+        ftsQuery = sanitizeFTS5Query(query);
+      } else {
+        ftsQuery = query;
+      }
     } else {
       ftsQuery = sanitizeFTS5Query(query);
     }
@@ -382,7 +394,13 @@ export class BM25SearchService {
     if (phraseSearch) {
       ftsQuery = `"${query.replace(/"/g, '""')}"`;
     } else if (preSanitized) {
-      ftsQuery = query;
+      // M-7: Defense-in-depth: verify the pre-sanitized query is actually safe
+      if (/["'()]/.test(query)) {
+        console.error(`[WARN] preSanitized query contains FTS5 metacharacters, falling back to sanitization: "${query}"`);
+        ftsQuery = sanitizeFTS5Query(query);
+      } else {
+        ftsQuery = query;
+      }
     } else {
       ftsQuery = sanitizeFTS5Query(query);
     }
@@ -401,7 +419,8 @@ export class BM25SearchService {
         d.doc_title,
         d.doc_author,
         d.doc_subject,
-        (SELECT o.parse_quality_score FROM ocr_results o WHERE o.document_id = ex.document_id ORDER BY o.processing_completed_at DESC LIMIT 1) AS ocr_quality_score
+        (SELECT o.parse_quality_score FROM ocr_results o WHERE o.document_id = ex.document_id ORDER BY o.processing_completed_at DESC LIMIT 1) AS ocr_quality_score,
+        (SELECT e.id FROM embeddings e WHERE e.extraction_id = ex.id ORDER BY e.created_at DESC LIMIT 1) AS embedding_id
         ${includeHighlight ? ", snippet(extractions_fts, 0, '<mark>', '</mark>', '...', 32) AS highlight" : ''}
       FROM extractions_fts
       JOIN extractions ex ON extractions_fts.rowid = ex.rowid
@@ -424,7 +443,7 @@ export class BM25SearchService {
     const results = rows.map((row, index) => ({
       chunk_id: null as string | null,
       image_id: null as string | null,
-      embedding_id: null as string | null,
+      embedding_id: (row.embedding_id as string | null) ?? null,
       extraction_id: row.extraction_id as string,
       document_id: row.document_id as string,
       original_text: row.original_text as string,
@@ -820,6 +839,11 @@ export function sanitizeFTS5Query(query: string): string {
     )
       continue;
     cleaned.push(t);
+  }
+
+  // Strip leading NOT to prevent accidental negative-only queries
+  if (cleaned.length >= 2 && cleaned[0] === 'NOT') {
+    cleaned.shift();
   }
 
   const finalTokens = cleaned.filter((t) => t.length > 0);

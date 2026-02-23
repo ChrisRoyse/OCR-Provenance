@@ -305,6 +305,7 @@ export function mergeClusters(
   clusterId1: string,
   clusterId2: string
 ): { merged_cluster_id: string; documents_moved: number } {
+  // Validation outside transaction - read-only lookups
   const cluster1 = getCluster(db, clusterId1);
   if (!cluster1) {
     throw new Error(`Cluster "${clusterId1}" not found`);
@@ -321,33 +322,41 @@ export function mergeClusters(
     );
   }
 
-  // Move all document_clusters from cluster2 to cluster1
-  const moveResult = db
-    .prepare('UPDATE document_clusters SET cluster_id = ? WHERE cluster_id = ?')
-    .run(clusterId1, clusterId2);
-
-  const documentsMoved = moveResult.changes;
-
-  // Update cluster1's document_count
-  db.prepare(
-    'UPDATE clusters SET document_count = document_count + ? WHERE id = ?'
-  ).run(documentsMoved, clusterId1);
-
-  // Delete cluster2's provenance record reference before deleting the cluster
+  // M-8: Wrap all mutations in a transaction so a crash mid-merge
+  // cannot leave cluster state inconsistent (e.g., documents moved
+  // but old cluster not deleted, or count not updated).
   const cluster2ProvId = cluster2.provenance_id;
 
-  // Delete cluster2 record
-  db.prepare('DELETE FROM clusters WHERE id = ?').run(clusterId2);
+  const runInTransaction = db.transaction(() => {
+    // Move all document_clusters from cluster2 to cluster1
+    const moveResult = db
+      .prepare('UPDATE document_clusters SET cluster_id = ? WHERE cluster_id = ?')
+      .run(clusterId1, clusterId2);
 
-  // Clean up cluster2's provenance record
-  try {
-    db.prepare('DELETE FROM provenance WHERE id = ?').run(cluster2ProvId);
-  } catch (e: unknown) {
-    console.error(
-      `[cluster-operations] Failed to delete provenance ${cluster2ProvId}:`,
-      e instanceof Error ? e.message : String(e)
-    );
-  }
+    const documentsMoved = moveResult.changes;
+
+    // Update cluster1's document_count
+    db.prepare(
+      'UPDATE clusters SET document_count = document_count + ? WHERE id = ?'
+    ).run(documentsMoved, clusterId1);
+
+    // Delete cluster2 record
+    db.prepare('DELETE FROM clusters WHERE id = ?').run(clusterId2);
+
+    // Clean up cluster2's provenance record
+    try {
+      db.prepare('DELETE FROM provenance WHERE id = ?').run(cluster2ProvId);
+    } catch (e: unknown) {
+      console.error(
+        `[cluster-operations] Failed to delete provenance ${cluster2ProvId}:`,
+        e instanceof Error ? e.message : String(e)
+      );
+    }
+
+    return documentsMoved;
+  });
+
+  const documentsMoved = runInTransaction();
 
   return { merged_cluster_id: clusterId1, documents_moved: documentsMoved };
 }

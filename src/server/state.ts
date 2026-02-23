@@ -295,6 +295,16 @@ export function createDatabase(
   const db = DatabaseService.create(name, description, path);
 
   if (autoSelect) {
+    // H-3: Refuse to switch while async operations are in-flight
+    if (_activeOperations > 0) {
+      // Close the newly created DB since we can't switch to it
+      db.close();
+      throw new Error(
+        `Cannot auto-select newly created database "${name}" while ${_activeOperations} operation(s) are in-flight. ` +
+          `Wait for active operations to complete, then select the database manually.`
+      );
+    }
+
     // Close any existing connection first
     if (state.currentDatabase) {
       state.currentDatabase.close();

@@ -87,28 +87,12 @@ export class GeminiRateLimiter {
   }
 
   /**
-   * Try to acquire without blocking
-   * Returns true if acquired, false if would need to wait
-   */
-  tryAcquire(estimatedTokens: number = 1000): boolean {
-    this.checkWindow();
-
-    if (this.requestCount >= this.maxRPM || this.tokenCount + estimatedTokens > this.maxTPM) {
-      return false;
-    }
-
-    this.requestCount++;
-    this.tokenCount += estimatedTokens;
-    return true;
-  }
-
-  /**
    * Record actual token usage after a request completes
    * Adjusts the count if estimate was wrong
    */
   recordUsage(estimatedTokens: number, actualTokens: number): void {
     const diff = actualTokens - estimatedTokens;
-    this.tokenCount += diff;
+    this.tokenCount = Math.max(0, this.tokenCount + diff);
   }
 
   /**

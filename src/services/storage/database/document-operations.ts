@@ -471,59 +471,65 @@ export function deleteDocument(
   id: string,
   updateMetadataCounts: () => void
 ): void {
-  // First check document exists
+  // First check document exists (outside transaction - read-only)
   const doc = getDocument(db, id);
   if (!doc) {
     throw new DatabaseError(`Document "${id}" not found`, DatabaseErrorCode.DOCUMENT_NOT_FOUND);
   }
 
-  deleteDerivedRecords(db, id, 'deleteDocument');
+  // H-5: Wrap entire cascade delete in a transaction so a crash mid-sequence
+  // cannot leave the database in an inconsistent state.
+  const runInTransaction = db.transaction(() => {
+    deleteDerivedRecords(db, id, 'deleteDocument');
 
-  // Delete the document itself BEFORE provenance
-  // (document has FK to provenance via provenance_id)
-  db.prepare('DELETE FROM documents WHERE id = ?').run(id);
+    // Delete the document itself BEFORE provenance
+    // (document has FK to provenance via provenance_id)
+    db.prepare('DELETE FROM documents WHERE id = ?').run(id);
 
-  // Delete from provenance - must delete in reverse chain_depth order
-  // due to self-referential FKs on source_id and parent_id
-  // NOTE: root_document_id stores the document's provenance_id, NOT document id
-  const provenanceIds = db
-    .prepare('SELECT id FROM provenance WHERE root_document_id = ? ORDER BY chain_depth DESC')
-    .all(doc.provenance_id) as { id: string }[];
+    // Delete from provenance - must delete in reverse chain_depth order
+    // due to self-referential FKs on source_id and parent_id
+    // NOTE: root_document_id stores the document's provenance_id, NOT document id
+    const provenanceIds = db
+      .prepare('SELECT id FROM provenance WHERE root_document_id = ? ORDER BY chain_depth DESC')
+      .all(doc.provenance_id) as { id: string }[];
 
-  // P1.4: Get or create orphaned root provenance for re-parenting
-  const orphanedRootId = getOrCreateOrphanedRoot(db);
+    // P1.4: Get or create orphaned root provenance for re-parenting
+    const orphanedRootId = getOrCreateOrphanedRoot(db);
 
-  // Pre-clear self-referencing FKs (parent_id, source_id) on provenance records being deleted.
-  // Within the same chain_depth, parent provenance may appear before child provenance in the
-  // iteration order, causing FK violations. NULLing these first breaks the circular references.
-  const clearSelfRefStmt = db.prepare(
-    'UPDATE provenance SET parent_id = NULL, source_id = NULL WHERE id = ?'
-  );
-  for (const { id: provId } of provenanceIds) {
-    clearSelfRefStmt.run(provId);
-  }
-
-  const deleteProvStmt = db.prepare('DELETE FROM provenance WHERE id = ?');
-  const clusterRefCheck = db.prepare(
-    'SELECT COUNT(*) as cnt FROM clusters WHERE provenance_id = ?'
-  );
-  const reparentProvStmt = db.prepare(
-    'UPDATE provenance SET source_id = NULL, parent_id = ?, root_document_id = ? WHERE id = ?'
-  );
-  for (const { id: provId } of provenanceIds) {
-    // Skip CLUSTERING provenance still referenced by clusters (NOT NULL FK).
-    // Re-parent to orphaned root so provenance chain is preserved (P1.4).
-    // These are cleaned up when the cluster run is deleted.
-    const clusterRefs = (clusterRefCheck.get(provId) as { cnt: number }).cnt;
-    if (clusterRefs > 0) {
-      reparentProvStmt.run(orphanedRootId, 'ORPHANED_ROOT', provId);
-      continue;
+    // Pre-clear self-referencing FKs (parent_id, source_id) on provenance records being deleted.
+    // Within the same chain_depth, parent provenance may appear before child provenance in the
+    // iteration order, causing FK violations. NULLing these first breaks the circular references.
+    const clearSelfRefStmt = db.prepare(
+      'UPDATE provenance SET parent_id = NULL, source_id = NULL WHERE id = ?'
+    );
+    for (const { id: provId } of provenanceIds) {
+      clearSelfRefStmt.run(provId);
     }
-    deleteProvStmt.run(provId);
-  }
 
-  // Update metadata counts
-  updateMetadataCounts();
+    const deleteProvStmt = db.prepare('DELETE FROM provenance WHERE id = ?');
+    const clusterRefCheck = db.prepare(
+      'SELECT COUNT(*) as cnt FROM clusters WHERE provenance_id = ?'
+    );
+    const reparentProvStmt = db.prepare(
+      'UPDATE provenance SET source_id = NULL, parent_id = ?, root_document_id = ? WHERE id = ?'
+    );
+    for (const { id: provId } of provenanceIds) {
+      // Skip CLUSTERING provenance still referenced by clusters (NOT NULL FK).
+      // Re-parent to orphaned root so provenance chain is preserved (P1.4).
+      // These are cleaned up when the cluster run is deleted.
+      const clusterRefs = (clusterRefCheck.get(provId) as { cnt: number }).cnt;
+      if (clusterRefs > 0) {
+        reparentProvStmt.run(orphanedRootId, 'ORPHANED_ROOT', provId);
+        continue;
+      }
+      deleteProvStmt.run(provId);
+    }
+
+    // Update metadata counts inside transaction for atomicity
+    updateMetadataCounts();
+  });
+
+  runInTransaction();
 }
 
 /**
@@ -536,6 +542,7 @@ export function deleteDocument(
  * @param documentId - Document ID to clean
  */
 export function cleanDocumentDerivedData(db: Database.Database, documentId: string): void {
+  // Validate document exists (outside transaction - read-only)
   const doc = getDocument(db, documentId);
   if (!doc) {
     throw new DatabaseError(
@@ -544,22 +551,33 @@ export function cleanDocumentDerivedData(db: Database.Database, documentId: stri
     );
   }
 
-  const embeddingCount = deleteDerivedRecords(db, documentId, 'cleanDocumentDerivedData');
+  // H-5: Wrap cleanup in a transaction so partial deletes cannot leave
+  // the database in an inconsistent state.
+  let embeddingCount = 0;
+  let provenanceCount = 0;
 
-  // Delete non-root provenance records (keep DOCUMENT-level provenance at chain_depth=0)
-  // root_document_id stores the document's provenance_id, NOT document id
-  const nonRootProvIds = db
-    .prepare(
-      'SELECT id FROM provenance WHERE root_document_id = ? AND chain_depth > 0 ORDER BY chain_depth DESC'
-    )
-    .all(doc.provenance_id) as { id: string }[];
+  const runInTransaction = db.transaction(() => {
+    embeddingCount = deleteDerivedRecords(db, documentId, 'cleanDocumentDerivedData');
 
-  const deleteProvStmt = db.prepare('DELETE FROM provenance WHERE id = ?');
-  for (const { id: provId } of nonRootProvIds) {
-    deleteProvStmt.run(provId);
-  }
+    // Delete non-root provenance records (keep DOCUMENT-level provenance at chain_depth=0)
+    // root_document_id stores the document's provenance_id, NOT document id
+    const nonRootProvIds = db
+      .prepare(
+        'SELECT id FROM provenance WHERE root_document_id = ? AND chain_depth > 0 ORDER BY chain_depth DESC'
+      )
+      .all(doc.provenance_id) as { id: string }[];
+
+    const deleteProvStmt = db.prepare('DELETE FROM provenance WHERE id = ?');
+    for (const { id: provId } of nonRootProvIds) {
+      deleteProvStmt.run(provId);
+    }
+
+    provenanceCount = nonRootProvIds.length;
+  });
+
+  runInTransaction();
 
   console.error(
-    `[INFO] Cleaned derived data for document ${documentId}: ${embeddingCount} embeddings, ${nonRootProvIds.length} provenance records removed`
+    `[INFO] Cleaned derived data for document ${documentId}: ${embeddingCount} embeddings, ${provenanceCount} provenance records removed`
   );
 }

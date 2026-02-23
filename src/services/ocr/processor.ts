@@ -222,11 +222,18 @@ export class OCRProcessor {
   }
 
   /**
-   * Process all pending documents
+   * Process all pending documents.
+   *
+   * H-2 fix: Before processing, recover any documents stuck in 'processing'
+   * status for longer than 30 minutes (indicates a prior server crash).
+   * These are reset to 'pending' so they get re-processed.
    */
   async processPending(mode?: 'fast' | 'balanced' | 'accurate'): Promise<BatchResult> {
     const startTime = Date.now();
     const ocrMode = mode ?? this.defaultMode;
+
+    // H-2: Recover stale 'processing' documents (crashed mid-OCR)
+    this.recoverStaleProcessingDocuments();
 
     const pending = this.db.listDocuments({ status: 'pending' });
     if (pending.length === 0) {
@@ -275,6 +282,34 @@ export class OCRProcessor {
       totalDurationMs: Date.now() - startTime,
       results,
     };
+  }
+
+  /**
+   * H-2: Recover documents stuck in 'processing' status after a server crash.
+   * Any document that has been 'processing' for longer than 30 minutes is
+   * assumed to be orphaned from a crash and is reset to 'pending'.
+   */
+  private recoverStaleProcessingDocuments(): void {
+    const conn = this.db.getConnection();
+    const staleRows = conn
+      .prepare(
+        `SELECT id FROM documents WHERE status = 'processing'
+         AND modified_at < datetime('now', '-30 minutes')`
+      )
+      .all() as Array<{ id: string }>;
+
+    for (const row of staleRows) {
+      console.error(
+        `[WARN] Recovering stale 'processing' document ${row.id} (stuck >30min, likely server crash). Resetting to 'pending'.`
+      );
+      this.db.updateDocumentStatus(row.id, 'pending');
+    }
+
+    if (staleRows.length > 0) {
+      console.error(
+        `[INFO] Recovered ${staleRows.length} stale 'processing' document(s) to 'pending' status.`
+      );
+    }
   }
 
   /**

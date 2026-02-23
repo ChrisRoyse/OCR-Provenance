@@ -612,7 +612,7 @@ function buildProvenanceSummary(
         case 'OCR_RESULT': {
           const qualityScore = link.processing_quality_score;
           const qualityStr = qualityScore != null
-            ? `, ${Math.round(qualityScore * 20)}% quality`
+            ? `, quality ${qualityScore.toFixed(1)}/5.0`
             : '';
           parts.push(`OCR (${link.processor ?? 'unknown'}${qualityStr})`);
           break;
@@ -892,10 +892,14 @@ function applyMetadataBoosts(
       }
     }
 
-    // Apply boost to whichever score field exists
-    if (r.bm25_score != null) r.bm25_score = (r.bm25_score as number) * boost;
-    if (r.similarity_score != null) r.similarity_score = (r.similarity_score as number) * boost;
-    if (r.rrf_score != null) r.rrf_score = (r.rrf_score as number) * boost;
+    // Clamp aggregate multiplier to [0.5, 2.0] to prevent compounding penalties (M-9)
+    // from overwhelming relevance scores and to cap the max boost ratio at 4x (M-11).
+    const clampedBoost = Math.max(0.5, Math.min(2.0, boost));
+
+    // Apply clamped boost to whichever score field exists
+    if (r.bm25_score != null) r.bm25_score = (r.bm25_score as number) * clampedBoost;
+    if (r.similarity_score != null) r.similarity_score = (r.similarity_score as number) * clampedBoost;
+    if (r.rrf_score != null) r.rrf_score = (r.rrf_score as number) * clampedBoost;
   }
 }
 
@@ -2934,11 +2938,11 @@ async function handleCrossDbSearch(params: Record<string, unknown>): Promise<Too
         const ftsQuery = sanitizeFTS5Query(input.query);
         const rows = conn
           .prepare(
-            `SELECT c.id, c.document_id, c.text, c.chunk_index, rank
+            `SELECT c.id, c.document_id, c.text, c.chunk_index, bm25(chunks_fts) AS bm25_score
              FROM chunks_fts
              JOIN chunks c ON c.rowid = chunks_fts.rowid
              WHERE chunks_fts MATCH ?
-             ORDER BY rank
+             ORDER BY bm25(chunks_fts)
              LIMIT ?`
           )
           .all(ftsQuery, input.limit_per_db) as Array<{
@@ -2946,7 +2950,7 @@ async function handleCrossDbSearch(params: Record<string, unknown>): Promise<Too
           document_id: string;
           text: string;
           chunk_index: number;
-          rank: number;
+          bm25_score: number;
         }>;
 
         for (const row of rows) {
@@ -2962,7 +2966,7 @@ async function handleCrossDbSearch(params: Record<string, unknown>): Promise<Too
             chunk_id: row.id,
             chunk_index: row.chunk_index,
             text_preview: row.text.substring(0, 300),
-            bm25_score: Math.abs(row.rank),
+            bm25_score: Math.abs(row.bm25_score),
             normalized_score: 0, // Set during per-database normalization below
           });
         }
@@ -2997,7 +3001,7 @@ async function handleCrossDbSearch(params: Record<string, unknown>): Promise<Too
       for (const r of dbResults) {
         r.normalized_score = range > 0
           ? (r.bm25_score - minScore) / range
-          : 0.5;
+          : 1.0;
       }
     }
 

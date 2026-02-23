@@ -283,6 +283,7 @@ function verifyEntityExists(
     throw new Error(`Invalid entity type: ${entityType}. Valid types: ${VALID_ENTITY_TYPES.join(', ')}`);
   }
 
+  // Table name from hardcoded whitelist (tableMap) - safe from injection
   const row = conn.prepare(`SELECT id FROM ${tableName} WHERE id = ?`).get(entityId);
   if (!row) {
     throw new Error(`${entityType} not found: ${entityId}`);
