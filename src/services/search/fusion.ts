@@ -155,6 +155,9 @@ function buildFusedResult(
     doc_page_count: result.doc_page_count ?? null,
     datalab_mode: result.datalab_mode ?? null,
     total_chunks: result.total_chunks ?? 0,
+    table_columns: result.table_columns ?? null,
+    table_row_count: result.table_row_count ?? null,
+    table_column_count: result.table_column_count ?? null,
   };
 }
 
@@ -188,7 +191,6 @@ export class RRFFusion {
     bm25Results: RankedResult[],
     semanticResults: RankedResult[],
     limit: number,
-    _options?: { qualityBoost?: boolean }
   ): RRFSearchResult[] {
     const { k, bm25Weight, semanticWeight } = this.config;
     // Use chunk_id/image_id as dedup key so the same chunk from BM25 and semantic

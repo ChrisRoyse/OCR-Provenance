@@ -133,8 +133,6 @@ export interface VectorSearchOptions {
   documentFilter?: string[];
   /** Chunk-level filter conditions (from resolveChunkFilter) */
   chunkFilter?: { conditions: string[]; params: unknown[] };
-  /** Boost results from higher-quality OCR pages */
-  qualityBoost?: boolean;
   /** Page range filter for VLM/extraction results */
   pageRangeFilter?: { min_page?: number; max_page?: number };
 }

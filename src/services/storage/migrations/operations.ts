@@ -3260,16 +3260,23 @@ function migrateV29ToV30(db: Database.Database): void {
       db.exec(trigger);
     }
 
-    // 3. Populate from existing data
+    // 3. Populate from existing data (clear first for crash-retry idempotency)
+    db.exec("INSERT INTO documents_fts(documents_fts) VALUES('delete-all')");
     db.exec(`
       INSERT INTO documents_fts(rowid, doc_title, doc_author, doc_subject)
       SELECT rowid, COALESCE(doc_title, ''), COALESCE(doc_author, ''), COALESCE(doc_subject, '')
       FROM documents
     `);
 
-    // 4. Add saved search analytics columns
-    db.exec('ALTER TABLE saved_searches ADD COLUMN last_executed_at TEXT');
-    db.exec('ALTER TABLE saved_searches ADD COLUMN execution_count INTEGER DEFAULT 0');
+    // 4. Add saved search analytics columns (idempotent: check column existence first)
+    const ssColumns = db.prepare('PRAGMA table_info(saved_searches)').all() as { name: string }[];
+    const ssColumnNames = new Set(ssColumns.map((c) => c.name));
+    if (!ssColumnNames.has('last_executed_at')) {
+      db.exec('ALTER TABLE saved_searches ADD COLUMN last_executed_at TEXT');
+    }
+    if (!ssColumnNames.has('execution_count')) {
+      db.exec('ALTER TABLE saved_searches ADD COLUMN execution_count INTEGER DEFAULT 0');
+    }
 
     // 5. Create chunk performance indexes
     db.exec('CREATE INDEX IF NOT EXISTS idx_chunks_section_path ON chunks(section_path)');

@@ -153,18 +153,13 @@ export async function localRerank(
     proc.stdin.write(inputPayload);
     proc.stdin.end();
 
-    // Set up SIGKILL escalation if the process doesn't exit after SIGTERM (from timeout)
+    // SIGKILL escalation: spawn's built-in timeout sends SIGTERM;
+    // this timer escalates to SIGKILL if the process doesn't exit
     timeoutTimer = setTimeout(() => {
       if (!settled && !proc.killed) {
-        console.error('[local-reranker] Timeout reached, sending SIGTERM');
-        proc.kill('SIGTERM');
-        sigkillTimer = setTimeout(() => {
-          if (!settled && !proc.killed) {
-            console.error('[local-reranker] SIGKILL escalation after grace period');
-            proc.kill('SIGKILL');
-          }
-        }, SIGKILL_GRACE_MS);
+        console.error('[local-reranker] SIGKILL escalation after timeout grace period');
+        proc.kill('SIGKILL');
       }
-    }, RERANKER_TIMEOUT_MS);
+    }, RERANKER_TIMEOUT_MS + SIGKILL_GRACE_MS);
   });
 }

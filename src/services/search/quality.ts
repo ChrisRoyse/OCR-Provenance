@@ -10,7 +10,8 @@
  */
 export function computeQualityMultiplier(qualityScore: number | null | undefined): number {
   if (qualityScore !== null && qualityScore !== undefined) {
-    return 0.8 + 0.04 * qualityScore;
+    const clamped = Math.max(0, Math.min(5, qualityScore));
+    return 0.8 + 0.04 * clamped;
   }
   return 0.9;
 }

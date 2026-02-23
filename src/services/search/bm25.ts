@@ -22,7 +22,6 @@ interface BM25SearchOptions {
   documentFilter?: string[];
   includeHighlight?: boolean;
   chunkFilter?: ChunkFilterSQL;
-  qualityBoost?: boolean;
   /** Page range filter applied to VLM/extraction searches (which lack chunk metadata) */
   pageRangeFilter?: { min_page?: number; max_page?: number };
 }

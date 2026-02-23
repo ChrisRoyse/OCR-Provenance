@@ -95,6 +95,7 @@ interface InternalSearchParams {
   rrf_k: number;
   auto_route: boolean;
   // Always-on fields injected by unified handler
+  /** @deprecated Quality boost is always applied. Field retained for schema compatibility. */
   quality_boost: boolean;
   expand_query: boolean;
   exclude_duplicate_chunks: boolean;
@@ -1198,10 +1199,10 @@ async function handleSearchSemanticInternal(params: Record<string, unknown>): Pr
       table_columns_contain: input.table_columns_contain,
     });
 
-    // Generate query embedding (use expanded query for better semantic coverage)
-    // Prepend section prefix to query when section_path_filter is set for section-aware matching
+    // Generate query embedding using ORIGINAL query (not FTS5-expanded)
+    // The expanded query contains OR operators that contaminate embedding vectors
     const embedder = getEmbeddingService();
-    let embeddingQuery = searchQuery;
+    let embeddingQuery = input.query;
     if (input.section_path_filter) {
       embeddingQuery = `[Section: ${input.section_path_filter}] ${embeddingQuery}`;
     }
@@ -1226,7 +1227,6 @@ async function handleSearchSemanticInternal(params: Record<string, unknown>): Pr
       threshold: searchThreshold,
       documentFilter,
       chunkFilter: chunkFilter.conditions.length > 0 ? chunkFilter : undefined,
-      qualityBoost: input.quality_boost,
       pageRangeFilter: input.page_range_filter,
     });
 
@@ -1552,7 +1552,6 @@ async function handleSearchKeywordInternal(params: Record<string, unknown>): Pro
       documentFilter,
       includeHighlight: input.include_highlight,
       chunkFilter: chunkFilter.conditions.length > 0 ? chunkFilter : undefined,
-      qualityBoost: input.quality_boost,
     });
 
     // Search VLM FTS
@@ -1563,7 +1562,6 @@ async function handleSearchKeywordInternal(params: Record<string, unknown>): Pro
       documentFilter,
       includeHighlight: input.include_highlight,
       pageRangeFilter: input.page_range_filter,
-      qualityBoost: input.quality_boost,
     });
 
     // Search extractions FTS
@@ -1573,7 +1571,6 @@ async function handleSearchKeywordInternal(params: Record<string, unknown>): Pro
       phraseSearch: input.phrase_search,
       documentFilter,
       includeHighlight: input.include_highlight,
-      qualityBoost: input.quality_boost,
     });
 
     // Merge by score (higher is better), apply combined limit
@@ -1819,7 +1816,6 @@ async function handleSearchHybridInternal(params: Record<string, unknown>): Prom
       documentFilter,
       includeHighlight: false,
       chunkFilter: chunkFilter.conditions.length > 0 ? chunkFilter : undefined,
-      qualityBoost: input.quality_boost,
     });
     const bm25VlmResults = bm25.searchVLM({
       query: searchQuery,
@@ -1827,14 +1823,12 @@ async function handleSearchHybridInternal(params: Record<string, unknown>): Prom
       documentFilter,
       includeHighlight: false,
       pageRangeFilter: input.page_range_filter,
-      qualityBoost: input.quality_boost,
     });
     const bm25ExtractionResults = bm25.searchExtractions({
       query: searchQuery,
       limit: limit * 2,
       documentFilter,
       includeHighlight: false,
-      qualityBoost: input.quality_boost,
     });
 
     // Merge BM25 results by score
@@ -1843,10 +1837,10 @@ async function handleSearchHybridInternal(params: Record<string, unknown>): Prom
       .slice(0, limit * 2)
       .map((r, i) => ({ ...r, rank: i + 1 }));
 
-    // Get semantic results (use expanded query for better semantic coverage)
-    // Prepend section prefix to query when section_path_filter is set for section-aware matching
+    // Get semantic results using ORIGINAL query (not FTS5-expanded)
+    // The expanded query contains OR operators that contaminate embedding vectors
     const embedder = getEmbeddingService();
-    let hybridEmbeddingQuery = searchQuery;
+    let hybridEmbeddingQuery = input.query;
     if (input.section_path_filter) {
       hybridEmbeddingQuery = `[Section: ${input.section_path_filter}] ${hybridEmbeddingQuery}`;
     }
@@ -1857,7 +1851,6 @@ async function handleSearchHybridInternal(params: Record<string, unknown>): Prom
       threshold: 0.3,
       documentFilter,
       chunkFilter: chunkFilter.conditions.length > 0 ? chunkFilter : undefined,
-      qualityBoost: input.quality_boost,
       pageRangeFilter: input.page_range_filter,
     });
 
@@ -1872,9 +1865,7 @@ async function handleSearchHybridInternal(params: Record<string, unknown>): Prom
     });
 
     const fusionLimit = input.rerank ? Math.max(limit * 2, 20) : limit;
-    const rawResults = fusion.fuse(bm25Ranked, semanticRanked, fusionLimit, {
-      qualityBoost: input.quality_boost,
-    });
+    const rawResults = fusion.fuse(bm25Ranked, semanticRanked, fusionLimit);
 
     let finalResults: Array<Record<string, unknown>>;
     let rerankInfo: Record<string, unknown> | undefined;
@@ -2553,17 +2544,14 @@ async function handleSearchExport(params: Record<string, unknown>): Promise<Tool
       params
     );
 
-    // Run the appropriate search
-    let searchResult: ToolResponse;
+    // Run the appropriate search, routing through unified handler with appropriate mode
     const searchParams: Record<string, unknown> = {
       query: input.query,
       limit: input.limit,
       include_provenance: false,
+      mode: input.search_type === 'bm25' ? 'keyword' : input.search_type,
     };
-
-    // Route through unified handler with appropriate mode
-    searchParams.mode = input.search_type === 'bm25' ? 'keyword' : input.search_type;
-    searchResult = await handleSearchUnified(searchParams);
+    const searchResult = await handleSearchUnified(searchParams);
 
     // Parse search results from the ToolResponse
     if (!searchResult.content || searchResult.content.length === 0) {
