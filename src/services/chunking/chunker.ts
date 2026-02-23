@@ -37,6 +37,14 @@ import { normalizeHeadingLevels } from './heading-normalizer.js';
 import { mergeHeadingOnlyChunks } from './chunk-merger.js';
 
 /**
+ * Strip HTML tags from text and collapse whitespace.
+ * Used to clean table chunk text before FTS5 indexing.
+ */
+function stripHtmlForFTS(text: string): string {
+  return text.replace(/<[^>]+>/g, '').replace(/\s{2,}/g, ' ');
+}
+
+/**
  * Parameters for creating chunk provenance record
  */
 export interface ChunkProvenanceParams {
@@ -275,6 +283,9 @@ export function chunkHybridSectionAware(
           columnHeaders: ts.columnHeaders,
           rowCount: ts.rowCount,
           columnCount: ts.columnCount,
+          summary: ts.summary,
+          caption: ts.caption,
+          continuationOf: ts.continuationOf,
         };
       }
     }
@@ -342,6 +353,8 @@ export function chunkHybridSectionAware(
     // Task 7.2: Prepend column header context for table chunks
     let chunkText = block.text;
     if (block.type === 'table') {
+      // Strip HTML tags from table text for clean FTS indexing
+      chunkText = stripHtmlForFTS(chunkText);
       const ts = findTableStructureForBlock(block);
       if (ts) {
         const prefix = buildTableHeaderPrefix(ts);
@@ -395,7 +408,8 @@ export function chunkHybridSectionAware(
     }
 
     // Split oversized atomic block at line boundaries
-    const blockText = block.text;
+    // Strip HTML tags from table text for clean FTS indexing
+    const blockText = block.type === 'table' ? stripHtmlForFTS(block.text) : block.text;
     let pos = 0;
 
     while (pos < blockText.length) {

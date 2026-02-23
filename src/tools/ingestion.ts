@@ -129,6 +129,9 @@ function storeChunks(
           table_columns: cr.tableMetadata.columnHeaders,
           table_row_count: cr.tableMetadata.rowCount,
           table_column_count: cr.tableMetadata.columnCount,
+          ...(cr.tableMetadata.summary ? { table_summary: cr.tableMetadata.summary } : {}),
+          ...(cr.tableMetadata.caption ? { table_caption: cr.tableMetadata.caption } : {}),
+          ...(cr.tableMetadata.continuationOf !== undefined ? { table_continuation_of: cr.tableMetadata.continuationOf } : {}),
         } : {}),
       },
       location: {

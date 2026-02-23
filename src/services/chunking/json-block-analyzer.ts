@@ -889,6 +889,14 @@ export interface TableStructure {
   rowCount: number;
   columnCount: number;
   pageNumber: number | null;
+  /** Human-readable summary of table content */
+  summary: string;
+  /** Values from the first data row (for summary generation) */
+  firstRowValues: string[];
+  /** Caption text from preceding block (e.g., "Table 1: Budget Summary") */
+  caption?: string;
+  /** Index of a prior table this continues (cross-page table detection) */
+  continuationOf?: number;
 }
 
 /**
@@ -912,27 +920,60 @@ export function extractTableStructures(
   }
 
   const structures: TableStructure[] = [];
+  /** Track previous block for caption detection */
+  let previousBlockText = '';
 
   walkBlocks(jsonBlocks, (block, _pageNum) => {
     const blockType = block.block_type as string | undefined;
+
+    // Track non-table block text for caption detection
+    if (blockType && blockType !== 'Table' && blockType !== 'TableGroup') {
+      const text = extractBlockText(block);
+      if (text.length > 0) {
+        previousBlockText = text;
+      }
+      return;
+    }
+
     if (blockType !== 'Table' && blockType !== 'TableGroup') {
       return;
     }
 
-    // Extract column headers from the block's children
-    const columnHeaders = extractTableColumnHeaders(block);
-    if (columnHeaders.length === 0) {
-      return;
-    }
-
-    // Count rows from block children
-    const { rowCount, columnCount } = countTableDimensions(block, columnHeaders.length);
-
-    // Locate the table in markdown text
+    // Locate the table in markdown text first (needed for markdown fallbacks)
     const region = locateBlockInMarkdown(block, blockType, _pageNum, markdownText, pageOffsets);
     if (!region) {
+      previousBlockText = '';
       return;
     }
+
+    // Get the markdown text range for this table
+    const tableMarkdown = markdownText.slice(region.startOffset, region.endOffset);
+
+    // Extract column headers from the block's children, with markdown fallback
+    let columnHeaders = extractTableColumnHeaders(block);
+    if (columnHeaders.length === 0) {
+      columnHeaders = extractHeadersFromMarkdown(tableMarkdown);
+    }
+
+    // Count rows from block children, with markdown fallback
+    let { rowCount, columnCount } = countTableDimensions(block, columnHeaders.length);
+    if (rowCount === 0) {
+      const mdDims = countTableDimensionsFromMarkdown(tableMarkdown);
+      rowCount = mdDims.rowCount;
+      if (columnCount === 0) columnCount = mdDims.columnCount;
+    }
+
+    // Extract first data row values from markdown for summary
+    const firstRowValues = extractFirstDataRow(tableMarkdown);
+
+    // Detect caption from preceding block
+    let caption: string | undefined;
+    if (previousBlockText.length > 0 && /^(Table|Figure)\s+\d+[.:]/i.test(previousBlockText)) {
+      caption = previousBlockText.slice(0, 200);
+    }
+
+    // Generate summary
+    const summary = generateTableSummary(columnHeaders, rowCount, firstRowValues, caption);
 
     structures.push({
       startOffset: region.startOffset,
@@ -941,10 +982,173 @@ export function extractTableStructures(
       rowCount,
       columnCount,
       pageNumber: region.pageNumber,
+      summary,
+      firstRowValues,
+      caption,
     });
+
+    previousBlockText = '';
   }, 0);
 
+  // Cross-page table continuity detection
+  detectTableContinuations(structures);
+
   return structures;
+}
+
+/**
+ * Extract column headers from the first pipe-delimited row of markdown table text.
+ * Fallback when JSON block children don't contain TableRow elements.
+ */
+function extractHeadersFromMarkdown(tableMarkdown: string): string[] {
+  const lines = tableMarkdown.split('\n').filter(l => l.trim().length > 0);
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed.includes('|')) continue;
+    // Skip separator rows like |---|---|
+    if (/^\|?[\s-:|]+\|?$/.test(trimmed)) continue;
+    // Parse pipe-delimited cells
+    const cells = trimmed.split('|')
+      .map(c => c.trim())
+      .filter(c => c.length > 0);
+    if (cells.length > 0) return cells;
+  }
+  return [];
+}
+
+/**
+ * Count table dimensions from markdown pipe-delimited text.
+ * Counts data rows (excludes header and separator rows).
+ */
+function countTableDimensionsFromMarkdown(tableMarkdown: string): { rowCount: number; columnCount: number } {
+  const lines = tableMarkdown.split('\n').filter(l => l.trim().length > 0 && l.includes('|'));
+  if (lines.length === 0) return { rowCount: 0, columnCount: 0 };
+
+  let maxCols = 0;
+  let headerFound = false;
+  let dataRows = 0;
+
+  for (const line of lines) {
+    const trimmed = line.trim();
+    // Check if separator row
+    if (/^\|?[\s-:|]+\|?$/.test(trimmed)) {
+      continue;
+    }
+    const cells = trimmed.split('|').map(c => c.trim()).filter(c => c.length > 0);
+    if (cells.length > maxCols) maxCols = cells.length;
+
+    if (!headerFound) {
+      headerFound = true; // first non-separator row is the header
+    } else {
+      dataRows++;
+    }
+  }
+
+  return { rowCount: dataRows, columnCount: maxCols };
+}
+
+/**
+ * Extract values from the first data row (after header and separator) of markdown table.
+ */
+function extractFirstDataRow(tableMarkdown: string): string[] {
+  const lines = tableMarkdown.split('\n').filter(l => l.trim().length > 0 && l.includes('|'));
+  let headerSeen = false;
+  let separatorSeen = false;
+
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (/^\|?[\s-:|]+\|?$/.test(trimmed)) {
+      separatorSeen = true;
+      continue;
+    }
+    if (!headerSeen) {
+      headerSeen = true;
+      continue;
+    }
+    if (separatorSeen || headerSeen) {
+      // This is the first data row
+      return trimmed.split('|').map(c => c.trim()).filter(c => c.length > 0);
+    }
+  }
+  return [];
+}
+
+/**
+ * Generate a human-readable summary of table content.
+ * Format: "Table with N rows and columns: col1, col2. Sample: val1, val2"
+ * Max 200 chars.
+ */
+export function generateTableSummary(
+  columnHeaders: string[],
+  rowCount: number,
+  firstRowValues: string[],
+  caption?: string,
+): string {
+  const parts: string[] = [];
+
+  if (caption) {
+    parts.push(caption);
+  }
+
+  const rowDesc = rowCount > 0 ? `${rowCount} rows` : 'rows';
+  if (columnHeaders.length > 0) {
+    parts.push(`Table with ${rowDesc} and columns: ${columnHeaders.join(', ')}`);
+  } else {
+    parts.push(`Table with ${rowDesc}`);
+  }
+
+  if (firstRowValues.length > 0) {
+    parts.push(`Sample: ${firstRowValues.join(', ')}`);
+  }
+
+  let summary = parts.join('. ');
+  if (summary.length > 200) {
+    summary = summary.slice(0, 197) + '...';
+  }
+  return summary;
+}
+
+/**
+ * Detect cross-page table continuations by comparing column headers.
+ * Consecutive tables with matching headers on adjacent pages are linked.
+ */
+function detectTableContinuations(structures: TableStructure[]): void {
+  if (structures.length < 2) return;
+
+  for (let i = 1; i < structures.length; i++) {
+    const prev = structures[i - 1];
+    const curr = structures[i];
+
+    // Both must have column headers to compare
+    if (prev.columnHeaders.length === 0 || curr.columnHeaders.length === 0) continue;
+
+    // Must be on adjacent pages (or page info unavailable)
+    if (prev.pageNumber !== null && curr.pageNumber !== null) {
+      if (curr.pageNumber - prev.pageNumber > 1) continue;
+    }
+
+    // Compare column headers: exact match or >80% overlap
+    const overlap = columnHeaderOverlap(prev.columnHeaders, curr.columnHeaders);
+    if (overlap >= 0.8) {
+      curr.continuationOf = i - 1;
+    }
+  }
+}
+
+/**
+ * Compute Sorensen-Dice similarity between two column header arrays.
+ */
+function columnHeaderOverlap(a: string[], b: string[]): number {
+  if (a.length === 0 && b.length === 0) return 1;
+  if (a.length === 0 || b.length === 0) return 0;
+
+  const setA = new Set(a.map(h => h.toLowerCase().trim()));
+  const setB = new Set(b.map(h => h.toLowerCase().trim()));
+  let intersection = 0;
+  for (const h of setA) {
+    if (setB.has(h)) intersection++;
+  }
+  return (2 * intersection) / (setA.size + setB.size);
 }
 
 /**

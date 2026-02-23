@@ -33,7 +33,7 @@ import { BM25SearchService, sanitizeFTS5Query } from '../services/search/bm25.js
 import { RRFFusion, type RankedResult } from '../services/search/fusion.js';
 import { rerankResults } from '../services/search/reranker.js';
 import { expandQuery, getExpandedTerms } from '../services/search/query-expander.js';
-import { classifyQuery } from '../services/search/query-classifier.js';
+import { classifyQuery, isTableQuery } from '../services/search/query-classifier.js';
 import { getClusterSummariesForDocument } from '../services/storage/database/cluster-operations.js';
 import { getImage } from '../services/storage/database/image-operations.js';
 import { computeBlockConfidence, isRepeatedHeaderFooter } from '../services/chunking/json-block-analyzer.js';
@@ -1166,11 +1166,12 @@ async function handleSearchSemanticInternal(params: Record<string, unknown>): Pr
     const conn = db.getConnection();
 
     // Expand query with domain-specific synonyms + corpus cluster terms if requested
+    const tableQueryDetected = isTableQuery(input.query);
     let searchQuery = input.query;
     let queryExpansion: QueryExpansionInfo | undefined;
     if (input.expand_query) {
-      searchQuery = expandQuery(input.query, db);
-      queryExpansion = getExpandedTerms(input.query, db);
+      searchQuery = expandQuery(input.query, db, tableQueryDetected);
+      queryExpansion = getExpandedTerms(input.query, db, tableQueryDetected);
     }
 
     // Resolve metadata filter to document IDs, then chain through quality + cluster filters
@@ -1505,11 +1506,12 @@ async function handleSearchKeywordInternal(params: Record<string, unknown>): Pro
     const conn = db.getConnection();
 
     // Expand query with domain-specific synonyms + corpus cluster terms if requested
+    const tableQueryDetected = isTableQuery(input.query);
     let searchQuery = input.query;
     let queryExpansion: QueryExpansionInfo | undefined;
     if (input.expand_query) {
-      searchQuery = expandQuery(input.query, db);
-      queryExpansion = getExpandedTerms(input.query, db);
+      searchQuery = expandQuery(input.query, db, tableQueryDetected);
+      queryExpansion = getExpandedTerms(input.query, db, tableQueryDetected);
     }
 
     // Resolve metadata filter to document IDs, then chain through quality + cluster filters
@@ -1776,11 +1778,12 @@ async function handleSearchHybridInternal(params: Record<string, unknown>): Prom
     }
 
     // Expand query with domain-specific synonyms + corpus cluster terms if requested
+    const tableQueryDetected = isTableQuery(input.query);
     let searchQuery = input.query;
     let queryExpansion: QueryExpansionInfo | undefined;
     if (input.expand_query) {
-      searchQuery = expandQuery(input.query, db);
-      queryExpansion = getExpandedTerms(input.query, db);
+      searchQuery = expandQuery(input.query, db, tableQueryDetected);
+      queryExpansion = getExpandedTerms(input.query, db, tableQueryDetected);
     }
 
     // Resolve metadata filter to document IDs, then chain through quality + cluster filters

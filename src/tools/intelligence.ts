@@ -93,10 +93,21 @@ function extractTablesFromBlocks(blocks: Array<Record<string, unknown>>): Parsed
   function walkBlock(block: Record<string, unknown>, pageNumber: number | null): void {
     const blockType = block.block_type as string | undefined;
 
-    // Track page number from Page blocks
-    const currentPage = blockType === 'Page' && typeof block.id === 'number'
-      ? (block.id as number) + 1
-      : pageNumber;
+    // Track page number from Page blocks (handle both number and numeric string IDs)
+    let currentPage = pageNumber;
+    if (blockType === 'Page') {
+      if (typeof block.id === 'number') {
+        currentPage = (block.id as number) + 1;
+      } else if (typeof block.id === 'string' && /^\d+$/.test(block.id as string)) {
+        currentPage = parseInt(block.id as string, 10) + 1;
+      } else if (typeof block.page === 'number') {
+        currentPage = (block.page as number) + 1;
+      }
+    }
+    // Fallback: if block has a page field, use it
+    if (currentPage === null && typeof block.page === 'number') {
+      currentPage = (block.page as number) + 1;
+    }
 
     if (blockType === 'Table') {
       const table = parseTableBlock(block, tables.length, currentPage);
@@ -577,7 +588,15 @@ async function handleDocumentTables(params: Record<string, unknown>): Promise<To
 
     let blocks: Array<Record<string, unknown>>;
     try {
-      blocks = JSON.parse(ocrRow.json_blocks) as Array<Record<string, unknown>>;
+      const parsed = JSON.parse(ocrRow.json_blocks) as unknown;
+      // Handle both formats: flat array or {children: [...], metadata: {...}}
+      if (Array.isArray(parsed)) {
+        blocks = parsed as Array<Record<string, unknown>>;
+      } else if (parsed && typeof parsed === 'object' && Array.isArray((parsed as Record<string, unknown>).children)) {
+        blocks = (parsed as Record<string, unknown>).children as Array<Record<string, unknown>>;
+      } else {
+        blocks = [];
+      }
     } catch (parseErr) {
       console.error(`[DocumentTables] Failed to parse json_blocks for ${input.document_id}: ${String(parseErr)}`);
       return formatResponse(successResult({
@@ -590,7 +609,7 @@ async function handleDocumentTables(params: Record<string, unknown>): Promise<To
       }));
     }
 
-    if (!Array.isArray(blocks) || blocks.length === 0) {
+    if (blocks.length === 0) {
       return formatResponse(successResult({
         document_id: input.document_id,
         file_name: doc.file_name,
@@ -906,6 +925,237 @@ async function handleDocumentExtras(params: Record<string, unknown>): Promise<To
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
+// INPUT SCHEMA: ocr_table_export
+// ═══════════════════════════════════════════════════════════════════════════════
+
+const TableExportInput = z.object({
+  document_id: z.string().min(1).describe('Document ID to export tables from'),
+  table_index: z.number().int().min(0).optional()
+    .describe('Specific table index (0-based). Omit to export all tables.'),
+  format: z.enum(['csv', 'json', 'markdown']).default('json')
+    .describe('Export format: csv (RFC 4180), json (structured), or markdown (pipe-delimited)'),
+});
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// HANDLER: ocr_table_export
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/**
+ * Handle ocr_table_export - Export table data in CSV, JSON, or markdown format
+ */
+async function handleTableExport(params: Record<string, unknown>): Promise<ToolResponse> {
+  try {
+    const input = validateInput(TableExportInput, params);
+    const { db } = requireDatabase();
+
+    // Verify document exists
+    const doc = db.getDocument(input.document_id);
+    if (!doc) {
+      throw documentNotFoundError(input.document_id);
+    }
+
+    // Get json_blocks from ocr_results
+    const ocrRow = db.getConnection()
+      .prepare('SELECT json_blocks FROM ocr_results WHERE document_id = ?')
+      .get(input.document_id) as { json_blocks: string | null } | undefined;
+
+    const exportNextSteps = [
+      { tool: 'ocr_document_tables', description: 'View table structure and cell data' },
+      { tool: 'ocr_search', description: 'Search for related content' },
+    ];
+
+    if (!ocrRow?.json_blocks) {
+      return formatResponse(successResult({
+        document_id: input.document_id,
+        file_name: doc.file_name,
+        tables: [],
+        total_tables: 0,
+        format: input.format,
+        message: 'No OCR results or JSON blocks available for export.',
+        next_steps: exportNextSteps,
+      }));
+    }
+
+    let blocks: Array<Record<string, unknown>>;
+    try {
+      const parsed = JSON.parse(ocrRow.json_blocks) as unknown;
+      if (Array.isArray(parsed)) {
+        blocks = parsed as Array<Record<string, unknown>>;
+      } else if (parsed && typeof parsed === 'object' && Array.isArray((parsed as Record<string, unknown>).children)) {
+        blocks = (parsed as Record<string, unknown>).children as Array<Record<string, unknown>>;
+      } else {
+        blocks = [];
+      }
+    } catch {
+      return formatResponse(successResult({
+        document_id: input.document_id,
+        file_name: doc.file_name,
+        tables: [],
+        total_tables: 0,
+        format: input.format,
+        message: 'Failed to parse JSON blocks.',
+        next_steps: exportNextSteps,
+      }));
+    }
+
+    const allTables = extractTablesFromBlocks(blocks);
+
+    // Filter by table_index if specified
+    let tables: ParsedTable[];
+    if (input.table_index !== undefined) {
+      if (input.table_index >= allTables.length) {
+        return formatResponse(successResult({
+          document_id: input.document_id,
+          file_name: doc.file_name,
+          total_tables: allTables.length,
+          requested_index: input.table_index,
+          format: input.format,
+          message: `Table index ${input.table_index} out of range. Document has ${allTables.length} table(s).`,
+          next_steps: exportNextSteps,
+        }));
+      }
+      tables = [allTables[input.table_index]];
+    } else {
+      tables = allTables;
+    }
+
+    // Format output based on requested format
+    if (input.format === 'csv') {
+      const csvQuote = (value: string): string => `"${value.replace(/"/g, '""')}"`;
+      const csvParts: string[] = [];
+
+      for (const table of tables) {
+        if (table.cells.length === 0) continue;
+        // Build row map
+        const rowMap = new Map<number, Map<number, string>>();
+        for (const cell of table.cells) {
+          if (!rowMap.has(cell.row)) rowMap.set(cell.row, new Map());
+          rowMap.get(cell.row)!.set(cell.col, cell.text);
+        }
+
+        const maxRow = table.row_count > 0 ? table.row_count - 1 : Math.max(...table.cells.map(c => c.row));
+        const maxCol = table.column_count > 0 ? table.column_count - 1 : Math.max(...table.cells.map(c => c.col));
+
+        const lines: string[] = [];
+        for (let r = 0; r <= maxRow; r++) {
+          const row = rowMap.get(r);
+          const cols: string[] = [];
+          for (let c = 0; c <= maxCol; c++) {
+            cols.push(csvQuote(row?.get(c) ?? ''));
+          }
+          lines.push(cols.join(','));
+        }
+        csvParts.push(lines.join('\n'));
+      }
+
+      return formatResponse(successResult({
+        document_id: input.document_id,
+        file_name: doc.file_name,
+        total_tables: allTables.length,
+        exported_tables: tables.length,
+        format: 'csv',
+        data: csvParts.join('\n\n'),
+        next_steps: exportNextSteps,
+      }));
+    }
+
+    if (input.format === 'markdown') {
+      const mdParts: string[] = [];
+
+      for (const table of tables) {
+        if (table.cells.length === 0) continue;
+        const rowMap = new Map<number, Map<number, string>>();
+        for (const cell of table.cells) {
+          if (!rowMap.has(cell.row)) rowMap.set(cell.row, new Map());
+          rowMap.get(cell.row)!.set(cell.col, cell.text);
+        }
+
+        const maxRow = table.row_count > 0 ? table.row_count - 1 : Math.max(...table.cells.map(c => c.row));
+        const maxCol = table.column_count > 0 ? table.column_count - 1 : Math.max(...table.cells.map(c => c.col));
+
+        const lines: string[] = [];
+        // Header row
+        const headerRow = rowMap.get(0);
+        const headerCells: string[] = [];
+        for (let c = 0; c <= maxCol; c++) {
+          headerCells.push(headerRow?.get(c) ?? '');
+        }
+        lines.push(`| ${headerCells.join(' | ')} |`);
+        lines.push(`| ${headerCells.map(() => '---').join(' | ')} |`);
+
+        // Data rows
+        for (let r = 1; r <= maxRow; r++) {
+          const row = rowMap.get(r);
+          const cells: string[] = [];
+          for (let c = 0; c <= maxCol; c++) {
+            cells.push(row?.get(c) ?? '');
+          }
+          lines.push(`| ${cells.join(' | ')} |`);
+        }
+        if (table.caption) {
+          lines.unshift(`**${table.caption}**`);
+        }
+        mdParts.push(lines.join('\n'));
+      }
+
+      return formatResponse(successResult({
+        document_id: input.document_id,
+        file_name: doc.file_name,
+        total_tables: allTables.length,
+        exported_tables: tables.length,
+        format: 'markdown',
+        data: mdParts.join('\n\n'),
+        next_steps: exportNextSteps,
+      }));
+    }
+
+    // Default: JSON format
+    const jsonTables = tables.map(t => {
+      // Build column names from first row
+      const colNames: string[] = [];
+      for (const cell of t.cells) {
+        if (cell.row === 0) {
+          colNames[cell.col] = cell.text;
+        }
+      }
+      // Build data rows
+      const rows: Record<string, string>[] = [];
+      const maxRow = t.row_count > 0 ? t.row_count - 1 : Math.max(0, ...t.cells.map(c => c.row));
+      for (let r = 1; r <= maxRow; r++) {
+        const rowCells = t.cells.filter(c => c.row === r);
+        const rowObj: Record<string, string> = {};
+        for (const cell of rowCells) {
+          const colName = colNames[cell.col] ?? `col_${cell.col}`;
+          rowObj[colName] = cell.text;
+        }
+        rows.push(rowObj);
+      }
+
+      return {
+        table_index: t.table_index,
+        page_number: t.page_number,
+        caption: t.caption,
+        columns: colNames.filter(Boolean),
+        row_count: rows.length,
+        rows,
+      };
+    });
+
+    return formatResponse(successResult({
+      document_id: input.document_id,
+      file_name: doc.file_name,
+      total_tables: allTables.length,
+      exported_tables: tables.length,
+      format: 'json',
+      tables: jsonTables,
+      next_steps: exportNextSteps,
+    }));
+  } catch (error) {
+    return handleError(error);
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
 // TOOL DEFINITIONS EXPORT
 // ═══════════════════════════════════════════════════════════════════════════════
 
@@ -936,5 +1186,11 @@ export const intelligenceTools: Record<string, ToolDefinition> = {
       '[ANALYSIS] Supplementary OCR data: charts, links, tracked changes, bounding boxes, infographics. Specify section to filter.',
     inputSchema: DocumentExtrasInput.shape,
     handler: handleDocumentExtras,
+  },
+  ocr_table_export: {
+    description:
+      '[ANALYSIS] Export table data as CSV, JSON, or markdown. Specify table_index for one table, or omit for all. JSON format returns rows with column-keyed objects.',
+    inputSchema: TableExportInput.shape,
+    handler: handleTableExport,
   },
 };

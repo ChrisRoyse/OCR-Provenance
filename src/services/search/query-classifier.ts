@@ -14,6 +14,8 @@ export interface QueryClassification {
   confidence: number;
   reasoning: string;
   detected_patterns: string[];
+  /** Whether the query contains table-related keywords */
+  is_table_query: boolean;
 }
 
 // Pattern detection rules (no Gemini needed - pure heuristics)
@@ -32,6 +34,22 @@ const SEMANTIC_INDICATORS: RegExp[] = [
   /\b(documents?|files?|papers?|records?) (about|on|regarding)\b/i,
 ];
 
+/** Patterns indicating the query targets table content */
+const TABLE_QUERY_PATTERNS: RegExp[] = [
+  /\b(table|tables|tabular)\b/i,
+  /\b(column|columns|row|rows|cell|cells)\b/i,
+  /\b(spreadsheet|grid|matrix)\b/i,
+  /\b(header|headers)\s+(of|in|from)\b/i,
+];
+
+/**
+ * Check if a query targets table content (columns, rows, etc.).
+ * Used to trigger table-aware query expansion.
+ */
+export function isTableQuery(query: string): boolean {
+  return TABLE_QUERY_PATTERNS.some(p => p.test(query));
+}
+
 /**
  * Classify a query string and recommend a search strategy.
  *
@@ -45,6 +63,7 @@ export function classifyQuery(query: string): QueryClassification {
   const detectedPatterns: string[] = [];
   let exactScore = 0;
   let semanticScore = 0;
+  const tableQuery = isTableQuery(query);
 
   for (const pattern of EXACT_PATTERNS) {
     if (pattern.test(query)) {
@@ -77,6 +96,7 @@ export function classifyQuery(query: string): QueryClassification {
       confidence: 0.5,
       reasoning: 'No strong indicators detected, defaulting to hybrid',
       detected_patterns: [],
+      is_table_query: tableQuery,
     };
   }
 
@@ -88,6 +108,7 @@ export function classifyQuery(query: string): QueryClassification {
       confidence: Math.min(exactRatio, 0.95),
       reasoning: `Strong exact-match patterns detected: ${detectedPatterns.join(', ')}`,
       detected_patterns: detectedPatterns,
+      is_table_query: tableQuery,
     };
   } else if (exactRatio < 0.3) {
     return {
@@ -96,6 +117,7 @@ export function classifyQuery(query: string): QueryClassification {
       confidence: Math.min(1 - exactRatio, 0.95),
       reasoning: `Semantic query patterns detected: ${detectedPatterns.join(', ')}`,
       detected_patterns: detectedPatterns,
+      is_table_query: tableQuery,
     };
   }
 
@@ -105,5 +127,6 @@ export function classifyQuery(query: string): QueryClassification {
     confidence: 0.6,
     reasoning: `Mix of exact and semantic patterns: ${detectedPatterns.join(', ')}`,
     detected_patterns: detectedPatterns,
+    is_table_query: tableQuery,
   };
 }
