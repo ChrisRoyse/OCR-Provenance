@@ -22,6 +22,7 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import Database from 'better-sqlite3';
 import { existsSync, mkdirSync, rmSync } from 'fs';
 import { join } from 'path';
+import { homedir } from 'os';
 import {
   createDatabase,
   deleteDatabase,
@@ -101,7 +102,7 @@ describe('V7 Intelligence Optimization E2E', () => {
     try { clearDatabase(); } catch { /* cleanup */ }
     try { deleteDatabase(DB_NAME); } catch { /* cleanup */ }
     // Filesystem fallback if deleteDatabase failed
-    const dbDir = require('path').join(require('os').homedir(), '.ocr-provenance', 'databases');
+    const dbDir = join(homedir(), '.ocr-provenance', 'databases');
     for (const suffix of ['', '-wal', '-shm']) {
       try { const p = `${dbDir}/${DB_NAME}.db${suffix}`; if (existsSync(p)) rmSync(p); } catch { /* cleanup */ }
     }
@@ -660,7 +661,7 @@ describe('V7 Intelligence Optimization E2E', () => {
 
     it('tool count verification: 101 total tools', async () => {
       // Count all exported tools across modules
-      const allTools = {
+      const _allTools = {
         ...documentTools,
         ...searchTools,
         ...reportTools,

@@ -39,7 +39,7 @@ describe('Phase 5: Provenance Query Tools', () => {
   let docId1: string;
   let docProvId1: string;
   let docId2: string;
-  let docProvId2: string;
+  let _docProvId2: string;
 
   beforeAll(() => {
     tempDir = createTempDir('test-prov-tools-');
@@ -156,7 +156,7 @@ describe('Phase 5: Provenance Query Tools', () => {
 
     // ---- Document 2: smaller pipeline (DOC -> OCR) ----
     const rootId2 = uuidv4();
-    docProvId2 = rootId2;
+    _docProvId2 = rootId2;
 
     const pDoc2 = createTestProvenance({
       id: rootId2,

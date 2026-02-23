@@ -24,6 +24,13 @@ interface BM25SearchOptions {
   chunkFilter?: ChunkFilterSQL;
   /** Page range filter applied to VLM/extraction searches (which lack chunk metadata) */
   pageRangeFilter?: { min_page?: number; max_page?: number };
+  /**
+   * When true, the query is already a valid FTS5 expression (e.g. OR-joined
+   * terms from expandQuery) and must NOT be re-processed by sanitizeFTS5Query().
+   * Re-processing would insert implicit AND between consecutive non-operator
+   * tokens, corrupting the OR semantics (H-2 fix).
+   */
+  preSanitized?: boolean;
 }
 
 interface BM25SearchResult {
@@ -104,13 +111,21 @@ export class BM25SearchService {
       documentFilter,
       includeHighlight = true,
       chunkFilter,
+      preSanitized = false,
     } = options;
 
     if (!query || query.trim().length === 0) {
       throw new Error('BM25 search query cannot be empty');
     }
 
-    const ftsQuery = phraseSearch ? `"${query.replace(/"/g, '""')}"` : sanitizeFTS5Query(query);
+    let ftsQuery: string;
+    if (phraseSearch) {
+      ftsQuery = `"${query.replace(/"/g, '""')}"`;
+    } else if (preSanitized) {
+      ftsQuery = query;
+    } else {
+      ftsQuery = sanitizeFTS5Query(query);
+    }
 
     let sql = `
       SELECT
@@ -232,6 +247,7 @@ export class BM25SearchService {
       documentFilter,
       includeHighlight = true,
       pageRangeFilter,
+      preSanitized = false,
     } = options;
 
     if (!query || query.trim().length === 0) {
@@ -244,7 +260,14 @@ export class BM25SearchService {
       .get();
     if (!vlmFtsExists) return [];
 
-    const ftsQuery = phraseSearch ? `"${query.replace(/"/g, '""')}"` : sanitizeFTS5Query(query);
+    let ftsQuery: string;
+    if (phraseSearch) {
+      ftsQuery = `"${query.replace(/"/g, '""')}"`;
+    } else if (preSanitized) {
+      ftsQuery = query;
+    } else {
+      ftsQuery = sanitizeFTS5Query(query);
+    }
 
     let sql = `
       SELECT
@@ -342,6 +365,7 @@ export class BM25SearchService {
       phraseSearch = false,
       documentFilter,
       includeHighlight = true,
+      preSanitized = false,
     } = options;
 
     if (!query || query.trim().length === 0) {
@@ -354,7 +378,14 @@ export class BM25SearchService {
       .get();
     if (!ftsExists) return [];
 
-    const ftsQuery = phraseSearch ? `"${query.replace(/"/g, '""')}"` : sanitizeFTS5Query(query);
+    let ftsQuery: string;
+    if (phraseSearch) {
+      ftsQuery = `"${query.replace(/"/g, '""')}"`;
+    } else if (preSanitized) {
+      ftsQuery = query;
+    } else {
+      ftsQuery = sanitizeFTS5Query(query);
+    }
 
     let sql = `
       SELECT

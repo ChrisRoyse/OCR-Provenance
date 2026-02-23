@@ -220,14 +220,6 @@ export function listDatabases(storagePath?: string): DatabaseInfo[] {
           });
         }
       } finally {
-        try {
-          db.pragma('optimize');
-        } catch (error) {
-          console.error(
-            '[static-operations] pragma optimize failed during listDatabases:',
-            error instanceof Error ? error.message : String(error)
-          );
-        }
         db.close();
       }
     } catch (error) {

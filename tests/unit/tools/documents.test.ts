@@ -957,10 +957,19 @@ describe('Edge Cases', () => {
         state.currentDatabase = db;
         state.currentDatabaseName = dbName;
 
-        insertTestDocument(db, uuidv4(), 'doc1.txt', '/test/doc1.txt');
-        // Small delay to ensure different timestamps
-        await new Promise((resolve) => setTimeout(resolve, 10));
-        insertTestDocument(db, uuidv4(), 'doc2.txt', '/test/doc2.txt');
+        // Use explicit timestamps to guarantee ordering without timing dependency
+        const docId1 = uuidv4();
+        const docId2 = uuidv4();
+        insertTestDocument(db, docId1, 'doc1.txt', '/test/doc1.txt');
+
+        // Update doc1 to have an earlier timestamp via direct SQL
+        const conn = db.getConnection();
+        conn.prepare('UPDATE documents SET created_at = ? WHERE id = ?')
+          .run('2025-01-01T00:00:00.000Z', docId1);
+
+        insertTestDocument(db, docId2, 'doc2.txt', '/test/doc2.txt');
+        conn.prepare('UPDATE documents SET created_at = ? WHERE id = ?')
+          .run('2025-01-02T00:00:00.000Z', docId2);
 
         const response = await handleDocumentList({});
         const result = parseResponse(response);
@@ -973,26 +982,6 @@ describe('Edge Cases', () => {
         expect(documents[1].file_name).toBe('doc1.txt');
       }
     );
-
-    it.skipIf(!sqliteVecAvailable)('list sorts by created_at descending (default)', async () => {
-      const db = DatabaseService.create(dbName, undefined, tempDir);
-      state.currentDatabase = db;
-      state.currentDatabaseName = dbName;
-
-      insertTestDocument(db, uuidv4(), 'first.txt', '/test/first.txt');
-      // Small delay to ensure different timestamps
-      await new Promise((resolve) => setTimeout(resolve, 10));
-      insertTestDocument(db, uuidv4(), 'second.txt', '/test/second.txt');
-
-      const response = await handleDocumentList({});
-      const result = parseResponse(response);
-
-      expect(result.success).toBe(true);
-      const documents = result.data?.documents as Array<Record<string, unknown>>;
-      expect(documents).toHaveLength(2);
-      // Most recent should be first
-      expect(documents[0].file_name).toBe('second.txt');
-    });
   });
 
   describe('Edge Case 7: Delete Cascade Verification', () => {

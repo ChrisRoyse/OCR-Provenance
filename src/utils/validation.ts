@@ -14,9 +14,6 @@
 import { z } from 'zod';
 import * as path from 'path';
 import { homedir } from 'os';
-import { createRequire } from 'module';
-
-const require = createRequire(import.meta.url);
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // CUSTOM ERROR CLASS
@@ -328,10 +325,10 @@ export const SearchFilters = z.object({
     .describe('Filter to table chunks whose column headers contain this text (case-insensitive match on stored table_columns in processing_params)'),
   min_quality_score: z
     .number()
-    .min(0)
+    .min(0.01)
     .max(5)
     .optional()
-    .describe('Minimum OCR quality score (0-5). Filters documents with low-quality OCR results.'),
+    .describe('Minimum OCR quality score (0.01-5). Filters to documents with quality >= threshold. Use 0.01 for "all scored documents".'),
 }).optional().default({});
 
 /**
@@ -513,18 +510,11 @@ export const ConfigSetInput = z.object({
  * This function is called lazily so it picks up the current config at call time.
  */
 function getDefaultAllowedBaseDirs(): string[] {
-  // Lazy require to avoid circular dependency (validation.ts is imported by tools
-  // which are imported by state.ts consumers). We only need the config value.
-  let storagePath: string;
-  try {
-    // Synchronous require via createRequire (same pattern as vector.ts, schema-helpers.ts).
-    // Reads DEFAULT_STORAGE_PATH from helpers module which has no circular deps.
-    const { DEFAULT_STORAGE_PATH } = require('../services/storage/database/helpers.js');
-    storagePath = DEFAULT_STORAGE_PATH;
-  } catch (error) {
-    console.error(`[validation] Failed to load DEFAULT_STORAGE_PATH from helpers module: ${error instanceof Error ? error.message : String(error)}`);
-    storagePath = path.join(homedir(), '.ocr-provenance', 'databases');
-  }
+  // Inline the default storage path computation to avoid circular dependency and
+  // module resolution failures (M-8: createRequire fails during vitest because
+  // it resolves .js from src/ where only .ts files exist). This matches the
+  // value in src/services/storage/database/helpers.ts DEFAULT_STORAGE_PATH.
+  const storagePath = path.join(homedir(), '.ocr-provenance', 'databases');
 
   return [
     path.resolve(storagePath),

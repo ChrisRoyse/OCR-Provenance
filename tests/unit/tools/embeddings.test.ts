@@ -8,7 +8,7 @@
  * NO MOCK DATA.
  */
 
-import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { v4 as uuidv4 } from 'uuid';
 import {
   createTempDir,
@@ -339,7 +339,7 @@ describe('handleEmbeddingGet', () => {
   const dbName = createUniqueName('emb-get-tool');
   let chunkEmbId: string;
   let imageEmbId: string;
-  let chunkEmbProvId: string;
+  let _chunkEmbProvId: string;
 
   beforeAll(() => {
     tempDir = createTempDir('emb-get-tool-');
@@ -387,7 +387,7 @@ describe('handleEmbeddingGet', () => {
       chain_depth: 3,
     });
     db.insertProvenance(embProv);
-    chunkEmbProvId = embProv.id;
+    _chunkEmbProvId = embProv.id;
     const emb = createTestEmbedding(chunk.id, doc.id, embProv.id, {
       image_id: null,
       extraction_id: null,

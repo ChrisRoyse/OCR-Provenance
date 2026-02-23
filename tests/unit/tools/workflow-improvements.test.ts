@@ -7,7 +7,7 @@
  * NO MOCK DATA - Uses real DatabaseService instances with temp databases.
  */
 
-import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { v4 as uuidv4 } from 'uuid';
 import {
   createTempDir,
@@ -33,7 +33,7 @@ import { ingestionTools } from '../../../src/tools/ingestion.js';
 import { embeddingTools } from '../../../src/tools/embeddings.js';
 import {
   insertUploadedFile,
-  listUploadedFiles,
+  listUploadedFiles as _listUploadedFiles,
 } from '../../../src/services/storage/database/upload-operations.js';
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -363,7 +363,7 @@ describe('ocr_embedding_rebuild (document re-embed, merged from ocr_reembed_docu
 
   it('should delete old embeddings when re-embedding', { timeout: 120000 }, async () => {
     const { db } = requireDatabase();
-    const conn = db.getConnection();
+    const _conn = db.getConnection();
 
     // Create full document pipeline: provenance -> document -> OCR -> chunk -> embedding
     const docProvId = uuidv4();

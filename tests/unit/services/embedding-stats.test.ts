@@ -29,9 +29,9 @@ describe('getEmbeddingsFiltered', () => {
 
   // Shared test data IDs
   let docId1: string;
-  let docId2: string;
+  let _docId2: string;
   let chunkEmbId1: string;
-  let chunkEmbId2: string;
+  let _chunkEmbId2: string;
   let imageEmbId: string;
 
   beforeAll(() => {
@@ -91,7 +91,7 @@ describe('getEmbeddingsFiltered', () => {
     const docProv2 = createTestProvenance();
     db.insertProvenance(docProv2);
     const doc2 = createTestDocument(docProv2.id);
-    docId2 = doc2.id;
+    _docId2 = doc2.id;
     db.insertDocument(doc2);
 
     const ocrProv2 = createTestProvenance({
@@ -130,7 +130,7 @@ describe('getEmbeddingsFiltered', () => {
       model_name: 'nomic-embed-text-v1.5',
       generation_duration_ms: 30,
     });
-    chunkEmbId2 = emb2.id;
+    _chunkEmbId2 = emb2.id;
     db.insertEmbedding(emb2);
 
     // Create an image embedding for doc1 (no chunk, has image_id)

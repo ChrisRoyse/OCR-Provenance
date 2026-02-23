@@ -11,7 +11,7 @@
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { randomUUID } from 'crypto';
-import { existsSync, mkdirSync, writeFileSync, rmSync } from 'fs';
+import { existsSync, mkdirSync, readFileSync, rmSync } from 'fs';
 import { join } from 'path';
 import Database from 'better-sqlite3';
 
@@ -33,9 +33,9 @@ import { reportTools } from '../../src/tools/reports.js';
 import { comparisonTools } from '../../src/tools/comparison.js';
 import { clusteringTools } from '../../src/tools/clustering.js';
 import { fileManagementTools } from '../../src/tools/file-management.js';
-import { ingestionTools } from '../../src/tools/ingestion.js';
+import { ingestionTools as _ingestionTools } from '../../src/tools/ingestion.js';
 import { tagTools } from '../../src/tools/tags.js';
-import { searchTools } from '../../src/tools/search.js';
+import { searchTools as _searchTools } from '../../src/tools/search.js';
 
 // ===============================================================================
 // HELPERS
@@ -957,7 +957,7 @@ describe('Gap Closure Phases 0-10: Manual E2E Test', () => {
 
       // Verify file exists and is valid JSON
       expect(existsSync(outputPath)).toBe(true);
-      const content = JSON.parse(require('fs').readFileSync(outputPath, 'utf-8'));
+      const content = JSON.parse(readFileSync(outputPath, 'utf-8'));
       expect(content.document.id).toBe(DOC_ID_1);
       expect(content.chunks.length).toBe(4);
     });
@@ -992,7 +992,7 @@ describe('Gap Closure Phases 0-10: Manual E2E Test', () => {
 
       // Verify file
       expect(existsSync(outputPath)).toBe(true);
-      const content = JSON.parse(require('fs').readFileSync(outputPath, 'utf-8'));
+      const content = JSON.parse(readFileSync(outputPath, 'utf-8'));
       expect(Array.isArray(content)).toBe(true);
       expect(content.length).toBeGreaterThanOrEqual(2);
     });

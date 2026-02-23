@@ -4,7 +4,7 @@
  * NO MOCK DATA - Uses real DatabaseService instances with temp databases.
  */
 
-import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { readFileSync, existsSync } from 'fs';
 import { join } from 'path';
 import { v4 as uuidv4 } from 'uuid';
@@ -408,9 +408,9 @@ describe('ocr_corpus_export', () => {
   it('should export corpus in JSON format with 3 documents', async () => {
     const { db } = requireDatabase();
 
-    const doc1 = insertDocWithChunks(db, 'doc1.pdf', ['Chunk A1', 'Chunk A2']);
-    const doc2 = insertDocWithChunks(db, 'doc2.pdf', ['Chunk B1']);
-    const doc3 = insertDocWithChunks(db, 'doc3.pdf', ['Chunk C1', 'Chunk C2', 'Chunk C3']);
+    const _doc1 = insertDocWithChunks(db, 'doc1.pdf', ['Chunk A1', 'Chunk A2']);
+    const _doc2 = insertDocWithChunks(db, 'doc2.pdf', ['Chunk B1']);
+    const _doc3 = insertDocWithChunks(db, 'doc3.pdf', ['Chunk C1', 'Chunk C2', 'Chunk C3']);
 
     const outputPath = join(exportDir, 'corpus.json');
     const result = await handleCorpusExport({

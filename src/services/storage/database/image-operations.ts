@@ -205,15 +205,11 @@ export function listImages(db: Database.Database, options?: ListImagesOptions): 
 
   query += ' ORDER BY created_at DESC';
 
-  if (options?.limit !== undefined) {
-    query += ' LIMIT ?';
-    params.push(options.limit);
-  }
+  const limit = options?.limit ?? 10000;
+  query += ' LIMIT ?';
+  params.push(limit);
 
   if (options?.offset !== undefined) {
-    if (options?.limit === undefined) {
-      query += ' LIMIT 10000'; // Bounded default matching listDocuments pattern
-    }
     query += ' OFFSET ?';
     params.push(options.offset);
   }

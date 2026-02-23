@@ -10,9 +10,9 @@ dotenv.config({ path: '/home/cabdru/datalab/.env' });
 
 import Database from 'better-sqlite3';
 import {
-  createDatabase,
-  selectDatabase,
-  requireDatabase,
+  createDatabase as _createDatabase,
+  selectDatabase as _selectDatabase,
+  requireDatabase as _requireDatabase,
 } from '../../src/server/state.js';
 import { databaseTools } from '../../src/tools/database.js';
 import { ingestionTools } from '../../src/tools/ingestion.js';

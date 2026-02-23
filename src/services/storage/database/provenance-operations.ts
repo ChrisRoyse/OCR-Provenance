@@ -86,15 +86,21 @@ export function getProvenance(db: Database.Database, id: string): ProvenanceReco
 export function getProvenanceChain(db: Database.Database, id: string): ProvenanceRecord[] {
   const chain: ProvenanceRecord[] = [];
   let currentId: string | null = id;
+  const seen = new Set<string>();
 
   const MAX_CHAIN_DEPTH = 100;
   let iterations = 0;
   while (currentId !== null) {
+    if (seen.has(currentId)) {
+      throw new Error(`Circular reference detected in provenance chain at record ${currentId}`);
+    }
+    seen.add(currentId);
+
     if (++iterations > MAX_CHAIN_DEPTH) {
-      console.error(
-        `[ERROR] Provenance chain walk exceeded ${MAX_CHAIN_DEPTH} iterations -- possible circular reference at ${currentId}`
+      throw new Error(
+        `Provenance chain walk exceeded ${MAX_CHAIN_DEPTH} iterations at record ${currentId} — ` +
+        `possible circular reference. Chain collected so far: ${chain.length} records.`
       );
-      break;
     }
     const record = getProvenance(db, currentId);
     if (!record) {
@@ -144,7 +150,7 @@ export function getProvenanceByRootDocument(
  * @returns ProvenanceRecord[] - Array of child records
  */
 export function getProvenanceChildren(db: Database.Database, parentId: string): ProvenanceRecord[] {
-  const stmt = db.prepare('SELECT * FROM provenance WHERE parent_id = ? ORDER BY created_at');
+  const stmt = db.prepare('SELECT * FROM provenance WHERE parent_id = ? ORDER BY created_at LIMIT 10000');
   const rows = stmt.all(parentId) as ProvenanceRow[];
   return rows.map(rowToProvenance);
 }
@@ -235,11 +241,12 @@ export function queryProvenance(
   const countRow = countStmt.get(...params) as { count: number };
   const total = countRow.count;
 
-  // Validate and apply ordering
-  const validOrderColumns = ['created_at', 'processing_duration_ms', 'processing_quality_score'];
-  const orderBy = validOrderColumns.includes(filters.order_by ?? '')
-    ? filters.order_by!
-    : 'created_at';
+  // Validate and apply ordering with whitelist guard
+  const VALID_ORDER_COLUMNS = new Set(['created_at', 'processing_duration_ms', 'processing_quality_score']);
+  const orderBy = filters.order_by ?? 'created_at';
+  if (!VALID_ORDER_COLUMNS.has(orderBy)) {
+    throw new Error(`Invalid order column: ${orderBy}`);
+  }
   const orderDir = filters.order_dir === 'asc' ? 'ASC' : 'DESC';
 
   const limit = filters.limit ?? 50;

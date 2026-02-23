@@ -75,4 +75,12 @@ describe('sqlite-vec availability', () => {
       expect(sqliteVecAvailable).toBe(false);
     }
   });
+
+  it('sqlite-vec should be available in CI', () => {
+    if (process.env.CI) {
+      // In CI environments, sqlite-vec MUST be available. If not, ~690 tests
+      // silently skip, giving a false sense of coverage.
+      expect(sqliteVecAvailable).toBe(true);
+    }
+  });
 });

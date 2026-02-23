@@ -13,6 +13,29 @@
 
 import type { DatabaseService } from '../storage/database/index.js';
 
+/** FTS5 metacharacters that must be stripped from expansion terms */
+const FTS5_METACHAR_RE = /['"()*:^~+{}[\]\\;@<>#!$%&|,./`?-]/g;
+
+/** FTS5 boolean operators that corrupt query semantics if used as literal terms */
+const FTS5_OPERATOR_WORDS = new Set(['AND', 'OR', 'NOT']);
+
+/**
+ * Sanitize a single term for safe inclusion in an FTS5 OR-joined query.
+ *
+ * 1. Strips all FTS5 metacharacters
+ * 2. Returns empty string if the cleaned term is an FTS5 operator (AND/OR/NOT)
+ *    to prevent accidental operator injection from corpus/table data
+ *
+ * @param term - Raw term from corpus clusters, table columns, or synonyms
+ * @returns Sanitized term safe for FTS5, or empty string if term should be skipped
+ */
+export function sanitizeFTS5Term(term: string): string {
+  const cleaned = term.replace(FTS5_METACHAR_RE, '').trim();
+  if (cleaned.length === 0) return '';
+  if (FTS5_OPERATOR_WORDS.has(cleaned.toUpperCase())) return '';
+  return cleaned;
+}
+
 const SYNONYM_MAP: Record<string, string[]> = {
   // Legal terms
   injury: ['wound', 'trauma', 'harm', 'damage'],
@@ -83,8 +106,10 @@ export function getTableColumnExpansionTerms(
       const colLower = col.toLowerCase();
       for (const word of queryWords) {
         if (colLower.includes(word) || word.includes(colLower)) {
-          // Add individual words from the column name
-          const colWords = col.split(/\s+/).filter(w => w.length > 2);
+          // Add individual words from the column name, sanitized for FTS5 safety
+          const colWords = col.split(/\s+/)
+            .map(w => sanitizeFTS5Term(w))
+            .filter(w => w.length > 2);
           terms.push(...colWords);
           break;
         }
@@ -237,27 +262,50 @@ export function expandQuery(query: string, db?: DatabaseService, isTableQuery?: 
     .toLowerCase()
     .split(/\s+/)
     .filter((w) => w.length > 0);
-  const expanded = new Set<string>(words);
+
+  // Sanitize every term (including original query words) before adding to the set.
+  // This ensures the final OR-joined string is a valid FTS5 expression with no
+  // metacharacters or accidental operator words from any source.
+  const expanded = new Set<string>();
+  for (const w of words) {
+    const safe = sanitizeFTS5Term(w);
+    if (safe.length > 0) expanded.add(safe);
+  }
 
   for (const word of words) {
     const synonyms = SYNONYM_MAP[word];
     if (synonyms) {
-      for (const syn of synonyms) expanded.add(syn);
+      for (const syn of synonyms) {
+        const safe = sanitizeFTS5Term(syn);
+        if (safe.length > 0) expanded.add(safe);
+      }
     }
   }
 
-  // Corpus-driven expansion from cluster top terms
+  // Corpus-driven expansion from cluster top terms.
+  // Corpus terms may be multi-word (e.g. "patient records") -- split into
+  // individual words so each becomes a separate OR operand.
   if (db) {
     const corpusTerms = getCorpusExpansionTerms(db, words);
     for (const terms of Object.values(corpusTerms)) {
-      for (const term of terms) expanded.add(term);
+      for (const term of terms) {
+        for (const part of term.split(/\s+/)) {
+          const safe = sanitizeFTS5Term(part);
+          if (safe.length > 0) expanded.add(safe);
+        }
+      }
     }
   }
 
   // Table column expansion for table-related queries
   if (isTableQuery && db) {
     const tableTerms = getTableColumnExpansionTerms(db, words);
-    for (const term of tableTerms) expanded.add(term.toLowerCase());
+    for (const term of tableTerms) {
+      for (const part of term.toLowerCase().split(/\s+/)) {
+        const safe = sanitizeFTS5Term(part);
+        if (safe.length > 0) expanded.add(safe);
+      }
+    }
   }
 
   return [...expanded].join(' OR ');
