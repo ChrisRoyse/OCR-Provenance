@@ -16,7 +16,7 @@ import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
-import requests
+from datalab_sdk import DatalabClient
 
 # Configure logging FIRST - all logging goes to stderr
 logging.basicConfig(
@@ -31,7 +31,7 @@ logger = logging.getLogger(__name__)
 # CONSTANTS
 # =============================================================================
 
-DATALAB_BASE_URL = "https://www.datalab.to"
+# SDK handles base URL via DATALAB_HOST env var (default: https://www.datalab.to)
 
 
 # =============================================================================
@@ -110,10 +110,11 @@ class FileListResult:
 # =============================================================================
 
 
-def get_api_key() -> str:
+def get_client() -> DatalabClient:
     """
-    Get Datalab API key from environment.
-    FAIL-FAST: Raises immediately if not set.
+    Get a DatalabClient instance.
+    FAIL-FAST: Raises immediately if API key not set.
+    The SDK reads DATALAB_API_KEY from the environment automatically.
     """
     api_key = os.environ.get("DATALAB_API_KEY")
     if not api_key:
@@ -125,14 +126,7 @@ def get_api_key() -> str:
         raise ValueError(
             "DATALAB_API_KEY is set to placeholder value. Update .env with your actual API key."
         )
-    return api_key
-
-
-def get_headers(api_key: str) -> dict:
-    """Build standard API headers."""
-    return {
-        "X-Api-Key": api_key,
-    }
+    return DatalabClient()
 
 
 def compute_file_hash(file_path: str) -> str:
@@ -196,16 +190,14 @@ def validate_file(file_path: str) -> Path:
 
 def upload_file(file_path: str, timeout: int = 300) -> UploadResult:
     """
-    Upload a file to Datalab cloud storage.
+    Upload a file to Datalab cloud storage via SDK.
 
-    3-step process:
-    1. POST /api/v1/files/upload to get presigned URL
-    2. PUT file to presigned URL
-    3. GET /api/v1/files/{file_id}/confirm to confirm upload
+    The SDK handles the 3-step upload process internally with retry logic
+    (tenacity-based exponential backoff for 429/5xx).
 
     Args:
         file_path: Path to file to upload
-        timeout: Request timeout in seconds
+        timeout: Request timeout in seconds (unused - SDK manages timeouts)
 
     Returns:
         UploadResult with file_id and reference
@@ -216,93 +208,29 @@ def upload_file(file_path: str, timeout: int = 300) -> UploadResult:
         ValueError: On missing API key
     """
     validated_path = validate_file(file_path)
-    api_key = get_api_key()
-    headers = get_headers(api_key)
+    client = get_client()
     file_hash = compute_file_hash(str(validated_path))
     file_size = validated_path.stat().st_size
     file_name = validated_path.name
     content_type = get_content_type(str(validated_path))
 
-    logger.info(f"Uploading file: {validated_path} ({file_size} bytes)")
+    logger.info(f"Uploading file via SDK: {validated_path} ({file_size} bytes)")
 
     start_time = time.time()
 
-    # Step 1: Get presigned upload URL
-    logger.info("Step 1: Requesting presigned upload URL")
-    upload_request_url = f"{DATALAB_BASE_URL}/api/v1/files/upload"
-    upload_payload = {
-        "filename": file_name,
-        "content_type": content_type,
-        "file_size": file_size,
-    }
+    try:
+        result = client.upload_files(str(validated_path))
+    except Exception as e:
+        raise FileManagerAPIError(f"SDK upload failed: {e}", 500) from e
 
-    resp = requests.post(
-        upload_request_url,
-        json=upload_payload,
-        headers=headers,
-        timeout=timeout,
-    )
+    # SDK returns UploadedFileMetadata with file_id, reference, etc.
+    file_id = result.file_id
+    reference = result.reference
 
-    if resp.status_code != 200:
-        raise FileManagerAPIError(
-            f"Failed to get upload URL: {resp.status_code} {resp.text[:500]}",
-            resp.status_code,
-        )
-
-    upload_data = resp.json()
-    presigned_url = upload_data.get("presigned_url") or upload_data.get("upload_url")
-    file_id = upload_data.get("file_id") or upload_data.get("id")
-
-    if not presigned_url:
-        raise FileManagerAPIError(
-            f"No presigned URL in response: {json.dumps(upload_data)[:500]}",
-            500,
-        )
     if not file_id:
-        raise FileManagerAPIError(
-            f"No file_id in response: {json.dumps(upload_data)[:500]}",
-            500,
-        )
+        raise FileManagerAPIError("SDK returned empty file_id", 500)
 
-    logger.info(f"Got file_id: {file_id}")
-
-    # Step 2: PUT file to presigned URL
-    logger.info("Step 2: Uploading file to presigned URL")
-    with open(str(validated_path), "rb") as f:
-        put_resp = requests.put(
-            presigned_url,
-            data=f,
-            headers={"Content-Type": content_type},
-            timeout=timeout,
-        )
-
-    if put_resp.status_code not in (200, 201, 204):
-        raise FileManagerAPIError(
-            f"Failed to upload file: {put_resp.status_code} {put_resp.text[:500]}",
-            put_resp.status_code,
-        )
-
-    logger.info("File uploaded successfully")
-
-    # Step 3: Confirm upload
-    logger.info("Step 3: Confirming upload")
-    confirm_url = f"{DATALAB_BASE_URL}/api/v1/files/{file_id}/confirm"
-    confirm_resp = requests.get(
-        confirm_url,
-        headers=headers,
-        timeout=timeout,
-    )
-
-    reference = None
-    if confirm_resp.status_code == 200:
-        confirm_data = confirm_resp.json()
-        reference = confirm_data.get("reference") or confirm_data.get("datalab_reference")
-        logger.info(f"Upload confirmed, reference: {reference}")
-    else:
-        logger.warning(
-            f"Confirm returned {confirm_resp.status_code}: {confirm_resp.text[:200]}. "
-            "Upload may still be processing."
-        )
+    logger.info(f"Upload complete via SDK: file_id={file_id}, reference={reference}")
 
     end_time = time.time()
     duration_ms = int((end_time - start_time) * 1000)
@@ -321,116 +249,87 @@ def upload_file(file_path: str, timeout: int = 300) -> UploadResult:
 
 def list_files(limit: int = 50, offset: int = 0, timeout: int = 60) -> FileListResult:
     """
-    List files in Datalab cloud storage.
+    List files in Datalab cloud storage via SDK.
 
     Args:
         limit: Max files to return
         offset: Pagination offset
-        timeout: Request timeout in seconds
+        timeout: Request timeout in seconds (unused - SDK manages timeouts)
 
     Returns:
         FileListResult with files array and total count
     """
-    api_key = get_api_key()
-    headers = get_headers(api_key)
+    client = get_client()
 
-    url = f"{DATALAB_BASE_URL}/api/v1/files"
-    params = {"limit": limit, "offset": offset}
+    try:
+        data = client.list_files(limit=limit, offset=offset)
+    except Exception as e:
+        raise FileManagerAPIError(f"SDK list_files failed: {e}", 500) from e
 
-    resp = requests.get(url, headers=headers, params=params, timeout=timeout)
-
-    if resp.status_code != 200:
-        raise FileManagerAPIError(
-            f"Failed to list files: {resp.status_code} {resp.text[:500]}",
-            resp.status_code,
-        )
-
-    data = resp.json()
-
-    # Handle both array and paginated response formats
-    if isinstance(data, list):
-        files = data
-        total = len(files)
-    else:
-        files = data.get("files", data.get("results", []))
-        total = data.get("total", data.get("count", len(files)))
+    # SDK returns dict with 'files', 'total', 'limit', 'offset'
+    files = data.get("files", [])
+    total = data.get("total", len(files))
 
     return FileListResult(files=files, total=total)
 
 
 def get_file(file_id: str, timeout: int = 60) -> FileInfo:
     """
-    Get metadata for a specific file.
+    Get metadata for a specific file via SDK.
 
     Args:
         file_id: Datalab file ID
-        timeout: Request timeout in seconds
+        timeout: Request timeout in seconds (unused - SDK manages timeouts)
 
     Returns:
         FileInfo with file metadata
     """
-    api_key = get_api_key()
-    headers = get_headers(api_key)
+    client = get_client()
 
-    url = f"{DATALAB_BASE_URL}/api/v1/files/{file_id}"
-
-    resp = requests.get(url, headers=headers, timeout=timeout)
-
-    if resp.status_code == 404:
-        raise FileManagerAPIError(f"File not found: {file_id}", 404)
-
-    if resp.status_code != 200:
-        raise FileManagerAPIError(
-            f"Failed to get file: {resp.status_code} {resp.text[:500]}",
-            resp.status_code,
-        )
-
-    data = resp.json()
+    try:
+        meta = client.get_file_metadata(file_id)
+    except Exception as e:
+        error_str = str(e).lower()
+        if "404" in error_str or "not found" in error_str:
+            raise FileManagerAPIError(f"File not found: {file_id}", 404) from e
+        raise FileManagerAPIError(f"SDK get_file_metadata failed: {e}", 500) from e
 
     return FileInfo(
-        file_id=data.get("id", data.get("file_id", file_id)),
-        file_name=data.get("file_name"),
-        file_size=data.get("file_size"),
-        content_type=data.get("content_type"),
-        created_at=data.get("created_at"),
-        reference=data.get("reference"),
-        status=data.get("status"),
+        file_id=meta.file_id,
+        file_name=meta.original_filename,
+        file_size=meta.file_size,
+        content_type=meta.content_type,
+        created_at=str(meta.created) if meta.created else None,
+        reference=meta.reference,
+        status=meta.upload_status,
     )
 
 
 def get_download_url(file_id: str, timeout: int = 60) -> str:
     """
-    Get a download URL for a file.
+    Get a download URL for a file via SDK.
 
     Args:
         file_id: Datalab file ID
-        timeout: Request timeout in seconds
+        timeout: Request timeout in seconds (unused - SDK manages timeouts)
 
     Returns:
         Download URL string
     """
-    api_key = get_api_key()
-    headers = get_headers(api_key)
+    client = get_client()
 
-    url = f"{DATALAB_BASE_URL}/api/v1/files/{file_id}/download"
+    try:
+        data = client.get_file_download_url(file_id)
+    except Exception as e:
+        error_str = str(e).lower()
+        if "404" in error_str or "not found" in error_str:
+            raise FileManagerAPIError(f"File not found: {file_id}", 404) from e
+        raise FileManagerAPIError(f"SDK get_file_download_url failed: {e}", 500) from e
 
-    resp = requests.get(url, headers=headers, timeout=timeout)
-
-    if resp.status_code == 404:
-        raise FileManagerAPIError(f"File not found: {file_id}", 404)
-
-    if resp.status_code != 200:
-        raise FileManagerAPIError(
-            f"Failed to get download URL: {resp.status_code} {resp.text[:500]}",
-            resp.status_code,
-        )
-
-    data = resp.json()
-    download_url = data.get("url") or data.get("download_url") or data.get("presigned_url")
-
+    download_url = data.get("download_url")
     if not download_url:
         raise FileManagerAPIError(
-            f"No download URL in response: {json.dumps(data)[:500]}",
+            f"No download_url in SDK response: {json.dumps(data)[:500]}",
             500,
         )
 
@@ -439,29 +338,29 @@ def get_download_url(file_id: str, timeout: int = 60) -> str:
 
 def delete_file(file_id: str, timeout: int = 60) -> bool:
     """
-    Delete a file from Datalab cloud storage.
+    Delete a file from Datalab cloud storage via SDK.
 
     Args:
         file_id: Datalab file ID
-        timeout: Request timeout in seconds
+        timeout: Request timeout in seconds (unused - SDK manages timeouts)
 
     Returns:
         True if deleted
     """
-    api_key = get_api_key()
-    headers = get_headers(api_key)
+    client = get_client()
 
-    url = f"{DATALAB_BASE_URL}/api/v1/files/{file_id}"
+    try:
+        result = client.delete_file(file_id)
+    except Exception as e:
+        error_str = str(e).lower()
+        if "404" in error_str or "not found" in error_str:
+            raise FileManagerAPIError(f"File not found: {file_id}", 404) from e
+        raise FileManagerAPIError(f"SDK delete_file failed: {e}", 500) from e
 
-    resp = requests.delete(url, headers=headers, timeout=timeout)
-
-    if resp.status_code == 404:
-        raise FileManagerAPIError(f"File not found: {file_id}", 404)
-
-    if resp.status_code not in (200, 204):
+    if not result.get("success", True):
         raise FileManagerAPIError(
-            f"Failed to delete file: {resp.status_code} {resp.text[:500]}",
-            resp.status_code,
+            f"SDK delete returned failure: {result.get('message', 'unknown')}",
+            500,
         )
 
     return True

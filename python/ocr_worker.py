@@ -411,9 +411,11 @@ def process_document(
         page_count = result.page_count or 1
         quality_score = result.parse_quality_score
 
-        # Get cost from response (SDK returns 'total_cost_cents' directly in cents)
+        # Get cost from response (SDK returns 'total_cents' in cost_breakdown dict)
         cost_breakdown = result.cost_breakdown or {}
-        cost_cents = cost_breakdown.get("total_cost_cents")
+        cost_cents = cost_breakdown.get("total_cents")
+        if cost_breakdown and cost_cents is None:
+            logger.warning("cost_breakdown present but missing 'total_cents' key. Keys: %s", list(cost_breakdown.keys()))
 
         # Capture images from Datalab response (filename -> base64 data)
         # Images are returned as a dict with filename keys and base64-encoded image data

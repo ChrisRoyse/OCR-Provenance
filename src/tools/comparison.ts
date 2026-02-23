@@ -195,21 +195,13 @@ function computeEmbeddingCentroidSimilarity(
   docId1: string,
   docId2: string
 ): number | null {
-  try {
-    const docEmbeddings = computeDocumentEmbeddings(conn, [docId1, docId2]);
-    const emb1 = docEmbeddings.find((d) => d.document_id === docId1);
-    const emb2 = docEmbeddings.find((d) => d.document_id === docId2);
+  const docEmbeddings = computeDocumentEmbeddings(conn, [docId1, docId2]);
+  const emb1 = docEmbeddings.find((d) => d.document_id === docId1);
+  const emb2 = docEmbeddings.find((d) => d.document_id === docId2);
 
-    if (!emb1 || !emb2) return null;
+  if (!emb1 || !emb2) return null;
 
-    return cosineSimilarity(emb1.embedding, Array.from(emb2.embedding));
-  } catch (error) {
-    console.error(
-      '[comparison] Failed to compute embedding centroid similarity:',
-      error instanceof Error ? error.message : String(error)
-    );
-    return null;
-  }
+  return cosineSimilarity(emb1.embedding, Array.from(emb2.embedding));
 }
 
 /**
@@ -224,43 +216,35 @@ function computeStructuralSimilarity(
   docId1: string,
   docId2: string
 ): number {
-  try {
-    const stats1 = getBlockTypeStats(conn, docId1);
-    const stats2 = getBlockTypeStats(conn, docId2);
+  const stats1 = getBlockTypeStats(conn, docId1);
+  const stats2 = getBlockTypeStats(conn, docId2);
 
-    if (!stats1 || !stats2) return 0;
+  if (!stats1 || !stats2) return 0;
 
-    // Build unified set of block types
-    const allTypes = new Set([...Object.keys(stats1), ...Object.keys(stats2)]);
-    if (allTypes.size === 0) return 0;
+  // Build unified set of block types
+  const allTypes = new Set([...Object.keys(stats1), ...Object.keys(stats2)]);
+  if (allTypes.size === 0) return 0;
 
-    // Build distribution vectors
-    const vec1: number[] = [];
-    const vec2: number[] = [];
-    for (const type of allTypes) {
-      vec1.push(stats1[type] ?? 0);
-      vec2.push(stats2[type] ?? 0);
-    }
-
-    // Compute cosine similarity
-    let dotProduct = 0;
-    let norm1 = 0;
-    let norm2 = 0;
-    for (let i = 0; i < vec1.length; i++) {
-      dotProduct += vec1[i] * vec2[i];
-      norm1 += vec1[i] * vec1[i];
-      norm2 += vec2[i] * vec2[i];
-    }
-
-    if (norm1 === 0 || norm2 === 0) return 0;
-    return dotProduct / (Math.sqrt(norm1) * Math.sqrt(norm2));
-  } catch (error) {
-    console.error(
-      '[comparison] Failed to compute structural similarity:',
-      error instanceof Error ? error.message : String(error)
-    );
-    return 0;
+  // Build distribution vectors
+  const vec1: number[] = [];
+  const vec2: number[] = [];
+  for (const type of allTypes) {
+    vec1.push(stats1[type] ?? 0);
+    vec2.push(stats2[type] ?? 0);
   }
+
+  // Compute cosine similarity
+  let dotProduct = 0;
+  let norm1 = 0;
+  let norm2 = 0;
+  for (let i = 0; i < vec1.length; i++) {
+    dotProduct += vec1[i] * vec2[i];
+    norm1 += vec1[i] * vec1[i];
+    norm2 += vec2[i] * vec2[i];
+  }
+
+  if (norm1 === 0 || norm2 === 0) return 0;
+  return dotProduct / (Math.sqrt(norm1) * Math.sqrt(norm2));
 }
 
 /**
@@ -386,16 +370,32 @@ async function handleDocumentCompare(params: Record<string, unknown>): Promise<T
     const similarityRatio = textDiff ? textDiff.similarity_ratio : 0;
 
     // Multi-signal similarity computation (ME-6)
-    const embeddingSimilarity = computeEmbeddingCentroidSimilarity(
-      conn,
-      input.document_id_1,
-      input.document_id_2
-    );
-    const structSimilarity = computeStructuralSimilarity(
-      conn,
-      input.document_id_1,
-      input.document_id_2
-    );
+    // Track which components failed to surface in response instead of silently swallowing
+    const componentsFailed: string[] = [];
+
+    let embeddingSimilarity: number | null = null;
+    try {
+      embeddingSimilarity = computeEmbeddingCentroidSimilarity(
+        conn,
+        input.document_id_1,
+        input.document_id_2
+      );
+    } catch (error) {
+      console.error('[comparison] Centroid similarity failed:', error instanceof Error ? error.message : String(error));
+      componentsFailed.push('centroid_similarity');
+    }
+
+    let structSimilarity = 0;
+    try {
+      structSimilarity = computeStructuralSimilarity(
+        conn,
+        input.document_id_1,
+        input.document_id_2
+      );
+    } catch (error) {
+      console.error('[comparison] Structural similarity failed:', error instanceof Error ? error.message : String(error));
+      componentsFailed.push('structural_similarity');
+    }
 
     // Quality alignment: how close are the OCR quality scores
     const q1 = (ocr1.parse_quality_score as number | null) ?? 0;
@@ -493,6 +493,10 @@ async function handleDocumentCompare(params: Record<string, unknown>): Promise<T
       provenance_id: provId,
       processing_duration_ms: processingDurationMs,
     };
+
+    if (componentsFailed.length > 0) {
+      comparisonResponse.components_failed = componentsFailed;
+    }
 
     if (input.include_provenance) {
       comparisonResponse.provenance_chain = fetchProvenanceChain(db, provId, 'comparison');

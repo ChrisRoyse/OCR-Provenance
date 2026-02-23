@@ -66,6 +66,7 @@ export const DEFAULT_BATCH_SIZE = 64;
 export class NomicEmbeddingClient {
   private readonly workerPath: string;
   private readonly pythonPath: string | undefined;
+  private _lastDevice: string = 'unknown';
 
   constructor(options?: { workerPath?: string; pythonPath?: string }) {
     this.workerPath =
@@ -176,8 +177,19 @@ export class NomicEmbeddingClient {
       }
     }
 
+    // Track actual device used (from Python worker result)
+    this._lastDevice = result.device ?? 'unknown';
+
     // Convert to Float32Array for efficient storage
     return result.embeddings.map((e) => new Float32Array(e));
+  }
+
+  /**
+   * Get the device used by the last successful embedding operation.
+   * Populated by the Python worker result (e.g., 'cuda:0', 'cpu', 'mps').
+   */
+  getLastDevice(): string {
+    return this._lastDevice;
   }
 
   async embedQuery(query: string): Promise<Float32Array> {

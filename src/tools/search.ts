@@ -19,7 +19,7 @@ import { z } from 'zod';
 import { getEmbeddingService } from '../services/embedding/embedder.js';
 import { DatabaseService } from '../services/storage/database/index.js';
 import { VectorService } from '../services/storage/vector.js';
-import { requireDatabase, getDefaultStoragePath } from '../server/state.js';
+import { requireDatabase, getDefaultStoragePath, withDatabaseOperation } from '../server/state.js';
 import { successResult } from '../server/types.js';
 import {
   validateInput,
@@ -1182,9 +1182,9 @@ function toSemanticRanked(
  */
 async function handleSearchSemanticInternal(params: Record<string, unknown>): Promise<ToolResponse> {
   try {
+    return await withDatabaseOperation(async ({ db, vector }) => {
     // Params already validated and enriched by handleSearchUnified
     const input = params as unknown as InternalSearchParams;
-    const { db, vector } = requireDatabase();
     const conn = db.getConnection();
 
     // Semantic mode: skip query expansion entirely.
@@ -1496,6 +1496,7 @@ async function handleSearchSemanticInternal(params: Record<string, unknown>): Pr
     }
 
     return formatResponse(successResult(responseData));
+    }); // end withDatabaseOperation
   } catch (error) {
     return handleError(error);
   }
@@ -1506,9 +1507,9 @@ async function handleSearchSemanticInternal(params: Record<string, unknown>): Pr
  */
 async function handleSearchKeywordInternal(params: Record<string, unknown>): Promise<ToolResponse> {
   try {
+    return await withDatabaseOperation(async ({ db }) => {
     // Params already validated and enriched by handleSearchUnified
     const input = params as unknown as InternalSearchParams;
-    const { db } = requireDatabase();
     const conn = db.getConnection();
 
     // Expand query with domain-specific synonyms + corpus cluster terms if requested
@@ -1752,6 +1753,7 @@ async function handleSearchKeywordInternal(params: Record<string, unknown>): Pro
     }
 
     return formatResponse(successResult(responseData));
+    }); // end withDatabaseOperation
   } catch (error) {
     return handleError(error);
   }
@@ -1762,9 +1764,9 @@ async function handleSearchKeywordInternal(params: Record<string, unknown>): Pro
  */
 async function handleSearchHybridInternal(params: Record<string, unknown>): Promise<ToolResponse> {
   try {
+    return await withDatabaseOperation(async ({ db, vector }) => {
     // Params already validated and enriched by handleSearchUnified
     const input = params as unknown as InternalSearchParams;
-    const { db, vector } = requireDatabase();
     const limit = (input.limit as number) ?? 10;
     const conn = db.getConnection();
 
@@ -2032,6 +2034,7 @@ async function handleSearchHybridInternal(params: Record<string, unknown>): Prom
     }
 
     return formatResponse(successResult(responseData));
+    }); // end withDatabaseOperation
   } catch (error) {
     return handleError(error);
   }
@@ -2059,13 +2062,9 @@ export async function handleSearchUnified(params: Record<string, unknown>): Prom
     // Flatten filters from nested object into top-level params for internal handlers.
     // Internal handlers (InternalSearchParams) expect flat params, not nested filters.
     const filters = input.filters ?? {};
-    // Only pass similarity_threshold if the user explicitly provided a non-default value.
+    // Pass similarity_threshold through if the user explicitly provided any value.
     // The internal semantic handler uses adaptive threshold when it's undefined.
-    // Checking 'in params' is fragile: MCP clients may always send all params with defaults.
-    // Instead, compare against the schema default (0.7). If it equals the default, treat as not user-set.
-    const SIMILARITY_THRESHOLD_DEFAULT = 0.7;
-    const userSetThreshold = input.similarity_threshold !== undefined
-      && input.similarity_threshold !== SIMILARITY_THRESHOLD_DEFAULT;
+    const userSetThreshold = input.similarity_threshold !== undefined;
 
     const enrichedParams: Record<string, unknown> = {
       // Spread validated top-level params
@@ -2506,6 +2505,13 @@ async function handleBenchmarkCompare(params: Record<string, unknown>): Promise<
       } finally {
         tempDb?.close();
       }
+    }
+
+    // FIX-6: If every database had an error, return an error instead of success with 0 results
+    const allFailed = dbResults.length > 0 && dbResults.every(r => 'error' in r && r.error);
+    if (allFailed) {
+      const errors = dbResults.map(r => `${r.database_name}: ${r.error}`).join('; ');
+      return handleError(new Error(`All databases failed: ${errors}`));
     }
 
     // Compute overlap analysis: which document_ids appear in multiple databases

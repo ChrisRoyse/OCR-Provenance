@@ -293,6 +293,21 @@ function deleteDerivedRecords(db: Database.Database, documentId: string, caller:
     ).run(documentId, documentId);
   }
 
+  // Delete entity_tags referencing entities about to be deleted (polymorphic FK, no CASCADE)
+  try {
+    db.prepare(`
+      DELETE FROM entity_tags WHERE
+        (entity_type = 'document' AND entity_id = ?)
+        OR (entity_type = 'chunk' AND entity_id IN (SELECT id FROM chunks WHERE document_id = ?))
+        OR (entity_type = 'image' AND entity_id IN (SELECT id FROM images WHERE document_id = ?))
+        OR (entity_type = 'extraction' AND entity_id IN (SELECT id FROM extractions WHERE document_id = ?))
+    `).run(documentId, documentId, documentId, documentId);
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : String(e);
+    if (!msg.includes('no such table')) throw e;
+    console.error('[document-operations] entity_tags table not found, skipping:', msg);
+  }
+
   // Delete from embeddings (safe: images.vlm_embedding_id already NULLed)
   db.prepare('DELETE FROM embeddings WHERE document_id = ?').run(documentId);
 

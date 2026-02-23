@@ -118,6 +118,9 @@ export class EmbeddingService {
       );
     }
 
+    // Get actual device from last successful embedding operation
+    const actualDevice = this.client.getLastDevice();
+
     const result = db.transaction(() => {
       const embeddingIds: string[] = [];
       const provenanceIds: string[] = [];
@@ -131,7 +134,7 @@ export class EmbeddingService {
         const embeddingId = uuidv4();
         const now = new Date().toISOString();
 
-        const provenanceId = this.createProvenance(db, chunk, documentInfo);
+        const provenanceId = this.createProvenance(db, chunk, documentInfo, actualDevice);
         provenanceIds.push(provenanceId);
 
         const embedding: Omit<Embedding, 'created_at' | 'vector'> = {
@@ -155,7 +158,7 @@ export class EmbeddingService {
           model_version: MODEL_VERSION,
           task_type: 'search_document',
           inference_mode: 'local',
-          gpu_device: 'cuda:0',
+          gpu_device: actualDevice,
           provenance_id: provenanceId,
           content_hash: computeHash(chunk.text),
           generation_duration_ms: null,
@@ -209,7 +212,7 @@ export class EmbeddingService {
     return this.embedDocumentChunks(db, vectorService, pendingChunks, documentInfo);
   }
 
-  private createProvenance(db: DatabaseService, chunk: Chunk, documentInfo: DocumentInfo): string {
+  private createProvenance(db: DatabaseService, chunk: Chunk, documentInfo: DocumentInfo, device: string): string {
     const provenanceId = uuidv4();
     const now = new Date().toISOString();
     const chunkProv = db.getProvenance(chunk.provenance_id);
@@ -245,7 +248,7 @@ export class EmbeddingService {
         dimensions: EMBEDDING_DIM,
         task_type: 'search_document',
         inference_mode: 'local',
-        device: 'cuda:0',
+        device,
         dtype: 'float16',
         batch_size: this.batchSize,
         section_aware: true,
