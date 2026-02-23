@@ -58,7 +58,7 @@ export function getTableColumnExpansionTerms(
   try {
     const conn = db.getConnection();
     const rows = conn.prepare(
-      "SELECT DISTINCT processing_params FROM provenance WHERE processing_params LIKE '%table_columns%'"
+      "SELECT DISTINCT processing_params FROM provenance WHERE processing_params LIKE '%table_columns%' LIMIT 500"
     ).all() as Array<{ processing_params: string }>;
 
     const allColumns = new Set<string>();
@@ -119,7 +119,7 @@ export function getCorpusExpansionTerms(
     const conn = db.getConnection();
     const rows = conn
       .prepare(
-        'SELECT top_terms_json FROM clusters WHERE top_terms_json IS NOT NULL AND coherence_score > 0.3'
+        'SELECT top_terms_json FROM clusters WHERE top_terms_json IS NOT NULL AND coherence_score > 0.3 LIMIT 200'
       )
       .all() as Array<{ top_terms_json: string }>;
 

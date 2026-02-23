@@ -120,17 +120,9 @@ describe('Gap Closure Phases 0-10: Manual E2E Test', () => {
   }, 30_000);
 
   afterAll(() => {
-    try {
-      clearDatabase();
-      deleteDatabase(DB_NAME);
-    } catch {
-      /* cleanup */
-    }
-    try {
-      if (existsSync(tmpDir)) rmSync(tmpDir, { recursive: true, force: true });
-    } catch {
-      /* cleanup */
-    }
+    try { clearDatabase(); } catch { /* cleanup */ }
+    try { deleteDatabase(DB_NAME); } catch { /* cleanup */ }
+    try { if (tmpDir) rmSync(tmpDir, { recursive: true, force: true }); } catch { /* cleanup */ }
   });
 
   // =============================================================================

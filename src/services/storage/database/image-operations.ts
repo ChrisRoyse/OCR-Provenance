@@ -142,6 +142,8 @@ export function getImagesByDocument(
   if (options?.limit && options.limit > 0) {
     sql += ' LIMIT ?';
     params.push(options.limit);
+  } else {
+    sql += ' LIMIT 5000'; // Default bound to prevent unbounded image loading
   }
 
   const stmt = db.prepare(sql);
@@ -161,6 +163,7 @@ export function getImagesByOCRResult(db: Database.Database, ocrResultId: string)
     SELECT * FROM images
     WHERE ocr_result_id = ?
     ORDER BY page_number, image_index
+    LIMIT 5000
   `);
   const rows = stmt.all(ocrResultId) as ImageRow[];
   return rows.map(rowToImage);

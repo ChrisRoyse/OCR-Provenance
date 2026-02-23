@@ -120,12 +120,11 @@ export function listDocuments(db: Database.Database, options?: ListDocumentsOpti
   if (options?.limit !== undefined) {
     query += ' LIMIT ?';
     params.push(options.limit);
+  } else {
+    query += ' LIMIT 10000'; // Always bound result sets
   }
 
   if (options?.offset !== undefined) {
-    if (options?.limit === undefined) {
-      query += ' LIMIT 10000'; // L-1: bounded default instead of LIMIT -1
-    }
     query += ' OFFSET ?';
     params.push(options.offset);
   }

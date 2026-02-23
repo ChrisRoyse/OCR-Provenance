@@ -201,10 +201,23 @@ export function getEmbeddingByExtractionId(
  */
 export function getEmbeddingsByDocumentId(
   db: Database.Database,
-  documentId: string
+  documentId: string,
+  options?: { limit?: number; offset?: number }
 ): Omit<Embedding, 'vector'>[] {
-  const stmt = db.prepare('SELECT * FROM embeddings WHERE document_id = ? ORDER BY chunk_index');
-  const rows = stmt.all(documentId) as EmbeddingRow[];
+  let sql = 'SELECT * FROM embeddings WHERE document_id = ? ORDER BY chunk_index';
+  const params: (string | number)[] = [documentId];
+
+  const limit = options?.limit ?? 10000;
+  sql += ' LIMIT ?';
+  params.push(limit);
+
+  if (options?.offset !== undefined) {
+    sql += ' OFFSET ?';
+    params.push(options.offset);
+  }
+
+  const stmt = db.prepare(sql);
+  const rows = stmt.all(...params) as EmbeddingRow[];
   return rows.map(rowToEmbedding);
 }
 

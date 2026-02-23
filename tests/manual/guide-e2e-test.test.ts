@@ -444,12 +444,8 @@ describe('Test 9: ocr_guide with empty database', () => {
   });
 
   afterAll(() => {
-    try {
-      clearDatabase();
-      deleteDatabase(tempDbName);
-    } catch (err) {
-      console.error(`[Test 9] Cleanup error: ${err}`);
-    }
+    try { clearDatabase(); } catch { /* cleanup */ }
+    try { deleteDatabase(tempDbName); } catch { /* cleanup */ }
   });
 
   it('should recommend ingestion when database has 0 documents', async () => {

@@ -388,8 +388,8 @@ export class ImageExtractor {
       let stdout = '';
       let stderr = '';
 
-      proc.stdout.on('data', (d) => (stdout += d));
-      proc.stderr.on('data', (d) => (stderr += d));
+      proc.stdout.on('data', (d) => { if (stdout.length < 65536) stdout += d; });
+      proc.stderr.on('data', (d) => { if (stderr.length < 10240) stderr += d; });
 
       proc.on('error', reject);
       proc.on('close', (code) => {

@@ -55,7 +55,7 @@ export function insertExtraction(
  */
 export function getExtractionsByDocument(db: Database.Database, documentId: string): Extraction[] {
   return db
-    .prepare('SELECT * FROM extractions WHERE document_id = ? ORDER BY created_at DESC')
+    .prepare('SELECT * FROM extractions WHERE document_id = ? ORDER BY created_at DESC LIMIT 1000')
     .all(documentId) as Extraction[];
 }
 

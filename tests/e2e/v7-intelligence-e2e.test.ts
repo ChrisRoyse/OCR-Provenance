@@ -20,7 +20,7 @@
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import Database from 'better-sqlite3';
-import { existsSync, unlinkSync, mkdirSync } from 'fs';
+import { existsSync, mkdirSync, rmSync } from 'fs';
 import { join } from 'path';
 import {
   createDatabase,
@@ -94,14 +94,17 @@ describe('V7 Intelligence Optimization E2E', () => {
   }, 600_000);
 
   afterAll(() => {
-    // Cleanup export files
-    try {
-      const jsonPath = join(EXPORT_DIR, 'doc-export.json');
-      const corpusPath = join(EXPORT_DIR, 'corpus-export.json');
-      if (existsSync(jsonPath)) unlinkSync(jsonPath);
-      if (existsSync(corpusPath)) unlinkSync(corpusPath);
-    } catch { /* cleanup */ }
-    try { clearDatabase(); deleteDatabase(DB_NAME); } catch { /* cleanup */ }
+    // Cleanup export directory and all its contents
+    try { rmSync(EXPORT_DIR, { recursive: true, force: true }); } catch { /* cleanup */ }
+    // Checkpoint WAL before closing to ensure clean state for deletion
+    try { conn?.pragma('wal_checkpoint(TRUNCATE)'); } catch { /* ok if closed */ }
+    try { clearDatabase(); } catch { /* cleanup */ }
+    try { deleteDatabase(DB_NAME); } catch { /* cleanup */ }
+    // Filesystem fallback if deleteDatabase failed
+    const dbDir = require('path').join(require('os').homedir(), '.ocr-provenance', 'databases');
+    for (const suffix of ['', '-wal', '-shm']) {
+      try { const p = `${dbDir}/${DB_NAME}.db${suffix}`; if (existsSync(p)) rmSync(p); } catch { /* cleanup */ }
+    }
   });
 
   // ═══════════════════════════════════════════════════════════════════════════

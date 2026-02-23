@@ -192,9 +192,25 @@ export function hasChunksByDocumentId(db: Database.Database, documentId: string)
  * @param documentId - Document ID
  * @returns Chunk[] - Array of chunks ordered by chunk_index
  */
-export function getChunksByDocumentId(db: Database.Database, documentId: string): Chunk[] {
-  const stmt = db.prepare('SELECT * FROM chunks WHERE document_id = ? ORDER BY chunk_index');
-  const rows = stmt.all(documentId) as ChunkRow[];
+export function getChunksByDocumentId(
+  db: Database.Database,
+  documentId: string,
+  options?: { limit?: number; offset?: number }
+): Chunk[] {
+  let sql = 'SELECT * FROM chunks WHERE document_id = ? ORDER BY chunk_index';
+  const params: (string | number)[] = [documentId];
+
+  const limit = options?.limit ?? 10000;
+  sql += ' LIMIT ?';
+  params.push(limit);
+
+  if (options?.offset !== undefined) {
+    sql += ' OFFSET ?';
+    params.push(options.offset);
+  }
+
+  const stmt = db.prepare(sql);
+  const rows = stmt.all(...params) as ChunkRow[];
   return rows.map(rowToChunk);
 }
 
@@ -205,9 +221,25 @@ export function getChunksByDocumentId(db: Database.Database, documentId: string)
  * @param ocrResultId - OCR result ID
  * @returns Chunk[] - Array of chunks ordered by chunk_index
  */
-export function getChunksByOCRResultId(db: Database.Database, ocrResultId: string): Chunk[] {
-  const stmt = db.prepare('SELECT * FROM chunks WHERE ocr_result_id = ? ORDER BY chunk_index');
-  const rows = stmt.all(ocrResultId) as ChunkRow[];
+export function getChunksByOCRResultId(
+  db: Database.Database,
+  ocrResultId: string,
+  options?: { limit?: number; offset?: number }
+): Chunk[] {
+  let sql = 'SELECT * FROM chunks WHERE ocr_result_id = ? ORDER BY chunk_index';
+  const params: (string | number)[] = [ocrResultId];
+
+  const limit = options?.limit ?? 10000;
+  sql += ' LIMIT ?';
+  params.push(limit);
+
+  if (options?.offset !== undefined) {
+    sql += ' OFFSET ?';
+    params.push(options.offset);
+  }
+
+  const stmt = db.prepare(sql);
+  const rows = stmt.all(...params) as ChunkRow[];
   return rows.map(rowToChunk);
 }
 

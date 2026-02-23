@@ -11,6 +11,7 @@ import {
   unlinkSync,
   writeFileSync,
   chmodSync,
+  rmSync,
 } from 'fs';
 import { createRequire } from 'module';
 import { join } from 'path';
@@ -249,6 +250,29 @@ export function deleteDatabase(name: string, storagePath?: string): void {
       `Database "${name}" not found at ${dbPath}`,
       DatabaseErrorCode.DATABASE_NOT_FOUND
     );
+  }
+
+  // Before deleting the DB file, query for document IDs to clean up image directories
+  try {
+    const db = new Database(dbPath, { readonly: true });
+    try {
+      const basePath = storagePath ?? join(dbPath, '..'); // parent of .db file
+      const imagesBaseDir = join(basePath, 'images');
+      if (existsSync(imagesBaseDir)) {
+        // Query all document IDs — image dirs are created per-document during OCR
+        const docs = db.prepare('SELECT id FROM documents').all() as Array<{ id: string }>;
+        for (const { id } of docs) {
+          const imageDir = join(imagesBaseDir, id);
+          if (existsSync(imageDir)) {
+            try { rmSync(imageDir, { recursive: true, force: true }); } catch { /* best effort */ }
+          }
+        }
+      }
+    } finally {
+      db.close();
+    }
+  } catch {
+    // DB may be corrupt or missing tables -- proceed with file deletion
   }
 
   unlinkSync(dbPath);

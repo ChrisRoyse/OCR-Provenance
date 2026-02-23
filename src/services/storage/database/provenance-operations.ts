@@ -116,12 +116,23 @@ export function getProvenanceChain(db: Database.Database, id: string): Provenanc
  */
 export function getProvenanceByRootDocument(
   db: Database.Database,
-  rootDocumentId: string
+  rootDocumentId: string,
+  options?: { limit?: number; offset?: number }
 ): ProvenanceRecord[] {
-  const stmt = db.prepare(
-    'SELECT * FROM provenance WHERE root_document_id = ? ORDER BY chain_depth'
-  );
-  const rows = stmt.all(rootDocumentId) as ProvenanceRow[];
+  let sql = 'SELECT * FROM provenance WHERE root_document_id = ? ORDER BY chain_depth';
+  const params: (string | number)[] = [rootDocumentId];
+
+  const limit = options?.limit ?? 10000;
+  sql += ' LIMIT ?';
+  params.push(limit);
+
+  if (options?.offset !== undefined) {
+    sql += ' OFFSET ?';
+    params.push(options.offset);
+  }
+
+  const stmt = db.prepare(sql);
+  const rows = stmt.all(...params) as ProvenanceRow[];
   return rows.map(rowToProvenance);
 }
 

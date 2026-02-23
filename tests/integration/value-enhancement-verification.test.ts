@@ -27,12 +27,9 @@ import {
   SCHEMA_VERSION,
 } from '../../src/services/storage/migrations/schema-definitions.js';
 
-// Use a temporary database for testing
-const TEST_DB_PATH = path.join(
-  fs.mkdtempSync(path.join(os.tmpdir(), 've-verification-')),
-  'test.db'
-);
-
+// Temp dir and DB path are created inside beforeAll to avoid side effects when tests are skipped
+let TEST_DB_DIR: string;
+let TEST_DB_PATH: string;
 let db: Database.Database;
 
 // Shared doc IDs for cross-test references
@@ -65,8 +62,8 @@ const sqliteVecAvailable = isSqliteVecAvailable();
 
 describe.skipIf(!sqliteVecAvailable)('VALUE ENHANCEMENT VERIFICATION: Phases 1-5', () => {
   beforeAll(() => {
-    // Clean up any previous test DB
-    if (fs.existsSync(TEST_DB_PATH)) fs.unlinkSync(TEST_DB_PATH);
+    TEST_DB_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 've-verification-'));
+    TEST_DB_PATH = path.join(TEST_DB_DIR, 'test.db');
 
     db = new Database(TEST_DB_PATH);
 
@@ -79,8 +76,8 @@ describe.skipIf(!sqliteVecAvailable)('VALUE ENHANCEMENT VERIFICATION: Phases 1-5
   });
 
   afterAll(() => {
-    if (db) db.close();
-    if (fs.existsSync(TEST_DB_PATH)) fs.unlinkSync(TEST_DB_PATH);
+    try { if (db) db.close(); } catch { /* cleanup */ }
+    try { if (TEST_DB_DIR) fs.rmSync(TEST_DB_DIR, { recursive: true, force: true }); } catch { /* cleanup */ }
   });
 
   // ─────────────────────────────────────────────────────────────────────────────

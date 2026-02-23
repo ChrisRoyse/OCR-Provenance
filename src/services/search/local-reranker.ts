@@ -68,11 +68,16 @@ export async function localRerank(
     let stderr = '';
     let settled = false;
     let sigkillTimer: ReturnType<typeof setTimeout> | null = null;
+    let timeoutTimer: ReturnType<typeof setTimeout> | null = null;
 
     const cleanup = () => {
       if (sigkillTimer) {
         clearTimeout(sigkillTimer);
         sigkillTimer = null;
+      }
+      if (timeoutTimer) {
+        clearTimeout(timeoutTimer);
+        timeoutTimer = null;
       }
     };
 
@@ -149,7 +154,7 @@ export async function localRerank(
     proc.stdin.end();
 
     // Set up SIGKILL escalation if the process doesn't exit after SIGTERM (from timeout)
-    setTimeout(() => {
+    timeoutTimer = setTimeout(() => {
       if (!settled && !proc.killed) {
         console.error('[local-reranker] Timeout reached, sending SIGTERM');
         proc.kill('SIGTERM');
