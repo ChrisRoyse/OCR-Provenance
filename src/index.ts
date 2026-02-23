@@ -56,7 +56,6 @@ import { comparisonTools } from './tools/comparison.js';
 import { clusteringTools } from './tools/clustering.js';
 import { chunkTools } from './tools/chunks.js';
 import { embeddingTools } from './tools/embeddings.js';
-import { timelineTools } from './tools/timeline.js';
 import { tagTools } from './tools/tags.js';
 import { intelligenceTools } from './tools/intelligence.js';
 import { healthTools } from './tools/health.js';
@@ -94,7 +93,6 @@ const allToolModules: Record<string, ToolDefinition>[] = [
   clusteringTools,
   chunkTools,
   embeddingTools,
-  timelineTools,
   tagTools,
   intelligenceTools,
   healthTools,

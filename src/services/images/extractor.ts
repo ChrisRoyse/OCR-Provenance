@@ -383,22 +383,72 @@ export class ImageExtractor {
    * Run a simple command and return output
    */
   private runCommand(cmd: string, args: string[]): Promise<string> {
+    const timeout = 10000;
     return new Promise((resolve, reject) => {
-      const proc = spawn(cmd, args, { timeout: 10000 });
+      const proc = spawn(cmd, args, { timeout });
       let stdout = '';
       let stderr = '';
+      let settled = false;
+      let sigkillTimer: ReturnType<typeof setTimeout> | null = null;
+
+      const cleanup = () => {
+        if (sigkillTimer) {
+          clearTimeout(sigkillTimer);
+          sigkillTimer = null;
+        }
+      };
 
       proc.stdout.on('data', (d) => { if (stdout.length < 65536) stdout += d; });
       proc.stderr.on('data', (d) => { if (stderr.length < 10240) stderr += d; });
 
-      proc.on('error', reject);
-      proc.on('close', (code) => {
+      proc.on('error', (err) => {
+        cleanup();
+        if (settled) return;
+        settled = true;
+        reject(err);
+      });
+
+      proc.on('close', (code, signal) => {
+        cleanup();
+        if (settled) return;
+        settled = true;
+
+        if (signal === 'SIGTERM' || signal === 'SIGKILL') {
+          reject(new Error(`Process killed by ${signal} (timeout: ${timeout}ms)`));
+          return;
+        }
+
         if (code === 0) {
           resolve(stdout);
         } else {
           reject(new Error(stderr || `Exit code ${code}`));
         }
       });
+
+      // SIGKILL escalation if SIGTERM doesn't exit within 5s
+      if (timeout > 0) {
+        sigkillTimer = setTimeout(() => {
+          if (!proc.killed) {
+            console.error(
+              `[ImageExtractor] runCommand process did not exit after SIGTERM, sending SIGKILL (pid: ${proc.pid})`
+            );
+            try {
+              proc.kill('SIGKILL');
+            } catch (error) {
+              console.error(
+                '[ImageExtractor] Failed to SIGKILL runCommand process:',
+                error instanceof Error ? error.message : String(error)
+              );
+            }
+          }
+          if (!settled) {
+            settled = true;
+            reject(
+              new Error(`Process killed by SIGKILL after timeout (${timeout}ms + 5s grace)`)
+            );
+          }
+        }, timeout + 5000);
+      }
     });
   }
 }

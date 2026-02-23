@@ -29,7 +29,6 @@ import {
   ProvenanceType,
   uuidv4,
 } from '../../integration/server/helpers.js';
-import { timelineTools } from '../../../src/tools/timeline.js';
 import { reportTools } from '../../../src/tools/reports.js';
 
 // Extract unified trends handler (MERGE-C: ocr_timeline_analytics + ocr_quality_trends -> ocr_trends)
@@ -408,10 +407,6 @@ describe('Phase 6: Temporal Analytics Tools', () => {
   // =====================================================================
 
   describe('Tool exports', () => {
-    it('should export 0 timeline tools (MERGE-C: ocr_timeline_analytics moved to ocr_trends)', () => {
-      expect(Object.keys(timelineTools)).toHaveLength(0);
-    });
-
     it('should have ocr_trends in reportTools (MERGE-C: unified trends)', () => {
       expect(reportTools.ocr_trends).toBeDefined();
       expect(reportTools.ocr_trends.handler).toBeDefined();

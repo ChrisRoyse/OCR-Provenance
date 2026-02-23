@@ -5,8 +5,6 @@
  * Formula: score = sum(weight / (k + rank))
  */
 
-import { computeQualityMultiplier } from './quality.js';
-
 interface RRFConfig {
   k: number;
   bm25Weight: number;
@@ -222,10 +220,9 @@ export class RRFFusion {
 
     const results = Array.from(fusedMap.values());
 
-    // Always apply quality-aware scoring (soft signal, not opt-in filter)
-    for (const r of results) {
-      r.rrf_score *= computeQualityMultiplier(r.ocr_quality_score);
-    }
+    // Quality-aware scoring is already applied within BM25 and semantic
+    // handlers individually before fusion. Re-applying here would double-penalize
+    // low-quality results (e.g., 0.8x * 0.8x = 0.64x instead of intended 0.8x).
 
     return results
       .sort((a, b) => b.rrf_score - a.rrf_score)

@@ -28,7 +28,7 @@ import { extractPageOffsetsFromText } from '../services/chunking/markdown-parser
 import { EmbeddingService } from '../services/embedding/embedder.js';
 import { ProvenanceTracker } from '../services/provenance/tracker.js';
 import { computeHash, hashFile, computeFileHashSync } from '../utils/hash.js';
-import { state, requireDatabase, validateGeneration, getConfig } from '../server/state.js';
+import { state, requireDatabase, getConfig, withDatabaseOperation } from '../server/state.js';
 import { successResult } from '../server/types.js';
 import {
   validateInput,
@@ -557,8 +557,9 @@ interface ProcessOneDocumentParams {
 async function processOneDocument(
   doc: Document,
   params: ProcessOneDocumentParams
-): Promise<void> {
-  const { db, vector, generation, ocrMode, ocrOptions, pageSchema, imagesBaseDir } = params;
+): Promise<string[]> {
+  const warnings: string[] = [];
+  const { db, vector, ocrMode, ocrOptions, pageSchema, imagesBaseDir } = params;
 
   console.error(`[INFO] Processing document: ${doc.id} (${doc.file_name})`);
 
@@ -759,11 +760,11 @@ async function processOneDocument(
         console.error(`[T2.8] Tagged ${taggedCount} chunks as repeated header/footer (${allRepeated.length} patterns detected) for document ${doc.id}`);
       }
     } catch (tagError) {
-      // Non-fatal: tagging failure should not block document processing
+      const tagErrMsg = tagError instanceof Error ? tagError.message : String(tagError);
       console.error(
-        `[WARN] Header/footer tagging failed for ${doc.id}: ` +
-        `${tagError instanceof Error ? tagError.message : String(tagError)}`
+        `[WARN] Header/footer tagging failed for ${doc.id}: ${tagErrMsg}`
       );
+      warnings.push(`Header/footer auto-tagging failed: ${tagErrMsg}. Chunks stored but repeated headers/footers not tagged.`);
     }
   }
 
@@ -860,11 +861,11 @@ async function processOneDocument(
       `links=${existingExtras.link_count ?? 0}, fingerprint=yes`
     );
   } catch (enrichError) {
-    // Non-fatal: enrichment failure should not block document processing
+    const enrichErrMsg = enrichError instanceof Error ? enrichError.message : String(enrichError);
     console.error(
-      `[WARN] Extras enrichment failed for ${doc.id}: ` +
-      `${enrichError instanceof Error ? enrichError.message : String(enrichError)}`
+      `[WARN] Extras enrichment failed for ${doc.id}: ${enrichErrMsg}`
     );
+    warnings.push(`Metadata enrichment failed: ${enrichErrMsg}. Document complete but block stats, links, and structural fingerprint are missing.`);
   }
 
   // Step 4: Generate embeddings for text chunks
@@ -985,13 +986,12 @@ async function processOneDocument(
     });
   }
 
-  // Step 6: Validate database wasn't switched during long-running processing
-  validateGeneration(generation);
-
-  // Step 7: Mark document complete (OCR + chunks + embeddings succeeded)
+  // Step 6: Mark document complete (OCR + chunks + embeddings succeeded)
+  // Note: Generation validation is handled by withDatabaseOperation() in the caller.
   db.updateDocumentStatus(doc.id, 'complete');
 
   console.error(`[INFO] Document ${doc.id} processing complete`);
+  return warnings;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -1382,184 +1382,193 @@ export async function handleProcessPending(
 ): Promise<{ content: Array<{ type: 'text'; text: string }> }> {
   try {
     const input = validateInput(ProcessPendingInput, params);
-    const { db, vector, generation } = requireDatabase();
 
     if (!process.env.DATALAB_API_KEY) {
       throw new Error('DATALAB_API_KEY environment variable is required for OCR processing');
     }
 
-    // Atomic document claiming: UPDATE then SELECT to prevent concurrent callers
-    // from processing the same documents (F-INTEG-3)
-    const claimLimit = input.max_concurrent ?? 3;
-    const conn = db.getConnection();
-    conn
-      .prepare(
-        `UPDATE documents SET status = 'processing', modified_at = ?
-       WHERE id IN (SELECT id FROM documents WHERE status = 'pending' ORDER BY created_at ASC LIMIT ?)`
-      )
-      .run(new Date().toISOString(), claimLimit);
-    const pendingDocs = db.listDocuments({ status: 'processing', limit: claimLimit });
+    // H-1/H-2: Use withDatabaseOperation to track this long-running async operation.
+    // This prevents database switches while processing is in-flight and validates
+    // generation on completion.
+    return await withDatabaseOperation(async ({ db, vector, generation }) => {
+      // Atomic document claiming: UPDATE then SELECT to prevent concurrent callers
+      // from processing the same documents (F-INTEG-3)
+      const claimLimit = input.max_concurrent ?? 3;
+      const conn = db.getConnection();
+      conn
+        .prepare(
+          `UPDATE documents SET status = 'processing', modified_at = ?
+         WHERE id IN (SELECT id FROM documents WHERE status = 'pending' ORDER BY created_at ASC LIMIT ?)`
+        )
+        .run(new Date().toISOString(), claimLimit);
+      const pendingDocs = db.listDocuments({ status: 'processing', limit: claimLimit });
 
-    if (pendingDocs.length === 0) {
-      return formatResponse(
-        successResult({
-          processed: 0,
-          failed: 0,
-          remaining: 0,
-          message: 'No pending documents to process',
-          next_steps: [{ tool: 'ocr_status', description: 'Check overall processing status' }],
-        })
-      );
-    }
+      if (pendingDocs.length === 0) {
+        return formatResponse(
+          successResult({
+            processed: 0,
+            failed: 0,
+            remaining: 0,
+            message: 'No pending documents to process',
+            next_steps: [{ tool: 'ocr_status', description: 'Check overall processing status' }],
+          })
+        );
+      }
 
-    const ocrMode = input.ocr_mode ?? state.config.defaultOCRMode;
-    const ocrOptions = {
-      maxPages: input.max_pages,
-      pageRange: input.page_range,
-      skipCache: input.skip_cache,
-      disableImageExtraction: input.disable_image_extraction,
-      extras: input.extras,
-      pageSchema: input.page_schema,
-      additionalConfig: input.additional_config,
-    };
-    const results = {
-      processed: 0,
-      failed: 0,
-      errors: [] as Array<{ document_id: string; error: string }>,
-    };
-    const successfulDocIds: string[] = [];
+      const ocrMode = input.ocr_mode ?? state.config.defaultOCRMode;
+      const ocrOptions = {
+        maxPages: input.max_pages,
+        pageRange: input.page_range,
+        skipCache: input.skip_cache,
+        disableImageExtraction: input.disable_image_extraction,
+        extras: input.extras,
+        pageSchema: input.page_schema,
+        additionalConfig: input.additional_config,
+      };
+      const results = {
+        processed: 0,
+        failed: 0,
+        errors: [] as Array<{ document_id: string; error: string }>,
+        warnings: [] as Array<{ document_id: string; warnings: string[] }>,
+      };
+      const successfulDocIds: string[] = [];
 
-    const batchId = uuidv4();
-    const batchStartTime = Date.now();
-    console.error(`[INFO] Batch ${batchId}: processing ${pendingDocs.length} documents`);
+      const batchId = uuidv4();
+      const batchStartTime = Date.now();
+      console.error(`[INFO] Batch ${batchId}: processing ${pendingDocs.length} documents`);
 
-    // Default images output directory
-    const imagesBaseDir = resolve(state.config.defaultStoragePath, 'images');
+      // Default images output directory
+      const imagesBaseDir = resolve(state.config.defaultStoragePath, 'images');
 
-    // FIX-P1-2: Process documents in parallel batches using max_concurrent
-    const maxConcurrent = input.max_concurrent ?? 3;
+      // FIX-P1-2: Process documents in parallel batches using max_concurrent
+      const maxConcurrent = input.max_concurrent ?? 3;
 
-    // Build shared processing params for the module-level processOneDocument function
-    const processingParams: ProcessOneDocumentParams = {
-      db,
-      vector,
-      generation,
-      ocrMode,
-      ocrOptions,
-      pageSchema: input.page_schema,
-      imagesBaseDir,
-    };
+      // Build shared processing params for the module-level processOneDocument function
+      const processingParams: ProcessOneDocumentParams = {
+        db,
+        vector,
+        generation,
+        ocrMode,
+        ocrOptions,
+        pageSchema: input.page_schema,
+        imagesBaseDir,
+      };
 
-    // Wrapper that handles per-document error tracking and cleanup
-    const processDocWithTracking = async (doc: (typeof pendingDocs)[0]) => {
+      // Wrapper that handles per-document error tracking and cleanup
+      const processDocWithTracking = async (doc: (typeof pendingDocs)[0]) => {
+        try {
+          const docWarnings = await processOneDocument(doc, processingParams);
+          results.processed++;
+          successfulDocIds.push(doc.id);
+          if (docWarnings.length > 0) {
+            results.warnings.push({ document_id: doc.id, warnings: docWarnings });
+          }
+        } catch (error) {
+          const errorMsg = error instanceof Error ? error.message : String(error);
+          console.error(`[ERROR] Document ${doc.id} failed: ${errorMsg}`);
+
+          // F-INTEG-1: Clean up partial derived data (orphaned chunks, embeddings)
+          // before marking as failed, so a retry starts from a clean state.
+          try {
+            db.cleanDocumentDerivedData(doc.id);
+            console.error(`[INFO] Cleaned partial data for failed document ${doc.id}`);
+          } catch (cleanupError) {
+            const cleanupMsg =
+              cleanupError instanceof Error ? cleanupError.message : String(cleanupError);
+            console.error(`[WARN] Cleanup of partial data failed for ${doc.id}: ${cleanupMsg}`);
+          }
+
+          db.updateDocumentStatus(doc.id, 'failed', errorMsg);
+          results.failed++;
+          results.errors.push({ document_id: doc.id, error: errorMsg });
+        }
+
+        if (typeof global.gc === 'function') {
+          global.gc();
+        }
+      };
+
+      // FIX-P1-2: Execute documents in parallel batches
+      for (let batchStart = 0; batchStart < pendingDocs.length; batchStart += maxConcurrent) {
+        const batch = pendingDocs.slice(batchStart, batchStart + maxConcurrent);
+        if (batch.length > 1) {
+          console.error(
+            `[INFO] Processing document batch ${Math.floor(batchStart / maxConcurrent) + 1}: ` +
+              `${batch.length} documents (${batchStart + 1}-${batchStart + batch.length} of ${pendingDocs.length})`
+          );
+        }
+        await Promise.allSettled(batch.map(processDocWithTracking));
+      }
+
+      // Get remaining count - CRITICAL: use 'status' not 'statusFilter'
+      const remaining = db.listDocuments({ status: 'pending' }).length;
+
+      // Auto-clustering check
+      let autoClusterResult: Record<string, unknown> | undefined;
+      const config = getConfig();
+      if (config.autoClusterEnabled && results.processed > 0) {
+        const totalDocs = (conn.prepare('SELECT COUNT(*) as cnt FROM documents WHERE status = ?').get('complete') as { cnt: number }).cnt;
+        const threshold = config.autoClusterThreshold ?? 10;
+
+        // Check if we have enough docs and no recent clustering run
+        const lastCluster = conn.prepare('SELECT MAX(created_at) as latest FROM clusters').get() as { latest: string | null };
+        const lastClusterDate = lastCluster?.latest ? new Date(lastCluster.latest) : null;
+        const hoursSinceLastCluster = lastClusterDate ? (Date.now() - lastClusterDate.getTime()) / 3600000 : Infinity;
+
+        if (totalDocs >= threshold && hoursSinceLastCluster > 1) {
+          try {
+            const { runClustering } = await import('../services/clustering/clustering-service.js');
+            const algorithm = config.autoClusterAlgorithm ?? 'hdbscan';
+            const clusterResult = await runClustering(db, vector, { algorithm, n_clusters: null, min_cluster_size: 3, distance_threshold: null, linkage: 'average' });
+            autoClusterResult = { triggered: true, run_id: clusterResult.run_id, clusters: clusterResult.n_clusters, algorithm };
+            console.error(`[Ingestion] Auto-clustering triggered: ${clusterResult.n_clusters} clusters via ${algorithm}`);
+          } catch (e) {
+            console.error(`[Ingestion] Auto-clustering failed: ${e instanceof Error ? e.message : String(e)}`);
+            autoClusterResult = { triggered: true, error: e instanceof Error ? e.message : String(e) };
+          }
+        }
+      }
+
+      // Build response
+      const response: Record<string, unknown> = {
+        batch_id: batchId,
+        batch_duration_ms: Date.now() - batchStartTime,
+        processed: results.processed,
+        failed: results.failed,
+        remaining,
+        errors: results.errors.length > 0 ? results.errors : undefined,
+        warnings: results.warnings.length > 0 ? results.warnings : undefined,
+      };
+
+      response.next_steps = [
+        { tool: 'ocr_search', description: 'Search across all processed documents' },
+        { tool: 'ocr_document_list', description: 'Browse all documents in the database' },
+      ];
+
       try {
-        await processOneDocument(doc, processingParams);
-        results.processed++;
-        successfulDocIds.push(doc.id);
+        const totalDocCount = (
+          db
+            .getConnection()
+            .prepare('SELECT COUNT(*) as cnt FROM documents WHERE status = ?')
+            .get('complete') as { cnt: number }
+        ).cnt;
+        if (totalDocCount > 1) {
+          (response.next_steps as Array<{ tool: string; description: string }>).push(
+            { tool: 'ocr_document_compare', description: 'Compare differences between documents' }
+          );
+        }
       } catch (error) {
-        const errorMsg = error instanceof Error ? error.message : String(error);
-        console.error(`[ERROR] Document ${doc.id} failed: ${errorMsg}`);
-
-        // F-INTEG-1: Clean up partial derived data (orphaned chunks, embeddings)
-        // before marking as failed, so a retry starts from a clean state.
-        try {
-          db.cleanDocumentDerivedData(doc.id);
-          console.error(`[INFO] Cleaned partial data for failed document ${doc.id}`);
-        } catch (cleanupError) {
-          const cleanupMsg =
-            cleanupError instanceof Error ? cleanupError.message : String(cleanupError);
-          console.error(`[WARN] Cleanup of partial data failed for ${doc.id}: ${cleanupMsg}`);
-        }
-
-        db.updateDocumentStatus(doc.id, 'failed', errorMsg);
-        results.failed++;
-        results.errors.push({ document_id: doc.id, error: errorMsg });
-      }
-
-      if (typeof global.gc === 'function') {
-        global.gc();
-      }
-    };
-
-    // FIX-P1-2: Execute documents in parallel batches
-    for (let batchStart = 0; batchStart < pendingDocs.length; batchStart += maxConcurrent) {
-      const batch = pendingDocs.slice(batchStart, batchStart + maxConcurrent);
-      if (batch.length > 1) {
         console.error(
-          `[INFO] Processing document batch ${Math.floor(batchStart / maxConcurrent) + 1}: ` +
-            `${batch.length} documents (${batchStart + 1}-${batchStart + batch.length} of ${pendingDocs.length})`
+          `[Ingestion] Failed to query document count for auto-compare hint: ${String(error)}`
         );
       }
-      await Promise.allSettled(batch.map(processDocWithTracking));
-    }
 
-    // Get remaining count - CRITICAL: use 'status' not 'statusFilter'
-    const remaining = db.listDocuments({ status: 'pending' }).length;
-
-    // Auto-clustering check
-    let autoClusterResult: Record<string, unknown> | undefined;
-    const config = getConfig();
-    if (config.autoClusterEnabled && results.processed > 0) {
-      const totalDocs = (conn.prepare('SELECT COUNT(*) as cnt FROM documents WHERE status = ?').get('complete') as { cnt: number }).cnt;
-      const threshold = config.autoClusterThreshold ?? 10;
-
-      // Check if we have enough docs and no recent clustering run
-      const lastCluster = conn.prepare('SELECT MAX(created_at) as latest FROM clusters').get() as { latest: string | null };
-      const lastClusterDate = lastCluster?.latest ? new Date(lastCluster.latest) : null;
-      const hoursSinceLastCluster = lastClusterDate ? (Date.now() - lastClusterDate.getTime()) / 3600000 : Infinity;
-
-      if (totalDocs >= threshold && hoursSinceLastCluster > 1) {
-        try {
-          const { runClustering } = await import('../services/clustering/clustering-service.js');
-          const algorithm = config.autoClusterAlgorithm ?? 'hdbscan';
-          const clusterResult = await runClustering(db, vector, { algorithm, n_clusters: null, min_cluster_size: 3, distance_threshold: null, linkage: 'average' });
-          autoClusterResult = { triggered: true, run_id: clusterResult.run_id, clusters: clusterResult.n_clusters, algorithm };
-          console.error(`[Ingestion] Auto-clustering triggered: ${clusterResult.n_clusters} clusters via ${algorithm}`);
-        } catch (e) {
-          console.error(`[Ingestion] Auto-clustering failed: ${e instanceof Error ? e.message : String(e)}`);
-          autoClusterResult = { triggered: true, error: e instanceof Error ? e.message : String(e) };
-        }
+      if (autoClusterResult) {
+        response.auto_clustering = autoClusterResult;
       }
-    }
 
-    // Build response
-    const response: Record<string, unknown> = {
-      batch_id: batchId,
-      batch_duration_ms: Date.now() - batchStartTime,
-      processed: results.processed,
-      failed: results.failed,
-      remaining,
-      errors: results.errors.length > 0 ? results.errors : undefined,
-    };
-
-    response.next_steps = [
-      { tool: 'ocr_search', description: 'Search across all processed documents' },
-      { tool: 'ocr_document_list', description: 'Browse all documents in the database' },
-    ];
-
-    try {
-      const totalDocCount = (
-        db
-          .getConnection()
-          .prepare('SELECT COUNT(*) as cnt FROM documents WHERE status = ?')
-          .get('complete') as { cnt: number }
-      ).cnt;
-      if (totalDocCount > 1) {
-        (response.next_steps as Array<{ tool: string; description: string }>).push(
-          { tool: 'ocr_document_compare', description: 'Compare differences between documents' }
-        );
-      }
-    } catch (error) {
-      console.error(
-        `[Ingestion] Failed to query document count for auto-compare hint: ${String(error)}`
-      );
-    }
-
-    if (autoClusterResult) {
-      response.auto_clustering = autoClusterResult;
-    }
-
-    return formatResponse(successResult(response));
+      return formatResponse(successResult(response));
+    });
   } catch (error) {
     return handleError(error);
   }
@@ -1804,87 +1813,91 @@ async function handleReprocess(
       }),
       params
     );
-    const { db, vector, generation } = requireDatabase();
 
     if (!process.env.DATALAB_API_KEY) {
       throw new Error('DATALAB_API_KEY environment variable is required for OCR processing');
     }
 
-    const doc = db.getDocument(input.document_id);
-    if (!doc) throw documentNotFoundError(input.document_id);
-    if (doc.status !== 'complete' && doc.status !== 'failed') {
-      throw new Error(
-        `Document status must be 'complete' or 'failed' to reprocess (current: ${doc.status})`
-      );
-    }
-
-    // Save previous quality score for comparison
-    const previousOCR = db.getOCRResultByDocumentId(doc.id);
-    const previousQuality = previousOCR?.parse_quality_score ?? null;
-
-    // Clean all derived data (chunks, embeddings, images, ocr_results, extractions)
-    db.cleanDocumentDerivedData(doc.id);
-
-    // M-11 FIX: Directly claim THIS document by setting status to 'processing'.
-    // Previously set to 'pending' then called handleProcessPending() which batch-claims
-    // from ALL pending documents -- a race condition if other documents are also pending.
-    db.updateDocumentStatus(doc.id, 'processing');
-
-    const ocrMode = input.ocr_mode ?? state.config.defaultOCRMode;
-    const imagesBaseDir = resolve(state.config.defaultStoragePath, 'images');
-    const startTime = Date.now();
-
-    // Process the single document directly -- no batch claiming needed
-    try {
-      await processOneDocument(doc, {
-        db,
-        vector,
-        generation,
-        ocrMode,
-        ocrOptions: {
-          skipCache: input.skip_cache,
-        },
-        imagesBaseDir,
-      });
-    } catch (error) {
-      const errorMsg = error instanceof Error ? error.message : String(error);
-      console.error(`[ERROR] Reprocess failed for document ${doc.id}: ${errorMsg}`);
-
-      // Clean up partial data and mark as failed
-      try {
-        db.cleanDocumentDerivedData(doc.id);
-      } catch (cleanupError) {
-        console.error(
-          `[WARN] Cleanup of partial data failed for ${doc.id}: ` +
-            `${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}`
+    // H-1/H-2: Use withDatabaseOperation to track this long-running async operation.
+    return await withDatabaseOperation(async ({ db, vector, generation }) => {
+      const doc = db.getDocument(input.document_id);
+      if (!doc) throw documentNotFoundError(input.document_id);
+      if (doc.status !== 'complete' && doc.status !== 'failed') {
+        throw new Error(
+          `Document status must be 'complete' or 'failed' to reprocess (current: ${doc.status})`
         );
       }
-      db.updateDocumentStatus(doc.id, 'failed', errorMsg);
 
-      throw error;
-    }
+      // Save previous quality score for comparison
+      const previousOCR = db.getOCRResultByDocumentId(doc.id);
+      const previousQuality = previousOCR?.parse_quality_score ?? null;
 
-    // Get new quality score
-    const newOCR = db.getOCRResultByDocumentId(doc.id);
+      // Clean all derived data (chunks, embeddings, images, ocr_results, extractions)
+      db.cleanDocumentDerivedData(doc.id);
 
-    return formatResponse(
-      successResult({
-        document_id: doc.id,
-        previous_quality: previousQuality,
-        new_quality: newOCR?.parse_quality_score ?? null,
-        quality_change:
-          previousQuality !== null &&
-          newOCR?.parse_quality_score !== null &&
-          newOCR?.parse_quality_score !== undefined
-            ? (newOCR.parse_quality_score - previousQuality).toFixed(2)
-            : null,
-        processing_duration_ms: Date.now() - startTime,
-        next_steps: [
-          { tool: 'ocr_status', description: 'Check processing status' },
-          { tool: 'ocr_document_get', description: 'View updated document details' },
-        ],
-      })
-    );
+      // M-11 FIX: Directly claim THIS document by setting status to 'processing'.
+      // Previously set to 'pending' then called handleProcessPending() which batch-claims
+      // from ALL pending documents -- a race condition if other documents are also pending.
+      db.updateDocumentStatus(doc.id, 'processing');
+
+      const ocrMode = input.ocr_mode ?? state.config.defaultOCRMode;
+      const imagesBaseDir = resolve(state.config.defaultStoragePath, 'images');
+      const startTime = Date.now();
+
+      // Process the single document directly -- no batch claiming needed
+      let reprocessWarnings: string[] = [];
+      try {
+        reprocessWarnings = await processOneDocument(doc, {
+          db,
+          vector,
+          generation,
+          ocrMode,
+          ocrOptions: {
+            skipCache: input.skip_cache,
+          },
+          imagesBaseDir,
+        });
+      } catch (error) {
+        const errorMsg = error instanceof Error ? error.message : String(error);
+        console.error(`[ERROR] Reprocess failed for document ${doc.id}: ${errorMsg}`);
+
+        // Clean up partial data and mark as failed
+        try {
+          db.cleanDocumentDerivedData(doc.id);
+        } catch (cleanupError) {
+          console.error(
+            `[WARN] Cleanup of partial data failed for ${doc.id}: ` +
+              `${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}`
+          );
+        }
+        db.updateDocumentStatus(doc.id, 'failed', errorMsg);
+
+        throw error;
+      }
+
+      // Get new quality score
+      const newOCR = db.getOCRResultByDocumentId(doc.id);
+
+      return formatResponse(
+        successResult({
+          document_id: doc.id,
+          previous_quality: previousQuality,
+          new_quality: newOCR?.parse_quality_score ?? null,
+          quality_change:
+            previousQuality !== null &&
+            newOCR?.parse_quality_score !== null &&
+            newOCR?.parse_quality_score !== undefined
+              ? (newOCR.parse_quality_score - previousQuality).toFixed(2)
+              : null,
+          processing_duration_ms: Date.now() - startTime,
+          ...(reprocessWarnings.length > 0 ? { warnings: reprocessWarnings } : {}),
+          next_steps: [
+            { tool: 'ocr_status', description: 'Check processing status' },
+            { tool: 'ocr_document_get', description: 'View updated document details' },
+          ],
+        })
+      );
+    });
   } catch (error) {
     return handleError(error);
   }

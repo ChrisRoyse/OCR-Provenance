@@ -28,7 +28,6 @@ import { structuredExtractionTools } from '../../src/tools/extraction-structured
 import { imageTools } from '../../src/tools/images.js';
 import { embeddingTools } from '../../src/tools/embeddings.js';
 import { provenanceTools } from '../../src/tools/provenance.js';
-import { timelineTools } from '../../src/tools/timeline.js';
 import { reportTools } from '../../src/tools/reports.js';
 import { comparisonTools } from '../../src/tools/comparison.js';
 import { clusteringTools } from '../../src/tools/clustering.js';
@@ -576,30 +575,31 @@ describe('Gap Closure Phases 0-10: Manual E2E Test', () => {
   // =============================================================================
 
   describe('Phase 6: Timeline & Reports', () => {
-    it('ocr_timeline_analytics - daily documents', async () => {
-      const data = ok(await callTool(timelineTools, 'ocr_timeline_analytics', {
+    it('ocr_trends volume - daily documents', async () => {
+      const data = ok(await callTool(reportTools, 'ocr_trends', {
+        metric: 'volume',
         bucket: 'daily',
-        metric: 'documents',
+        volume_metric: 'documents',
       }));
       expect(data.bucket).toBe('daily');
-      expect(data.metric).toBe('documents');
       expect(data.total_periods).toBeGreaterThanOrEqual(0);
       expect(data.total_count).toBeGreaterThanOrEqual(0);
     });
 
-    it('ocr_timeline_analytics - monthly pages', async () => {
-      const data = ok(await callTool(timelineTools, 'ocr_timeline_analytics', {
+    it('ocr_trends volume - monthly pages', async () => {
+      const data = ok(await callTool(reportTools, 'ocr_trends', {
+        metric: 'volume',
         bucket: 'monthly',
-        metric: 'pages',
+        volume_metric: 'pages',
       }));
       expect(data.bucket).toBe('monthly');
-      expect(data.metric).toBe('pages');
     });
 
-    it('ocr_timeline_analytics - with date filter (empty range)', async () => {
-      const data = ok(await callTool(timelineTools, 'ocr_timeline_analytics', {
+    it('ocr_trends volume - with date filter (empty range)', async () => {
+      const data = ok(await callTool(reportTools, 'ocr_trends', {
+        metric: 'volume',
         bucket: 'daily',
-        metric: 'documents',
+        volume_metric: 'documents',
         created_after: '2099-01-01T00:00:00Z',
       }));
       expect(data.total_count).toBe(0);

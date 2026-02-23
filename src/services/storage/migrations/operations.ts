@@ -2444,74 +2444,83 @@ function migrateV18ToV19(db: Database.Database): void {
  * @throws MigrationError if migration fails
  */
 function migrateV19ToV20(db: Database.Database): void {
+  // M-5: PRAGMA foreign_keys in try-finally so it ALWAYS re-enables even on crash
+  db.exec('PRAGMA foreign_keys = OFF');
   try {
-    db.exec('PRAGMA foreign_keys = OFF');
+    // M-5: Wrap all DDL in a transaction for atomicity
+    db.exec('BEGIN TRANSACTION');
+    try {
+      // Step 1: Add new columns to knowledge_edges
+      const edgeCols = db.pragma('table_info(knowledge_edges)') as Array<{ name: string }>;
+      const edgeColNames = new Set(edgeCols.map((c) => c.name));
 
-    // Step 1: Add new columns to knowledge_edges
-    const edgeCols = db.pragma('table_info(knowledge_edges)') as Array<{ name: string }>;
-    const edgeColNames = new Set(edgeCols.map((c) => c.name));
+      if (!edgeColNames.has('valid_from')) {
+        db.exec('ALTER TABLE knowledge_edges ADD COLUMN valid_from TEXT');
+      }
+      if (!edgeColNames.has('valid_until')) {
+        db.exec('ALTER TABLE knowledge_edges ADD COLUMN valid_until TEXT');
+      }
+      if (!edgeColNames.has('normalized_weight')) {
+        db.exec('ALTER TABLE knowledge_edges ADD COLUMN normalized_weight REAL DEFAULT 0');
+      }
+      if (!edgeColNames.has('contradiction_count')) {
+        db.exec('ALTER TABLE knowledge_edges ADD COLUMN contradiction_count INTEGER DEFAULT 0');
+      }
 
-    if (!edgeColNames.has('valid_from')) {
-      db.exec('ALTER TABLE knowledge_edges ADD COLUMN valid_from TEXT');
-    }
-    if (!edgeColNames.has('valid_until')) {
-      db.exec('ALTER TABLE knowledge_edges ADD COLUMN valid_until TEXT');
-    }
-    if (!edgeColNames.has('normalized_weight')) {
-      db.exec('ALTER TABLE knowledge_edges ADD COLUMN normalized_weight REAL DEFAULT 0');
-    }
-    if (!edgeColNames.has('contradiction_count')) {
-      db.exec('ALTER TABLE knowledge_edges ADD COLUMN contradiction_count INTEGER DEFAULT 0');
-    }
+      // Step 2: Add new columns to knowledge_nodes
+      const nodeCols = db.pragma('table_info(knowledge_nodes)') as Array<{ name: string }>;
+      const nodeColNames = new Set(nodeCols.map((c) => c.name));
 
-    // Step 2: Add new columns to knowledge_nodes
-    const nodeCols = db.pragma('table_info(knowledge_nodes)') as Array<{ name: string }>;
-    const nodeColNames = new Set(nodeCols.map((c) => c.name));
+      if (!nodeColNames.has('importance_score')) {
+        db.exec('ALTER TABLE knowledge_nodes ADD COLUMN importance_score REAL');
+      }
+      if (!nodeColNames.has('resolution_type')) {
+        db.exec('ALTER TABLE knowledge_nodes ADD COLUMN resolution_type TEXT');
+      }
 
-    if (!nodeColNames.has('importance_score')) {
-      db.exec('ALTER TABLE knowledge_nodes ADD COLUMN importance_score REAL');
-    }
-    if (!nodeColNames.has('resolution_type')) {
-      db.exec('ALTER TABLE knowledge_nodes ADD COLUMN resolution_type TEXT');
-    }
+      // Step 3: Add ocr_quality_score to chunks
+      const chunkCols = db.pragma('table_info(chunks)') as Array<{ name: string }>;
+      const chunkColNames = new Set(chunkCols.map((c) => c.name));
+      if (!chunkColNames.has('ocr_quality_score')) {
+        db.exec('ALTER TABLE chunks ADD COLUMN ocr_quality_score REAL');
+      }
 
-    // Step 3: Add ocr_quality_score to chunks
-    const chunkCols = db.pragma('table_info(chunks)') as Array<{ name: string }>;
-    const chunkColNames = new Set(chunkCols.map((c) => c.name));
-    if (!chunkColNames.has('ocr_quality_score')) {
-      db.exec('ALTER TABLE chunks ADD COLUMN ocr_quality_score REAL');
-    }
+      // Step 4: Create placeholder entity_embeddings table (v21 will recreate with correct schema)
+      db.exec(`CREATE TABLE IF NOT EXISTS entity_embeddings (
+        id TEXT PRIMARY KEY,
+        entity_id TEXT NOT NULL REFERENCES entities(id),
+        node_id TEXT REFERENCES knowledge_nodes(id),
+        embedding_model TEXT NOT NULL,
+        dimensions INTEGER NOT NULL,
+        content_hash TEXT NOT NULL,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        provenance_id TEXT REFERENCES provenance(id)
+      )`);
+      db.exec(
+        'CREATE INDEX IF NOT EXISTS idx_entity_embeddings_entity_id ON entity_embeddings(entity_id)'
+      );
+      db.exec(
+        'CREATE INDEX IF NOT EXISTS idx_entity_embeddings_node_id ON entity_embeddings(node_id)'
+      );
+      db.exec(
+        'CREATE INDEX IF NOT EXISTS idx_entity_embeddings_content_hash ON entity_embeddings(content_hash)'
+      );
 
-    // Step 4: Create placeholder entity_embeddings table (v21 will recreate with correct schema)
-    db.exec(`CREATE TABLE IF NOT EXISTS entity_embeddings (
-      id TEXT PRIMARY KEY,
-      entity_id TEXT NOT NULL REFERENCES entities(id),
-      node_id TEXT REFERENCES knowledge_nodes(id),
-      embedding_model TEXT NOT NULL,
-      dimensions INTEGER NOT NULL,
-      content_hash TEXT NOT NULL,
-      created_at TEXT NOT NULL DEFAULT (datetime('now')),
-      provenance_id TEXT REFERENCES provenance(id)
-    )`);
-    db.exec(
-      'CREATE INDEX IF NOT EXISTS idx_entity_embeddings_entity_id ON entity_embeddings(entity_id)'
-    );
-    db.exec(
-      'CREATE INDEX IF NOT EXISTS idx_entity_embeddings_node_id ON entity_embeddings(node_id)'
-    );
-    db.exec(
-      'CREATE INDEX IF NOT EXISTS idx_entity_embeddings_content_hash ON entity_embeddings(content_hash)'
-    );
+      db.exec('COMMIT');
+    } catch (error) {
+      db.exec('ROLLBACK');
+      throw error;
+    }
 
     // Step 5: Create placeholder vec_entity_embeddings virtual table (v21 will recreate with correct PK)
+    // Note: Virtual table creation (vec0) is placed outside the transaction because
+    // vec0 virtual tables may not support transactional DDL in all SQLite builds.
     db.exec(`CREATE VIRTUAL TABLE IF NOT EXISTS vec_entity_embeddings USING vec0(
       id TEXT PRIMARY KEY,
       embedding float[768] distance_metric=cosine
     )`);
 
-    db.exec('PRAGMA foreign_keys = ON');
-
-    // FK integrity check
+    // FK integrity check after all DDL is committed
     const fkViolations = db.pragma('foreign_key_check') as unknown[];
     if (fkViolations.length > 0) {
       throw new Error(
@@ -2519,15 +2528,8 @@ function migrateV19ToV20(db: Database.Database): void {
           `First: ${JSON.stringify(fkViolations[0])}`
       );
     }
-  } catch (error) {
+  } finally {
     db.exec('PRAGMA foreign_keys = ON');
-    const cause = error instanceof Error ? error.message : String(error);
-    throw new MigrationError(
-      `Failed to migrate from v19 to v20 (entity embeddings, temporal edges, node scoring): ${cause}`,
-      'migrate',
-      'knowledge_edges',
-      error
-    );
   }
 }
 
@@ -2541,29 +2543,38 @@ function migrateV19ToV20(db: Database.Database): void {
  * - Rebuild vec_entity_embeddings with entity_embedding_id PK (was id)
  */
 function migrateV20ToV21(db: Database.Database): void {
+  // M-6: PRAGMA foreign_keys in try-finally so it ALWAYS re-enables even on crash
+  db.exec('PRAGMA foreign_keys = OFF');
   try {
-    db.exec('PRAGMA foreign_keys = OFF');
+    // M-6: Wrap DROP + CREATE in a transaction for atomicity
+    db.exec('BEGIN TRANSACTION');
+    try {
+      // Step 1: Drop and recreate entity_embeddings with correct schema
+      // Safe because embed_entities never succeeded with the v20 schema
+      // DROP TABLE removes the table's indexes automatically
+      db.exec('DROP TABLE IF EXISTS entity_embeddings');
 
-    // Step 1: Drop and recreate entity_embeddings with correct schema
-    // Safe because embed_entities never succeeded with the v20 schema
-    // DROP TABLE removes the table's indexes automatically
-    db.exec('DROP TABLE IF EXISTS entity_embeddings');
+      db.exec(CREATE_ENTITY_EMBEDDINGS_TABLE);
+      db.exec(
+        'CREATE INDEX IF NOT EXISTS idx_entity_embeddings_node_id ON entity_embeddings(node_id)'
+      );
+      db.exec(
+        'CREATE INDEX IF NOT EXISTS idx_entity_embeddings_content_hash ON entity_embeddings(content_hash)'
+      );
 
-    db.exec(CREATE_ENTITY_EMBEDDINGS_TABLE);
-    db.exec(
-      'CREATE INDEX IF NOT EXISTS idx_entity_embeddings_node_id ON entity_embeddings(node_id)'
-    );
-    db.exec(
-      'CREATE INDEX IF NOT EXISTS idx_entity_embeddings_content_hash ON entity_embeddings(content_hash)'
-    );
+      db.exec('COMMIT');
+    } catch (error) {
+      db.exec('ROLLBACK');
+      throw error;
+    }
 
     // Step 2: Drop and recreate vec_entity_embeddings with correct PK column name
+    // Note: Virtual table operations (vec0) are placed outside the transaction because
+    // vec0 virtual tables may not support transactional DDL in all SQLite builds.
     db.exec('DROP TABLE IF EXISTS vec_entity_embeddings');
     db.exec(CREATE_VEC_ENTITY_EMBEDDINGS_TABLE);
 
-    db.exec('PRAGMA foreign_keys = ON');
-
-    // FK integrity check
+    // FK integrity check after all DDL is committed
     const fkViolations = db.pragma('foreign_key_check') as unknown[];
     if (fkViolations.length > 0) {
       throw new Error(
@@ -2571,15 +2582,8 @@ function migrateV20ToV21(db: Database.Database): void {
           `First: ${JSON.stringify(fkViolations[0])}`
       );
     }
-  } catch (error) {
+  } finally {
     db.exec('PRAGMA foreign_keys = ON');
-    const cause = error instanceof Error ? error.message : String(error);
-    throw new MigrationError(
-      `Failed to migrate from v20 to v21 (entity embeddings schema fix): ${cause}`,
-      'migrate',
-      'entity_embeddings',
-      error
-    );
   }
 }
 
@@ -3180,22 +3184,26 @@ function migrateV26ToV27(db: Database.Database): void {
 function migrateV27ToV28(db: Database.Database): void {
   console.error('[MIGRATION] Applying v27 → v28: Add saved_searches table');
   try {
-    db.exec(`
-      CREATE TABLE IF NOT EXISTS saved_searches (
-        id TEXT PRIMARY KEY,
-        name TEXT NOT NULL,
-        query TEXT NOT NULL,
-        search_type TEXT NOT NULL CHECK (search_type IN ('bm25', 'semantic', 'hybrid')),
-        search_params TEXT NOT NULL DEFAULT '{}',
-        result_count INTEGER NOT NULL,
-        result_ids TEXT NOT NULL DEFAULT '[]',
-        created_at TEXT NOT NULL DEFAULT (datetime('now')),
-        notes TEXT
-      )
-    `);
-    db.exec('CREATE INDEX IF NOT EXISTS idx_saved_searches_name ON saved_searches(name)');
-    db.exec('CREATE INDEX IF NOT EXISTS idx_saved_searches_search_type ON saved_searches(search_type)');
-    db.exec('CREATE INDEX IF NOT EXISTS idx_saved_searches_created ON saved_searches(created_at DESC)');
+    // L-5: Wrap CREATE TABLE + CREATE INDEX in a transaction for atomicity
+    const transaction = db.transaction(() => {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS saved_searches (
+          id TEXT PRIMARY KEY,
+          name TEXT NOT NULL,
+          query TEXT NOT NULL,
+          search_type TEXT NOT NULL CHECK (search_type IN ('bm25', 'semantic', 'hybrid')),
+          search_params TEXT NOT NULL DEFAULT '{}',
+          result_count INTEGER NOT NULL,
+          result_ids TEXT NOT NULL DEFAULT '[]',
+          created_at TEXT NOT NULL DEFAULT (datetime('now')),
+          notes TEXT
+        )
+      `);
+      db.exec('CREATE INDEX IF NOT EXISTS idx_saved_searches_name ON saved_searches(name)');
+      db.exec('CREATE INDEX IF NOT EXISTS idx_saved_searches_search_type ON saved_searches(search_type)');
+      db.exec('CREATE INDEX IF NOT EXISTS idx_saved_searches_created ON saved_searches(created_at DESC)');
+    });
+    transaction();
     console.error('[MIGRATION] v28 migration complete: saved_searches table created');
   } catch (error) {
     const cause = error instanceof Error ? error.message : String(error);
@@ -3222,10 +3230,14 @@ function migrateV27ToV28(db: Database.Database): void {
 function migrateV28ToV29(db: Database.Database): void {
   console.error('[MIGRATION] Applying v28 → v29: Add tags and entity_tags tables');
   try {
-    db.exec(CREATE_TAGS_TABLE);
-    db.exec(CREATE_ENTITY_TAGS_TABLE);
-    db.exec('CREATE INDEX IF NOT EXISTS idx_entity_tags_entity ON entity_tags(entity_id, entity_type)');
-    db.exec('CREATE INDEX IF NOT EXISTS idx_entity_tags_tag ON entity_tags(tag_id)');
+    // L-5: Wrap CREATE TABLE + CREATE INDEX in a transaction for atomicity
+    const transaction = db.transaction(() => {
+      db.exec(CREATE_TAGS_TABLE);
+      db.exec(CREATE_ENTITY_TAGS_TABLE);
+      db.exec('CREATE INDEX IF NOT EXISTS idx_entity_tags_entity ON entity_tags(entity_id, entity_type)');
+      db.exec('CREATE INDEX IF NOT EXISTS idx_entity_tags_tag ON entity_tags(tag_id)');
+    });
+    transaction();
     console.error('[MIGRATION] v29 migration complete: tags and entity_tags tables created');
   } catch (error) {
     const cause = error instanceof Error ? error.message : String(error);
@@ -3254,6 +3266,8 @@ function migrateV29ToV30(db: Database.Database): void {
   console.error('[MIGRATION] Applying v29 → v30: Documents FTS5, saved search analytics, chunk indexes');
   try {
     // 1. Create documents_fts FTS5 virtual table
+    // Note: FTS5 virtual table creation is outside the transaction because
+    // virtual tables manage their own storage and may not support transactional DDL.
     db.exec(CREATE_DOCUMENTS_FTS_TABLE);
 
     // 2. Create sync triggers
@@ -3261,27 +3275,32 @@ function migrateV29ToV30(db: Database.Database): void {
       db.exec(trigger);
     }
 
-    // 3. Populate from existing data (clear first for crash-retry idempotency)
-    db.exec("INSERT INTO documents_fts(documents_fts) VALUES('delete-all')");
-    db.exec(`
-      INSERT INTO documents_fts(rowid, doc_title, doc_author, doc_subject)
-      SELECT rowid, COALESCE(doc_title, ''), COALESCE(doc_author, ''), COALESCE(doc_subject, '')
-      FROM documents
-    `);
+    // L-5: Wrap the remaining DDL + FTS population in a transaction for atomicity.
+    // The FTS delete-all + insert must be atomic to avoid an empty index on crash.
+    const transaction = db.transaction(() => {
+      // 3. Populate from existing data (clear first for crash-retry idempotency)
+      db.exec("INSERT INTO documents_fts(documents_fts) VALUES('delete-all')");
+      db.exec(`
+        INSERT INTO documents_fts(rowid, doc_title, doc_author, doc_subject)
+        SELECT rowid, COALESCE(doc_title, ''), COALESCE(doc_author, ''), COALESCE(doc_subject, '')
+        FROM documents
+      `);
 
-    // 4. Add saved search analytics columns (idempotent: check column existence first)
-    const ssColumns = db.prepare('PRAGMA table_info(saved_searches)').all() as { name: string }[];
-    const ssColumnNames = new Set(ssColumns.map((c) => c.name));
-    if (!ssColumnNames.has('last_executed_at')) {
-      db.exec('ALTER TABLE saved_searches ADD COLUMN last_executed_at TEXT');
-    }
-    if (!ssColumnNames.has('execution_count')) {
-      db.exec('ALTER TABLE saved_searches ADD COLUMN execution_count INTEGER DEFAULT 0');
-    }
+      // 4. Add saved search analytics columns (idempotent: check column existence first)
+      const ssColumns = db.prepare('PRAGMA table_info(saved_searches)').all() as { name: string }[];
+      const ssColumnNames = new Set(ssColumns.map((c) => c.name));
+      if (!ssColumnNames.has('last_executed_at')) {
+        db.exec('ALTER TABLE saved_searches ADD COLUMN last_executed_at TEXT');
+      }
+      if (!ssColumnNames.has('execution_count')) {
+        db.exec('ALTER TABLE saved_searches ADD COLUMN execution_count INTEGER DEFAULT 0');
+      }
 
-    // 5. Create chunk performance indexes
-    db.exec('CREATE INDEX IF NOT EXISTS idx_chunks_section_path ON chunks(section_path)');
-    db.exec('CREATE INDEX IF NOT EXISTS idx_chunks_heading_level ON chunks(heading_level)');
+      // 5. Create chunk performance indexes
+      db.exec('CREATE INDEX IF NOT EXISTS idx_chunks_section_path ON chunks(section_path)');
+      db.exec('CREATE INDEX IF NOT EXISTS idx_chunks_heading_level ON chunks(heading_level)');
+    });
+    transaction();
 
     console.error('[MIGRATION] v30 migration complete: documents_fts, saved search analytics, chunk indexes');
   } catch (error) {

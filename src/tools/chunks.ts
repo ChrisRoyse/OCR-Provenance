@@ -13,6 +13,7 @@
  */
 
 import { z } from 'zod';
+import { safeMin, safeMax } from '../utils/math.js';
 import { formatResponse, handleError, fetchProvenanceChain, type ToolResponse, type ToolDefinition } from './shared.js';
 import { successResult } from '../server/types.js';
 import { MCPError } from '../server/errors.js';
@@ -257,8 +258,8 @@ async function handleChunkContext(params: Record<string, unknown>): Promise<Tool
     const allPages = allChunks
       .map((c) => c.page_number)
       .filter((p): p is number => p !== null);
-    const minPage = allPages.length > 0 ? Math.min(...allPages) : null;
-    const maxPage = allPages.length > 0 ? Math.max(...allPages) : null;
+    const minPage = safeMin(allPages) ?? null;
+    const maxPage = safeMax(allPages) ?? null;
     const combinedPageRange =
       minPage !== null && maxPage !== null
         ? minPage === maxPage

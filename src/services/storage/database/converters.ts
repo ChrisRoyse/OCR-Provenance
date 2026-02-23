@@ -39,11 +39,10 @@ function parseProcessingParams(id: string, raw: string): Record<string, unknown>
 }
 
 /**
- * Safely parse JSON location, returning a fallback on corrupt data.
- * On parse failure, returns { _parse_error, _raw } cast to ProvenanceLocation
- * so the caller can inspect the object at runtime without crashing.
+ * Safely parse JSON location, returning null on corrupt data.
+ * Callers already handle null (ProvenanceRecord.location is ProvenanceLocation | null).
  */
-function parseLocation(id: string, raw: string): ProvenanceLocation {
+function parseLocation(id: string, raw: string): ProvenanceLocation | null {
   try {
     return JSON.parse(raw) as ProvenanceLocation;
   } catch (error) {
@@ -51,16 +50,15 @@ function parseLocation(id: string, raw: string): ProvenanceLocation {
       `[converters] Corrupt location in provenance ${id}: ${raw}:`,
       error instanceof Error ? error.message : String(error)
     );
-    return { _parse_error: true, _raw: raw } as unknown as ProvenanceLocation;
+    return null;
   }
 }
 
 /**
- * Safely parse JSON vlm_structured_data, returning a fallback on corrupt data.
- * On parse failure, returns { _parse_error, _raw } cast to VLMStructuredData
- * so the caller can inspect the object at runtime without crashing.
+ * Safely parse JSON vlm_structured_data, returning null on corrupt data.
+ * Callers already handle null (ImageReference.vlm_structured_data is VLMStructuredData | null).
  */
-function parseVLMStructuredData(id: string, raw: string): VLMStructuredData {
+function parseVLMStructuredData(id: string, raw: string): VLMStructuredData | null {
   try {
     return JSON.parse(raw) as VLMStructuredData;
   } catch (error) {
@@ -68,7 +66,7 @@ function parseVLMStructuredData(id: string, raw: string): VLMStructuredData {
       `[converters] Corrupt vlm_structured_data in image ${id}: ${raw}:`,
       error instanceof Error ? error.message : String(error)
     );
-    return { _parse_error: true, _raw: raw } as unknown as VLMStructuredData;
+    return null;
   }
 }
 

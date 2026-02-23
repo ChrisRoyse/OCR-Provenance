@@ -508,34 +508,41 @@ export class BM25SearchService {
 
     const start = Date.now();
 
+    // L-15: Wrap delete-all + insert + metadata update in a transaction so a crash
+    // between delete-all and insert cannot leave an empty VLM FTS index.
     // H-4 fix: FTS5 'rebuild' reads ALL rows from the content table (embeddings),
     // including chunk embeddings (image_id IS NULL). This creates ghost VLM results.
     // Instead: clear the index, then manually re-insert only VLM embeddings.
-    this.db.exec("INSERT INTO vlm_fts(vlm_fts) VALUES('delete-all')");
-    this.db.exec(`
-      INSERT INTO vlm_fts(rowid, original_text)
-      SELECT rowid, original_text FROM embeddings WHERE image_id IS NOT NULL
-    `);
+    const rebuildTransaction = this.db.transaction(() => {
+      this.db.exec("INSERT INTO vlm_fts(vlm_fts) VALUES('delete-all')");
+      this.db.exec(`
+        INSERT INTO vlm_fts(rowid, original_text)
+        SELECT rowid, original_text FROM embeddings WHERE image_id IS NOT NULL
+      `);
 
-    const count = this.db
-      .prepare('SELECT COUNT(*) as cnt FROM embeddings WHERE image_id IS NOT NULL')
-      .get() as { cnt: number };
+      const count = this.db
+        .prepare('SELECT COUNT(*) as cnt FROM embeddings WHERE image_id IS NOT NULL')
+        .get() as { cnt: number };
 
-    const now = new Date().toISOString();
-    this.db
-      .prepare(
-        `
-      INSERT INTO fts_index_metadata (id, last_rebuild_at, chunks_indexed, tokenizer, schema_version, content_hash)
-      VALUES (2, ?, ?, 'porter unicode61', ?, NULL)
-      ON CONFLICT(id) DO UPDATE SET
-        last_rebuild_at = excluded.last_rebuild_at,
-        chunks_indexed = excluded.chunks_indexed
-    `
-      )
-      .run(now, count.cnt, SCHEMA_VERSION);
+      const now = new Date().toISOString();
+      this.db
+        .prepare(
+          `
+        INSERT INTO fts_index_metadata (id, last_rebuild_at, chunks_indexed, tokenizer, schema_version, content_hash)
+        VALUES (2, ?, ?, 'porter unicode61', ?, NULL)
+        ON CONFLICT(id) DO UPDATE SET
+          last_rebuild_at = excluded.last_rebuild_at,
+          chunks_indexed = excluded.chunks_indexed
+      `
+        )
+        .run(now, count.cnt, SCHEMA_VERSION);
+
+      return count.cnt;
+    });
+    const vlmCount = rebuildTransaction();
 
     return {
-      vlm_indexed: count.cnt,
+      vlm_indexed: vlmCount,
       duration_ms: Date.now() - start,
     };
   }

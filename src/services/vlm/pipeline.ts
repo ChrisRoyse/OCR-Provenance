@@ -605,10 +605,14 @@ export class VLMPipeline {
           };
         }
       } catch (error) {
-        // If analysis fails, proceed with VLM (fail open)
+        const errMsg = error instanceof Error ? error.message : String(error);
         console.error(
-          `[VLMPipeline] Relevance analysis failed for ${image.id}, proceeding with VLM: ${error}`
+          `[VLMPipeline] Relevance analysis failed for ${image.id}, skipping to avoid processing potentially irrelevant images: ${errMsg}`
         );
+        return {
+          process: false,
+          reason: `Relevance analysis failed: ${errMsg}. Skipping to avoid processing potentially irrelevant images.`,
+        };
       }
     }
 

@@ -12,7 +12,7 @@
 
 import { z } from 'zod';
 import * as fs from 'fs';
-import { requireDatabase } from '../server/state.js';
+import { requireDatabase, withDatabaseOperation } from '../server/state.js';
 import { successResult } from '../server/types.js';
 import { MCPError } from '../server/errors.js';
 import {
@@ -74,6 +74,7 @@ export async function handleVLMDescribe(params: Record<string, unknown>): Promis
       });
     }
 
+    return await withDatabaseOperation(async () => {
     const vlm = getVLMService();
 
     // Enrich context with table metadata for database-tracked images
@@ -128,6 +129,7 @@ export async function handleVLMDescribe(params: Record<string, unknown>): Promis
     }
 
     // Try to generate embedding for database-tracked images
+    const warnings: string[] = [];
     let embeddingId: string | null = null;
     let embeddingGenerated = false;
     try {
@@ -264,9 +266,9 @@ export async function handleVLMDescribe(params: Record<string, unknown>): Promis
         }
       }
     } catch (embError) {
-      // Non-fatal: standalone describe still works without embedding
       const errMsg = embError instanceof Error ? embError.message : String(embError);
-      console.error(`[WARN] VLM describe embedding generation skipped: ${errMsg}`);
+      console.error(`[WARN] VLM describe embedding generation failed: ${errMsg}`);
+      warnings.push(`Embedding generation failed: ${errMsg}. Description stored but not semantically searchable.`);
     }
 
     return formatResponse(
@@ -279,12 +281,14 @@ export async function handleVLMDescribe(params: Record<string, unknown>): Promis
         confidence: result.analysis.confidence,
         embedding_id: embeddingId,
         embedding_generated: embeddingGenerated,
+        ...(warnings.length > 0 ? { warnings } : {}),
         next_steps: [
           { tool: 'ocr_image_get', description: 'View image details including the new description' },
           { tool: 'ocr_image_search', description: 'Search for similar images (mode=semantic for meaning-based)' },
         ],
       })
     );
+    }); // end withDatabaseOperation
   } catch (error) {
     return handleError(error);
   }
@@ -305,6 +309,7 @@ export async function handleVLMProcess(
     const batchSize = input.batch_size ?? 5;
     const limit = input.limit ?? 50;
 
+    return await withDatabaseOperation(async () => {
     const { db, vector } = requireDatabase();
     const conn = db.getConnection();
 
@@ -384,6 +389,7 @@ export async function handleVLMProcess(
 
       return formatResponse(successResult(responseData));
     }
+    }); // end withDatabaseOperation
   } catch (error) {
     return handleError(error);
   }

@@ -13,6 +13,7 @@
 import { z } from 'zod';
 import * as fs from 'fs';
 import { dirname } from 'path';
+import { safeMin, safeMax } from '../utils/math.js';
 import { requireDatabase } from '../server/state.js';
 import { successResult } from '../server/types.js';
 import { MCPError } from '../server/errors.js';
@@ -185,8 +186,8 @@ export async function handleEvaluationReport(
         vlm_pending: docImageCounts.pending,
         vlm_failed: docImageCounts.failed,
         avg_confidence: avgConfidence,
-        min_confidence: confidences.length > 0 ? Math.min(...confidences) : 0,
-        max_confidence: confidences.length > 0 ? Math.max(...confidences) : 0,
+        min_confidence: safeMin(confidences) ?? 0,
+        max_confidence: safeMax(confidences) ?? 0,
         image_types: docImageTypes,
       });
     }
@@ -378,8 +379,8 @@ export async function handleDocumentReport(params: Record<string, unknown>): Pro
             confidences.length > 0
               ? confidences.reduce((a, b) => a + b, 0) / confidences.length
               : null,
-          min_confidence: confidences.length > 0 ? Math.min(...confidences) : null,
-          max_confidence: confidences.length > 0 ? Math.max(...confidences) : null,
+          min_confidence: safeMin(confidences) ?? null,
+          max_confidence: safeMax(confidences) ?? null,
           type_distribution: imageTypes,
           details: imageDetails,
         },

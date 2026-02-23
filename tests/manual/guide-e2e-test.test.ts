@@ -46,7 +46,6 @@ import { comparisonTools } from '../../src/tools/comparison.js';
 import { clusteringTools } from '../../src/tools/clustering.js';
 import { chunkTools } from '../../src/tools/chunks.js';
 import { embeddingTools } from '../../src/tools/embeddings.js';
-import { timelineTools } from '../../src/tools/timeline.js';
 import { tagTools } from '../../src/tools/tags.js';
 import { healthTools } from '../../src/tools/health.js';
 
@@ -379,7 +378,6 @@ describe('Test 8: Tool description tier tags', () => {
     clustering: clusteringTools as ToolModule,
     chunks: chunkTools as ToolModule,
     embeddings: embeddingTools as ToolModule,
-    timeline: timelineTools as ToolModule,
     tags: tagTools as ToolModule,
     health: healthTools as ToolModule,
     intelligence: intelligenceTools as ToolModule,

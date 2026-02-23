@@ -13,6 +13,7 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
+import { safeMin, safeMax } from '../utils/math.js';
 import { v4 as uuidv4 } from 'uuid';
 import { z } from 'zod';
 import { getEmbeddingService } from '../services/embedding/embedder.js';
@@ -421,8 +422,8 @@ function attachContextChunks(
   for (const [docId, docResults] of byDoc) {
     // Batch query: get all potentially needed chunks for this doc
     const allIndices = docResults.map(r => r.chunk_index as number);
-    const minIdx = Math.min(...allIndices) - contextSize;
-    const maxIdx = Math.max(...allIndices) + contextSize;
+    const minIdx = (safeMin(allIndices) ?? 0) - contextSize;
+    const maxIdx = (safeMax(allIndices) ?? 0) + contextSize;
 
     const neighbors = conn.prepare(
       `SELECT id, text, chunk_index, page_number, heading_context, section_path, content_types
@@ -2830,19 +2831,19 @@ async function handleSearchSaved(params: Record<string, unknown>): Promise<ToolR
     const searchResultData = JSON.parse(searchResult.content[0].text) as Record<string, unknown>;
 
     // Task 6.4: Update saved search analytics (execution tracking)
+    let analyticsWarning: string | undefined;
     try {
       conn.prepare(
         'UPDATE saved_searches SET last_executed_at = ?, execution_count = COALESCE(execution_count, 0) + 1 WHERE id = ?'
       ).run(new Date().toISOString(), row.id);
     } catch (analyticsErr) {
-      // Non-fatal: schema v29 databases may not have these columns yet
-      console.error(
-        '[search] Failed to update saved search analytics:',
-        analyticsErr instanceof Error ? analyticsErr.message : String(analyticsErr)
-      );
+      // Non-fatal: schema pre-v30 databases may not have these columns yet
+      const msg = analyticsErr instanceof Error ? analyticsErr.message : String(analyticsErr);
+      console.error('[search] Failed to update saved search analytics:', msg);
+      analyticsWarning = `Analytics tracking unavailable: database schema may be pre-v30. ${msg}`;
     }
 
-    return formatResponse(successResult({
+    const result: Record<string, unknown> = {
       action: 'execute',
       saved_search: {
         id: row.id,
@@ -2856,7 +2857,12 @@ async function handleSearchSaved(params: Record<string, unknown>): Promise<ToolR
       re_executed_at: new Date().toISOString(),
       search_results: searchResultData,
       next_steps: [{ tool: 'ocr_search', description: 'Run a new search' }, { tool: 'ocr_search_saved', description: 'Save a search (action=save) for later' }],
-    }));
+    };
+    if (analyticsWarning) {
+      result.warning = analyticsWarning;
+    }
+
+    return formatResponse(successResult(result));
   } catch (error) {
     return handleError(error);
   }
@@ -2873,6 +2879,19 @@ const CrossDbSearchInput = z.object({
   limit_per_db: z.number().int().min(1).max(50).default(10)
     .describe('Maximum results per database'),
 });
+
+/** Result from cross-database BM25 search with normalized score for cross-DB ranking. */
+interface CrossDBSearchResult {
+  database_name: string;
+  document_id: string;
+  file_name: string | null;
+  chunk_id: string;
+  chunk_index: number;
+  text_preview: string;
+  bm25_score: number;
+  /** Min-max normalized score [0, 1] for cross-database comparability. */
+  normalized_score: number;
+}
 
 /**
  * Handle ocr_search_cross_db - Search across multiple databases using BM25
@@ -2893,15 +2912,7 @@ async function handleCrossDbSearch(params: Record<string, unknown>): Promise<Too
       databases = databases.filter((db) => nameSet.has(db.name));
     }
 
-    const allResults: Array<{
-      database_name: string;
-      document_id: string;
-      file_name: string | null;
-      chunk_id: string;
-      chunk_index: number;
-      text_preview: string;
-      bm25_score: number;
-    }> = [];
+    const allResults: CrossDBSearchResult[] = [];
     const skippedDbs: Array<{ name: string; reason: string }> = [];
 
     for (const dbInfo of databases) {
@@ -2952,6 +2963,7 @@ async function handleCrossDbSearch(params: Record<string, unknown>): Promise<Too
             chunk_index: row.chunk_index,
             text_preview: row.text.substring(0, 300),
             bm25_score: Math.abs(row.rank),
+            normalized_score: 0, // Set during per-database normalization below
           });
         }
       } catch (dbError) {
@@ -2979,21 +2991,18 @@ async function handleCrossDbSearch(params: Record<string, unknown>): Promise<Too
     }
     for (const dbResults of byDatabase.values()) {
       const scores = dbResults.map(r => r.bm25_score);
-      const minScore = Math.min(...scores);
-      const maxScore = Math.max(...scores);
+      const minScore = safeMin(scores) ?? 0;
+      const maxScore = safeMax(scores) ?? 0;
       const range = maxScore - minScore;
       for (const r of dbResults) {
-        (r as Record<string, unknown>).normalized_score = range > 0
+        r.normalized_score = range > 0
           ? (r.bm25_score - minScore) / range
-          : 1.0;
+          : 0.5;
       }
     }
 
     // Sort by normalized score (higher=better)
-    allResults.sort((a, b) =>
-      ((b as Record<string, unknown>).normalized_score as number) -
-      ((a as Record<string, unknown>).normalized_score as number)
-    );
+    allResults.sort((a, b) => b.normalized_score - a.normalized_score);
 
     return formatResponse(
       successResult({

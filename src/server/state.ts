@@ -85,6 +85,12 @@ let _cachedVectorService: VectorService | null = null;
 let _dbGeneration = 0;
 
 /**
+ * Active operation counter - tracks in-flight async database operations.
+ * selectDatabase() and clearDatabase() refuse to proceed when > 0.
+ */
+let _activeOperations = 0;
+
+/**
  * Require database to be selected - FAIL FAST if not
  *
  * @returns Database service, vector service, and generation counter
@@ -124,6 +130,77 @@ export function validateGeneration(expectedGeneration: number): void {
   }
 }
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// OPERATION TRACKING (H-1, H-2, M-9)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/**
+ * Begin tracking an in-flight database operation.
+ *
+ * Increments the active operation counter and returns the current generation.
+ * While any operations are active, selectDatabase() and clearDatabase() will
+ * throw to prevent database switches during async work.
+ *
+ * @returns Current database generation for later validation
+ * @throws MCPError if no database is selected
+ */
+export function beginDatabaseOperation(): number {
+  if (!state.currentDatabase) {
+    throw databaseNotSelectedError();
+  }
+  _activeOperations++;
+  return _dbGeneration;
+}
+
+/**
+ * End tracking an in-flight database operation.
+ *
+ * Decrements the active operation counter. Counter never goes below 0.
+ */
+export function endDatabaseOperation(): void {
+  if (_activeOperations > 0) {
+    _activeOperations--;
+  }
+}
+
+/**
+ * Get the number of active database operations (for diagnostics/testing).
+ */
+export function getActiveOperationCount(): number {
+  return _activeOperations;
+}
+
+/**
+ * Execute an async function within a tracked database operation scope.
+ *
+ * Calls beginDatabaseOperation() before the function and endDatabaseOperation()
+ * in a finally block, guaranteeing the counter is decremented even on error.
+ * Also validates the generation after the function completes to detect any
+ * mid-operation database switch.
+ *
+ * Use this for async tool handlers that do database writes across multiple
+ * await points. Read-only synchronous handlers do not need this wrapper
+ * because the event loop does not yield.
+ *
+ * @param fn - Async function receiving DatabaseServices
+ * @returns The result of fn
+ * @throws MCPError if no database is selected
+ * @throws Error if the database was switched during the operation
+ */
+export async function withDatabaseOperation<T>(
+  fn: (services: DatabaseServices) => Promise<T>
+): Promise<T> {
+  const generation = beginDatabaseOperation();
+  try {
+    const services = requireDatabase();
+    const result = await fn(services);
+    validateGeneration(generation);
+    return result;
+  } finally {
+    endDatabaseOperation();
+  }
+}
+
 /**
  * Check if a database is currently selected
  */
@@ -145,33 +222,48 @@ export function getCurrentDatabaseName(): string | null {
 /**
  * Select a database by name - opens connection and sets as current
  *
- * FAIL FAST: Throws immediately if database doesn't exist
+ * FAIL FAST: Throws immediately if database doesn't exist or if operations
+ * are in-flight (H-2 guard). Uses atomic swap (M-9 fix): opens new DB first,
+ * then swaps state, then closes old DB -- no null window.
  *
  * @param name - Database name to select
  * @param storagePath - Optional storage path override
  * @throws MCPError with DATABASE_NOT_FOUND if database doesn't exist
+ * @throws Error if database operations are in-flight
  */
 export function selectDatabase(name: string, storagePath?: string): void {
   const path = storagePath ?? state.config.defaultStoragePath;
 
-  // Verify database exists BEFORE closing old connection - FAIL FAST
+  // H-2: Refuse to switch while async operations are in-flight
+  if (_activeOperations > 0) {
+    throw new Error(
+      `Cannot switch databases while ${_activeOperations} operation(s) are in-flight. ` +
+        `Wait for active operations to complete before switching databases.`
+    );
+  }
+
+  // Verify database exists BEFORE any state changes - FAIL FAST
   // If the new DB doesn't exist, the old connection stays open and usable.
   if (!DatabaseService.exists(name, path)) {
     throw databaseNotFoundError(name, path);
   }
 
-  // Close existing connection (safe: we know new DB exists)
-  if (state.currentDatabase) {
-    state.currentDatabase.close();
-    state.currentDatabase = null;
-    state.currentDatabaseName = null;
-    _cachedVectorService = null;
-  }
+  // M-9: Atomic swap - open new FIRST, then swap state, then close old.
+  // This eliminates the null window where state.currentDatabase is null
+  // between closing old and opening new.
+  const newDb = DatabaseService.open(name, path);
+  const oldDb = state.currentDatabase;
+
+  // Swap state atomically (single tick - no await between these assignments)
+  state.currentDatabase = newDb;
+  state.currentDatabaseName = name;
+  _cachedVectorService = null;
   _dbGeneration++;
 
-  // Open the database
-  state.currentDatabase = DatabaseService.open(name, path);
-  state.currentDatabaseName = name;
+  // Close old connection AFTER state points to new DB
+  if (oldDb) {
+    oldDb.close();
+  }
 }
 
 /**
@@ -245,9 +337,24 @@ export function deleteDatabase(name: string, storagePath?: string): void {
 }
 
 /**
- * Clear current database selection - closes connection
+ * Clear current database selection - closes connection.
+ *
+ * FAIL FAST: Throws if async operations are in-flight (H-2 guard).
+ * The forceClose parameter bypasses the guard for internal use only
+ * (resetState in tests, process exit cleanup).
+ *
+ * @param forceClose - Skip operation guard (internal use only)
+ * @throws Error if database operations are in-flight and forceClose is false
  */
-export function clearDatabase(): void {
+export function clearDatabase(forceClose: boolean = false): void {
+  // H-2: Refuse to clear while async operations are in-flight
+  if (!forceClose && _activeOperations > 0) {
+    throw new Error(
+      `Cannot clear database while ${_activeOperations} operation(s) are in-flight. ` +
+        `Wait for active operations to complete before clearing the database.`
+    );
+  }
+
   if (state.currentDatabase) {
     state.currentDatabase.close();
     state.currentDatabase = null;
@@ -305,11 +412,15 @@ export function getDefaultStoragePath(): string {
 
 /**
  * Reset all server state - ONLY USE IN TESTS
+ *
+ * Uses forceClose=true to bypass the operation guard since tests
+ * need to reset state unconditionally between test cases.
  */
 export function resetState(): void {
-  clearDatabase();
+  clearDatabase(/* forceClose */ true);
   _cachedVectorService = null;
   _dbGeneration = 0;
+  _activeOperations = 0;
   state.config = { ...defaultConfig };
 }
 

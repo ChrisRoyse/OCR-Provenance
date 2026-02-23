@@ -386,9 +386,9 @@ export class VectorService {
       params.push(...options.chunkFilter.params);
     }
 
-    // Page range filter for VLM results (which use e.page_number, not ch.page_number)
-    // This is handled post-filter in mapAndFilterResults for simplicity,
-    // since VLM and chunk results are mixed in vector search.
+    // Page range filter for VLM/extraction results (which use e.page_number, not ch.page_number)
+    // is applied post-query in mapAndFilterResults, since VLM and chunk results are mixed
+    // and chunk results are already filtered by the chunkFilter SQL conditions above.
 
     return { sql, params };
   }
@@ -578,11 +578,10 @@ export class VectorService {
     rows: SearchRow[],
     maxDistance: number,
     limit: number,
-    _options: VectorSearchOptions = {}
+    options: VectorSearchOptions = {}
   ): VectorSearchResult[] {
-    const results = rows
+    let results = rows
       .filter((row) => row.distance <= maxDistance)
-      .slice(0, limit)
       .map((row) => ({
         embedding_id: row.embedding_id,
         chunk_id: row.chunk_id,
@@ -624,6 +623,23 @@ export class VectorService {
         doc_page_count: row.doc_page_count ?? null,
         datalab_mode: row.datalab_mode ?? null,
       }));
+
+    // Apply pageRangeFilter to VLM/extraction results (chunk results already filtered by SQL)
+    if (options.pageRangeFilter) {
+      const { min_page, max_page } = options.pageRangeFilter;
+      results = results.filter((r) => {
+        // Chunk results already filtered by chunkFilter SQL conditions
+        if (r.chunk_id !== null) return true;
+        // VLM/extraction results: filter by page_number
+        if (r.page_number === null) return false; // No page info = exclude when filtering by page
+        if (min_page !== undefined && r.page_number < min_page) return false;
+        if (max_page !== undefined && r.page_number > max_page) return false;
+        return true;
+      });
+    }
+
+    // Apply limit after all filtering (VLM filter may have removed results)
+    results = results.slice(0, limit);
 
     // Always apply quality-weighted scoring (soft signal, not opt-in filter)
     for (const r of results) {

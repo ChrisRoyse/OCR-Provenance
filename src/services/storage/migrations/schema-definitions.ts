@@ -293,6 +293,11 @@ CREATE VIRTUAL TABLE IF NOT EXISTS vlm_fts USING fts5(
 /**
  * Triggers to keep VLM FTS5 in sync with embeddings table
  * Only fire for embeddings with image_id IS NOT NULL (VLM description embeddings)
+ *
+ * NOTE (L-3): The UPDATE trigger only fires on original_text changes when
+ * new.image_id IS NOT NULL. If image_id were set from non-null to null, the
+ * stale FTS entry would remain. In practice image_id is immutable after INSERT,
+ * so this is a theoretical gap only. The DELETE trigger covers row removal.
  */
 export const CREATE_VLM_FTS_TRIGGERS = [
   `CREATE TRIGGER IF NOT EXISTS vlm_fts_ai AFTER INSERT ON embeddings

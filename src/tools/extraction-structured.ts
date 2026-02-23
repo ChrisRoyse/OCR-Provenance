@@ -134,6 +134,7 @@ async function handleExtractStructured(params: Record<string, unknown>) {
 
     // Generate embedding for extraction content (semantic search)
     // Provenance chain: DOCUMENT(0) -> OCR_RESULT(1) -> EXTRACTION(2) -> EMBEDDING(3)
+    const warnings: string[] = [];
     let embeddingId: string | null = null;
     let embeddingProvId: string | null = null;
     try {
@@ -205,12 +206,11 @@ async function handleExtractStructured(params: Record<string, unknown>) {
       // Store vector in vec_embeddings
       vector.storeVector(embeddingId, vectors[0]);
     } catch (embError) {
-      // Log embedding failure but don't fail the extraction itself
-      // The extraction was already stored successfully
       const errMsg = embError instanceof Error ? embError.message : String(embError);
       console.error(
         `[WARN] Extraction embedding generation failed for extraction ${extractionId}: ${errMsg}`
       );
+      warnings.push(`Embedding generation failed: ${errMsg}. Extraction stored but not semantically searchable.`);
       embeddingId = null;
       embeddingProvId = null;
     }
@@ -237,6 +237,7 @@ async function handleExtractStructured(params: Record<string, unknown>) {
         provenance_id: extractionProvId,
         embedding_id: embeddingId,
         embedding_provenance_id: embeddingProvId,
+        ...(warnings.length > 0 ? { warnings } : {}),
         next_steps: [{ tool: 'ocr_extraction_list', description: 'List all extractions for the document' }, { tool: 'ocr_extraction_get', description: 'View the extraction results in detail' }],
       })
     );

@@ -33,6 +33,12 @@ export default defineConfig({
       reporter: ['text', 'json', 'html'],
       include: ['src/**/*.ts'],
       exclude: ['src/**/*.d.ts', 'src/**/*.test.ts'],
+      thresholds: {
+        lines: 70,
+        branches: 60,
+        functions: 70,
+        statements: 70,
+      },
     },
     globalTeardown: ['./tests/global-teardown.ts'],
     testTimeout: 30000,
