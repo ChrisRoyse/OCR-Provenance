@@ -76,13 +76,54 @@ export async function handleVLMDescribe(params: Record<string, unknown>): Promis
 
     const vlm = getVLMService();
 
+    // Enrich context with table metadata for database-tracked images
+    let enrichedContext = contextText;
+    try {
+      const { db } = requireDatabase();
+      const conn = db.getConnection();
+      // Look up image by path to get page number
+      const imgRow = conn.prepare(
+        'SELECT document_id, page_number FROM images WHERE extracted_path = ?'
+      ).get(imagePath) as { document_id: string; page_number: number | null } | undefined;
+
+      if (imgRow?.page_number !== null && imgRow?.page_number !== undefined) {
+        // Find table provenance for this document + page
+        const tableRows = conn.prepare(
+          "SELECT processing_params FROM provenance WHERE root_document_id IN (SELECT provenance_id FROM documents WHERE id = ?) AND processing_params LIKE '%table_columns%' AND json_extract(processing_params, '$.character_start') IS NOT NULL"
+        ).all(imgRow.document_id) as Array<{ processing_params: string }>;
+
+        const tableContextParts: string[] = [];
+        for (const row of tableRows) {
+          try {
+            const params = JSON.parse(row.processing_params) as Record<string, unknown>;
+            // Check if table is on the same page via location
+            const cols = params.table_columns as string[] | undefined;
+            const summary = params.table_summary as string | undefined;
+            if (cols && cols.length > 0) {
+              const part = summary ?? `Table with columns: ${(cols as string[]).join(', ')}`;
+              tableContextParts.push(part);
+            }
+          } catch { /* skip malformed */ }
+        }
+
+        if (tableContextParts.length > 0) {
+          const tableContext = `This page contains structured table data. ${tableContextParts.join('. ')}`;
+          enrichedContext = enrichedContext
+            ? `${enrichedContext}\n\n${tableContext}`
+            : tableContext;
+        }
+      }
+    } catch {
+      // No database selected or query failed — proceed without enrichment
+    }
+
     let result;
     if (useThinking) {
       // Use deep analysis with extended reasoning
       result = await vlm.analyzeDeep(imagePath);
     } else {
       result = await vlm.describeImage(imagePath, {
-        contextText,
+        contextText: enrichedContext,
         highResolution: true,
       });
     }

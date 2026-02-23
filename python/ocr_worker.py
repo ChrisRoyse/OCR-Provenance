@@ -375,7 +375,8 @@ def process_document(
         if disable_image_extraction:
             options.disable_image_extraction = True
         if extras:
-            options.extras = extras
+            # SDK expects comma-separated string, not list
+            options.extras = ",".join(extras) if isinstance(extras, list) else extras
         if page_schema:
             options.page_schema = page_schema
         if additional_config:

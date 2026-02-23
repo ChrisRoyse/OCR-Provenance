@@ -38,6 +38,66 @@ const SYNONYM_MAP: Record<string, string[]> = {
 /** Max corpus expansion terms per cluster match */
 const MAX_CORPUS_TERMS_PER_CLUSTER = 3;
 
+/** Max table column terms to add per query */
+const MAX_TABLE_COLUMN_TERMS = 5;
+
+/**
+ * Get matching table column names from provenance processing_params.
+ * Searches for column headers that contain any of the query words.
+ *
+ * @param db - DatabaseService instance
+ * @param queryWords - Lowercased query words to match against column names
+ * @returns Array of matching column name terms
+ */
+export function getTableColumnExpansionTerms(
+  db: DatabaseService,
+  queryWords: string[]
+): string[] {
+  const terms: string[] = [];
+
+  try {
+    const conn = db.getConnection();
+    const rows = conn.prepare(
+      "SELECT DISTINCT processing_params FROM provenance WHERE processing_params LIKE '%table_columns%'"
+    ).all() as Array<{ processing_params: string }>;
+
+    const allColumns = new Set<string>();
+    for (const row of rows) {
+      try {
+        const params = JSON.parse(row.processing_params) as Record<string, unknown>;
+        const cols = params.table_columns;
+        if (Array.isArray(cols)) {
+          for (const col of cols) {
+            if (typeof col === 'string' && col.length > 0) {
+              allColumns.add(col);
+            }
+          }
+        }
+      } catch {
+        // Skip malformed JSON
+      }
+    }
+
+    // Find columns matching any query word
+    for (const col of allColumns) {
+      const colLower = col.toLowerCase();
+      for (const word of queryWords) {
+        if (colLower.includes(word) || word.includes(colLower)) {
+          // Add individual words from the column name
+          const colWords = col.split(/\s+/).filter(w => w.length > 2);
+          terms.push(...colWords);
+          break;
+        }
+      }
+      if (terms.length >= MAX_TABLE_COLUMN_TERMS) break;
+    }
+  } catch (error) {
+    console.error(`[QueryExpander] Failed to query table column terms: ${String(error)}`);
+  }
+
+  return [...new Set(terms)].slice(0, MAX_TABLE_COLUMN_TERMS);
+}
+
 /**
  * Query cluster top terms from the database for corpus-specific expansion.
  *
@@ -109,16 +169,19 @@ export function getCorpusExpansionTerms(
  *
  * @param query - Original search query
  * @param db - Optional DatabaseService for corpus-driven expansion
+ * @param isTableQuery - Whether the query targets table content
  * @returns Expansion details: original query, new expanded terms, synonym map, corpus terms
  */
 export function getExpandedTerms(
   query: string,
-  db?: DatabaseService
+  db?: DatabaseService,
+  isTableQuery?: boolean,
 ): {
   original: string;
   expanded: string[];
   synonyms_found: Record<string, string[]>;
   corpus_terms?: Record<string, string[]>;
+  table_column_terms?: string[];
 } {
   const words = query
     .toLowerCase()
@@ -144,22 +207,32 @@ export function getExpandedTerms(
     }
   }
 
+  // Table column expansion
+  let tableColumnTerms: string[] | undefined;
+  if (isTableQuery && db) {
+    tableColumnTerms = getTableColumnExpansionTerms(db, words);
+    expanded.push(...tableColumnTerms);
+  }
+
   return {
     original: query,
     expanded,
     synonyms_found: synonymsFound,
     ...(corpusTerms && Object.keys(corpusTerms).length > 0 ? { corpus_terms: corpusTerms } : {}),
+    ...(tableColumnTerms && tableColumnTerms.length > 0 ? { table_column_terms: tableColumnTerms } : {}),
   };
 }
 
 /**
  * Expand query using static synonyms and optional corpus cluster terms.
+ * When isTableQuery is true, also expands with matching table column names.
  *
  * @param query - Original search query
  * @param db - Optional DatabaseService for corpus-driven expansion
+ * @param isTableQuery - Whether the query targets table content
  * @returns OR-joined expanded query string
  */
-export function expandQuery(query: string, db?: DatabaseService): string {
+export function expandQuery(query: string, db?: DatabaseService, isTableQuery?: boolean): string {
   const words = query
     .toLowerCase()
     .split(/\s+/)
@@ -179,6 +252,12 @@ export function expandQuery(query: string, db?: DatabaseService): string {
     for (const terms of Object.values(corpusTerms)) {
       for (const term of terms) expanded.add(term);
     }
+  }
+
+  // Table column expansion for table-related queries
+  if (isTableQuery && db) {
+    const tableTerms = getTableColumnExpansionTerms(db, words);
+    for (const term of tableTerms) expanded.add(term.toLowerCase());
   }
 
   return [...expanded].join(' OR ');
