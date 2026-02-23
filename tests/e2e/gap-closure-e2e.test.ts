@@ -8,6 +8,8 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { randomUUID } from 'crypto';
 import { rmSync, existsSync } from 'fs';
+import { join as pathJoin } from 'path';
+import { homedir } from 'os';
 import Database from 'better-sqlite3';
 import {
   createDatabase,
@@ -81,7 +83,7 @@ describe('Gap Closure E2E', () => {
     try { clearDatabase(); } catch { /* cleanup */ }
     try { deleteDatabase(DB_NAME); } catch { /* cleanup */ }
     // Filesystem fallback if deleteDatabase failed
-    const dbDir = require('path').join(require('os').homedir(), '.ocr-provenance', 'databases');
+    const dbDir = pathJoin(homedir(), '.ocr-provenance', 'databases');
     for (const suffix of ['', '-wal', '-shm']) {
       try { const p = `${dbDir}/${DB_NAME}.db${suffix}`; if (existsSync(p)) rmSync(p); } catch { /* cleanup */ }
     }

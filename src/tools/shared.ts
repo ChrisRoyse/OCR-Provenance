@@ -18,7 +18,7 @@ import { MCPError, formatErrorResponse } from '../server/errors.js';
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /** MCP tool response format */
-export type ToolResponse = { content: Array<{ type: 'text'; text: string }> };
+export type ToolResponse = { content: Array<{ type: 'text'; text: string }>; isError?: boolean };
 
 /** Tool handler function signature */
 type ToolHandler = (params: Record<string, unknown>) => Promise<ToolResponse>;
@@ -49,7 +49,10 @@ export function formatResponse(result: unknown): ToolResponse {
 export function handleError(error: unknown): ToolResponse {
   const mcpError = MCPError.fromUnknown(error);
   console.error(`[ERROR] ${mcpError.category}: ${mcpError.message}`);
-  return formatResponse(formatErrorResponse(mcpError));
+  return {
+    content: [{ type: 'text', text: JSON.stringify(formatErrorResponse(mcpError), null, 2) }],
+    isError: true,
+  };
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════

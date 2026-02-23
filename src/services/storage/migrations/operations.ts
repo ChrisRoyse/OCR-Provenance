@@ -445,10 +445,7 @@ function migrateV1ToV2(db: Database.Database): void {
     );
     db.exec('CREATE INDEX IF NOT EXISTS idx_images_provenance_id ON images(provenance_id)');
 
-    db.exec('COMMIT');
-    db.exec('PRAGMA foreign_keys = ON');
-
-    // L-15: Verify FK integrity after table recreation
+    // M-5: Verify FK integrity BEFORE commit so violations cause rollback
     const fkViolations = db.pragma('foreign_key_check') as unknown[];
     if (fkViolations.length > 0) {
       throw new Error(
@@ -456,6 +453,9 @@ function migrateV1ToV2(db: Database.Database): void {
           `First: ${JSON.stringify(fkViolations[0])}`
       );
     }
+
+    db.exec('COMMIT');
+    db.exec('PRAGMA foreign_keys = ON');
   } catch (error) {
     // Rollback on error
     try {
@@ -566,10 +566,7 @@ function migrateV2ToV3(db: Database.Database): void {
     );
     db.exec('CREATE INDEX IF NOT EXISTS idx_embeddings_page ON embeddings(page_number)');
 
-    db.exec('COMMIT');
-    db.exec('PRAGMA foreign_keys = ON');
-
-    // MIG-4: Verify FK integrity after table recreation
+    // M-5: Verify FK integrity BEFORE commit so violations cause rollback
     const fkViolations = db.pragma('foreign_key_check') as unknown[];
     if (fkViolations.length > 0) {
       throw new Error(
@@ -577,6 +574,9 @@ function migrateV2ToV3(db: Database.Database): void {
           `First: ${JSON.stringify(fkViolations[0])}`
       );
     }
+
+    db.exec('COMMIT');
+    db.exec('PRAGMA foreign_keys = ON');
   } catch (error) {
     try {
       db.exec('ROLLBACK');
@@ -687,14 +687,8 @@ function migrateV4ToV5(db: Database.Database): void {
       db.exec('ALTER TABLE images ADD COLUMN content_hash TEXT');
     }
     db.exec('CREATE INDEX IF NOT EXISTS idx_images_content_hash ON images(content_hash)');
-  });
 
-  try {
-    transaction();
-    db.exec('PRAGMA foreign_keys = ON');
-
-    // L-14: FK integrity check for pattern consistency with other migrations.
-    // ADD COLUMN can't violate FKs, but this ensures the table isn't corrupt.
+    // M-5: FK integrity check inside transaction so violations cause rollback
     const fkViolations = db.pragma('foreign_key_check') as unknown[];
     if (fkViolations.length > 0) {
       throw new Error(
@@ -702,6 +696,11 @@ function migrateV4ToV5(db: Database.Database): void {
           `First: ${JSON.stringify(fkViolations[0])}`
       );
     }
+  });
+
+  try {
+    transaction();
+    db.exec('PRAGMA foreign_keys = ON');
   } catch (error) {
     db.exec('PRAGMA foreign_keys = ON');
     const cause = error instanceof Error ? error.message : String(error);
@@ -913,10 +912,7 @@ function migrateV6ToV7(db: Database.Database): void {
     );
     db.exec('CREATE INDEX IF NOT EXISTS idx_provenance_parent_id ON provenance(parent_id)');
 
-    db.exec('COMMIT');
-    db.exec('PRAGMA foreign_keys = ON');
-
-    // L-15: Verify FK integrity after table recreation
+    // M-5: Verify FK integrity BEFORE commit so violations cause rollback
     const fkViolations = db.pragma('foreign_key_check') as unknown[];
     if (fkViolations.length > 0) {
       throw new Error(
@@ -924,6 +920,9 @@ function migrateV6ToV7(db: Database.Database): void {
           `First: ${JSON.stringify(fkViolations[0])}`
       );
     }
+
+    db.exec('COMMIT');
+    db.exec('PRAGMA foreign_keys = ON');
   } catch (error) {
     try {
       db.exec('ROLLBACK');
@@ -1059,10 +1058,7 @@ function migrateV9ToV10(db: Database.Database): void {
         END`);
     }
 
-    db.exec('COMMIT');
-    db.exec('PRAGMA foreign_keys = ON');
-
-    // FK integrity check
+    // M-5: Verify FK integrity BEFORE commit so violations cause rollback
     const fkViolations = db.pragma('foreign_key_check') as unknown[];
     if (fkViolations.length > 0) {
       throw new Error(
@@ -1070,6 +1066,9 @@ function migrateV9ToV10(db: Database.Database): void {
           `First: ${JSON.stringify(fkViolations[0])}`
       );
     }
+
+    db.exec('COMMIT');
+    db.exec('PRAGMA foreign_keys = ON');
   } catch (error) {
     try {
       db.exec('ROLLBACK');
@@ -1116,19 +1115,19 @@ function migrateV10ToV11(db: Database.Database): void {
       if (!names.has('extras_json')) {
         db.exec('ALTER TABLE ocr_results ADD COLUMN extras_json TEXT');
       }
+
+      // M-5: FK integrity check inside transaction so violations cause rollback
+      const fkViolations = db.pragma('foreign_key_check') as unknown[];
+      if (fkViolations.length > 0) {
+        throw new Error(
+          `Foreign key integrity check failed after v10->v11 migration: ${fkViolations.length} violation(s). ` +
+            `First: ${JSON.stringify(fkViolations[0])}`
+        );
+      }
     });
     transaction();
 
     db.exec('PRAGMA foreign_keys = ON');
-
-    // FK integrity check for consistency with other migrations
-    const fkViolations = db.pragma('foreign_key_check') as unknown[];
-    if (fkViolations.length > 0) {
-      throw new Error(
-        `Foreign key integrity check failed after v10->v11 migration: ${fkViolations.length} violation(s). ` +
-          `First: ${JSON.stringify(fkViolations[0])}`
-      );
-    }
   } catch (error) {
     db.exec('PRAGMA foreign_keys = ON');
     const cause = error instanceof Error ? error.message : String(error);
@@ -1338,8 +1337,9 @@ export function migrateToLatest(db: Database.Database): void {
   }
 
   if (currentVersion < 31) {
-    migrateV30ToV31(db);
-    bumpVersion(31);
+    // M-6: bumpVersion is passed into migrateV30ToV31 so it runs inside the
+    // same transaction as the migration body, making them atomic.
+    migrateV30ToV31(db, bumpVersion);
   }
 }
 
@@ -1436,10 +1436,7 @@ function migrateV7ToV8(db: Database.Database): void {
     );
     db.exec('CREATE INDEX IF NOT EXISTS idx_provenance_parent_id ON provenance(parent_id)');
 
-    db.exec('COMMIT');
-    db.exec('PRAGMA foreign_keys = ON');
-
-    // FK integrity check after table recreation
+    // M-5: Verify FK integrity BEFORE commit so violations cause rollback
     const fkViolations = db.pragma('foreign_key_check') as unknown[];
     if (fkViolations.length > 0) {
       throw new Error(
@@ -1447,6 +1444,9 @@ function migrateV7ToV8(db: Database.Database): void {
           `First: ${JSON.stringify(fkViolations[0])}`
       );
     }
+
+    db.exec('COMMIT');
+    db.exec('PRAGMA foreign_keys = ON');
   } catch (error) {
     try {
       db.exec('ROLLBACK');
@@ -1533,10 +1533,7 @@ function migrateV8ToV9(db: Database.Database): void {
     db.exec('ALTER TABLE form_fills_new RENAME TO form_fills');
     db.exec('CREATE INDEX IF NOT EXISTS idx_form_fills_status ON form_fills(status)');
 
-    db.exec('COMMIT');
-    db.exec('PRAGMA foreign_keys = ON');
-
-    // FK integrity check after table recreation
+    // M-5: Verify FK integrity BEFORE commit so violations cause rollback
     const fkViolations = db.pragma('foreign_key_check') as unknown[];
     if (fkViolations.length > 0) {
       throw new Error(
@@ -1544,6 +1541,9 @@ function migrateV8ToV9(db: Database.Database): void {
           `First: ${JSON.stringify(fkViolations[0])}`
       );
     }
+
+    db.exec('COMMIT');
+    db.exec('PRAGMA foreign_keys = ON');
   } catch (error) {
     try {
       db.exec('ROLLBACK');
@@ -1599,18 +1599,19 @@ function migrateV11ToV12(db: Database.Database): void {
       if (!columns.some((c) => c.name === 'datalab_file_id')) {
         db.exec('ALTER TABLE documents ADD COLUMN datalab_file_id TEXT');
       }
+
+      // M-5: FK integrity check inside transaction so violations cause rollback
+      const fkViolations = db.pragma('foreign_key_check') as unknown[];
+      if (fkViolations.length > 0) {
+        throw new Error(
+          `Foreign key integrity check failed after v11->v12 migration: ${fkViolations.length} violation(s). ` +
+            `First: ${JSON.stringify(fkViolations[0])}`
+        );
+      }
     });
     transaction();
 
     db.exec('PRAGMA foreign_keys = ON');
-
-    const fkViolations = db.pragma('foreign_key_check') as unknown[];
-    if (fkViolations.length > 0) {
-      throw new Error(
-        `Foreign key integrity check failed after v11->v12 migration: ${fkViolations.length} violation(s). ` +
-          `First: ${JSON.stringify(fkViolations[0])}`
-      );
-    }
   } catch (error) {
     db.exec('PRAGMA foreign_keys = ON');
     const cause = error instanceof Error ? error.message : String(error);
@@ -1702,10 +1703,7 @@ function migrateV12ToV13(db: Database.Database): void {
       'CREATE INDEX IF NOT EXISTS idx_entity_mentions_entity_id ON entity_mentions(entity_id)'
     );
 
-    db.exec('COMMIT');
-    db.exec('PRAGMA foreign_keys = ON');
-
-    // FK integrity check
+    // M-5: Verify FK integrity BEFORE commit so violations cause rollback
     const fkViolations = db.pragma('foreign_key_check') as unknown[];
     if (fkViolations.length > 0) {
       throw new Error(
@@ -1713,6 +1711,9 @@ function migrateV12ToV13(db: Database.Database): void {
           `First: ${JSON.stringify(fkViolations[0])}`
       );
     }
+
+    db.exec('COMMIT');
+    db.exec('PRAGMA foreign_keys = ON');
   } catch (error) {
     try {
       db.exec('ROLLBACK');
@@ -1806,10 +1807,7 @@ function migrateV13ToV14(db: Database.Database): void {
     db.exec('CREATE INDEX IF NOT EXISTS idx_comparisons_doc2 ON comparisons(document_id_2)');
     db.exec('CREATE INDEX IF NOT EXISTS idx_comparisons_created ON comparisons(created_at)');
 
-    db.exec('COMMIT');
-    db.exec('PRAGMA foreign_keys = ON');
-
-    // FK integrity check
+    // M-5: Verify FK integrity BEFORE commit so violations cause rollback
     const fkViolations = db.pragma('foreign_key_check') as unknown[];
     if (fkViolations.length > 0) {
       throw new Error(
@@ -1817,6 +1815,9 @@ function migrateV13ToV14(db: Database.Database): void {
           `First: ${JSON.stringify(fkViolations[0])}`
       );
     }
+
+    db.exec('COMMIT');
+    db.exec('PRAGMA foreign_keys = ON');
   } catch (error) {
     try {
       db.exec('ROLLBACK');
@@ -1927,10 +1928,7 @@ function migrateV15ToV16(db: Database.Database): void {
     db.exec('CREATE INDEX IF NOT EXISTS idx_nel_node_id ON node_entity_links(node_id)');
     db.exec('CREATE INDEX IF NOT EXISTS idx_nel_document_id ON node_entity_links(document_id)');
 
-    db.exec('COMMIT');
-    db.exec('PRAGMA foreign_keys = ON');
-
-    // FK integrity check
+    // M-5: Verify FK integrity BEFORE commit so violations cause rollback
     const fkViolations = db.pragma('foreign_key_check') as unknown[];
     if (fkViolations.length > 0) {
       throw new Error(
@@ -1938,6 +1936,9 @@ function migrateV15ToV16(db: Database.Database): void {
           `First: ${JSON.stringify(fkViolations[0])}`
       );
     }
+
+    db.exec('COMMIT');
+    db.exec('PRAGMA foreign_keys = ON');
   } catch (error) {
     try {
       db.exec('ROLLBACK');
@@ -2041,10 +2042,7 @@ function migrateV14ToV15(db: Database.Database): void {
     db.exec('CREATE INDEX IF NOT EXISTS idx_doc_clusters_cluster ON document_clusters(cluster_id)');
     db.exec('CREATE INDEX IF NOT EXISTS idx_doc_clusters_run ON document_clusters(run_id)');
 
-    db.exec('COMMIT');
-    db.exec('PRAGMA foreign_keys = ON');
-
-    // FK integrity check
+    // M-5: Verify FK integrity BEFORE commit so violations cause rollback
     const fkViolations = db.pragma('foreign_key_check') as unknown[];
     if (fkViolations.length > 0) {
       throw new Error(
@@ -2052,6 +2050,9 @@ function migrateV14ToV15(db: Database.Database): void {
           `First: ${JSON.stringify(fkViolations[0])}`
       );
     }
+
+    db.exec('COMMIT');
+    db.exec('PRAGMA foreign_keys = ON');
   } catch (error) {
     try {
       db.exec('ROLLBACK');
@@ -2191,10 +2192,7 @@ function migrateV16ToV17(db: Database.Database): void {
       `);
     }
 
-    db.exec('COMMIT');
-    db.exec('PRAGMA foreign_keys = ON');
-
-    // FK integrity check
+    // M-5: Verify FK integrity BEFORE commit so violations cause rollback
     const fkViolations = db.pragma('foreign_key_check') as unknown[];
     if (fkViolations.length > 0) {
       throw new Error(
@@ -2202,6 +2200,9 @@ function migrateV16ToV17(db: Database.Database): void {
           `First: ${JSON.stringify(fkViolations[0])}`
       );
     }
+
+    db.exec('COMMIT');
+    db.exec('PRAGMA foreign_keys = ON');
   } catch (error) {
     try {
       db.exec('ROLLBACK');
@@ -2341,10 +2342,7 @@ function migrateV17ToV18(db: Database.Database): void {
       `);
     }
 
-    db.exec('COMMIT');
-    db.exec('PRAGMA foreign_keys = ON');
-
-    // FK integrity check
+    // M-5: Verify FK integrity BEFORE commit so violations cause rollback
     const fkViolations = db.pragma('foreign_key_check') as unknown[];
     if (fkViolations.length > 0) {
       throw new Error(
@@ -2352,6 +2350,9 @@ function migrateV17ToV18(db: Database.Database): void {
           `First: ${JSON.stringify(fkViolations[0])}`
       );
     }
+
+    db.exec('COMMIT');
+    db.exec('PRAGMA foreign_keys = ON');
   } catch (error) {
     try {
       db.exec('ROLLBACK');
@@ -2730,10 +2731,7 @@ function migrateV22ToV23(db: Database.Database): void {
       'CREATE INDEX IF NOT EXISTS idx_ke_relationship_type ON knowledge_edges(relationship_type)'
     );
 
-    db.exec('COMMIT');
-    db.exec('PRAGMA foreign_keys = ON');
-
-    // FK integrity check
+    // M-5: Verify FK integrity BEFORE commit so violations cause rollback
     const fkViolations = db.pragma('foreign_key_check') as unknown[];
     if (fkViolations.length > 0) {
       throw new Error(
@@ -2741,6 +2739,9 @@ function migrateV22ToV23(db: Database.Database): void {
           `First: ${JSON.stringify(fkViolations[0])}`
       );
     }
+
+    db.exec('COMMIT');
+    db.exec('PRAGMA foreign_keys = ON');
   } catch (error) {
     try {
       db.exec('ROLLBACK');
@@ -2912,15 +2913,16 @@ function migrateV24ToV25(db: Database.Database): void {
     db.exec('CREATE INDEX IF NOT EXISTS idx_provenance_root_document_id ON provenance(root_document_id)');
     db.exec('CREATE INDEX IF NOT EXISTS idx_provenance_parent_id ON provenance(parent_id)');
 
-    db.exec('COMMIT');
-    db.exec('PRAGMA foreign_keys = ON');
-
+    // M-5: Verify FK integrity BEFORE commit so violations cause rollback
     const fkViolations = db.pragma('foreign_key_check') as unknown[];
     if (fkViolations.length > 0) {
       throw new Error(
         `Foreign key integrity check failed after v24->v25 migration: ${fkViolations.length} violation(s). First: ${JSON.stringify(fkViolations[0])}`
       );
     }
+
+    db.exec('COMMIT');
+    db.exec('PRAGMA foreign_keys = ON');
   } catch (error) {
     try {
       db.exec('ROLLBACK');
@@ -3069,10 +3071,7 @@ function migrateV25ToV26(db: Database.Database): void {
     db.exec('CREATE INDEX IF NOT EXISTS idx_comparisons_doc2 ON comparisons(document_id_2)');
     db.exec('CREATE INDEX IF NOT EXISTS idx_comparisons_created ON comparisons(created_at)');
 
-    db.exec('COMMIT');
-    db.exec('PRAGMA foreign_keys = ON');
-
-    // Verify FK integrity
+    // M-5: Verify FK integrity BEFORE commit so violations cause rollback
     const fkViolations = db.pragma('foreign_key_check') as unknown[];
     if (fkViolations.length > 0) {
       console.error(`[Migration v25->v26] FK violations detected: ${JSON.stringify(fkViolations.slice(0, 5))}`);
@@ -3080,6 +3079,9 @@ function migrateV25ToV26(db: Database.Database): void {
         `Foreign key integrity check failed after v25->v26 migration: ${fkViolations.length} violation(s)`
       );
     }
+
+    db.exec('COMMIT');
+    db.exec('PRAGMA foreign_keys = ON');
 
     console.error('[Migration] v25 -> v26: Removed entity extraction and knowledge graph tables');
   } catch (error) {
@@ -3137,14 +3139,8 @@ function migrateV26ToV27(db: Database.Database): void {
     if (!columnNames.has('chunking_strategy')) {
       db.exec("ALTER TABLE chunks ADD COLUMN chunking_strategy TEXT NOT NULL DEFAULT 'hybrid_section'");
     }
-  });
 
-  try {
-    transaction();
-    db.exec('PRAGMA foreign_keys = ON');
-
-    // FK integrity check for pattern consistency with other migrations.
-    // ADD COLUMN can't violate FKs, but this ensures the table isn't corrupt.
+    // M-5: FK integrity check inside transaction so violations cause rollback
     const fkViolations = db.pragma('foreign_key_check') as unknown[];
     if (fkViolations.length > 0) {
       throw new Error(
@@ -3152,6 +3148,11 @@ function migrateV26ToV27(db: Database.Database): void {
           `First: ${JSON.stringify(fkViolations[0])}`
       );
     }
+  });
+
+  try {
+    transaction();
+    db.exec('PRAGMA foreign_keys = ON');
 
     console.error('[Migration] v26 -> v27: Added hybrid section-aware chunking columns to chunks table');
   } catch (error) {
@@ -3299,53 +3300,88 @@ function migrateV29ToV30(db: Database.Database): void {
  *
  * Changes:
  * - New indexes: idx_documents_doc_author, idx_documents_doc_subject
+ * - Backfills VLM extracted text into embeddings for FTS searchability
+ *
+ * M-6: bumpVersion is called inside the transaction so migration body and
+ * version bump are atomic. If the process crashes, both roll back together.
  *
  * @param db - Database instance from better-sqlite3
+ * @param bumpVersion - Callback to bump schema version (called inside transaction)
  * @throws MigrationError if migration fails
  */
-function migrateV30ToV31(db: Database.Database): void {
+function migrateV30ToV31(db: Database.Database, bumpVersion: (v: number) => void): void {
   console.error('[MIGRATION] Applying v30 → v31: document metadata indexes, VLM text enrichment');
   try {
-    db.exec('CREATE INDEX IF NOT EXISTS idx_documents_doc_author ON documents(doc_author)');
-    db.exec('CREATE INDEX IF NOT EXISTS idx_documents_doc_subject ON documents(doc_subject)');
+    // M-6 / H-3: Wrap entire migration body + bumpVersion in a single transaction
+    // so the UPDATE and version bump are atomic. If the process crashes between
+    // them, both roll back and the migration re-runs cleanly on restart.
+    const transaction = db.transaction(() => {
+      db.exec('CREATE INDEX IF NOT EXISTS idx_documents_doc_author ON documents(doc_author)');
+      db.exec('CREATE INDEX IF NOT EXISTS idx_documents_doc_subject ON documents(doc_subject)');
 
-    // T2.10: Backfill VLM extracted text into embeddings for FTS searchability
-    // Appends extracted text from vlm_structured_data to the embedding's original_text
-    // so it enters the vlm_fts index automatically via existing triggers
-    db.exec(`
-      UPDATE embeddings SET original_text = original_text || ' ' ||
-        COALESCE((
+      // T2.10: Backfill VLM extracted text into embeddings for FTS searchability
+      // Appends extracted text from vlm_structured_data to the embedding's original_text
+      // so it enters the vlm_fts index automatically via existing triggers.
+      //
+      // H-3: Only update rows where GROUP_CONCAT produces a non-empty result.
+      //   Uses a subquery that returns NULL (not empty string) when no text found,
+      //   so the outer WHERE filters them out. No trailing space is appended.
+      // L-12: Checks json_type(...) = 'array' before json_each() to avoid iterating
+      //   characters of a string or crashing on non-array $.extractedText values.
+      db.exec(`
+        UPDATE embeddings SET original_text = original_text || ' ' || (
           SELECT GROUP_CONCAT(value, ' ')
           FROM images i, json_each(json_extract(i.vlm_structured_data, '$.extractedText'))
           WHERE i.id = embeddings.image_id
           AND i.vlm_structured_data IS NOT NULL
           AND json_valid(i.vlm_structured_data)
           AND json_extract(i.vlm_structured_data, '$.extractedText') IS NOT NULL
-        ), '')
-      WHERE embeddings.image_id IS NOT NULL
-      AND EXISTS (
-        SELECT 1 FROM images i
-        WHERE i.id = embeddings.image_id
-        AND i.vlm_structured_data IS NOT NULL
-        AND json_valid(i.vlm_structured_data)
-        AND json_extract(i.vlm_structured_data, '$.extractedText') IS NOT NULL
-      )
-    `);
-
-    // Rebuild VLM FTS index to pick up the updated text
-    // H-4: Must use delete-all + selective re-insert (NOT 'rebuild') because
-    // FTS5 external content 'rebuild' reads ALL rows from embeddings table,
-    // including chunk embeddings (image_id IS NULL), creating ghost VLM results.
-    try {
-      db.exec("INSERT INTO vlm_fts(vlm_fts) VALUES('delete-all')");
-      db.exec(`
-        INSERT INTO vlm_fts(rowid, original_text)
-        SELECT rowid, original_text FROM embeddings WHERE image_id IS NOT NULL
+          AND json_type(json_extract(i.vlm_structured_data, '$.extractedText')) = 'array'
+        )
+        WHERE embeddings.image_id IS NOT NULL
+        AND EXISTS (
+          SELECT 1 FROM images i
+          WHERE i.id = embeddings.image_id
+          AND i.vlm_structured_data IS NOT NULL
+          AND json_valid(i.vlm_structured_data)
+          AND json_extract(i.vlm_structured_data, '$.extractedText') IS NOT NULL
+          AND json_type(json_extract(i.vlm_structured_data, '$.extractedText')) = 'array'
+        )
+        AND (
+          SELECT GROUP_CONCAT(value, ' ')
+          FROM images i, json_each(json_extract(i.vlm_structured_data, '$.extractedText'))
+          WHERE i.id = embeddings.image_id
+          AND i.vlm_structured_data IS NOT NULL
+          AND json_valid(i.vlm_structured_data)
+          AND json_type(json_extract(i.vlm_structured_data, '$.extractedText')) = 'array'
+        ) IS NOT NULL
       `);
-      console.error('[MIGRATION] VLM FTS index rebuilt with extracted text');
-    } catch (ftsError) {
-      console.error('[MIGRATION] VLM FTS rebuild skipped (may not exist yet):', ftsError instanceof Error ? ftsError.message : String(ftsError));
-    }
+
+      // Rebuild VLM FTS index to pick up the updated text.
+      // H-4: Check table existence first. If vlm_fts doesn't exist yet (fresh DB
+      // still running through early migrations), skip cleanly. Any OTHER error
+      // (corruption, SQL error) must propagate and fail the migration.
+      const vlmFtsExists = db
+        .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='vlm_fts'")
+        .get();
+      if (vlmFtsExists) {
+        // Use delete-all + selective re-insert (NOT 'rebuild') because FTS5
+        // external content 'rebuild' reads ALL rows from embeddings table,
+        // including chunk embeddings (image_id IS NULL), creating ghost VLM results.
+        db.exec("INSERT INTO vlm_fts(vlm_fts) VALUES('delete-all')");
+        db.exec(`
+          INSERT INTO vlm_fts(rowid, original_text)
+          SELECT rowid, original_text FROM embeddings WHERE image_id IS NOT NULL
+        `);
+        console.error('[MIGRATION] VLM FTS index rebuilt with extracted text');
+      } else {
+        console.error('[MIGRATION] VLM FTS table does not exist yet, skipping rebuild');
+      }
+
+      // M-6: Bump version inside the transaction so it's atomic with the body
+      bumpVersion(31);
+    });
+    transaction();
 
     console.error('[MIGRATION] v31 migration complete: indexes + VLM text enrichment');
   } catch (error) {

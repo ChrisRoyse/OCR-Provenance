@@ -327,7 +327,7 @@ describe('QW-2: Quality-Filtered Search', () => {
   });
 
   it.skipIf(!sqliteVecAvailable)(
-    'should work with min_quality_score of 0 (returns all)',
+    'should reject min_quality_score of 0 (minimum is 0.01)',
     async () => {
       const db = DatabaseService.create(dbName, undefined, tempDir);
       state.currentDatabase = db;
@@ -339,10 +339,11 @@ describe('QW-2: Quality-Filtered Search', () => {
       const bm25 = new BM25SearchService(db.getConnection());
       bm25.rebuildIndex();
 
+      // min_quality_score=0 is now rejected by Zod (minimum 0.01) to avoid
+      // ambiguity between "no filter" and "quality >= 0" (M-4 fix)
       const response = await handleSearch({ query: 'pears', limit: 10, filters: { min_quality_score: 0 } });
       const parsed = parseResponse(response);
-      expect(parsed.success).toBe(true);
-      expect(parsed.data!.total).toBe(2);
+      expect(parsed.success).toBe(false);
     }
   );
 

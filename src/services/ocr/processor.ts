@@ -58,6 +58,15 @@ export interface BatchResult {
  */
 const DATALAB_SDK_VERSION = '1.0.0';
 
+function parseMaxConcurrent(): number {
+  const raw = process.env.DATALAB_MAX_CONCURRENT ?? '3';
+  const parsed = parseInt(raw, 10);
+  if (Number.isNaN(parsed)) {
+    throw new Error(`Invalid numeric env var DATALAB_MAX_CONCURRENT: "${raw}"`);
+  }
+  return parsed;
+}
+
 export class OCRProcessor {
   private readonly client: DatalabClient;
   private readonly db: DatabaseService;
@@ -67,8 +76,7 @@ export class OCRProcessor {
   constructor(db: DatabaseService, config: ProcessorConfig = {}) {
     this.db = db;
     this.client = new DatalabClient(config);
-    this.maxConcurrent =
-      config.maxConcurrent ?? parseInt(process.env.DATALAB_MAX_CONCURRENT ?? '5', 10);
+    this.maxConcurrent = config.maxConcurrent ?? parseMaxConcurrent();
     this.defaultMode = config.defaultMode ?? 'balanced';
   }
 

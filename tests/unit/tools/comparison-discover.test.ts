@@ -7,7 +7,7 @@
  * @module tests/unit/tools/comparison-discover
  */
 
-import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { v4 as uuidv4 } from 'uuid';
 import {
   createTempDir,
@@ -65,7 +65,7 @@ function createDocumentWithEmbedding(
   options: { fileName?: string } = {}
 ) {
   const { db, vector } = requireDatabase();
-  const conn = db.getConnection();
+  const _conn = db.getConnection();
 
   // Create provenance chain
   const docProvId = uuidv4();
@@ -188,8 +188,8 @@ describe.skipIf(!sqliteVecAvailable)('ocr_comparison_discover', () => {
 
   it('should discover similar document pairs based on embedding proximity', async () => {
     // Create two documents with similar text
-    const doc1 = createDocumentWithEmbedding('This is a legal contract about terms and conditions.');
-    const doc2 = createDocumentWithEmbedding('This is a legal agreement about terms and provisions.');
+    const _doc1 = createDocumentWithEmbedding('This is a legal contract about terms and conditions.');
+    const _doc2 = createDocumentWithEmbedding('This is a legal agreement about terms and provisions.');
 
     const result = await comparisonTools.ocr_comparison_discover.handler({
       min_similarity: 0.0, // Very low threshold to ensure we find the pair

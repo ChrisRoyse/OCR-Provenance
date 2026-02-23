@@ -163,7 +163,10 @@ describe.skipIf(!MODEL_AVAILABLE)('Cross-platform embedding (integration)', () =
     it('generates 768-dim query embedding', () => {
       const result = runWorker(['--query', 'auto device test', '--device', 'auto']);
       expect(result.success).toBe(true);
-      expect(result.device).toBe('auto');
+      // L-1 fix: device field now contains the resolved device (e.g. "cuda:0", "mps", "cpu")
+      // instead of the raw input parameter "auto"
+      expect(result.device).not.toBe('auto');
+      expect(typeof result.device).toBe('string');
       expect((result.embedding as number[]).length).toBe(768);
     }, 120000);
   });

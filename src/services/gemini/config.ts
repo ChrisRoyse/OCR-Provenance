@@ -75,6 +75,20 @@ export const GeminiConfigSchema = z.object({
 export type GeminiConfig = z.infer<typeof GeminiConfigSchema>;
 
 /**
+ * Parse and validate a numeric environment variable.
+ * Throws with a clear message if the value is not a valid integer.
+ */
+function parseIntEnv(name: string, fallback: number): number {
+  const raw = process.env[name];
+  if (raw === undefined || raw === '') return fallback;
+  const parsed = parseInt(raw, 10);
+  if (Number.isNaN(parsed)) {
+    throw new Error(`Invalid numeric env var ${name}: "${raw}"`);
+  }
+  return parsed;
+}
+
+/**
  * Load configuration from environment variables.
  *
  * Checks for GEMINI_API_KEY before Zod validation to provide a clear,
@@ -92,9 +106,7 @@ export function loadGeminiConfig(overrides?: Partial<GeminiConfig>): GeminiConfi
   const envConfig = {
     apiKey,
     model: process.env.GEMINI_MODEL || GEMINI_MODELS.FLASH_3,
-    maxOutputTokens: process.env.GEMINI_MAX_OUTPUT_TOKENS
-      ? parseInt(process.env.GEMINI_MAX_OUTPUT_TOKENS, 10)
-      : 8192,
+    maxOutputTokens: parseIntEnv('GEMINI_MAX_OUTPUT_TOKENS', 8192),
     temperature: process.env.GEMINI_TEMPERATURE ? parseFloat(process.env.GEMINI_TEMPERATURE) : 0.0,
     mediaResolution:
       (process.env.GEMINI_MEDIA_RESOLUTION as MediaResolution) || 'MEDIA_RESOLUTION_HIGH',

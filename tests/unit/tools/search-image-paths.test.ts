@@ -22,7 +22,7 @@ import {
 // Wrappers that route through the unified handler with mode parameter
 const handleSearch = (params: Record<string, unknown>) =>
   handleSearchUnified({ ...params, mode: 'keyword' });
-const handleSearchSemantic = (params: Record<string, unknown>) =>
+const _handleSearchSemantic = (params: Record<string, unknown>) =>
   handleSearchUnified({ ...params, mode: 'semantic' });
 const handleSearchHybrid = (params: Record<string, unknown>) =>
   handleSearchUnified({ ...params, mode: 'hybrid' });

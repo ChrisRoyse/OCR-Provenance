@@ -170,8 +170,9 @@ function groupResultsByDocument(
 
 /**
  * Resolve metadata_filter to document IDs.
- * Returns undefined if no metadata filter or no matches, allowing all documents.
- * Returns empty array if filter specified but no matches (blocks all results).
+ * Returns existingDocFilter unchanged if no metadata filter is specified.
+ * Returns ['__no_match__'] sentinel if filter is specified but matches zero documents,
+ * ensuring downstream filters (e.g. resolveClusterFilter) correctly block all results.
  */
 function resolveMetadataFilter(
   db: ReturnType<typeof requireDatabase>['db'],
@@ -207,7 +208,12 @@ function resolveMetadataFilter(
     .getConnection()
     .prepare(sql)
     .all(...params) as { id: string }[];
-  return rows.map((r) => r.id);
+  const ids = rows.map((r) => r.id);
+  // Return sentinel when metadata filter was specified but matched zero documents,
+  // so downstream filters (e.g. resolveClusterFilter) correctly intersect with empty set
+  // instead of treating it as "no filter".
+  if (ids.length === 0) return ['__no_match__'];
+  return ids;
 }
 
 /**
@@ -325,13 +331,13 @@ function resolveChunkFilter(
   }
 
   if (filters.section_path_filter) {
-    conditions.push("c.section_path LIKE ? || '%'");
-    params.push(filters.section_path_filter);
+    conditions.push("c.section_path LIKE ? || '%' ESCAPE '\\'");
+    params.push(escapeLikePattern(filters.section_path_filter));
   }
 
   if (filters.heading_filter) {
-    conditions.push("c.heading_context LIKE '%' || ? || '%'");
-    params.push(filters.heading_filter);
+    conditions.push("c.heading_context LIKE '%' || ? || '%' ESCAPE '\\'");
+    params.push(escapeLikePattern(filters.heading_filter));
   }
 
   if (filters.page_range_filter) {
@@ -565,9 +571,12 @@ function excludeRepeatedHeaderFooterChunks(
  * Reduces token count by ~77% per result.
  */
 function compactResult(r: Record<string, unknown>, mode: string): Record<string, unknown> {
-  const scoreField = mode === 'keyword' ? 'bm25_score'
-    : mode === 'hybrid' ? 'rrf_score'
-    : 'similarity_score';
+  let scoreField: string;
+  switch (mode) {
+    case 'keyword': scoreField = 'bm25_score'; break;
+    case 'hybrid': scoreField = 'rrf_score'; break;
+    default: scoreField = 'similarity_score'; break;
+  }
   return {
     document_id: r.document_id,
     chunk_id: r.chunk_id,
@@ -593,30 +602,35 @@ function buildProvenanceSummary(
     if (!chain || chain.length === 0) return undefined;
     const parts: string[] = [];
     for (const link of chain) {
-      const type = link.type;
-      const processor = link.processor;
-      if (type === 'DOCUMENT') {
-        const sourceType = link.source_type;
-        parts.push(sourceType?.toUpperCase() ?? 'DOCUMENT');
-      } else if (type === 'OCR_RESULT') {
-        const qualityScore = link.processing_quality_score;
-        const qualityStr = qualityScore !== undefined && qualityScore !== null
-          ? `, ${Math.round(qualityScore * 20)}% quality`
-          : '';
-        parts.push(`OCR (${processor ?? 'unknown'}${qualityStr})`);
-      } else if (type === 'CHUNK') {
-        const location = link.location;
-        const chunkIndex = location?.chunk_index;
-        const chunkStr = chunkIndex !== undefined
-          ? ` ${chunkIndex + 1}`
-          : '';
-        parts.push(`Chunk${chunkStr}`);
-      } else if (type === 'EMBEDDING') {
-        parts.push('Embedding');
-      } else if (type === 'VLM_DESCRIPTION') {
-        parts.push('VLM');
-      } else {
-        parts.push(type);
+      switch (link.type) {
+        case 'DOCUMENT': {
+          const sourceType = link.source_type;
+          parts.push(sourceType?.toUpperCase() ?? 'DOCUMENT');
+          break;
+        }
+        case 'OCR_RESULT': {
+          const qualityScore = link.processing_quality_score;
+          const qualityStr = qualityScore != null
+            ? `, ${Math.round(qualityScore * 20)}% quality`
+            : '';
+          parts.push(`OCR (${link.processor ?? 'unknown'}${qualityStr})`);
+          break;
+        }
+        case 'CHUNK': {
+          const chunkIndex = link.location?.chunk_index;
+          const chunkStr = chunkIndex !== undefined ? ` ${chunkIndex + 1}` : '';
+          parts.push(`Chunk${chunkStr}`);
+          break;
+        }
+        case 'EMBEDDING':
+          parts.push('Embedding');
+          break;
+        case 'VLM_DESCRIPTION':
+          parts.push('VLM');
+          break;
+        default:
+          parts.push(link.type);
+          break;
       }
     }
     return parts.join(' \u2192 ');
@@ -1168,14 +1182,9 @@ async function handleSearchSemanticInternal(params: Record<string, unknown>): Pr
     const { db, vector } = requireDatabase();
     const conn = db.getConnection();
 
-    // Expand query with domain-specific synonyms + corpus cluster terms if requested
-    const tableQueryDetected = isTableQuery(input.query);
-    let searchQuery = input.query;
-    let queryExpansion: QueryExpansionInfo | undefined;
-    if (input.expand_query) {
-      searchQuery = expandQuery(input.query, db, tableQueryDetected);
-      queryExpansion = getExpandedTerms(input.query, db, tableQueryDetected);
-    }
+    // Semantic mode: skip query expansion entirely.
+    // expand_query produces FTS5 OR-joined terms which have zero effect on vector search.
+    // The embedding is always generated from the original query.
 
     // Resolve metadata filter to document IDs, then chain through quality + cluster filters
     const documentFilter = resolveClusterFilter(
@@ -1201,8 +1210,7 @@ async function handleSearchSemanticInternal(params: Record<string, unknown>): Pr
       table_columns_contain: input.table_columns_contain,
     });
 
-    // Generate query embedding using ORIGINAL query (not FTS5-expanded)
-    // The expanded query contains OR operators that contaminate embedding vectors
+    // Generate query embedding from original query
     const embedder = getEmbeddingService();
     let embeddingQuery = input.query;
     if (input.section_path_filter) {
@@ -1458,16 +1466,7 @@ async function handleSearchSemanticInternal(params: Record<string, unknown>): Pr
             ],
     };
 
-    // Task 3.2: Standardized query expansion details
-    if (queryExpansion) {
-      responseData.query_expansion = {
-        original_query: queryExpansion.original,
-        expanded_query: searchQuery,
-        synonyms_found: queryExpansion.synonyms_found,
-        terms_added: queryExpansion.expanded.length,
-        corpus_terms: queryExpansion.corpus_terms,
-      };
-    }
+    // No query_expansion in semantic mode — expansion only applies to BM25/hybrid.
 
     if (rerankInfo) {
       responseData.rerank = rerankInfo;
@@ -1547,6 +1546,9 @@ async function handleSearchKeywordInternal(params: Record<string, unknown>): Pro
     const fetchLimit = input.rerank ? Math.max(limit * 2, 20) : limit * 2;
 
     // Search chunks FTS
+    // When expand_query produced an OR-joined FTS5 expression, pass preSanitized
+    // to prevent sanitizeFTS5Query from inserting implicit AND (H-2 fix).
+    const preSanitized = !!input.expand_query;
     const chunkResults = bm25.search({
       query: searchQuery,
       limit: fetchLimit,
@@ -1554,6 +1556,7 @@ async function handleSearchKeywordInternal(params: Record<string, unknown>): Pro
       documentFilter,
       includeHighlight: input.include_highlight,
       chunkFilter: chunkFilter.conditions.length > 0 ? chunkFilter : undefined,
+      preSanitized,
     });
 
     // Search VLM FTS
@@ -1564,6 +1567,7 @@ async function handleSearchKeywordInternal(params: Record<string, unknown>): Pro
       documentFilter,
       includeHighlight: input.include_highlight,
       pageRangeFilter: input.page_range_filter,
+      preSanitized,
     });
 
     // Search extractions FTS
@@ -1573,6 +1577,7 @@ async function handleSearchKeywordInternal(params: Record<string, unknown>): Pro
       phraseSearch: input.phrase_search,
       documentFilter,
       includeHighlight: input.include_highlight,
+      preSanitized,
     });
 
     // Merge by score (higher is better), apply combined limit
@@ -1807,6 +1812,9 @@ async function handleSearchHybridInternal(params: Record<string, unknown>): Prom
 
     // Get BM25 results (chunks + VLM + extractions)
     const bm25 = new BM25SearchService(db.getConnection());
+    // When expand_query produced an OR-joined FTS5 expression, pass preSanitized
+    // to prevent sanitizeFTS5Query from inserting implicit AND (H-2 fix).
+    const preSanitized = !!input.expand_query;
     // includeHighlight: false -- hybrid discards BM25 highlights (RRF doesn't surface snippets)
     const bm25ChunkResults = bm25.search({
       query: searchQuery,
@@ -1814,6 +1822,7 @@ async function handleSearchHybridInternal(params: Record<string, unknown>): Prom
       documentFilter,
       includeHighlight: false,
       chunkFilter: chunkFilter.conditions.length > 0 ? chunkFilter : undefined,
+      preSanitized,
     });
     const bm25VlmResults = bm25.searchVLM({
       query: searchQuery,
@@ -1821,12 +1830,14 @@ async function handleSearchHybridInternal(params: Record<string, unknown>): Prom
       documentFilter,
       includeHighlight: false,
       pageRangeFilter: input.page_range_filter,
+      preSanitized,
     });
     const bm25ExtractionResults = bm25.searchExtractions({
       query: searchQuery,
       limit: limit * 2,
       documentFilter,
       includeHighlight: false,
+      preSanitized,
     });
 
     // Merge BM25 results by score
@@ -2043,9 +2054,13 @@ export async function handleSearchUnified(params: Record<string, unknown>): Prom
     // Flatten filters from nested object into top-level params for internal handlers.
     // Internal handlers (InternalSearchParams) expect flat params, not nested filters.
     const filters = input.filters ?? {};
-    // Only pass similarity_threshold if the user explicitly provided it.
+    // Only pass similarity_threshold if the user explicitly provided a non-default value.
     // The internal semantic handler uses adaptive threshold when it's undefined.
-    const userSetThreshold = 'similarity_threshold' in (params as Record<string, unknown>);
+    // Checking 'in params' is fragile: MCP clients may always send all params with defaults.
+    // Instead, compare against the schema default (0.7). If it equals the default, treat as not user-set.
+    const SIMILARITY_THRESHOLD_DEFAULT = 0.7;
+    const userSetThreshold = input.similarity_threshold !== undefined
+      && input.similarity_threshold !== SIMILARITY_THRESHOLD_DEFAULT;
 
     const enrichedParams: Record<string, unknown> = {
       // Spread validated top-level params
@@ -2954,8 +2969,31 @@ async function handleCrossDbSearch(params: Record<string, unknown>): Promise<Too
       }
     }
 
-    // Sort by BM25 score (higher=better, already Math.abs'd)
-    allResults.sort((a, b) => b.bm25_score - a.bm25_score);
+    // Normalize BM25 scores per-database before merging.
+    // BM25 scores from different databases use different corpus statistics (IDF, avgdl)
+    // so raw scores are not comparable. Min-max normalize each database's scores to [0, 1].
+    const byDatabase = new Map<string, typeof allResults>();
+    for (const r of allResults) {
+      if (!byDatabase.has(r.database_name)) byDatabase.set(r.database_name, []);
+      byDatabase.get(r.database_name)!.push(r);
+    }
+    for (const dbResults of byDatabase.values()) {
+      const scores = dbResults.map(r => r.bm25_score);
+      const minScore = Math.min(...scores);
+      const maxScore = Math.max(...scores);
+      const range = maxScore - minScore;
+      for (const r of dbResults) {
+        (r as Record<string, unknown>).normalized_score = range > 0
+          ? (r.bm25_score - minScore) / range
+          : 1.0;
+      }
+    }
+
+    // Sort by normalized score (higher=better)
+    allResults.sort((a, b) =>
+      ((b as Record<string, unknown>).normalized_score as number) -
+      ((a as Record<string, unknown>).normalized_score as number)
+    );
 
     return formatResponse(
       successResult({
@@ -2963,6 +3001,7 @@ async function handleCrossDbSearch(params: Record<string, unknown>): Promise<Too
         databases_searched: databases.length - skippedDbs.length,
         total_results: allResults.length,
         results: allResults,
+        score_normalization: 'per_database_min_max',
         databases_skipped: skippedDbs.length > 0 ? skippedDbs : undefined,
         next_steps: [{ tool: 'ocr_db_select', description: 'Switch to a specific database for deeper search' }, { tool: 'ocr_search', description: 'Search within the current database with full features' }],
       })

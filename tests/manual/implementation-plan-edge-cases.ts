@@ -119,7 +119,7 @@ async function main() {
     const base: Record<string, unknown> = {
       id: 'test-img-3',
     };
-    let didCrash = false;
+    const didCrash = false;
 
     // Replicate the exact code path from images.ts lines 538-549
     if (vlmStructuredData) {
@@ -293,7 +293,7 @@ async function main() {
         CREATE INDEX IF NOT EXISTS idx_documents_doc_subject ON documents(doc_subject);
         CREATE INDEX IF NOT EXISTS idx_documents_doc_title ON documents(doc_title);
       `);
-    } catch (e) {
+    } catch (_e) {
       noError = false;
     }
     assert(noError, 'IF NOT EXISTS handles re-creation of existing indexes without error');
@@ -335,7 +335,7 @@ async function main() {
     const plan = db.prepare(
       "EXPLAIN QUERY PLAN SELECT id FROM documents WHERE doc_author IS NULL"
     ).all() as Array<{ detail: string }>;
-    const usesIndex = plan.some(p => p.detail.includes('idx_documents_doc_author'));
+    const _usesIndex = plan.some(p => p.detail.includes('idx_documents_doc_author'));
     // SQLite may or may not use an index for IS NULL - depends on optimizer
     console.log(`  INFO: doc_author IS NULL query plan: ${plan.map(p => p.detail).join('; ')}`);
     assert(true, 'doc_author IS NULL query executes without error');

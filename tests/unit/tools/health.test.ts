@@ -22,7 +22,7 @@ import {
   resetState,
   requireDatabase,
   ProvenanceType,
-  computeHash,
+  computeHash as _computeHash,
 } from '../../integration/server/helpers.js';
 import { healthTools } from '../../../src/tools/health.js';
 

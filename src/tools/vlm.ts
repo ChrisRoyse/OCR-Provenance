@@ -455,7 +455,7 @@ export async function handleVLMStatus(params: Record<string, unknown>): Promise<
     const status = vlm.getStatus();
 
     // Check if GEMINI_API_KEY is configured
-    const apiKeyConfigured = !!process.env.GEMINI_API_KEY;
+    const apiKeyConfigured = !!(process.env.GEMINI_API_KEY?.trim());
 
     return formatResponse(
       successResult({

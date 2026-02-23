@@ -228,6 +228,12 @@ function getBucketFormat(bucket: TimelineBucket): string {
   }
 }
 
+/** Whitelist of valid table names for timeline stats queries */
+const VALID_TIMELINE_TABLES = new Set(['documents', 'chunks', 'embeddings', 'images', 'ocr_results']);
+
+/** Whitelist of valid date column names for timeline stats queries */
+const VALID_DATE_COLUMNS = new Set(['created_at', 'processing_completed_at']);
+
 /**
  * Get processing volume over time buckets for various metrics.
  *
@@ -279,6 +285,14 @@ export function getTimelineStats(
       dateColumn = 'processing_completed_at';
       selectExpr = 'COALESCE(SUM(cost_cents), 0) as count';
       break;
+  }
+
+  // Whitelist validation for SQL-interpolated identifiers
+  if (!VALID_TIMELINE_TABLES.has(table)) {
+    throw new Error(`Invalid timeline table: ${table}`);
+  }
+  if (!VALID_DATE_COLUMNS.has(dateColumn)) {
+    throw new Error(`Invalid date column: ${dateColumn}`);
   }
 
   if (options.created_after) {
@@ -349,6 +363,13 @@ export function getQualityTrends(
 ): QualityTrendDataPoint[] {
   const format = getBucketFormat(options.bucket);
   const groupBy = options.group_by || 'none';
+
+  // Whitelist validation for group_by parameter (used in SQL branching)
+  const VALID_GROUP_BY = new Set(['none', 'ocr_mode', 'processor']);
+  if (!VALID_GROUP_BY.has(groupBy)) {
+    throw new Error(`Invalid group_by value: ${groupBy}`);
+  }
+
   const conditions: string[] = [];
   const params: unknown[] = [];
 

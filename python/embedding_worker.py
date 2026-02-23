@@ -376,7 +376,8 @@ def generate_embeddings(
         EmbeddingResult with embeddings and metrics
     """
     start_time = time.perf_counter()
-    is_cuda = resolve_device(device).startswith("cuda")
+    resolved_device = resolve_device(device)
+    is_cuda = resolved_device.startswith("cuda")
 
     # Reset VRAM tracking (CUDA only)
     if is_cuda:
@@ -400,7 +401,7 @@ def generate_embeddings(
             count=len(chunks),
             elapsed_ms=round(elapsed_ms, 2),
             ms_per_chunk=round(ms_per_chunk, 4),
-            device=device,
+            device=resolved_device,
             batch_size=final_batch_size,
             vram_used_gb=round(vram_gb, 3),
             error=None,
@@ -415,7 +416,7 @@ def generate_embeddings(
             count=0,
             elapsed_ms=round(elapsed_ms, 2),
             ms_per_chunk=0,
-            device=device,
+            device=resolved_device,
             batch_size=batch_size,
             error=str(e),
         )
@@ -433,6 +434,7 @@ def generate_query_embedding(query: str, device: str = DEFAULT_DEVICE) -> QueryE
         QueryEmbeddingResult with embedding and metrics
     """
     start_time = time.perf_counter()
+    resolved_device = resolve_device(device)
 
     try:
         embedding = embed_query(query, device)
@@ -442,7 +444,7 @@ def generate_query_embedding(query: str, device: str = DEFAULT_DEVICE) -> QueryE
             success=True,
             embedding=embedding.tolist(),
             elapsed_ms=round(elapsed_ms, 2),
-            device=device,
+            device=resolved_device,
             error=None,
         )
 
@@ -453,7 +455,7 @@ def generate_query_embedding(query: str, device: str = DEFAULT_DEVICE) -> QueryE
             success=False,
             embedding=[],
             elapsed_ms=round(elapsed_ms, 2),
-            device=device,
+            device=resolved_device,
             error=str(e),
         )
 

@@ -84,7 +84,7 @@ export function getTagByName(db: Database.Database, name: string): Tag | null {
  * Get all tags
  */
 export function getAllTags(db: Database.Database): Tag[] {
-  return db.prepare('SELECT * FROM tags ORDER BY name').all() as Tag[];
+  return db.prepare('SELECT * FROM tags ORDER BY name LIMIT 10000').all() as Tag[];
 }
 
 /**
@@ -97,7 +97,8 @@ export function getTagsWithCounts(db: Database.Database): TagWithCount[] {
        FROM tags t
        LEFT JOIN entity_tags et ON et.tag_id = t.id
        GROUP BY t.id
-       ORDER BY t.name`
+       ORDER BY t.name
+       LIMIT 10000`
     )
     .all() as TagWithCount[];
 }
@@ -209,7 +210,14 @@ export function searchByTags(
   }
 
   const sql = `
-    SELECT et.entity_id, et.entity_type, GROUP_CONCAT(DISTINCT t.name) as tag_names
+    SELECT et.entity_id, et.entity_type,
+      (SELECT JSON_GROUP_ARRAY(sub.name) FROM (
+        SELECT DISTINCT t2.name
+        FROM tags t2
+        INNER JOIN entity_tags et2 ON et2.tag_id = t2.id
+        WHERE et2.entity_id = et.entity_id AND et2.entity_type = et.entity_type
+        AND t2.name IN (${placeholders})
+      ) sub) as tag_names
     FROM entity_tags et
     INNER JOIN tags t ON t.id = et.tag_id
     WHERE t.name IN (${placeholders})
@@ -217,8 +225,13 @@ export function searchByTags(
     GROUP BY et.entity_id, et.entity_type
     ${havingClause}
     ORDER BY et.entity_id
+    LIMIT 10000
   `;
-  const rows = db.prepare(sql).all(...params) as Array<{
+
+  // Parameters: tagNames for subquery IN, then tagNames + entityType? + matchCount? for outer query
+  const allParams: (string | number)[] = [...tagNames, ...params];
+
+  const rows = db.prepare(sql).all(...allParams) as Array<{
     entity_id: string;
     entity_type: string;
     tag_names: string;
@@ -226,7 +239,7 @@ export function searchByTags(
   return rows.map((row) => ({
     entity_id: row.entity_id,
     entity_type: row.entity_type,
-    tags: row.tag_names.split(','),
+    tags: JSON.parse(row.tag_names) as string[],
   }));
 }
 
