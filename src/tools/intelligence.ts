@@ -97,16 +97,16 @@ function extractTablesFromBlocks(blocks: Array<Record<string, unknown>>): Parsed
     let currentPage = pageNumber;
     if (blockType === 'Page') {
       if (typeof block.id === 'number') {
-        currentPage = (block.id as number) + 1;
-      } else if (typeof block.id === 'string' && /^\d+$/.test(block.id as string)) {
-        currentPage = parseInt(block.id as string, 10) + 1;
+        currentPage = block.id + 1;
+      } else if (typeof block.id === 'string' && /^\d+$/.test(block.id)) {
+        currentPage = parseInt(block.id, 10) + 1;
       } else if (typeof block.page === 'number') {
-        currentPage = (block.page as number) + 1;
+        currentPage = block.page + 1;
       }
     }
     // Fallback: if block has a page field, use it
     if (currentPage === null && typeof block.page === 'number') {
-      currentPage = (block.page as number) + 1;
+      currentPage = block.page + 1;
     }
 
     if (blockType === 'Table') {
@@ -239,6 +239,70 @@ function extractBlockText(block: Record<string, unknown>): string {
   }
 
   return '';
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// JSON BLOCKS PARSING HELPERS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/** Result of fetching and parsing json_blocks from OCR results */
+type JsonBlocksResult =
+  | { ok: true; blocks: Array<Record<string, unknown>> }
+  | { ok: false; reason: 'no_ocr_data' | 'parse_error' | 'empty' };
+
+/**
+ * Fetch and parse json_blocks for a document from ocr_results.
+ * Handles both formats: flat array or {children: [...], metadata: {...}}.
+ */
+function fetchJsonBlocks(
+  conn: ReturnType<ReturnType<typeof requireDatabase>['db']['getConnection']>,
+  documentId: string,
+): JsonBlocksResult {
+  const ocrRow = conn
+    .prepare('SELECT json_blocks FROM ocr_results WHERE document_id = ?')
+    .get(documentId) as { json_blocks: string | null } | undefined;
+
+  if (!ocrRow?.json_blocks) {
+    return { ok: false, reason: 'no_ocr_data' };
+  }
+
+  let blocks: Array<Record<string, unknown>>;
+  try {
+    const parsed = JSON.parse(ocrRow.json_blocks) as unknown;
+    if (Array.isArray(parsed)) {
+      blocks = parsed as Array<Record<string, unknown>>;
+    } else if (parsed && typeof parsed === 'object' && Array.isArray((parsed as Record<string, unknown>).children)) {
+      blocks = (parsed as Record<string, unknown>).children as Array<Record<string, unknown>>;
+    } else {
+      blocks = [];
+    }
+  } catch (parseErr) {
+    console.error(`[intelligence] Failed to parse json_blocks for ${documentId}: ${String(parseErr)}`);
+    return { ok: false, reason: 'parse_error' };
+  }
+
+  if (blocks.length === 0) {
+    return { ok: false, reason: 'empty' };
+  }
+
+  return { ok: true, blocks };
+}
+
+/**
+ * Filter parsed tables by optional table_index.
+ * Returns null if the index is out of range (caller should handle).
+ */
+function filterTablesByIndex(
+  allTables: ParsedTable[],
+  tableIndex: number | undefined,
+): ParsedTable[] | null {
+  if (tableIndex === undefined) {
+    return allTables;
+  }
+  if (tableIndex >= allTables.length) {
+    return null;
+  }
+  return [allTables[tableIndex]];
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -559,86 +623,43 @@ async function handleDocumentTables(params: Record<string, unknown>): Promise<To
     const input = validateInput(DocumentTablesInput, params);
     const { db } = requireDatabase();
 
-    // Verify document exists
     const doc = db.getDocument(input.document_id);
     if (!doc) {
       throw documentNotFoundError(input.document_id);
     }
 
-    // Get json_blocks from ocr_results
-    const ocrRow = db.getConnection()
-      .prepare('SELECT json_blocks FROM ocr_results WHERE document_id = ?')
-      .get(input.document_id) as { json_blocks: string | null } | undefined;
-
-    const tableNextSteps = [
+    const nextSteps = [
       { tool: 'ocr_document_page', description: 'Read the page containing a table' },
       { tool: 'ocr_search', description: 'Search for related content' },
     ];
 
-    if (!ocrRow?.json_blocks) {
+    const blocksResult = fetchJsonBlocks(db.getConnection(), input.document_id);
+    if (!blocksResult.ok) {
       return formatResponse(successResult({
         document_id: input.document_id,
         file_name: doc.file_name,
         tables: [],
         total_tables: 0,
-        source: 'no_ocr_results_or_blocks',
-        next_steps: tableNextSteps,
+        source: blocksResult.reason === 'no_ocr_data' ? 'no_ocr_results_or_blocks'
+          : blocksResult.reason === 'parse_error' ? 'json_blocks_parse_error'
+          : 'empty_json_blocks',
+        next_steps: nextSteps,
       }));
     }
 
-    let blocks: Array<Record<string, unknown>>;
-    try {
-      const parsed = JSON.parse(ocrRow.json_blocks) as unknown;
-      // Handle both formats: flat array or {children: [...], metadata: {...}}
-      if (Array.isArray(parsed)) {
-        blocks = parsed as Array<Record<string, unknown>>;
-      } else if (parsed && typeof parsed === 'object' && Array.isArray((parsed as Record<string, unknown>).children)) {
-        blocks = (parsed as Record<string, unknown>).children as Array<Record<string, unknown>>;
-      } else {
-        blocks = [];
-      }
-    } catch (parseErr) {
-      console.error(`[DocumentTables] Failed to parse json_blocks for ${input.document_id}: ${String(parseErr)}`);
+    const allTables = extractTablesFromBlocks(blocksResult.blocks);
+
+    const tables = filterTablesByIndex(allTables, input.table_index);
+    if (tables === null) {
       return formatResponse(successResult({
         document_id: input.document_id,
         file_name: doc.file_name,
         tables: [],
-        total_tables: 0,
-        source: 'json_blocks_parse_error',
-        next_steps: tableNextSteps,
+        total_tables: allTables.length,
+        requested_index: input.table_index,
+        message: `Table index ${input.table_index} out of range. Document has ${allTables.length} table(s).`,
+        next_steps: nextSteps,
       }));
-    }
-
-    if (blocks.length === 0) {
-      return formatResponse(successResult({
-        document_id: input.document_id,
-        file_name: doc.file_name,
-        tables: [],
-        total_tables: 0,
-        source: 'empty_json_blocks',
-        next_steps: tableNextSteps,
-      }));
-    }
-
-    const allTables = extractTablesFromBlocks(blocks);
-
-    // Filter by table_index if specified
-    let tables: ParsedTable[];
-    if (input.table_index !== undefined) {
-      if (input.table_index >= allTables.length) {
-        return formatResponse(successResult({
-          document_id: input.document_id,
-          file_name: doc.file_name,
-          tables: [],
-          total_tables: allTables.length,
-          requested_index: input.table_index,
-          message: `Table index ${input.table_index} out of range. Document has ${allTables.length} table(s).`,
-          next_steps: tableNextSteps,
-        }));
-      }
-      tables = [allTables[input.table_index]];
-    } else {
-      tables = allTables;
     }
 
     return formatResponse(successResult({
@@ -647,7 +668,7 @@ async function handleDocumentTables(params: Record<string, unknown>): Promise<To
       tables,
       total_tables: allTables.length,
       source: 'json_blocks',
-      next_steps: tableNextSteps,
+      next_steps: nextSteps,
     }));
   } catch (error) {
     return handleError(error);
@@ -925,6 +946,37 @@ async function handleDocumentExtras(params: Record<string, unknown>): Promise<To
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
+// TABLE GRID HELPER
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/** Row-indexed, column-indexed cell text grid with computed dimensions */
+interface TableGrid {
+  rowMap: Map<number, Map<number, string>>;
+  maxRow: number;
+  maxCol: number;
+}
+
+/**
+ * Build a 2D grid from a parsed table's cells with computed max row/column indices.
+ */
+function buildTableGrid(table: ParsedTable): TableGrid {
+  const rowMap = new Map<number, Map<number, string>>();
+  for (const cell of table.cells) {
+    if (!rowMap.has(cell.row)) rowMap.set(cell.row, new Map());
+    rowMap.get(cell.row)!.set(cell.col, cell.text);
+  }
+
+  const maxRow = table.row_count > 0
+    ? table.row_count - 1
+    : Math.max(0, ...table.cells.map(c => c.row));
+  const maxCol = table.column_count > 0
+    ? table.column_count - 1
+    : Math.max(0, ...table.cells.map(c => c.col));
+
+  return { rowMap, maxRow, maxCol };
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
 // INPUT SCHEMA: ocr_table_export
 // ═══════════════════════════════════════════════════════════════════════════════
 
@@ -948,75 +1000,44 @@ async function handleTableExport(params: Record<string, unknown>): Promise<ToolR
     const input = validateInput(TableExportInput, params);
     const { db } = requireDatabase();
 
-    // Verify document exists
     const doc = db.getDocument(input.document_id);
     if (!doc) {
       throw documentNotFoundError(input.document_id);
     }
 
-    // Get json_blocks from ocr_results
-    const ocrRow = db.getConnection()
-      .prepare('SELECT json_blocks FROM ocr_results WHERE document_id = ?')
-      .get(input.document_id) as { json_blocks: string | null } | undefined;
-
-    const exportNextSteps = [
+    const nextSteps = [
       { tool: 'ocr_document_tables', description: 'View table structure and cell data' },
       { tool: 'ocr_search', description: 'Search for related content' },
     ];
 
-    if (!ocrRow?.json_blocks) {
+    const blocksResult = fetchJsonBlocks(db.getConnection(), input.document_id);
+    if (!blocksResult.ok) {
       return formatResponse(successResult({
         document_id: input.document_id,
         file_name: doc.file_name,
         tables: [],
         total_tables: 0,
         format: input.format,
-        message: 'No OCR results or JSON blocks available for export.',
-        next_steps: exportNextSteps,
+        message: blocksResult.reason === 'parse_error'
+          ? 'Failed to parse JSON blocks.'
+          : 'No OCR results or JSON blocks available for export.',
+        next_steps: nextSteps,
       }));
     }
 
-    let blocks: Array<Record<string, unknown>>;
-    try {
-      const parsed = JSON.parse(ocrRow.json_blocks) as unknown;
-      if (Array.isArray(parsed)) {
-        blocks = parsed as Array<Record<string, unknown>>;
-      } else if (parsed && typeof parsed === 'object' && Array.isArray((parsed as Record<string, unknown>).children)) {
-        blocks = (parsed as Record<string, unknown>).children as Array<Record<string, unknown>>;
-      } else {
-        blocks = [];
-      }
-    } catch {
+    const allTables = extractTablesFromBlocks(blocksResult.blocks);
+
+    const tables = filterTablesByIndex(allTables, input.table_index);
+    if (tables === null) {
       return formatResponse(successResult({
         document_id: input.document_id,
         file_name: doc.file_name,
-        tables: [],
-        total_tables: 0,
+        total_tables: allTables.length,
+        requested_index: input.table_index,
         format: input.format,
-        message: 'Failed to parse JSON blocks.',
-        next_steps: exportNextSteps,
+        message: `Table index ${input.table_index} out of range. Document has ${allTables.length} table(s).`,
+        next_steps: nextSteps,
       }));
-    }
-
-    const allTables = extractTablesFromBlocks(blocks);
-
-    // Filter by table_index if specified
-    let tables: ParsedTable[];
-    if (input.table_index !== undefined) {
-      if (input.table_index >= allTables.length) {
-        return formatResponse(successResult({
-          document_id: input.document_id,
-          file_name: doc.file_name,
-          total_tables: allTables.length,
-          requested_index: input.table_index,
-          format: input.format,
-          message: `Table index ${input.table_index} out of range. Document has ${allTables.length} table(s).`,
-          next_steps: exportNextSteps,
-        }));
-      }
-      tables = [allTables[input.table_index]];
-    } else {
-      tables = allTables;
     }
 
     // Format output based on requested format
@@ -1026,15 +1047,7 @@ async function handleTableExport(params: Record<string, unknown>): Promise<ToolR
 
       for (const table of tables) {
         if (table.cells.length === 0) continue;
-        // Build row map
-        const rowMap = new Map<number, Map<number, string>>();
-        for (const cell of table.cells) {
-          if (!rowMap.has(cell.row)) rowMap.set(cell.row, new Map());
-          rowMap.get(cell.row)!.set(cell.col, cell.text);
-        }
-
-        const maxRow = table.row_count > 0 ? table.row_count - 1 : Math.max(...table.cells.map(c => c.row));
-        const maxCol = table.column_count > 0 ? table.column_count - 1 : Math.max(...table.cells.map(c => c.col));
+        const { rowMap, maxRow, maxCol } = buildTableGrid(table);
 
         const lines: string[] = [];
         for (let r = 0; r <= maxRow; r++) {
@@ -1055,7 +1068,7 @@ async function handleTableExport(params: Record<string, unknown>): Promise<ToolR
         exported_tables: tables.length,
         format: 'csv',
         data: csvParts.join('\n\n'),
-        next_steps: exportNextSteps,
+        next_steps: nextSteps,
       }));
     }
 
@@ -1064,14 +1077,7 @@ async function handleTableExport(params: Record<string, unknown>): Promise<ToolR
 
       for (const table of tables) {
         if (table.cells.length === 0) continue;
-        const rowMap = new Map<number, Map<number, string>>();
-        for (const cell of table.cells) {
-          if (!rowMap.has(cell.row)) rowMap.set(cell.row, new Map());
-          rowMap.get(cell.row)!.set(cell.col, cell.text);
-        }
-
-        const maxRow = table.row_count > 0 ? table.row_count - 1 : Math.max(...table.cells.map(c => c.row));
-        const maxCol = table.column_count > 0 ? table.column_count - 1 : Math.max(...table.cells.map(c => c.col));
+        const { rowMap, maxRow, maxCol } = buildTableGrid(table);
 
         const lines: string[] = [];
         // Header row
@@ -1105,28 +1111,33 @@ async function handleTableExport(params: Record<string, unknown>): Promise<ToolR
         exported_tables: tables.length,
         format: 'markdown',
         data: mdParts.join('\n\n'),
-        next_steps: exportNextSteps,
+        next_steps: nextSteps,
       }));
     }
 
     // Default: JSON format
     const jsonTables = tables.map(t => {
+      const { rowMap, maxRow } = buildTableGrid(t);
+
       // Build column names from first row
+      const headerRow = rowMap.get(0);
       const colNames: string[] = [];
-      for (const cell of t.cells) {
-        if (cell.row === 0) {
-          colNames[cell.col] = cell.text;
+      if (headerRow) {
+        for (const [col, text] of headerRow) {
+          colNames[col] = text;
         }
       }
-      // Build data rows
+
+      // Build data rows as column-keyed objects
       const rows: Record<string, string>[] = [];
-      const maxRow = t.row_count > 0 ? t.row_count - 1 : Math.max(0, ...t.cells.map(c => c.row));
       for (let r = 1; r <= maxRow; r++) {
-        const rowCells = t.cells.filter(c => c.row === r);
+        const row = rowMap.get(r);
         const rowObj: Record<string, string> = {};
-        for (const cell of rowCells) {
-          const colName = colNames[cell.col] ?? `col_${cell.col}`;
-          rowObj[colName] = cell.text;
+        if (row) {
+          for (const [col, text] of row) {
+            const colName = colNames[col] ?? `col_${col}`;
+            rowObj[colName] = text;
+          }
         }
         rows.push(rowObj);
       }
@@ -1148,7 +1159,7 @@ async function handleTableExport(params: Record<string, unknown>): Promise<ToolR
       exported_tables: tables.length,
       format: 'json',
       tables: jsonTables,
-      next_steps: exportNextSteps,
+      next_steps: nextSteps,
     }));
   } catch (error) {
     return handleError(error);

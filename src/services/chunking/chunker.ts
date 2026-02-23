@@ -31,6 +31,10 @@ import {
   findAtomicRegions,
   isOffsetInAtomicRegion,
   extractTableStructures,
+  extractHeadersFromMarkdown,
+  countTableDimensionsFromMarkdown,
+  extractFirstDataRow,
+  generateTableSummary,
   type TableStructure,
 } from './json-block-analyzer.js';
 import { normalizeHeadingLevels } from './heading-normalizer.js';
@@ -42,6 +46,31 @@ import { mergeHeadingOnlyChunks } from './chunk-merger.js';
  */
 function stripHtmlForFTS(text: string): string {
   return text.replace(/<[^>]+>/g, '').replace(/\s{2,}/g, ' ');
+}
+
+/**
+ * Create table metadata directly from chunk text by parsing pipe-delimited markdown.
+ * Used as a fallback when offset-based table structure matching fails
+ * (common with DOCX tables where locateBlockInMarkdown cannot find the table).
+ */
+function createTableMetadataFromText(chunkText: string): ChunkResult['tableMetadata'] {
+  // Only attempt if text contains pipe-delimited table patterns
+  const pipeLines = chunkText.split('\n').filter(l => l.includes('|'));
+  if (pipeLines.length < 2) {
+    return null;
+  }
+
+  const columnHeaders = extractHeadersFromMarkdown(chunkText);
+  const { rowCount, columnCount } = countTableDimensionsFromMarkdown(chunkText);
+  const firstRowValues = extractFirstDataRow(chunkText);
+  const summary = generateTableSummary(columnHeaders, rowCount, firstRowValues);
+
+  return {
+    columnHeaders,
+    rowCount,
+    columnCount: columnCount > 0 ? columnCount : columnHeaders.length,
+    summary,
+  };
 }
 
 /**
@@ -324,6 +353,12 @@ export function chunkHybridSectionAware(
 
     const pageInfo = determinePageInfoForSpan(startOff, endOff, pageOffsets);
 
+    // Check if this flushed chunk overlaps with a table structure
+    const hasTableContent = accumulator.contentTypes.has('table');
+    const tableMetaForFlushed = hasTableContent
+      ? (findTableMetadata(startOff, endOff - startOff) ?? createTableMetadataFromText(chunkText))
+      : null;
+
     chunks.push({
       index: chunkIndex++,
       text: chunkText,
@@ -338,6 +373,7 @@ export function chunkHybridSectionAware(
       sectionPath: currentSectionPath,
       contentTypes: Array.from(accumulator.contentTypes),
       isAtomic,
+      tableMetadata: tableMetaForFlushed,
     });
   }
 
@@ -365,7 +401,7 @@ export function chunkHybridSectionAware(
     }
 
     const tableMetaForAtomicChunk = block.type === 'table'
-      ? findTableMetadata(startOff, endOff - startOff)
+      ? (findTableMetadata(startOff, endOff - startOff) ?? createTableMetadataFromText(chunkText))
       : null;
 
     chunks.push({
@@ -439,7 +475,7 @@ export function chunkHybridSectionAware(
         const pageInfo = determinePageInfoForSpan(startOff, endOff, pageOffsets);
 
         const tableMetaForSubChunk = block.type === 'table'
-          ? findTableMetadata(startOff, endOff - startOff)
+          ? (findTableMetadata(startOff, endOff - startOff) ?? createTableMetadataFromText(chunkText))
           : null;
 
         chunks.push({

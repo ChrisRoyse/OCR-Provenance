@@ -86,8 +86,8 @@ export async function handleVLMDescribe(params: Record<string, unknown>): Promis
         'SELECT document_id, page_number FROM images WHERE extracted_path = ?'
       ).get(imagePath) as { document_id: string; page_number: number | null } | undefined;
 
-      if (imgRow?.page_number !== null && imgRow?.page_number !== undefined) {
-        // Find table provenance for this document + page
+      if (imgRow != null && imgRow.page_number != null) {
+        // Find table provenance for this document
         const tableRows = conn.prepare(
           "SELECT processing_params FROM provenance WHERE root_document_id IN (SELECT provenance_id FROM documents WHERE id = ?) AND processing_params LIKE '%table_columns%' AND json_extract(processing_params, '$.character_start') IS NOT NULL"
         ).all(imgRow.document_id) as Array<{ processing_params: string }>;
@@ -96,11 +96,10 @@ export async function handleVLMDescribe(params: Record<string, unknown>): Promis
         for (const row of tableRows) {
           try {
             const params = JSON.parse(row.processing_params) as Record<string, unknown>;
-            // Check if table is on the same page via location
             const cols = params.table_columns as string[] | undefined;
             const summary = params.table_summary as string | undefined;
             if (cols && cols.length > 0) {
-              const part = summary ?? `Table with columns: ${(cols as string[]).join(', ')}`;
+              const part = summary ?? `Table with columns: ${cols.join(', ')}`;
               tableContextParts.push(part);
             }
           } catch { /* skip malformed */ }

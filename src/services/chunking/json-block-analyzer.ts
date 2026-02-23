@@ -1000,7 +1000,7 @@ export function extractTableStructures(
  * Extract column headers from the first pipe-delimited row of markdown table text.
  * Fallback when JSON block children don't contain TableRow elements.
  */
-function extractHeadersFromMarkdown(tableMarkdown: string): string[] {
+export function extractHeadersFromMarkdown(tableMarkdown: string): string[] {
   const lines = tableMarkdown.split('\n').filter(l => l.trim().length > 0);
   for (const line of lines) {
     const trimmed = line.trim();
@@ -1020,7 +1020,7 @@ function extractHeadersFromMarkdown(tableMarkdown: string): string[] {
  * Count table dimensions from markdown pipe-delimited text.
  * Counts data rows (excludes header and separator rows).
  */
-function countTableDimensionsFromMarkdown(tableMarkdown: string): { rowCount: number; columnCount: number } {
+export function countTableDimensionsFromMarkdown(tableMarkdown: string): { rowCount: number; columnCount: number } {
   const lines = tableMarkdown.split('\n').filter(l => l.trim().length > 0 && l.includes('|'));
   if (lines.length === 0) return { rowCount: 0, columnCount: 0 };
 
@@ -1050,25 +1050,21 @@ function countTableDimensionsFromMarkdown(tableMarkdown: string): { rowCount: nu
 /**
  * Extract values from the first data row (after header and separator) of markdown table.
  */
-function extractFirstDataRow(tableMarkdown: string): string[] {
+export function extractFirstDataRow(tableMarkdown: string): string[] {
   const lines = tableMarkdown.split('\n').filter(l => l.trim().length > 0 && l.includes('|'));
   let headerSeen = false;
-  let separatorSeen = false;
 
   for (const line of lines) {
     const trimmed = line.trim();
     if (/^\|?[\s-:|]+\|?$/.test(trimmed)) {
-      separatorSeen = true;
       continue;
     }
     if (!headerSeen) {
       headerSeen = true;
       continue;
     }
-    if (separatorSeen || headerSeen) {
-      // This is the first data row
-      return trimmed.split('|').map(c => c.trim()).filter(c => c.length > 0);
-    }
+    // First non-header, non-separator row is the first data row
+    return trimmed.split('|').map(c => c.trim()).filter(c => c.length > 0);
   }
   return [];
 }
@@ -1220,35 +1216,54 @@ function extractHeadersFromHtml(block: Record<string, unknown>): string[] {
 }
 
 /**
- * Count table dimensions from block children.
+ * Count table dimensions from block children, with HTML fallback.
  */
 function countTableDimensions(
   block: Record<string, unknown>,
   headerColumnCount: number
 ): { rowCount: number; columnCount: number } {
   const children = (block.children ?? block.blocks) as unknown[] | undefined;
-  if (!Array.isArray(children)) {
-    return { rowCount: 0, columnCount: headerColumnCount };
-  }
 
   let rowCount = 0;
   let maxColumns = headerColumnCount;
 
-  for (const child of children) {
-    const childBlock = child as Record<string, unknown>;
-    const childType = childBlock.block_type as string | undefined;
+  if (Array.isArray(children) && children.length > 0) {
+    for (const child of children) {
+      const childBlock = child as Record<string, unknown>;
+      const childType = childBlock.block_type as string | undefined;
 
-    if (childType === 'TableRow' || childType === 'Row' || childType === 'TableHeader') {
-      rowCount++;
-      const cells = (childBlock.children ?? childBlock.blocks) as unknown[] | undefined;
-      if (Array.isArray(cells) && cells.length > maxColumns) {
-        maxColumns = cells.length;
+      if (childType === 'TableRow' || childType === 'Row' || childType === 'TableHeader') {
+        rowCount++;
+        const cells = (childBlock.children ?? childBlock.blocks) as unknown[] | undefined;
+        if (Array.isArray(cells) && cells.length > maxColumns) {
+          maxColumns = cells.length;
+        }
+      } else if (childType === 'Table') {
+        // Nested table in TableGroup
+        const nested = countTableDimensions(childBlock, headerColumnCount);
+        rowCount += nested.rowCount;
+        if (nested.columnCount > maxColumns) maxColumns = nested.columnCount;
       }
-    } else if (childType === 'Table') {
-      // Nested table in TableGroup
-      const nested = countTableDimensions(childBlock, headerColumnCount);
-      rowCount += nested.rowCount;
-      if (nested.columnCount > maxColumns) maxColumns = nested.columnCount;
+    }
+  }
+
+  // HTML fallback: count <tr> elements when block children yield 0 rows
+  if (rowCount === 0) {
+    const html = (block.html as string) ?? '';
+    if (html.length > 0) {
+      const trMatches = html.match(/<tr[^>]*>/gi);
+      if (trMatches) {
+        // Subtract 1 for header row (data rows only)
+        rowCount = Math.max(0, trMatches.length - 1);
+      }
+      // Count max columns from HTML if needed
+      if (maxColumns === 0) {
+        const firstRowMatch = html.match(/<tr[^>]*>([\s\S]*?)<\/tr>/i);
+        if (firstRowMatch) {
+          const cellCount = (firstRowMatch[1].match(/<t[dh][^>]*>/gi) ?? []).length;
+          if (cellCount > maxColumns) maxColumns = cellCount;
+        }
+      }
     }
   }
 
