@@ -378,8 +378,14 @@ export const SearchUnifiedInput = z.object({
     .describe('(hybrid mode) Semantic result weight'),
   rrf_k: z.number().int().min(1).max(100).default(60)
     .describe('(hybrid mode) RRF smoothing constant'),
-  auto_route: z.boolean().default(false)
+  auto_route: z.boolean().default(true)
     .describe('(hybrid mode) Auto-adjust BM25/semantic weights based on query classification'),
+
+  // ── V7 Intelligence Optimization ──────────────────────────────────────
+  compact: z.boolean().default(false)
+    .describe('When true, return only essential fields per result (document_id, chunk_id, original_text, source_file_name, page_number, score, result_type) for ~77% token reduction'),
+  include_provenance_summary: z.boolean().default(false)
+    .describe('When true, add a one-line provenance_summary string to each result showing the data lineage chain'),
 });
 
 /**

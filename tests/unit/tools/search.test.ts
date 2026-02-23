@@ -275,14 +275,13 @@ function insertTestChunk(
 // ═══════════════════════════════════════════════════════════════════════════════
 
 describe('searchTools exports', () => {
-  it('exports all 8 search tools (unified ocr_search + unified ocr_search_saved)', () => {
-    expect(Object.keys(searchTools)).toHaveLength(8);
+  it('exports all 7 search tools (unified ocr_search + unified ocr_search_saved with save action)', () => {
+    expect(Object.keys(searchTools)).toHaveLength(7);
     expect(searchTools).toHaveProperty('ocr_search');
     expect(searchTools).toHaveProperty('ocr_fts_manage');
     expect(searchTools).toHaveProperty('ocr_search_export');
     expect(searchTools).toHaveProperty('ocr_benchmark_compare');
     expect(searchTools).toHaveProperty('ocr_rag_context');
-    expect(searchTools).toHaveProperty('ocr_search_save');
     expect(searchTools).toHaveProperty('ocr_search_saved');
     expect(searchTools).toHaveProperty('ocr_search_cross_db');
   });

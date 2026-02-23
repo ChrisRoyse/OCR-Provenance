@@ -908,7 +908,7 @@ async function handleComparisonMatrix(params: Record<string, unknown>): Promise<
 export const comparisonTools: Record<string, ToolDefinition> = {
   ocr_document_compare: {
     description:
-      '[ANALYSIS] Use to compare two OCR-processed documents for text and structural differences. Returns similarity ratio, composite similarity, text diff, and structural diff. Both documents must have status "complete".',
+      '[ANALYSIS] Diff two documents for text and structural differences. Returns similarity ratios and diffs. Both must have status "complete".',
     inputSchema: DocumentCompareInput.shape,
     handler: handleDocumentCompare,
   },
@@ -926,19 +926,19 @@ export const comparisonTools: Record<string, ToolDefinition> = {
   },
   ocr_comparison_discover: {
     description:
-      '[ANALYSIS] Use to find document pairs that are likely similar before comparing them. Returns pairs ranked by embedding cosine similarity. Follow with ocr_document_compare or ocr_comparison_batch.',
+      '[ANALYSIS] Find likely-similar document pairs ranked by embedding similarity. Follow with ocr_document_compare or ocr_comparison_batch.',
     inputSchema: ComparisonDiscoverInput.shape,
     handler: handleComparisonDiscover,
   },
   ocr_comparison_batch: {
     description:
-      '[ANALYSIS] Use to compare multiple document pairs in one operation. Provide explicit pairs or a cluster_id to compare all documents within a cluster. Returns summaries for each pair.',
+      '[ANALYSIS] Compare multiple document pairs at once. Provide explicit pairs or a cluster_id to compare all within a cluster.',
     inputSchema: ComparisonBatchInput.shape,
     handler: handleComparisonBatch,
   },
   ocr_comparison_matrix: {
     description:
-      '[ANALYSIS] Use to compute an NxN pairwise similarity matrix across documents. Returns cosine similarity scores, most/least similar pairs, and average similarity. Requires documents with embeddings.',
+      '[ANALYSIS] NxN pairwise cosine similarity matrix across documents. Returns most/least similar pairs and averages. Requires embeddings.',
     inputSchema: ComparisonMatrixInput.shape,
     handler: handleComparisonMatrix,
   },

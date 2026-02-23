@@ -138,10 +138,15 @@ export async function handleImageList(params: Record<string, unknown>): Promise<
               description: img.vlm_description,
             }),
         })),
-        next_steps: [
-          { tool: 'ocr_image_get', description: 'Get full details for a specific image' },
-          { tool: 'ocr_vlm_process', description: 'Run VLM analysis on document images' },
-        ],
+        next_steps: images.length === 0
+          ? [
+              { tool: 'ocr_extract_images', description: 'Extract images from documents first' },
+              { tool: 'ocr_document_get', description: 'Check document processing status' },
+            ]
+          : [
+              { tool: 'ocr_image_get', description: 'Get full details for a specific image' },
+              { tool: 'ocr_vlm_process', description: 'Run VLM analysis on document images' },
+            ],
       })
     );
   } catch (error) {

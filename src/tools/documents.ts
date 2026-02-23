@@ -14,6 +14,7 @@
 import { z } from 'zod';
 import { existsSync, rmSync, writeFileSync, mkdirSync } from 'fs';
 import { resolve, dirname } from 'path';
+import { v4 as uuidv4 } from 'uuid';
 import { requireDatabase, getDefaultStoragePath } from '../server/state.js';
 import { successResult } from '../server/types.js';
 import {
@@ -141,11 +142,16 @@ export async function handleDocumentList(params: Record<string, unknown>): Promi
         total,
         limit: input.limit,
         offset: input.offset,
-        next_steps: [
-          { tool: 'ocr_document_get', description: 'Get details for a specific document by ID' },
-          { tool: 'ocr_search', description: 'Search within the corpus' },
-          { tool: 'ocr_document_structure', description: 'View a document outline (headings, tables)' },
-        ],
+        next_steps: total === 0
+          ? [
+              { tool: 'ocr_ingest_files', description: 'Add documents to the database first' },
+              { tool: 'ocr_ingest_directory', description: 'Scan a directory for documents to ingest' },
+            ]
+          : [
+              { tool: 'ocr_document_get', description: 'Get details for a specific document by ID' },
+              { tool: 'ocr_search', description: 'Search within the corpus' },
+              { tool: 'ocr_document_structure', description: 'View a document outline (headings, tables)' },
+            ],
       })
     );
   } catch (error) {
@@ -1134,42 +1140,80 @@ async function handleDocumentSectionsInternal(
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// BULK EXPORT INPUT SCHEMAS
+// UNIFIED EXPORT INPUT SCHEMA (MERGE-A: ocr_document_export + ocr_corpus_export → ocr_export)
 // ═══════════════════════════════════════════════════════════════════════════════
 
-const DocumentExportInput = z.object({
-  document_id: z.string().min(1).describe('Document ID'),
-  format: z.enum(['json', 'markdown']).default('json')
-    .describe('Export format: json or markdown'),
+const ExportInput = z.object({
+  document_id: z.string().min(1).optional()
+    .describe('Document ID to export. Omit to export entire corpus.'),
+  format: z.enum(['json', 'markdown', 'csv']).default('json')
+    .describe('Export format: json/markdown for single doc, json/csv for corpus'),
   output_path: z.string().min(1).describe('Path to save exported file'),
   include_images: z.boolean().default(true)
     .describe('Include image data in export'),
   include_extractions: z.boolean().default(true)
-    .describe('Include structured extractions in export'),
+    .describe('Include structured extractions (single doc only)'),
   include_provenance: z.boolean().default(false)
-    .describe('Include provenance chain in export'),
-});
-
-const CorpusExportInput = z.object({
-  output_path: z.string().min(1).describe('Path to save exported file'),
-  format: z.enum(['json', 'csv']).default('json')
-    .describe('Export format: json or csv'),
+    .describe('Include provenance chain (single doc only)'),
   include_chunks: z.boolean().default(false)
-    .describe('Include chunk list per document'),
-  include_images: z.boolean().default(false)
-    .describe('Include image list per document'),
+    .describe('Include chunk list per document (corpus only)'),
 });
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// DOCUMENT EXPORT HANDLER
+// UNIFIED EXPORT HANDLER (MERGE-A)
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /**
- * Handle ocr_document_export - Export all data for a document to JSON or markdown
+ * Handle ocr_export - Unified export for single document or entire corpus
+ * If document_id is provided: exports that document (json/markdown)
+ * If document_id is omitted: exports entire corpus (json/csv)
  */
-export async function handleDocumentExport(params: Record<string, unknown>): Promise<ToolResponse> {
+export async function handleExport(params: Record<string, unknown>): Promise<ToolResponse> {
   try {
-    const input = validateInput(DocumentExportInput, params);
+    const input = validateInput(ExportInput, params);
+
+    if (input.document_id) {
+      // Format validation for single doc
+      if (input.format === 'csv') {
+        throw new MCPError('VALIDATION_ERROR', 'CSV format only supported for corpus export, not single document. Use json or markdown.');
+      }
+      return handleDocumentExportInternal(input as {
+        document_id: string;
+        format: 'json' | 'markdown';
+        output_path: string;
+        include_images: boolean;
+        include_extractions: boolean;
+        include_provenance: boolean;
+      });
+    } else {
+      // Format validation for corpus
+      if (input.format === 'markdown') {
+        throw new MCPError('VALIDATION_ERROR', 'Markdown format only supported for single document export, not corpus. Use json or csv.');
+      }
+      return handleCorpusExportInternal(input as {
+        format: 'json' | 'csv';
+        output_path: string;
+        include_images: boolean;
+        include_chunks: boolean;
+      });
+    }
+  } catch (error) {
+    return handleError(error);
+  }
+}
+
+/**
+ * Internal: Export all data for a single document to JSON or markdown
+ */
+async function handleDocumentExportInternal(input: {
+  document_id: string;
+  format: 'json' | 'markdown';
+  output_path: string;
+  include_images: boolean;
+  include_extractions: boolean;
+  include_provenance: boolean;
+}): Promise<ToolResponse> {
+  try {
     const { db } = requireDatabase();
 
     // Get document record
@@ -1392,15 +1436,19 @@ export async function handleDocumentExport(params: Record<string, unknown>): Pro
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// CORPUS EXPORT HANDLER
+// INTERNAL CORPUS EXPORT HANDLER
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /**
- * Handle ocr_corpus_export - Export entire corpus metadata and statistics
+ * Internal: Export entire corpus metadata and statistics
  */
-export async function handleCorpusExport(params: Record<string, unknown>): Promise<ToolResponse> {
+async function handleCorpusExportInternal(input: {
+  format: 'json' | 'csv';
+  output_path: string;
+  include_images: boolean;
+  include_chunks: boolean;
+}): Promise<ToolResponse> {
   try {
-    const input = validateInput(CorpusExportInput, params);
     const { db } = requireDatabase();
     const conn = db.getConnection();
 
@@ -1668,7 +1716,6 @@ async function handleDocumentWorkflow(params: Record<string, unknown>): Promise<
       // Create tag if it doesn't exist
       const tagName = WORKFLOW_PREFIX + input.state;
       const now = new Date().toISOString();
-      const { v4: uuidv4 } = await import('uuid');
 
       conn
         .prepare(
@@ -1800,7 +1847,7 @@ export const documentTools: Record<string, ToolDefinition> = {
   },
   ocr_document_structure: {
     description:
-      '[ESSENTIAL] Use to get document structure. Default format="structure" returns headings, tables, figures, code blocks. Use format="tree" for hierarchical section tree with chunk IDs, or format="outline" for flat numbered list.',
+      '[ESSENTIAL] Document structure. format="structure" (default: headings/tables/figures), "tree" (hierarchical with chunk IDs), or "outline" (flat numbered).',
     inputSchema: DocumentStructureInput.shape,
     handler: handleDocumentStructure,
   },
@@ -1816,17 +1863,11 @@ export const documentTools: Record<string, ToolDefinition> = {
     inputSchema: DuplicateDetectionInput.shape,
     handler: handleDuplicateDetection,
   },
-  ocr_document_export: {
+  ocr_export: {
     description:
-      '[STATUS] Use to export all data for a document to JSON or markdown file. Returns complete document data including chunks, images, and extractions.',
-    inputSchema: DocumentExportInput.shape,
-    handler: handleDocumentExport,
-  },
-  ocr_corpus_export: {
-    description:
-      '[STATUS] Use to export entire corpus metadata to JSON or CSV. Returns all document summaries with statistics. Use for backup or external analysis.',
-    inputSchema: CorpusExportInput.shape,
-    handler: handleCorpusExport,
+      '[STATUS] Export document or corpus data. Provide document_id for single doc (json/markdown), omit for corpus (json/csv).',
+    inputSchema: ExportInput.shape,
+    handler: handleExport,
   },
   ocr_document_versions: {
     description:
@@ -1836,7 +1877,7 @@ export const documentTools: Record<string, ToolDefinition> = {
   },
   ocr_document_workflow: {
     description:
-      '[MANAGE] Use to track document review progress. action="get" shows current state, action="set" changes state (draft/review/approved/rejected/archived), action="history" shows all state transitions. States are stored as tags.',
+      '[MANAGE] Track document review states. action="get"|"set"|"history". States: draft/review/approved/rejected/archived.',
     inputSchema: DocumentWorkflowInput.shape,
     handler: handleDocumentWorkflow,
   },

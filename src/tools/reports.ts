@@ -63,11 +63,18 @@ const ErrorAnalyticsInput = z.object({
   limit: z.number().int().min(1).max(50).default(10),
 });
 
-const QualityTrendsInput = z.object({
+// MERGE-C: Unified trends schema (ocr_quality_trends + ocr_timeline_analytics → ocr_trends)
+const TrendsInput = z.object({
+  metric: z.enum(['quality', 'volume']).describe('Trend type: quality (OCR scores over time) or volume (processing counts over time)'),
   bucket: z.enum(['hourly', 'daily', 'weekly', 'monthly']).default('daily'),
-  group_by: z.enum(['none', 'ocr_mode', 'processor']).default('none'),
   created_after: z.string().optional(),
   created_before: z.string().optional(),
+  // quality-specific
+  group_by: z.enum(['none', 'ocr_mode', 'processor']).default('none')
+    .describe('(quality only) Group by OCR mode or processor'),
+  // volume-specific
+  volume_metric: z.enum(['documents', 'pages', 'chunks', 'embeddings', 'images', 'cost']).default('documents')
+    .describe('(volume only) Which metric to track over time'),
 });
 
 
@@ -764,7 +771,7 @@ export async function handleReportOverview(params: Record<string, unknown>): Pro
     result.next_steps = [
       { tool: 'ocr_report_performance', description: 'Get pipeline performance analytics' },
       { tool: 'ocr_error_analytics', description: 'Analyze errors and failures' },
-      { tool: 'ocr_quality_trends', description: 'View quality trends over time' },
+      { tool: 'ocr_trends', description: 'View quality/volume trends over time' },
     ];
 
     return formatResponse(successResult(result));
@@ -1476,40 +1483,75 @@ export async function handleErrorAnalytics(
 
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// QUALITY TRENDS HANDLER
+// UNIFIED TRENDS HANDLER (MERGE-C)
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /**
- * Handle ocr_quality_trends - Quality score trends over time
+ * Handle ocr_trends - Unified time-series trends
+ * metric='quality': OCR quality scores over time (delegates to getQualityTrends)
+ * metric='volume': Processing volume counts over time (delegates to getTimelineStats)
  */
-async function handleQualityTrends(params: Record<string, unknown>): Promise<ToolResponse> {
+async function handleTrends(params: Record<string, unknown>): Promise<ToolResponse> {
   try {
-    const input = validateInput(QualityTrendsInput, params);
+    const input = validateInput(TrendsInput, params);
     const { db } = requireDatabase();
 
     const bucket = input.bucket ?? 'daily';
-    const groupBy = input.group_by ?? 'none';
 
-    const data = db.getQualityTrends({
+    if (input.metric === 'quality') {
+      const groupBy = input.group_by ?? 'none';
+
+      const data = db.getQualityTrends({
+        bucket,
+        group_by: groupBy,
+        created_after: input.created_after,
+        created_before: input.created_before,
+      });
+
+      return formatResponse(
+        successResult({
+          metric: 'quality',
+          bucket,
+          group_by: groupBy,
+          total_periods: data.length,
+          filters: {
+            created_after: input.created_after ?? null,
+            created_before: input.created_before ?? null,
+          },
+          data,
+          next_steps: [
+            { tool: 'ocr_report_overview', description: 'Get aggregate quality summary' },
+            { tool: 'ocr_trends', description: 'View volume trends (metric=volume)' },
+          ],
+        })
+      );
+    }
+
+    // metric === 'volume'
+    const volumeMetric = input.volume_metric ?? 'documents';
+
+    const data = db.getTimelineStats({
       bucket,
-      group_by: groupBy,
+      metric: volumeMetric,
       created_after: input.created_after,
       created_before: input.created_before,
     });
 
     return formatResponse(
       successResult({
+        metric: 'volume',
         bucket,
-        group_by: groupBy,
+        volume_metric: volumeMetric,
         total_periods: data.length,
+        total_count: data.reduce((sum, d) => sum + d.count, 0),
         filters: {
           created_after: input.created_after ?? null,
           created_before: input.created_before ?? null,
         },
         data,
         next_steps: [
-          { tool: 'ocr_report_overview', description: 'Get aggregate quality summary' },
-          { tool: 'ocr_timeline_analytics', description: 'View processing volume trends' },
+          { tool: 'ocr_report_performance', description: 'Get detailed pipeline performance' },
+          { tool: 'ocr_trends', description: 'View quality trends (metric=quality)' },
         ],
       })
     );
@@ -1686,7 +1728,7 @@ export const reportTools: Record<string, ToolDefinition> = {
 
   ocr_report_overview: {
     description:
-      '[STATUS] Use to get quality summary and/or corpus profile. section="quality" for aggregate quality scores, "corpus" for document/chunk/content type stats, "all" for both combined. Replaces former ocr_quality_summary and ocr_corpus_profile.',
+      '[STATUS] Quality and corpus overview. section="quality"|"corpus"|"all" (default). Aggregate scores, content type stats.',
     inputSchema: {
       section: z
         .enum(['quality', 'corpus', 'all'])
@@ -1718,7 +1760,7 @@ export const reportTools: Record<string, ToolDefinition> = {
 
   ocr_report_performance: {
     description:
-      '[STATUS] Use to get pipeline performance, throughput, and/or bottleneck analytics. section="pipeline" for OCR/embedding/VLM durations, "throughput" for time-bucketed processing speed, "bottlenecks" for provenance duration analysis, "all" for everything. Replaces former ocr_pipeline_analytics, ocr_throughput_analytics, and ocr_provenance_bottlenecks.',
+      '[STATUS] Pipeline performance analytics. section="pipeline"|"throughput"|"bottlenecks"|"all" (default).',
     inputSchema: {
       section: z
         .enum(['pipeline', 'throughput', 'bottlenecks', 'all'])
@@ -1758,27 +1800,10 @@ export const reportTools: Record<string, ToolDefinition> = {
     handler: handleErrorAnalytics,
   },
 
-  ocr_quality_trends: {
+  ocr_trends: {
     description:
-      '[STATUS] Use to view quality score trends over time. Returns avg/min/max quality per time bucket, optionally grouped by OCR mode or processor.',
-    inputSchema: {
-      bucket: z
-        .enum(['hourly', 'daily', 'weekly', 'monthly'])
-        .default('daily')
-        .describe('Time bucket granularity'),
-      group_by: z
-        .enum(['none', 'ocr_mode', 'processor'])
-        .default('none')
-        .describe('Group quality data by OCR mode or processor'),
-      created_after: z
-        .string()
-        .optional()
-        .describe('Filter data created after this ISO 8601 timestamp'),
-      created_before: z
-        .string()
-        .optional()
-        .describe('Filter data created before this ISO 8601 timestamp'),
-    },
-    handler: handleQualityTrends,
+      '[STATUS] Time-series trends. metric="quality" for OCR scores, "volume" for processing counts. Bucketed by time period.',
+    inputSchema: TrendsInput.shape,
+    handler: handleTrends,
   },
 };

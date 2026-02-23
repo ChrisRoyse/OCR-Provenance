@@ -268,7 +268,7 @@ async function handleHealthCheck(params: Record<string, unknown>): Promise<ToolR
 export const healthTools: Record<string, ToolDefinition> = {
   ocr_health_check: {
     description:
-      '[ESSENTIAL] Use to diagnose data integrity issues: missing embeddings, orphaned provenance, images without VLM. Returns gap counts with fix suggestions. Set fix=true to auto-repair fixable gaps.',
+      '[ESSENTIAL] Diagnose data integrity issues: missing embeddings, orphaned provenance, VLM gaps. Set fix=true to auto-repair.',
     inputSchema: HealthCheckInput.shape,
     handler: handleHealthCheck,
   },

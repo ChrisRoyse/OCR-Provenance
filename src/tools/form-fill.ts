@@ -274,7 +274,7 @@ async function handleFormFillStatus(params: Record<string, unknown>) {
 export const formFillTools: Record<string, ToolDefinition> = {
   ocr_form_fill: {
     description:
-      '[PROCESSING] Use when extracting or filling structured key-value data from form-type documents (applications, invoices, questionnaires). Sends form fields to Datalab API for filling. Different from ocr_extract_structured which extracts data by page schema.',
+      '[PROCESSING] Extract/fill key-value form fields via Datalab API. For forms, invoices, applications. Use ocr_extract_structured for page-schema extraction instead.',
     inputSchema: FormFillInput.shape,
     handler: handleFormFill,
   },

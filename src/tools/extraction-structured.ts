@@ -408,7 +408,7 @@ async function handleExtractionGet(params: Record<string, unknown>): Promise<Too
 export const structuredExtractionTools: Record<string, ToolDefinition> = {
   ocr_extract_structured: {
     description:
-      '[PROCESSING] Use when you need custom structured data from document pages (tables, lists, specific fields). Provide a JSON page_schema defining the expected structure. Different from ocr_form_fill which handles key-value form filling. Document must have status "complete".',
+      '[PROCESSING] Extract custom structured data from pages via JSON page_schema. For tables, lists, fields. Use ocr_form_fill for key-value forms instead. Requires status "complete".',
     inputSchema: ExtractStructuredInput.shape,
     handler: handleExtractStructured,
   },

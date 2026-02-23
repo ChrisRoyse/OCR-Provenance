@@ -74,7 +74,16 @@ async function handleTagList(params: Record<string, unknown>): Promise<ToolRespo
       successResult({
         tags,
         total: tags.length,
-        next_steps: [{ tool: 'ocr_tag_apply', description: 'Apply a tag to an entity' }, { tool: 'ocr_tag_search', description: 'Find entities by tag' }, { tool: 'ocr_tag_create', description: 'Create a new tag' }],
+        next_steps: tags.length === 0
+          ? [
+              { tool: 'ocr_tag_create', description: 'Create a tag to organize documents' },
+              { tool: 'ocr_document_list', description: 'Browse documents to tag' },
+            ]
+          : [
+              { tool: 'ocr_tag_apply', description: 'Apply a tag to an entity' },
+              { tool: 'ocr_tag_search', description: 'Find entities by tag' },
+              { tool: 'ocr_tag_create', description: 'Create a new tag' },
+            ],
       })
     );
   } catch (error) {

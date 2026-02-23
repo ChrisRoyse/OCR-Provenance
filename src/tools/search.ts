@@ -3,7 +3,7 @@
  *
  * Tools: ocr_search (unified: keyword/semantic/hybrid), ocr_fts_manage,
  *        ocr_search_export, ocr_benchmark_compare, ocr_rag_context,
- *        ocr_search_save, ocr_search_saved (unified: list/get/execute)
+ *        ocr_search_saved (unified: save/list/get/execute)
  *
  * CRITICAL: NEVER use console.log() - stdout is reserved for JSON-RPC protocol.
  * Use console.error() for all logging.
@@ -101,6 +101,9 @@ interface InternalSearchParams {
   include_headers_footers: boolean;
   include_cluster_context: boolean;
   include_document_context: boolean;
+  // V7 Intelligence Optimization
+  compact: boolean;
+  include_provenance_summary: boolean;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -550,6 +553,107 @@ function excludeRepeatedHeaderFooterChunks(
     const chunkId = r.chunk_id as string | null;
     return !chunkId || !excludeChunkIds.has(chunkId);
   });
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// V7 INTELLIGENCE OPTIMIZATION - COMPACT MODE & PROVENANCE SUMMARY
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/**
+ * Map a full search result to compact format, keeping only essential fields.
+ * Reduces token count by ~77% per result.
+ */
+function compactResult(r: Record<string, unknown>, mode: string): Record<string, unknown> {
+  const scoreField = mode === 'keyword' ? 'bm25_score'
+    : mode === 'hybrid' ? 'rrf_score'
+    : 'similarity_score';
+  return {
+    document_id: r.document_id,
+    chunk_id: r.chunk_id,
+    original_text: r.original_text,
+    source_file_name: r.source_file_name,
+    page_number: r.page_number,
+    score: r[scoreField] ?? r.similarity_score ?? r.bm25_score ?? r.rrf_score,
+    result_type: r.result_type,
+  };
+}
+
+/**
+ * Build a one-line provenance summary string from the provenance chain.
+ * Format: "FILE → OCR (marker, 92% quality) → Chunk 3 → Embedding"
+ */
+function buildProvenanceSummary(
+  db: ReturnType<typeof requireDatabase>['db'],
+  provenanceId: string | null | undefined,
+): string | undefined {
+  if (!provenanceId) return undefined;
+  try {
+    const chain = db.getProvenanceChain(provenanceId);
+    if (!chain || chain.length === 0) return undefined;
+    const parts: string[] = [];
+    for (const link of chain) {
+      const type = link.type;
+      const processor = link.processor;
+      if (type === 'DOCUMENT') {
+        const sourceType = link.source_type;
+        parts.push(sourceType?.toUpperCase() ?? 'DOCUMENT');
+      } else if (type === 'OCR_RESULT') {
+        const qualityScore = link.processing_quality_score;
+        const qualityStr = qualityScore !== undefined && qualityScore !== null
+          ? `, ${Math.round(qualityScore * 20)}% quality`
+          : '';
+        parts.push(`OCR (${processor ?? 'unknown'}${qualityStr})`);
+      } else if (type === 'CHUNK') {
+        const location = link.location;
+        const chunkIndex = location?.chunk_index;
+        const chunkStr = chunkIndex !== undefined
+          ? ` ${chunkIndex + 1}`
+          : '';
+        parts.push(`Chunk${chunkStr}`);
+      } else if (type === 'EMBEDDING') {
+        parts.push('Embedding');
+      } else if (type === 'VLM_DESCRIPTION') {
+        parts.push('VLM');
+      } else {
+        parts.push(type);
+      }
+    }
+    return parts.join(' \u2192 ');
+  } catch (err) {
+    console.error(`[search] Failed to build provenance summary for ${provenanceId}: ${err instanceof Error ? err.message : String(err)}`);
+    return undefined;
+  }
+}
+
+/**
+ * Apply V7 compact mode and provenance summary to response data.
+ * Modifies responseData.results in place. Must be called BEFORE grouping.
+ */
+function applyV7Transforms(
+  responseData: Record<string, unknown>,
+  input: InternalSearchParams,
+  db: ReturnType<typeof requireDatabase>['db'],
+  mode: string,
+): void {
+  // V7: Attach provenance summary one-liners BEFORE compact (compact strips provenance_id)
+  if (input.include_provenance_summary) {
+    for (const r of responseData.results as Array<Record<string, unknown>>) {
+      r.provenance_summary = buildProvenanceSummary(db, r.provenance_id as string | null | undefined);
+    }
+  }
+
+  // V7: Apply compact mode - strip results to essential fields only
+  if (input.compact) {
+    responseData.results = (responseData.results as Array<Record<string, unknown>>).map(
+      r => {
+        const compacted = compactResult(r, mode);
+        // Preserve provenance_summary if it was attached above
+        if (r.provenance_summary) compacted.provenance_summary = r.provenance_summary;
+        return compacted;
+      }
+    );
+    responseData.compact = true;
+  }
 }
 
 /**
@@ -1333,11 +1437,22 @@ async function handleSearchSemanticInternal(params: Record<string, unknown>): Pr
       threshold_info: thresholdInfo,
       metadata_boosts_applied: true,
       cluster_context_included: clusterContextIncluded,
-      next_steps: [
-        { tool: 'ocr_chunk_context', description: 'Expand a result with neighboring chunks for more context' },
-        { tool: 'ocr_document_get', description: 'Deep-dive into a specific source document' },
-        { tool: 'ocr_document_page', description: 'Read the full page a result came from' },
-      ],
+      next_steps: finalResults.length === 0
+        ? [
+            { tool: 'ocr_search', description: 'Try different keywords, mode, or broader query' },
+            { tool: 'ocr_ingest_files', description: 'Add more documents to expand searchable content' },
+          ]
+        : finalResults.length === 1
+          ? [
+              { tool: 'ocr_chunk_context', description: 'Expand a result with neighboring chunks for more context' },
+              { tool: 'ocr_document_get', description: 'Deep-dive into a specific source document' },
+              { tool: 'ocr_document_find_similar', description: 'Find related documents' },
+            ]
+          : [
+              { tool: 'ocr_chunk_context', description: 'Expand a result with neighboring chunks for more context' },
+              { tool: 'ocr_document_get', description: 'Deep-dive into a specific source document' },
+              { tool: 'ocr_document_page', description: 'Read the full page a result came from' },
+            ],
     };
 
     // Task 3.2: Standardized query expansion details
@@ -1355,8 +1470,13 @@ async function handleSearchSemanticInternal(params: Record<string, unknown>): Pr
       responseData.rerank = rerankInfo;
     }
 
+    // V7: Apply compact mode and provenance summaries before grouping
+    applyV7Transforms(responseData, input, db, 'semantic');
+
     if (input.group_by_document) {
-      const { grouped, total_documents } = groupResultsByDocument(finalResults);
+      const { grouped, total_documents } = groupResultsByDocument(
+        responseData.results as Array<Record<string, unknown>>
+      );
       const groupedResponse: Record<string, unknown> = {
         ...responseData,
         total_results: finalResults.length,
@@ -1569,11 +1689,22 @@ async function handleSearchKeywordInternal(params: Record<string, unknown>): Pro
       },
       metadata_boosts_applied: true,
       cluster_context_included: clusterContextIncluded,
-      next_steps: [
-        { tool: 'ocr_chunk_context', description: 'Expand a result with neighboring chunks for more context' },
-        { tool: 'ocr_document_get', description: 'Deep-dive into a specific source document' },
-        { tool: 'ocr_document_page', description: 'Read the full page a result came from' },
-      ],
+      next_steps: finalResults.length === 0
+        ? [
+            { tool: 'ocr_search', description: 'Try different keywords, mode, or broader query' },
+            { tool: 'ocr_ingest_files', description: 'Add more documents to expand searchable content' },
+          ]
+        : finalResults.length === 1
+          ? [
+              { tool: 'ocr_chunk_context', description: 'Expand a result with neighboring chunks for more context' },
+              { tool: 'ocr_document_get', description: 'Deep-dive into a specific source document' },
+              { tool: 'ocr_document_find_similar', description: 'Find related documents' },
+            ]
+          : [
+              { tool: 'ocr_chunk_context', description: 'Expand a result with neighboring chunks for more context' },
+              { tool: 'ocr_document_get', description: 'Deep-dive into a specific source document' },
+              { tool: 'ocr_document_page', description: 'Read the full page a result came from' },
+            ],
     };
 
     if (documentMetadataMatches) {
@@ -1595,8 +1726,13 @@ async function handleSearchKeywordInternal(params: Record<string, unknown>): Pro
       responseData.rerank = rerankInfo;
     }
 
+    // V7: Apply compact mode and provenance summaries before grouping
+    applyV7Transforms(responseData, input, db, 'keyword');
+
     if (input.group_by_document) {
-      const { grouped, total_documents } = groupResultsByDocument(finalResults);
+      const { grouped, total_documents } = groupResultsByDocument(
+        responseData.results as Array<Record<string, unknown>>
+      );
       const groupedResponse: Record<string, unknown> = {
         ...responseData,
         total_results: finalResults.length,
@@ -1828,11 +1964,22 @@ async function handleSearchHybridInternal(params: Record<string, unknown>): Prom
       },
       metadata_boosts_applied: true,
       cluster_context_included: clusterContextIncluded,
-      next_steps: [
-        { tool: 'ocr_chunk_context', description: 'Expand a result with neighboring chunks for more context' },
-        { tool: 'ocr_document_get', description: 'Deep-dive into a specific source document' },
-        { tool: 'ocr_document_page', description: 'Read the full page a result came from' },
-      ],
+      next_steps: finalResults.length === 0
+        ? [
+            { tool: 'ocr_search', description: 'Try different keywords, mode, or broader query' },
+            { tool: 'ocr_ingest_files', description: 'Add more documents to expand searchable content' },
+          ]
+        : finalResults.length === 1
+          ? [
+              { tool: 'ocr_chunk_context', description: 'Expand a result with neighboring chunks for more context' },
+              { tool: 'ocr_document_get', description: 'Deep-dive into a specific source document' },
+              { tool: 'ocr_document_find_similar', description: 'Find related documents' },
+            ]
+          : [
+              { tool: 'ocr_chunk_context', description: 'Expand a result with neighboring chunks for more context' },
+              { tool: 'ocr_document_get', description: 'Deep-dive into a specific source document' },
+              { tool: 'ocr_document_page', description: 'Read the full page a result came from' },
+            ],
     };
 
     // Task 3.2: Standardized query expansion details
@@ -1858,8 +2005,13 @@ async function handleSearchHybridInternal(params: Record<string, unknown>): Prom
       responseData.query_classification = queryClassification;
     }
 
+    // V7: Apply compact mode and provenance summaries before grouping
+    applyV7Transforms(responseData, input, db, 'hybrid');
+
     if (input.group_by_document) {
-      const { grouped, total_documents } = groupResultsByDocument(finalResults);
+      const { grouped, total_documents } = groupResultsByDocument(
+        responseData.results as Array<Record<string, unknown>>
+      );
       const groupedResponse: Record<string, unknown> = {
         ...responseData,
         total_results: finalResults.length,
@@ -1940,6 +2092,9 @@ export async function handleSearchUnified(params: Record<string, unknown>): Prom
       include_headers_footers: false,
       include_cluster_context: true,
       include_document_context: true,
+      // V7 Intelligence Optimization params
+      compact: input.compact,
+      include_provenance_summary: input.include_provenance_summary,
     };
 
     // Route to internal handler based on mode
@@ -2495,71 +2650,27 @@ async function handleSearchExport(params: Record<string, unknown>): Promise<Tool
 // SAVED SEARCH HANDLERS
 // ═══════════════════════════════════════════════════════════════════════════════
 
-const SearchSaveInput = z.object({
-  name: z.string().min(1).max(200).describe('Name for the saved search'),
-  query: z.string().min(1).max(1000).describe('The search query'),
-  search_type: z.enum(['bm25', 'semantic', 'hybrid']).describe('Search method used'),
-  search_params: z.record(z.unknown()).optional().describe('All search parameters as JSON'),
-  result_count: z.number().int().min(0).describe('Number of results'),
-  result_ids: z.array(z.string()).optional().describe('Array of chunk/embedding IDs from results'),
-  notes: z.string().optional().describe('Optional notes about this search'),
-});
-
 const SearchSavedInput = z.object({
-  action: z.enum(['list', 'get', 'execute']).describe('Action: list all saved searches, get one by ID, or execute a saved search'),
+  action: z.enum(['list', 'get', 'execute', 'save']).describe('Action: list saved searches, get by ID, execute a saved search, or save a new search'),
   saved_search_id: z.string().min(1).optional().describe('ID of the saved search (required for get and execute actions)'),
-  search_type: z.enum(['bm25', 'semantic', 'hybrid']).optional().describe('Filter by search type (list action only)'),
+  search_type: z.enum(['bm25', 'semantic', 'hybrid']).optional().describe('Filter by search type (list) or search method (save)'),
   limit: z.number().int().min(1).max(100).default(50).describe('Max results for list action'),
   offset: z.number().int().min(0).default(0).describe('Pagination offset for list action'),
   override_limit: z.number().int().min(1).max(100).optional()
     .describe('Override the original result limit (execute action only)'),
+  name: z.string().min(1).max(200).optional().describe('Name for saved search (required for save action)'),
+  query: z.string().min(1).max(1000).optional().describe('Search query (required for save action)'),
+  search_params: z.record(z.unknown()).optional().describe('Search parameters JSON (save action)'),
+  result_count: z.number().int().min(0).optional().describe('Number of results (save action)'),
+  result_ids: z.array(z.string()).optional().describe('Result IDs array (save action)'),
+  notes: z.string().optional().describe('Notes about this search (save action)'),
 });
 
 /**
- * Handle ocr_search_save - Save search results with a name for later retrieval
- */
-async function handleSearchSave(params: Record<string, unknown>): Promise<ToolResponse> {
-  try {
-    const input = validateInput(SearchSaveInput, params);
-    const { db } = requireDatabase();
-    const conn = db.getConnection();
-
-    const id = uuidv4();
-    const now = new Date().toISOString();
-
-    conn.prepare(`
-      INSERT INTO saved_searches (id, name, query, search_type, search_params, result_count, result_ids, created_at, notes)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(
-      id,
-      input.name,
-      input.query,
-      input.search_type,
-      JSON.stringify(input.search_params ?? {}),
-      input.result_count,
-      JSON.stringify(input.result_ids ?? []),
-      now,
-      input.notes ?? null,
-    );
-
-    return formatResponse(successResult({
-      saved_search_id: id,
-      name: input.name,
-      query: input.query,
-      search_type: input.search_type,
-      result_count: input.result_count,
-      created_at: now,
-      next_steps: [{ tool: 'ocr_search_saved', description: 'List or re-execute saved searches' }],
-    }));
-  } catch (error) {
-    return handleError(error);
-  }
-}
-
-/**
- * Handle ocr_search_saved - Unified saved search management
+ * Handle ocr_search_saved - Unified saved search management (MERGE-B: includes save action)
  *
  * Actions:
+ * - save: Save search results for later retrieval
  * - list: List saved searches with optional type filtering
  * - get: Retrieve a saved search by ID including all parameters and result IDs
  * - execute: Re-execute a saved search with current data via handleSearchUnified
@@ -2569,6 +2680,42 @@ async function handleSearchSaved(params: Record<string, unknown>): Promise<ToolR
     const input = validateInput(SearchSavedInput, params);
     const { db } = requireDatabase();
     const conn = db.getConnection();
+
+    if (input.action === 'save') {
+      // Validate required fields for save
+      if (!input.name) throw new MCPError('VALIDATION_ERROR', 'name is required for save action');
+      if (!input.query) throw new MCPError('VALIDATION_ERROR', 'query is required for save action');
+      if (!input.search_type) throw new MCPError('VALIDATION_ERROR', 'search_type is required for save action');
+      if (input.result_count === undefined) throw new MCPError('VALIDATION_ERROR', 'result_count is required for save action');
+
+      const id = uuidv4();
+      const now = new Date().toISOString();
+
+      conn.prepare(`
+        INSERT INTO saved_searches (id, name, query, search_type, search_params, result_count, result_ids, created_at, notes)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        id,
+        input.name,
+        input.query,
+        input.search_type,
+        JSON.stringify(input.search_params ?? {}),
+        input.result_count,
+        JSON.stringify(input.result_ids ?? []),
+        now,
+        input.notes ?? null,
+      );
+
+      return formatResponse(successResult({
+        saved_search_id: id,
+        name: input.name,
+        query: input.query,
+        search_type: input.search_type,
+        result_count: input.result_count,
+        created_at: now,
+        next_steps: [{ tool: 'ocr_search_saved', description: 'List or re-execute saved searches' }],
+      }));
+    }
 
     if (input.action === 'list') {
       let sql = 'SELECT id, name, query, search_type, result_count, created_at, notes, last_executed_at, execution_count FROM saved_searches';
@@ -2600,7 +2747,7 @@ async function handleSearchSaved(params: Record<string, unknown>): Promise<ToolR
         total: totalRow.count,
         limit: input.limit,
         offset: input.offset,
-        next_steps: [{ tool: 'ocr_search', description: 'Run a new search' }, { tool: 'ocr_search_save', description: 'Save a new search for later' }],
+        next_steps: [{ tool: 'ocr_search', description: 'Run a new search' }, { tool: 'ocr_search_saved', description: 'Save a search (action=save) for later' }],
       }));
     }
 
@@ -2633,7 +2780,7 @@ async function handleSearchSaved(params: Record<string, unknown>): Promise<ToolR
         result_ids: JSON.parse(row.result_ids),
         created_at: row.created_at,
         notes: row.notes,
-        next_steps: [{ tool: 'ocr_search', description: 'Run a new search' }, { tool: 'ocr_search_save', description: 'Save a new search for later' }],
+        next_steps: [{ tool: 'ocr_search', description: 'Run a new search' }, { tool: 'ocr_search_saved', description: 'Save a search (action=save) for later' }],
       }));
     }
 
@@ -2704,7 +2851,7 @@ async function handleSearchSaved(params: Record<string, unknown>): Promise<ToolR
       },
       re_executed_at: new Date().toISOString(),
       search_results: searchResultData,
-      next_steps: [{ tool: 'ocr_search', description: 'Run a new search' }, { tool: 'ocr_search_save', description: 'Save a new search for later' }],
+      next_steps: [{ tool: 'ocr_search', description: 'Run a new search' }, { tool: 'ocr_search_saved', description: 'Save a search (action=save) for later' }],
     }));
   } catch (error) {
     return handleError(error);
@@ -2845,12 +2992,12 @@ async function handleCrossDbSearch(params: Record<string, unknown>): Promise<Too
  */
 export const searchTools: Record<string, ToolDefinition> = {
   ocr_search: {
-    description: '[ESSENTIAL] Primary search tool. Searches across all documents using keyword (BM25), semantic (vector), or hybrid (BM25+semantic fusion) modes. Default mode is hybrid which combines both for best results. Always quality-weighted, always expands queries, always deduplicates. Set mode to "keyword" for exact text matching or "semantic" for meaning-based search.',
+    description: '[ESSENTIAL] Primary search. mode="keyword" (BM25), "semantic" (vector), or "hybrid" (default, best). Quality-weighted, query-expanded, deduplicated.',
     inputSchema: SearchUnifiedInput.shape,
     handler: handleSearchUnified,
   },
   ocr_fts_manage: {
-    description: '[SETUP] Use after bulk document deletion or when keyword search returns unexpected zero results. action="status" checks index health; action="rebuild" recreates the FTS5 index. Only affects keyword/hybrid search modes.',
+    description: '[SETUP] FTS5 index maintenance. action="status" checks health; "rebuild" recreates index. Use when keyword search returns unexpected zero results.',
     inputSchema: {
       action: z.enum(['rebuild', 'status']).describe('Action: rebuild index or check status'),
     },
@@ -2914,13 +3061,8 @@ export const searchTools: Record<string, ToolDefinition> = {
     },
     handler: handleRagContext,
   },
-  ocr_search_save: {
-    description: '[SEARCH] Use to save search results for later retrieval or re-execution. Returns saved search ID. Manage saved searches with ocr_search_saved.',
-    inputSchema: SearchSaveInput.shape,
-    handler: handleSearchSave,
-  },
   ocr_search_saved: {
-    description: '[SEARCH] Manage saved searches. action="list" lists all saved searches (optional search_type filter). action="get" retrieves a saved search by ID with full parameters. action="execute" re-runs a saved search against current data.',
+    description: '[SEARCH] Manage saved searches. action="save"|"list"|"get"|"execute". Save requires name, query, search_type, result_count.',
     inputSchema: SearchSavedInput.shape,
     handler: handleSearchSaved,
   },

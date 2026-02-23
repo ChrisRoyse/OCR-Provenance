@@ -267,8 +267,8 @@ function insertTestChunk(
 // ═══════════════════════════════════════════════════════════════════════════════
 
 describe('documentTools exports', () => {
-  it('exports all 11 document tools (ocr_document_sections merged into ocr_document_structure)', () => {
-    expect(Object.keys(documentTools)).toHaveLength(11);
+  it('exports all 10 document tools (MERGE-A: ocr_document_export + ocr_corpus_export -> ocr_export)', () => {
+    expect(Object.keys(documentTools)).toHaveLength(10);
     expect(documentTools).toHaveProperty('ocr_document_list');
     expect(documentTools).toHaveProperty('ocr_document_get');
     expect(documentTools).toHaveProperty('ocr_document_delete');
@@ -276,8 +276,7 @@ describe('documentTools exports', () => {
     expect(documentTools).toHaveProperty('ocr_document_structure');
     expect(documentTools).toHaveProperty('ocr_document_update_metadata');
     expect(documentTools).toHaveProperty('ocr_document_duplicates');
-    expect(documentTools).toHaveProperty('ocr_document_export');
-    expect(documentTools).toHaveProperty('ocr_corpus_export');
+    expect(documentTools).toHaveProperty('ocr_export');
     expect(documentTools).toHaveProperty('ocr_document_versions');
     expect(documentTools).toHaveProperty('ocr_document_workflow');
   });

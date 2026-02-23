@@ -25,7 +25,7 @@ describe('Search Schemas', () => {
       expect(result.bm25_weight).toBe(1.0);
       expect(result.semantic_weight).toBe(1.0);
       expect(result.rrf_k).toBe(60);
-      expect(result.auto_route).toBe(false);
+      expect(result.auto_route).toBe(true);
       expect(result.rerank).toBe(false);
       expect(result.group_by_document).toBe(false);
     });

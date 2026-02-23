@@ -601,7 +601,7 @@ export async function handleProvenanceTimeline(
           total_processing_time_ms: 0,
           steps_count: 0,
           timeline: [],
-          next_steps: [{ tool: 'ocr_provenance_query', description: 'Query specific provenance records' }, { tool: 'ocr_timeline_analytics', description: 'View processing volume trends' }],
+          next_steps: [{ tool: 'ocr_provenance_query', description: 'Query specific provenance records' }, { tool: 'ocr_trends', description: 'View processing volume trends (metric=volume)' }],
         })
       );
     }
@@ -649,7 +649,7 @@ export async function handleProvenanceTimeline(
         total_processing_time_ms: totalProcessingTimeMs,
         steps_count: timeline.length,
         timeline,
-        next_steps: [{ tool: 'ocr_provenance_query', description: 'Query specific provenance records' }, { tool: 'ocr_timeline_analytics', description: 'View processing volume trends' }],
+        next_steps: [{ tool: 'ocr_provenance_query', description: 'Query specific provenance records' }, { tool: 'ocr_trends', description: 'View processing volume trends (metric=volume)' }],
       })
     );
   } catch (error) {

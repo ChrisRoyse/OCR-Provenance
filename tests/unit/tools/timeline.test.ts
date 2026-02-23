@@ -1,8 +1,6 @@
 /**
  * Tests for Phase 6 temporal analytics tools:
- * - ocr_timeline_analytics (in timeline.ts)
- * - ocr_throughput_analytics (in timeline.ts)
- * - ocr_quality_trends (in reports.ts)
+ * - ocr_trends (unified in reports.ts, MERGE-C: replaces ocr_timeline_analytics + ocr_quality_trends)
  *
  * Also tests the underlying DB methods:
  * - getTimelineStats
@@ -34,9 +32,14 @@ import {
 import { timelineTools } from '../../../src/tools/timeline.js';
 import { reportTools } from '../../../src/tools/reports.js';
 
-// Extract handlers from exported tool definitions
-const handleTimelineAnalytics = timelineTools.ocr_timeline_analytics.handler;
-const handleQualityTrends = reportTools.ocr_quality_trends.handler;
+// Extract unified trends handler (MERGE-C: ocr_timeline_analytics + ocr_quality_trends -> ocr_trends)
+const handleTrends = reportTools.ocr_trends.handler;
+
+// Wrappers that route through the unified handler with metric parameter
+const handleTimelineAnalytics = (params: Record<string, unknown>) =>
+  handleTrends({ ...params, metric: 'volume', volume_metric: params.metric ?? 'documents' });
+const handleQualityTrends = (params: Record<string, unknown>) =>
+  handleTrends({ ...params, metric: 'quality' });
 
 describe('Phase 6: Temporal Analytics Tools', () => {
   let tempDir: string;
@@ -405,14 +408,13 @@ describe('Phase 6: Temporal Analytics Tools', () => {
   // =====================================================================
 
   describe('Tool exports', () => {
-    it('should export 1 timeline tool', () => {
-      expect(Object.keys(timelineTools)).toHaveLength(1);
-      expect(timelineTools.ocr_timeline_analytics).toBeDefined();
+    it('should export 0 timeline tools (MERGE-C: ocr_timeline_analytics moved to ocr_trends)', () => {
+      expect(Object.keys(timelineTools)).toHaveLength(0);
     });
 
-    it('should have ocr_quality_trends in reportTools', () => {
-      expect(reportTools.ocr_quality_trends).toBeDefined();
-      expect(reportTools.ocr_quality_trends.handler).toBeDefined();
+    it('should have ocr_trends in reportTools (MERGE-C: unified trends)', () => {
+      expect(reportTools.ocr_trends).toBeDefined();
+      expect(reportTools.ocr_trends.handler).toBeDefined();
     });
   });
 
@@ -420,14 +422,15 @@ describe('Phase 6: Temporal Analytics Tools', () => {
   // ocr_timeline_analytics
   // =====================================================================
 
-  describe('ocr_timeline_analytics', () => {
+  describe('ocr_trends (volume mode, replaces ocr_timeline_analytics)', () => {
     it('should return daily document counts', async () => {
       const result = await handleTimelineAnalytics({});
       const parsed = JSON.parse(result.content[0].text);
 
       expect(parsed.success).toBe(true);
       expect(parsed.data.bucket).toBe('daily');
-      expect(parsed.data.metric).toBe('documents');
+      expect(parsed.data.metric).toBe('volume');
+      expect(parsed.data.volume_metric).toBe('documents');
       expect(parsed.data.total_count).toBe(3);
       expect(parsed.data.data.length).toBeGreaterThanOrEqual(2);
 
@@ -492,7 +495,8 @@ describe('Phase 6: Temporal Analytics Tools', () => {
       const parsed = JSON.parse(result.content[0].text);
 
       expect(parsed.success).toBe(true);
-      expect(parsed.data.metric).toBe('pages');
+      expect(parsed.data.metric).toBe('volume');
+      expect(parsed.data.volume_metric).toBe('pages');
       // Total pages: 5 + 3 + 10 = 18
       expect(parsed.data.total_count).toBe(18);
     });
@@ -502,7 +506,8 @@ describe('Phase 6: Temporal Analytics Tools', () => {
       const parsed = JSON.parse(result.content[0].text);
 
       expect(parsed.success).toBe(true);
-      expect(parsed.data.metric).toBe('chunks');
+      expect(parsed.data.metric).toBe('volume');
+      expect(parsed.data.volume_metric).toBe('chunks');
       // 1 + 1 + 2 = 4 chunks
       expect(parsed.data.total_count).toBe(4);
     });
@@ -512,7 +517,8 @@ describe('Phase 6: Temporal Analytics Tools', () => {
       const parsed = JSON.parse(result.content[0].text);
 
       expect(parsed.success).toBe(true);
-      expect(parsed.data.metric).toBe('embeddings');
+      expect(parsed.data.metric).toBe('volume');
+      expect(parsed.data.volume_metric).toBe('embeddings');
       // 1 + 1 + 2 = 4 embeddings
       expect(parsed.data.total_count).toBe(4);
     });
@@ -522,7 +528,8 @@ describe('Phase 6: Temporal Analytics Tools', () => {
       const parsed = JSON.parse(result.content[0].text);
 
       expect(parsed.success).toBe(true);
-      expect(parsed.data.metric).toBe('cost');
+      expect(parsed.data.metric).toBe('volume');
+      expect(parsed.data.volume_metric).toBe('cost');
       // 10 + 6 + 15 = 31 cents
       expect(parsed.data.total_count).toBe(31);
     });
@@ -588,10 +595,10 @@ describe('Phase 6: Temporal Analytics Tools', () => {
   });
 
   // =====================================================================
-  // ocr_quality_trends
+  // ocr_trends (quality mode, replaces ocr_quality_trends)
   // =====================================================================
 
-  describe('ocr_quality_trends', () => {
+  describe('ocr_trends (quality mode, replaces ocr_quality_trends)', () => {
     it('should return daily quality trends (no grouping)', async () => {
       const result = await handleQualityTrends({});
       const parsed = JSON.parse(result.content[0].text);

@@ -148,7 +148,15 @@ async function handleEmbeddingStats(params: Record<string, unknown>): Promise<To
     return formatResponse(successResult({
       document_id: input.document_id ?? null,
       ...stats,
-      next_steps: [{ tool: 'ocr_embedding_rebuild', description: 'Rebuild embeddings for items with gaps' }, { tool: 'ocr_embedding_list', description: 'Browse individual embeddings' }],
+      next_steps: stats.total_embeddings === 0
+        ? [
+            { tool: 'ocr_process_pending', description: 'Run processing to generate embeddings' },
+            { tool: 'ocr_document_list', description: 'Check if documents exist to process' },
+          ]
+        : [
+            { tool: 'ocr_embedding_rebuild', description: 'Rebuild embeddings for items with gaps' },
+            { tool: 'ocr_embedding_list', description: 'Browse individual embeddings' },
+          ],
     }));
   } catch (error) {
     return handleError(error);
@@ -697,7 +705,7 @@ export const embeddingTools: Record<string, ToolDefinition> = {
   },
 
   ocr_embedding_rebuild: {
-    description: '[SETUP] Use after changing embedding configuration, fixing corrupted vectors, or after VLM re-analysis (ocr_image_reanalyze). Specify exactly one of document_id, chunk_id, or image_id. Set include_vlm=true with document_id to also rebuild VLM image embeddings.',
+    description: '[SETUP] Rebuild embeddings for a document, chunk, or image. Use after config changes or VLM re-analysis. include_vlm=true for VLM image embeddings.',
     inputSchema: {
       document_id: z.string().min(1).optional().describe('Rebuild all chunk embeddings for this document (add include_vlm=true for VLM image embeddings too)'),
       chunk_id: z.string().min(1).optional().describe('Rebuild embedding for this specific chunk'),

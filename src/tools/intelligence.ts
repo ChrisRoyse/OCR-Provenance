@@ -266,6 +266,8 @@ async function handleGuide(params: Record<string, unknown>): Promise<ToolRespons
     let embeddingCount = 0;
     let imageCount = 0;
     let clusterCount = 0;
+    let embeddingCoverage = 0;
+    let vlmCoverage = 0;
 
     if (dbSelected) {
       try {
@@ -299,6 +301,38 @@ async function handleGuide(params: Record<string, unknown>): Promise<ToolRespons
           clusters: clusterCount,
           vectors: vector.getVectorCount(),
         };
+
+        // V7: Corpus snapshot for smarter guide
+        if (docCount > 0) {
+          const fileTypeRows = conn.prepare(
+            "SELECT file_type, COUNT(*) as count FROM documents WHERE file_type IS NOT NULL GROUP BY file_type ORDER BY count DESC"
+          ).all() as Array<{ file_type: string; count: number }>;
+
+          const comparisonCount = (conn.prepare('SELECT COUNT(*) as c FROM comparisons').get() as { c: number }).c;
+
+          embeddingCoverage = chunkCount > 0
+            ? Math.round((embeddingCount / chunkCount) * 100)
+            : 0;
+
+          // Count images with VLM descriptions vs total
+          const vlmCompleteCount = imageCount > 0
+            ? (conn.prepare("SELECT COUNT(*) as c FROM images WHERE vlm_status = 'complete'").get() as { c: number }).c
+            : 0;
+          vlmCoverage = imageCount > 0
+            ? Math.round((vlmCompleteCount / imageCount) * 100)
+            : 0;
+
+          context.corpus_snapshot = {
+            document_count: docCount,
+            total_chunks: chunkCount,
+            total_images: imageCount,
+            file_types: fileTypeRows.map(r => r.file_type),
+            has_clusters: clusterCount > 0,
+            has_comparisons: comparisonCount > 0,
+            embedding_coverage: `${embeddingCoverage}%`,
+            vlm_coverage: `${vlmCoverage}%`,
+          };
+        }
       } catch (err) {
         const errMsg = err instanceof Error ? err.message : String(err);
         context.database_stats_error = errMsg;
@@ -327,7 +361,7 @@ async function handleGuide(params: Record<string, unknown>): Promise<ToolRespons
       } else {
         next_steps.push({
           tool: 'ocr_db_select',
-          description: `Select a database to work with. Available: ${databases.map(d => d.name).join(', ')}`,
+          description: 'Select a database to work with (see database_names in context above)',
           priority: 'required',
         });
       }
@@ -461,6 +495,21 @@ async function handleGuide(params: Record<string, unknown>): Promise<ToolRespons
         description: `Browse ${docCount} documents.`,
         priority: 'optional',
       });
+      // V7: Context-aware next_steps from corpus snapshot
+      if (embeddingCoverage < 100 && chunkCount > 0) {
+        next_steps.push({
+          tool: 'ocr_health_check',
+          description: `Check for processing gaps (${embeddingCoverage}% embedding coverage).`,
+          priority: 'recommended',
+        });
+      }
+      if (clusterCount > 0) {
+        next_steps.push({
+          tool: 'ocr_cluster_list',
+          description: `Explore ${clusterCount} topic clusters.`,
+          priority: 'optional',
+        });
+      }
     }
 
     // Build summary message
@@ -476,6 +525,11 @@ async function handleGuide(params: Record<string, unknown>): Promise<ToolRespons
       message: parts.join(' '),
       context,
       next_steps,
+      workflow_chains: docCount > 0 ? [
+        { name: 'find_and_read', steps: ['ocr_search -> ocr_chunk_context -> ocr_document_page'], description: 'Find content, expand context, read full page' },
+        { name: 'compare_documents', steps: ['ocr_comparison_discover -> ocr_document_compare -> ocr_comparison_get'], description: 'Find similar pairs, diff them, inspect results' },
+        { name: 'process_new', steps: ['ocr_ingest_files -> ocr_process_pending -> ocr_health_check'], description: 'Add files, run OCR pipeline, verify completeness' },
+      ] : undefined,
     }));
   } catch (error) {
     return handleError(error);
@@ -861,9 +915,7 @@ async function handleDocumentExtras(params: Record<string, unknown>): Promise<To
 export const intelligenceTools: Record<string, ToolDefinition> = {
   ocr_guide: {
     description:
-      '[ESSENTIAL] Use first to understand the system state and get guidance on what to do next. ' +
-      'Returns available databases, selected database stats, and prioritized next_steps with tool recommendations. ' +
-      'Optional intent parameter narrows guidance: explore, search, ingest, analyze, or status.',
+      '[ESSENTIAL] System state overview with prioritized next_steps. Shows databases, stats, and tool recommendations. Optional intent: explore/search/ingest/analyze/status.',
     inputSchema: GuideInput.shape,
     handler: handleGuide,
   },
@@ -875,13 +927,13 @@ export const intelligenceTools: Record<string, ToolDefinition> = {
   },
   ocr_document_recommend: {
     description:
-      '[ANALYSIS] Use to find related documents based on cluster membership and vector similarity. Returns ranked recommendations with scores and reasons. Requires embeddings and/or clustering.',
+      '[ANALYSIS] Related document recommendations via cluster membership and vector similarity. Requires embeddings and/or clustering.',
     inputSchema: DocumentRecommendInput.shape,
     handler: handleDocumentRecommend,
   },
   ocr_document_extras: {
     description:
-      '[ANALYSIS] Use to access supplementary OCR data: charts, links, tracked changes, table bounding boxes, and infographics. Returns available sections from extras_json. Specify section to filter.',
+      '[ANALYSIS] Supplementary OCR data: charts, links, tracked changes, bounding boxes, infographics. Specify section to filter.',
     inputSchema: DocumentExtrasInput.shape,
     handler: handleDocumentExtras,
   },

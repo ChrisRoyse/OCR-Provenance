@@ -210,7 +210,16 @@ async function handleClusterList(params: Record<string, unknown>): Promise<ToolR
         clusters: items,
         total: items.length,
         offset: input.offset,
-        next_steps: [{ tool: 'ocr_cluster_get', description: 'Inspect a specific cluster' }, { tool: 'ocr_cluster_documents', description: 'Run a new clustering' }, { tool: 'ocr_comparison_matrix', description: 'View NxN document similarity matrix' }],
+        next_steps: items.length === 0
+          ? [
+              { tool: 'ocr_cluster_documents', description: 'Run clustering to group documents by similarity' },
+              { tool: 'ocr_document_list', description: 'Browse documents available for clustering' },
+            ]
+          : [
+              { tool: 'ocr_cluster_get', description: 'Inspect a specific cluster' },
+              { tool: 'ocr_cluster_documents', description: 'Run a new clustering' },
+              { tool: 'ocr_comparison_matrix', description: 'View NxN document similarity matrix' },
+            ],
       })
     );
   } catch (error) {
@@ -561,13 +570,13 @@ async function handleClusterMerge(params: Record<string, unknown>): Promise<Tool
 export const clusteringTools: Record<string, ToolDefinition> = {
   ocr_cluster_documents: {
     description:
-      '[PROCESSING] Use to group documents by semantic similarity using HDBSCAN, agglomerative, or k-means. Returns cluster assignments with coherence scores. Requires documents with embeddings.',
+      '[PROCESSING] Group documents by similarity using HDBSCAN, agglomerative, or k-means. Returns assignments with coherence scores. Requires embeddings.',
     inputSchema: ClusterDocumentsInput.shape,
     handler: handleClusterDocuments,
   },
   ocr_cluster_list: {
     description:
-      '[ANALYSIS] Use to browse existing document clusters with optional filtering by run ID or classification tag. Returns cluster summaries with labels and document counts. Use ocr_cluster_get for details.',
+      '[ANALYSIS] Browse existing clusters with optional run_id or tag filter. Returns summaries with labels and doc counts.',
     inputSchema: ClusterListInput.shape,
     handler: handleClusterList,
   },

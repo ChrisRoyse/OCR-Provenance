@@ -57,7 +57,7 @@ describe('reportTools exports', () => {
     expect(reportTools).toHaveProperty('ocr_cost_summary');
     expect(reportTools).toHaveProperty('ocr_report_performance');
     expect(reportTools).toHaveProperty('ocr_error_analytics');
-    expect(reportTools).toHaveProperty('ocr_quality_trends');
+    expect(reportTools).toHaveProperty('ocr_trends');
   });
 
   it('each tool has description, inputSchema, and handler', () => {

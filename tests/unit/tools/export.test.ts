@@ -22,7 +22,13 @@ import {
   requireDatabase,
   ProvenanceType,
 } from '../../integration/server/helpers.js';
-import { handleDocumentExport, handleCorpusExport } from '../../../src/tools/documents.js';
+import { handleExport } from '../../../src/tools/documents.js';
+
+// Wrappers that route through the unified handler (MERGE-A)
+const handleDocumentExport = (params: Record<string, unknown>) =>
+  handleExport(params);
+const handleCorpusExport = (params: Record<string, unknown>) =>
+  handleExport(params);
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // ocr_document_export TESTS
