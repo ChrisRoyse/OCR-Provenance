@@ -65,6 +65,7 @@ const FileGetInput = z.object({
 
 const FileDownloadInput = z.object({
   file_id: z.string().min(1).describe('Uploaded file record ID'),
+  expires_in: z.number().int().min(60).max(86400).default(3600).describe('Download URL expiry in seconds (default: 3600, min: 60, max: 86400)'),
 });
 
 const FileDeleteInput = z.object({
@@ -330,14 +331,15 @@ async function handleFileDownload(params: Record<string, unknown>) {
     }
 
     const client = new FileManagerClient();
-    const downloadUrl = await client.getDownloadUrl(file.datalab_file_id);
+    const downloadResult = await client.getDownloadUrl(file.datalab_file_id, input.expires_in);
 
     return formatResponse(
       successResult({
         file_id: input.file_id,
         datalab_file_id: file.datalab_file_id,
         file_name: file.file_name,
-        download_url: downloadUrl,
+        download_url: downloadResult.downloadUrl,
+        expires_in: downloadResult.expiresIn,
         next_steps: [{ tool: 'ocr_file_get', description: 'View file metadata' }],
       })
     );

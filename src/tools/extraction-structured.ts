@@ -237,6 +237,7 @@ async function handleExtractStructured(params: Record<string, unknown>) {
         provenance_id: extractionProvId,
         embedding_id: embeddingId,
         embedding_provenance_id: embeddingProvId,
+        cost_note: 'This call triggered a full re-OCR at standard Datalab cost. To avoid repeated costs, pass page_schema during ocr_process_pending instead.',
         ...(warnings.length > 0 ? { warnings } : {}),
         next_steps: [{ tool: 'ocr_extraction_list', description: 'List all extractions for the document' }, { tool: 'ocr_extraction_get', description: 'View the extraction results in detail' }],
       })
@@ -325,10 +326,26 @@ async function handleExtractionList(params: Record<string, unknown>) {
               ? fetchProvenanceChain(db, ext.provenance_id, '[extraction-list]')
               : undefined;
 
+            let parsedExtractionJson: unknown;
+            try {
+              parsedExtractionJson = JSON.parse(ext.extraction_json);
+            } catch (error) {
+              console.error(`[extraction-structured] Failed to parse extraction_json for extraction ${ext.id}: ${error instanceof Error ? error.message : String(error)}`);
+              parsedExtractionJson = ext.extraction_json;
+            }
+
+            let parsedSchemaJson: unknown;
+            try {
+              parsedSchemaJson = JSON.parse(ext.schema_json);
+            } catch (error) {
+              console.error(`[extraction-structured] Failed to parse schema_json for extraction ${ext.id}: ${error instanceof Error ? error.message : String(error)}`);
+              parsedSchemaJson = ext.schema_json;
+            }
+
             return {
               id: ext.id,
-              schema_json: ext.schema_json,
-              extraction_json: JSON.parse(ext.extraction_json),
+              schema_json: parsedSchemaJson,
+              extraction_json: parsedExtractionJson,
               content_hash: ext.content_hash,
               provenance_id: ext.provenance_id,
               created_at: ext.created_at,
@@ -413,7 +430,7 @@ async function handleExtractionGet(params: Record<string, unknown>): Promise<Too
 export const structuredExtractionTools: Record<string, ToolDefinition> = {
   ocr_extract_structured: {
     description:
-      '[PROCESSING] Extract custom structured data from pages via JSON page_schema. For tables, lists, fields. Use ocr_form_fill for key-value forms instead. Requires status "complete".',
+      '[PROCESSING] Extract custom structured data from pages via JSON page_schema. WARNING: Triggers a full re-OCR at standard cost (~$6/1000 pages) because page_schema requires re-processing. To avoid repeated costs, pass page_schema during initial ocr_process_pending instead. Use ocr_form_fill for key-value forms. Requires status "complete".',
     inputSchema: ExtractStructuredInput.shape,
     handler: handleExtractStructured,
   },

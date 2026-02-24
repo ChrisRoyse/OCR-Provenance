@@ -16,8 +16,6 @@ import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
-from datalab_sdk import DatalabClient
-
 # Configure logging FIRST - all logging goes to stderr
 logging.basicConfig(
     level=logging.INFO,
@@ -105,17 +103,72 @@ class FileListResult:
     total: int
 
 
+@dataclass
+class DownloadUrlResult:
+    """Result from get_download_url with metadata."""
+
+    download_url: str
+    expires_in: int
+    file_id: str
+
+
 # =============================================================================
 # HELPERS
 # =============================================================================
 
 
-def get_client() -> DatalabClient:
+def _import_sdk_exceptions() -> tuple:
+    """Import SDK exception classes (deferred to match get_client pattern)."""
+    from datalab_sdk.exceptions import (
+        DatalabAPIError,
+        DatalabFileError,
+        DatalabTimeoutError,
+        DatalabValidationError,
+    )
+
+    return DatalabAPIError, DatalabFileError, DatalabTimeoutError, DatalabValidationError
+
+
+def _handle_sdk_exception(e: Exception, operation: str, context: str = "") -> None:
+    """
+    Handle SDK exceptions with specific error types.
+    Raises the appropriate FileManager error based on the SDK exception type.
+    """
+    DatalabAPIError, DatalabFileError, DatalabTimeoutError, DatalabValidationError = _import_sdk_exceptions()
+
+    if isinstance(e, DatalabValidationError):
+        raise FileManagerAPIError(f"Invalid input for {operation}: {e}", 400) from e
+
+    if isinstance(e, DatalabTimeoutError):
+        raise FileManagerAPIError(f"{operation} timeout: {e}", 504) from e
+
+    if isinstance(e, DatalabFileError):
+        raise FileManagerFileError(f"{operation} file error: {e}", context or "unknown") from e
+
+    if isinstance(e, DatalabAPIError):
+        status = getattr(e, "status_code", 500)
+        error_msg = str(e)
+        if status == 429 or "rate limit" in error_msg.lower():
+            raise FileManagerAPIError(f"Rate limit exceeded during {operation}: {e}", 429) from e
+        if status in (401, 403):
+            raise FileManagerAPIError(f"Authentication error during {operation} ({status}): {e}", status) from e
+        if status == 404 or "not found" in error_msg.lower():
+            raise FileManagerAPIError(f"Not found during {operation}: {e}", 404) from e
+        raise FileManagerAPIError(f"API error during {operation} ({status}): {e}", status) from e
+
+    # Unexpected exception type — log and raise as 500
+    logger.error(f"Unexpected error during {operation}: {type(e).__name__}: {e}")
+    raise FileManagerAPIError(f"SDK {operation} failed: {e}", 500) from e
+
+
+def get_client() -> "DatalabClient":
     """
     Get a DatalabClient instance.
     FAIL-FAST: Raises immediately if API key not set.
     The SDK reads DATALAB_API_KEY from the environment automatically.
     """
+    from datalab_sdk import DatalabClient
+
     api_key = os.environ.get("DATALAB_API_KEY")
     if not api_key:
         raise ValueError(
@@ -183,6 +236,39 @@ def validate_file(file_path: str) -> Path:
     return path
 
 
+def _serialize_file_metadata(obj: object) -> dict:
+    """
+    Serialize an UploadedFileMetadata SDK object to a plain dict.
+    L-2: SDK returns UploadedFileMetadata dataclass objects, not dicts.
+    We explicitly convert to ensure consistent JSON output.
+    """
+    from dataclasses import fields as dc_fields
+
+    # If it's already a dict, return as-is
+    if isinstance(obj, dict):
+        return obj
+
+    # If it's a dataclass, convert properly with str(file_id) for L-1
+    try:
+        dc_fields(obj)  # Raises TypeError if not a dataclass
+        result = asdict(obj)
+        # L-1: Ensure file_id is str (SDK returns int)
+        if "file_id" in result:
+            result["file_id"] = str(result["file_id"])
+        return result
+    except TypeError:
+        pass
+
+    # Fallback: convert known attributes
+    result = {}
+    for attr in ("file_id", "original_filename", "content_type", "reference",
+                 "upload_status", "file_size", "created", "error"):
+        val = getattr(obj, attr, None)
+        if val is not None:
+            result[attr] = str(val) if attr == "file_id" else val
+    return result
+
+
 # =============================================================================
 # API ACTIONS
 # =============================================================================
@@ -221,10 +307,11 @@ def upload_file(file_path: str, timeout: int = 300) -> UploadResult:
     try:
         result = client.upload_files(str(validated_path))
     except Exception as e:
-        raise FileManagerAPIError(f"SDK upload failed: {e}", 500) from e
+        _handle_sdk_exception(e, "upload", str(validated_path))
 
-    # SDK returns UploadedFileMetadata with file_id, reference, etc.
-    file_id = result.file_id
+    # SDK returns UploadedFileMetadata with file_id (int), reference, etc.
+    # L-1: SDK's UploadedFileMetadata.file_id is int — convert to str for JSON protocol
+    file_id = str(result.file_id)
     reference = result.reference
 
     if not file_id:
@@ -264,10 +351,12 @@ def list_files(limit: int = 50, offset: int = 0, timeout: int = 60) -> FileListR
     try:
         data = client.list_files(limit=limit, offset=offset)
     except Exception as e:
-        raise FileManagerAPIError(f"SDK list_files failed: {e}", 500) from e
+        _handle_sdk_exception(e, "list_files")
 
-    # SDK returns dict with 'files', 'total', 'limit', 'offset'
-    files = data.get("files", [])
+    # SDK returns dict with 'files' (list of UploadedFileMetadata objects), 'total', 'limit', 'offset'
+    # L-2: Explicitly serialize UploadedFileMetadata objects to plain dicts
+    raw_files = data.get("files", [])
+    files = [_serialize_file_metadata(f) for f in raw_files]
     total = data.get("total", len(files))
 
     return FileListResult(files=files, total=total)
@@ -289,13 +378,11 @@ def get_file(file_id: str, timeout: int = 60) -> FileInfo:
     try:
         meta = client.get_file_metadata(file_id)
     except Exception as e:
-        error_str = str(e).lower()
-        if "404" in error_str or "not found" in error_str:
-            raise FileManagerAPIError(f"File not found: {file_id}", 404) from e
-        raise FileManagerAPIError(f"SDK get_file_metadata failed: {e}", 500) from e
+        _handle_sdk_exception(e, "get_file_metadata")
 
+    # L-1: Ensure file_id is str
     return FileInfo(
-        file_id=meta.file_id,
+        file_id=str(meta.file_id),
         file_name=meta.original_filename,
         file_size=meta.file_size,
         content_type=meta.content_type,
@@ -305,35 +392,46 @@ def get_file(file_id: str, timeout: int = 60) -> FileInfo:
     )
 
 
-def get_download_url(file_id: str, timeout: int = 60) -> str:
+def get_download_url(file_id: str, expires_in: int = 3600, timeout: int = 60) -> DownloadUrlResult:
     """
     Get a download URL for a file via SDK.
 
     Args:
         file_id: Datalab file ID
+        expires_in: URL expiry time in seconds (default: 3600, max: 86400)
         timeout: Request timeout in seconds (unused - SDK manages timeouts)
 
     Returns:
-        Download URL string
+        DownloadUrlResult with download_url, expires_in, and file_id
+
+    Raises:
+        FileManagerAPIError: On invalid expires_in, API errors, or missing download_url
     """
+    # L-3: Validate expires_in bounds
+    if expires_in < 60 or expires_in > 86400:
+        raise FileManagerAPIError(
+            f"expires_in must be between 60 and 86400 seconds, got {expires_in}", 400
+        )
+
     client = get_client()
 
     try:
-        data = client.get_file_download_url(file_id)
+        data = client.get_file_download_url(file_id, expires_in=expires_in)
     except Exception as e:
-        error_str = str(e).lower()
-        if "404" in error_str or "not found" in error_str:
-            raise FileManagerAPIError(f"File not found: {file_id}", 404) from e
-        raise FileManagerAPIError(f"SDK get_file_download_url failed: {e}", 500) from e
+        _handle_sdk_exception(e, "get_download_url")
 
     download_url = data.get("download_url")
     if not download_url:
         raise FileManagerAPIError(
-            f"No download_url in SDK response: {json.dumps(data)[:500]}",
+            f"No download_url in SDK response. Keys: {list(data.keys())}",
             500,
         )
 
-    return download_url
+    return DownloadUrlResult(
+        download_url=download_url,
+        expires_in=expires_in,
+        file_id=str(data.get("file_id", file_id)),
+    )
 
 
 def delete_file(file_id: str, timeout: int = 60) -> bool:
@@ -352,10 +450,7 @@ def delete_file(file_id: str, timeout: int = 60) -> bool:
     try:
         result = client.delete_file(file_id)
     except Exception as e:
-        error_str = str(e).lower()
-        if "404" in error_str or "not found" in error_str:
-            raise FileManagerAPIError(f"File not found: {file_id}", 404) from e
-        raise FileManagerAPIError(f"SDK delete_file failed: {e}", 500) from e
+        _handle_sdk_exception(e, "delete_file")
 
     if not result.get("success", True):
         raise FileManagerAPIError(
@@ -392,7 +487,7 @@ Examples:
   python file_manager_worker.py --action upload --file document.pdf
   python file_manager_worker.py --action list --limit 10
   python file_manager_worker.py --action get --file-id abc123
-  python file_manager_worker.py --action download-url --file-id abc123
+  python file_manager_worker.py --action download-url --file-id abc123 --expires-in 7200
   python file_manager_worker.py --action delete --file-id abc123
         """,
     )
@@ -406,6 +501,7 @@ Examples:
     parser.add_argument("--file-id", type=str, help="Datalab file ID (for get/download-url/delete)")
     parser.add_argument("--limit", type=int, default=50, help="Limit for list (default: 50)")
     parser.add_argument("--offset", type=int, default=0, help="Offset for list (default: 0)")
+    parser.add_argument("--expires-in", type=int, default=3600, help="Download URL expiry in seconds (default: 3600, min: 60, max: 86400)")
     parser.add_argument("--timeout", type=int, default=300, help="Timeout seconds (default: 300)")
     parser.add_argument("--verbose", "-v", action="store_true", help="Verbose logging")
 
@@ -436,8 +532,8 @@ Examples:
         elif args.action == "download-url":
             if not args.file_id:
                 raise ValueError("--file-id is required for download-url action")
-            url = get_download_url(args.file_id, timeout=args.timeout)
-            print(json.dumps({"download_url": url}))
+            result = get_download_url(args.file_id, expires_in=args.expires_in, timeout=args.timeout)
+            print(json.dumps(asdict(result)))
 
         elif args.action == "delete":
             if not args.file_id:
