@@ -341,6 +341,7 @@ def process_document(
         DatalabAPIError,
         DatalabFileError,
         DatalabTimeoutError,
+        DatalabValidationError,
     )
 
     # Validate inputs
@@ -411,11 +412,15 @@ def process_document(
         page_count = result.page_count or 1
         quality_score = result.parse_quality_score
 
-        # Get cost from response (SDK returns 'total_cents' in cost_breakdown dict)
+        # Get cost from response
+        # SDK v0.2.1 returns: {"list_cost_cents": N, "final_cost_cents": N}
+        # final_cost_cents is the actual charge after any discounts
         cost_breakdown = result.cost_breakdown or {}
-        cost_cents = cost_breakdown.get("total_cents")
+        cost_cents = cost_breakdown.get("final_cost_cents")
+        if cost_cents is None:
+            cost_cents = cost_breakdown.get("total_cost_cents")
         if cost_breakdown and cost_cents is None:
-            logger.warning("cost_breakdown present but missing 'total_cents' key. Keys: %s", list(cost_breakdown.keys()))
+            logger.warning("cost_breakdown present but no cost key found. Keys: %s", list(cost_breakdown.keys()))
 
         # Capture images from Datalab response (filename -> base64 data)
         # Images are returned as a dict with filename keys and base64-encoded image data
@@ -547,6 +552,10 @@ def process_document(
     except DatalabFileError as e:
         logger.error(f"File error: {e}")
         raise OCRFileError(str(e), file_url or str(validated_path)) from e
+
+    except DatalabValidationError as e:
+        logger.error(f"Validation error: {e}")
+        raise OCRAPIError(f"Invalid input: {e}", 400, request_id) from e
 
     except Exception as e:
         # Catch-all for unexpected errors - still fail fast

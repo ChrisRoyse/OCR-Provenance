@@ -178,6 +178,7 @@ def fill_form(
         DatalabAPIError,
         DatalabFileError,
         DatalabTimeoutError,
+        DatalabValidationError,
     )
 
     # Validate inputs
@@ -249,9 +250,11 @@ def fill_form(
         fields_not_found = getattr(result, "fields_not_found", []) or []
         page_count = getattr(result, "page_count", None)
         cost_breakdown = getattr(result, "cost_breakdown", {}) or {}
-        cost_cents = cost_breakdown.get("total_cents")
+        cost_cents = cost_breakdown.get("final_cost_cents")
+        if cost_cents is None:
+            cost_cents = cost_breakdown.get("total_cost_cents")
         if cost_breakdown and cost_cents is None:
-            logger.warning("cost_breakdown present but missing 'total_cents' key. Keys: %s", list(cost_breakdown.keys()))
+            logger.warning("cost_breakdown present but no cost key found. Keys: %s", list(cost_breakdown.keys()))
 
         logger.info(
             f"Form fill complete: {len(fields_filled)} filled, "
@@ -280,6 +283,9 @@ def fill_form(
 
     except DatalabFileError as e:
         raise FormFillFileError(str(e), str(validated_path)) from e
+
+    except DatalabValidationError as e:
+        raise FormFillAPIError(f"Invalid input: {e}", 400) from e
 
     except Exception as e:
         # Catch-all for unexpected errors - still fail fast
