@@ -70,6 +70,8 @@ export interface ListDocumentsOptions {
   status?: DocumentStatus;
   limit?: number;
   offset?: number;
+  /** Cursor for cursor-based pagination (base64url-encoded created_at + id) */
+  cursor?: string;
 }
 
 /**

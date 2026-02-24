@@ -15,6 +15,7 @@ import {
   databaseNotFoundError,
   databaseAlreadyExistsError,
 } from './errors.js';
+import { loadPersistedConfig } from '../utils/config-persistence.js';
 import type { ServerState, ServerConfig } from './types.js';
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -220,6 +221,54 @@ export function getCurrentDatabaseName(): string | null {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /**
+ * Apply persisted config from a database's config_json column.
+ *
+ * Called after database selection to restore config values that were
+ * saved by handleConfigSet in a previous session.
+ *
+ * @param db - The newly opened DatabaseService
+ */
+function applyPersistedConfig(db: DatabaseService): void {
+  try {
+    const persisted = loadPersistedConfig(db.getConnection());
+    if (Object.keys(persisted).length > 0) {
+      // Apply each persisted config key using updateConfig
+      const CONFIG_KEY_TO_STATE: Record<string, string> = {
+        datalab_default_mode: 'defaultOCRMode',
+        datalab_max_concurrent: 'maxConcurrent',
+        embedding_batch_size: 'embeddingBatchSize',
+        embedding_device: 'embeddingDevice',
+        chunk_size: 'chunkSize',
+        chunk_overlap_percent: 'chunkOverlapPercent',
+        max_chunk_size: 'maxChunkSize',
+        auto_cluster_enabled: 'autoClusterEnabled',
+        auto_cluster_threshold: 'autoClusterThreshold',
+        auto_cluster_algorithm: 'autoClusterAlgorithm',
+      };
+
+      const updates: Record<string, unknown> = {};
+      for (const [key, value] of Object.entries(persisted)) {
+        const stateKey = CONFIG_KEY_TO_STATE[key];
+        if (stateKey) {
+          updates[stateKey] = value;
+        }
+      }
+
+      if (Object.keys(updates).length > 0) {
+        updateConfig(updates as Partial<ServerConfig>);
+        console.error(
+          `[state] Loaded ${Object.keys(updates).length} persisted config value(s) from database`
+        );
+      }
+    }
+  } catch (error) {
+    console.error(
+      `[state] Failed to apply persisted config: ${error instanceof Error ? error.message : String(error)}`
+    );
+  }
+}
+
+/**
  * Select a database by name - opens connection and sets as current
  *
  * FAIL FAST: Throws immediately if database doesn't exist or if operations
@@ -264,6 +313,9 @@ export function selectDatabase(name: string, storagePath?: string): void {
   if (oldDb) {
     oldDb.close();
   }
+
+  // Load persisted config from the database (if any)
+  applyPersistedConfig(newDb);
 }
 
 /**

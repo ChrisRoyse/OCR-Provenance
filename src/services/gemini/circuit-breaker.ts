@@ -85,9 +85,26 @@ export class CircuitBreaker {
   private successCount: number = 0;
   private lastFailureTime: number | null = null;
   private readonly config: CircuitBreakerConfig;
+  /** Tracks consecutive circuit trips for exponential recovery backoff */
+  private consecutiveTrips: number = 0;
 
   constructor(config: Partial<CircuitBreakerConfig> = {}) {
     this.config = { ...DEFAULT_CONFIG, ...config };
+  }
+
+  /**
+   * Get current recovery time with exponential backoff on consecutive trips.
+   *
+   * Each consecutive trip doubles the recovery time:
+   * Trip 1: 60s, Trip 2: 120s, Trip 3: 240s, Trip 4: 480s, Trip 5+: 960s (cap)
+   *
+   * @returns Recovery time in milliseconds
+   */
+  getRecoveryTimeMs(): number {
+    const baseRecovery = this.config.recoveryTimeMs;
+    const tripExponent = Math.max(0, this.consecutiveTrips - 1);
+    const multiplier = Math.pow(2, Math.min(tripExponent, 4)); // Max 16x = 960s
+    return Math.min(baseRecovery * multiplier, 960000); // Cap at 16 minutes
   }
 
   /**
@@ -132,8 +149,9 @@ export class CircuitBreaker {
   private checkRecovery(): void {
     if (this.state === CircuitState.OPEN && this.lastFailureTime !== null) {
       const elapsed = Date.now() - this.lastFailureTime;
-      if (elapsed >= this.config.recoveryTimeMs) {
-        console.error('[CircuitBreaker] Transitioning from OPEN to HALF_OPEN');
+      const recoveryTime = this.getRecoveryTimeMs();
+      if (elapsed >= recoveryTime) {
+        console.error(`[CircuitBreaker] Transitioning from OPEN to HALF_OPEN (recovery: ${recoveryTime}ms, trip #${this.consecutiveTrips})`);
         this.state = CircuitState.HALF_OPEN;
         this.successCount = 0;
       }
@@ -156,6 +174,7 @@ export class CircuitBreaker {
         this.failureCount = 0;
         this.successCount = 0;
         this.lastFailureTime = null;
+        this.consecutiveTrips = 0; // Reset consecutive trips on successful recovery
       }
     } else if (this.state === CircuitState.CLOSED) {
       // Reset failure count on success
@@ -176,24 +195,27 @@ export class CircuitBreaker {
 
     if (this.state === CircuitState.HALF_OPEN) {
       // Any failure in HALF_OPEN immediately opens the circuit
-      console.error('[CircuitBreaker] Failure in HALF_OPEN, transitioning to OPEN');
+      this.consecutiveTrips++;
+      console.error(`[CircuitBreaker] Failure in HALF_OPEN, transitioning to OPEN (consecutive trip #${this.consecutiveTrips}, recovery: ${this.getRecoveryTimeMs()}ms)`);
       this.state = CircuitState.OPEN;
       this.successCount = 0;
     } else if (this.failureCount >= this.config.failureThreshold) {
+      this.consecutiveTrips++;
       console.error(
-        `[CircuitBreaker] Threshold reached (${this.failureCount}), transitioning to OPEN`
+        `[CircuitBreaker] Threshold reached (${this.failureCount}), transitioning to OPEN (consecutive trip #${this.consecutiveTrips}, recovery: ${this.getRecoveryTimeMs()}ms)`
       );
       this.state = CircuitState.OPEN;
     }
   }
 
   /**
-   * Get time remaining until recovery attempt
+   * Get time remaining until recovery attempt.
+   * Uses dynamic recovery time based on consecutive trips.
    */
   private getTimeToRecovery(): number {
     if (this.lastFailureTime === null) return 0;
     const elapsed = Date.now() - this.lastFailureTime;
-    return Math.max(0, this.config.recoveryTimeMs - elapsed);
+    return Math.max(0, this.getRecoveryTimeMs() - elapsed);
   }
 
   /**
@@ -233,6 +255,7 @@ export class CircuitBreaker {
     this.failureCount = 0;
     this.successCount = 0;
     this.lastFailureTime = null;
+    this.consecutiveTrips = 0;
     console.error('[CircuitBreaker] Manually reset to CLOSED');
   }
 

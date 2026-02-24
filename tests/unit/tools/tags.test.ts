@@ -750,7 +750,7 @@ describe('Phase 9: Cross-Entity Tagging Tools', () => {
       const row = conn.prepare('SELECT version FROM schema_version WHERE id = 1').get() as {
         version: number;
       };
-      expect(row.version).toBe(31);
+      expect(row.version).toBe(32);
     });
 
     it('should enforce entity_type CHECK constraint', () => {

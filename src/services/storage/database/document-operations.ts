@@ -13,6 +13,41 @@ import { runWithForeignKeyCheck } from './helpers.js';
 import { rowToDocument } from './converters.js';
 import { computeHash } from '../../../utils/hash.js';
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// CURSOR-BASED PAGINATION HELPERS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/**
+ * Encode a cursor from a (created_at, id) tuple.
+ * Uses base64url encoding for URL-safe transport.
+ *
+ * @param createdAt - ISO 8601 timestamp
+ * @param id - Document UUID
+ * @returns Base64url-encoded cursor string
+ */
+export function encodeCursor(createdAt: string, id: string): string {
+  return Buffer.from(JSON.stringify({ created_at: createdAt, id })).toString('base64url');
+}
+
+/**
+ * Decode a cursor back to a (created_at, id) tuple.
+ *
+ * @param cursor - Base64url-encoded cursor string
+ * @returns Decoded cursor with created_at and id
+ * @throws Error if cursor is invalid or malformed
+ */
+export function decodeCursor(cursor: string): { created_at: string; id: string } {
+  try {
+    const decoded = JSON.parse(Buffer.from(cursor, 'base64url').toString('utf-8')) as Record<string, unknown>;
+    if (typeof decoded.created_at !== 'string' || typeof decoded.id !== 'string') {
+      throw new Error('Invalid cursor format: missing created_at or id');
+    }
+    return { created_at: decoded.created_at as string, id: decoded.id as string };
+  } catch (error) {
+    throw new Error(`Invalid cursor: ${error instanceof Error ? error.message : String(error)}`);
+  }
+}
+
 /**
  * Insert a new document
  *
@@ -100,38 +135,88 @@ export function getDocumentByHash(db: Database.Database, fileHash: string): Docu
 }
 
 /**
- * List documents with optional filtering
+ * Result from listDocuments when cursor-based pagination is used
+ */
+export interface ListDocumentsResult {
+  documents: Document[];
+  /** Cursor for the next page (null if no more results) */
+  next_cursor: string | null;
+}
+
+/**
+ * List documents with optional filtering.
+ *
+ * Supports both offset-based and cursor-based pagination:
+ * - When `cursor` is provided, uses keyset pagination (WHERE created_at < cursor.created_at
+ *   OR (created_at = cursor.created_at AND id < cursor.id)) and ignores offset.
+ * - When `cursor` is absent, uses traditional LIMIT/OFFSET.
  *
  * @param db - Database connection
- * @param options - Optional filter options (status, limit, offset)
- * @returns Document[] - Array of documents
+ * @param options - Optional filter options (status, limit, offset, cursor)
+ * @returns Document[] - Array of documents (backward-compatible)
  */
 export function listDocuments(db: Database.Database, options?: ListDocumentsOptions): Document[] {
-  let query = 'SELECT * FROM documents';
+  const result = listDocumentsWithCursor(db, options);
+  return result.documents;
+}
+
+/**
+ * List documents with cursor-based pagination support.
+ *
+ * Returns both the documents and a next_cursor for fetching the next page.
+ *
+ * @param db - Database connection
+ * @param options - Optional filter options (status, limit, offset, cursor)
+ * @returns ListDocumentsResult with documents and next_cursor
+ */
+export function listDocumentsWithCursor(
+  db: Database.Database,
+  options?: ListDocumentsOptions,
+): ListDocumentsResult {
+  const conditions: string[] = [];
   const params: (string | number)[] = [];
 
   if (options?.status) {
-    query += ' WHERE status = ?';
+    conditions.push('status = ?');
     params.push(options.status);
   }
 
-  query += ' ORDER BY created_at DESC';
-
-  if (options?.limit !== undefined) {
-    query += ' LIMIT ?';
-    params.push(options.limit);
-  } else {
-    query += ' LIMIT 10000'; // Always bound result sets
+  // Cursor-based pagination: keyset filtering
+  if (options?.cursor) {
+    const decoded = decodeCursor(options.cursor);
+    conditions.push('(created_at < ? OR (created_at = ? AND id < ?))');
+    params.push(decoded.created_at, decoded.created_at, decoded.id);
   }
 
-  if (options?.offset !== undefined) {
+  let query = 'SELECT * FROM documents';
+  if (conditions.length > 0) {
+    query += ' WHERE ' + conditions.join(' AND ');
+  }
+
+  query += ' ORDER BY created_at DESC, id DESC';
+
+  const limit = options?.limit ?? 10000;
+  query += ' LIMIT ?';
+  params.push(limit);
+
+  // Only apply OFFSET when NOT using cursor-based pagination
+  if (!options?.cursor && options?.offset !== undefined) {
     query += ' OFFSET ?';
     params.push(options.offset);
   }
 
   const stmt = db.prepare(query);
   const rows = stmt.all(...params) as DocumentRow[];
-  return rows.map(rowToDocument);
+  const documents = rows.map(rowToDocument);
+
+  // Compute next_cursor from the last row
+  let next_cursor: string | null = null;
+  if (documents.length > 0 && documents.length === limit) {
+    const lastDoc = documents[documents.length - 1];
+    next_cursor = encodeCursor(lastDoc.created_at, lastDoc.id);
+  }
+
+  return { documents, next_cursor };
 }
 
 /**

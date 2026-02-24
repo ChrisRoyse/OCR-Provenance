@@ -8,6 +8,7 @@
 import { v4 as uuidv4 } from 'uuid';
 import { DatalabClient, type DatalabClientConfig } from './datalab.js';
 import { OCRError, OCRRateLimitError } from './errors.js';
+import { backoffSleep } from '../../utils/backoff.js';
 import { DatabaseService } from '../storage/database/index.js';
 import type { Document, OCRResult, PageOffset } from '../../models/document.js';
 import { ProvenanceType, type ProvenanceRecord } from '../../models/provenance.js';
@@ -156,11 +157,18 @@ export class OCRProcessor {
             continue;
           }
           if (attempt === 1 && error instanceof OCRError && error.category === 'OCR_RATE_LIMIT') {
-            const retryAfter = (error as OCRRateLimitError).retryAfter ?? 5;
-            console.error(
-              `[WARN] OCR rate limited on attempt 1 for ${documentId}, waiting ${retryAfter}s...`
-            );
-            await new Promise((resolve) => setTimeout(resolve, retryAfter * 1000));
+            const retryAfter = (error as OCRRateLimitError).retryAfter;
+            if (retryAfter !== undefined && retryAfter > 0) {
+              console.error(
+                `[WARN] OCR rate limited on attempt 1 for ${documentId}, server says wait ${retryAfter}s`
+              );
+              await new Promise((resolve) => setTimeout(resolve, retryAfter * 1000));
+            } else {
+              console.error(
+                `[WARN] OCR rate limited on attempt 1 for ${documentId}, using exponential backoff`
+              );
+              await backoffSleep(0);
+            }
             continue;
           }
           throw error;

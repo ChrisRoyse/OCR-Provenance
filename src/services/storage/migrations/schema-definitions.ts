@@ -8,7 +8,7 @@
  */
 
 /** Current schema version */
-export const SCHEMA_VERSION = 31;
+export const SCHEMA_VERSION = 32;
 
 /**
  * Database configuration pragmas for optimal performance and safety
@@ -64,6 +64,10 @@ CREATE TABLE IF NOT EXISTS provenance (
   parent_ids TEXT NOT NULL,
   chain_depth INTEGER NOT NULL,
   chain_path TEXT,
+  user_id TEXT,
+  agent_id TEXT,
+  agent_metadata_json TEXT,
+  chain_hash TEXT,
   FOREIGN KEY (source_id) REFERENCES provenance(id),
   FOREIGN KEY (parent_id) REFERENCES provenance(id)
 )
@@ -529,7 +533,11 @@ CREATE TABLE IF NOT EXISTS saved_searches (
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   notes TEXT,
   last_executed_at TEXT,
-  execution_count INTEGER DEFAULT 0
+  execution_count INTEGER DEFAULT 0,
+  user_id TEXT,
+  is_shared INTEGER DEFAULT 0,
+  alert_enabled INTEGER DEFAULT 0,
+  last_alert_at TEXT
 )
 `;
 
@@ -597,6 +605,205 @@ CREATE TABLE IF NOT EXISTS entity_tags (
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   UNIQUE(tag_id, entity_id, entity_type)
 )`;
+
+/**
+ * Users table - user identity and roles for multi-user support
+ * v32 addition
+ */
+export const CREATE_USERS_TABLE = `
+CREATE TABLE IF NOT EXISTS users (
+  id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
+  external_id TEXT UNIQUE,
+  display_name TEXT NOT NULL,
+  email TEXT,
+  role TEXT NOT NULL DEFAULT 'viewer' CHECK(role IN ('viewer','reviewer','editor','admin')),
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  last_active_at TEXT,
+  metadata_json TEXT DEFAULT '{}'
+)
+`;
+
+/**
+ * Audit log table - user action tracking for compliance
+ * v32 addition
+ */
+export const CREATE_AUDIT_LOG_TABLE = `
+CREATE TABLE IF NOT EXISTS audit_log (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id TEXT,
+  session_id TEXT,
+  action TEXT NOT NULL,
+  entity_type TEXT,
+  entity_id TEXT,
+  details_json TEXT DEFAULT '{}',
+  ip_address TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL
+)
+`;
+
+/**
+ * Annotations table - document/chunk annotations and comments
+ * v32 addition
+ */
+export const CREATE_ANNOTATIONS_TABLE = `
+CREATE TABLE IF NOT EXISTS annotations (
+  id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
+  document_id TEXT NOT NULL,
+  user_id TEXT,
+  chunk_id TEXT,
+  page_number INTEGER,
+  annotation_type TEXT NOT NULL CHECK(annotation_type IN ('comment', 'correction', 'question', 'highlight', 'flag', 'approval')),
+  content TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'open' CHECK(status IN ('open', 'resolved', 'dismissed')),
+  parent_id TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+  FOREIGN KEY (document_id) REFERENCES documents(id) ON DELETE CASCADE,
+  FOREIGN KEY (chunk_id) REFERENCES chunks(id) ON DELETE SET NULL,
+  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL,
+  FOREIGN KEY (parent_id) REFERENCES annotations(id) ON DELETE CASCADE
+)
+`;
+
+/**
+ * Document locks table - concurrent edit prevention
+ * v32 addition
+ */
+export const CREATE_DOCUMENT_LOCKS_TABLE = `
+CREATE TABLE IF NOT EXISTS document_locks (
+  document_id TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL,
+  session_id TEXT NOT NULL,
+  lock_type TEXT NOT NULL CHECK(lock_type IN ('exclusive', 'shared')),
+  reason TEXT,
+  acquired_at TEXT NOT NULL DEFAULT (datetime('now')),
+  expires_at TEXT NOT NULL,
+  FOREIGN KEY (document_id) REFERENCES documents(id) ON DELETE CASCADE,
+  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+)
+`;
+
+/**
+ * Workflow states table - state machine workflow for document review
+ * v32 addition
+ */
+export const CREATE_WORKFLOW_STATES_TABLE = `
+CREATE TABLE IF NOT EXISTS workflow_states (
+  id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
+  document_id TEXT NOT NULL,
+  state TEXT NOT NULL CHECK(state IN ('draft', 'submitted', 'in_review', 'changes_requested', 'approved', 'rejected', 'executed', 'expired', 'archived')),
+  assigned_to TEXT,
+  assigned_by TEXT,
+  reason TEXT,
+  due_date TEXT,
+  completed_at TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  metadata_json TEXT DEFAULT '{}',
+  FOREIGN KEY (document_id) REFERENCES documents(id) ON DELETE CASCADE,
+  FOREIGN KEY (assigned_to) REFERENCES users(id) ON DELETE SET NULL,
+  FOREIGN KEY (assigned_by) REFERENCES users(id) ON DELETE SET NULL
+)
+`;
+
+/**
+ * Approval chains table - reusable approval chain definitions
+ * v32 addition
+ */
+export const CREATE_APPROVAL_CHAINS_TABLE = `
+CREATE TABLE IF NOT EXISTS approval_chains (
+  id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
+  name TEXT NOT NULL,
+  description TEXT,
+  steps_json TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  created_by TEXT,
+  FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL
+)
+`;
+
+/**
+ * Approval steps table - per-document approval progress
+ * v32 addition
+ */
+export const CREATE_APPROVAL_STEPS_TABLE = `
+CREATE TABLE IF NOT EXISTS approval_steps (
+  id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
+  document_id TEXT NOT NULL,
+  chain_id TEXT NOT NULL,
+  step_order INTEGER NOT NULL,
+  required_role TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','approved','rejected','skipped')),
+  decided_by TEXT,
+  decided_at TEXT,
+  reason TEXT,
+  FOREIGN KEY (document_id) REFERENCES documents(id) ON DELETE CASCADE,
+  FOREIGN KEY (chain_id) REFERENCES approval_chains(id) ON DELETE CASCADE,
+  FOREIGN KEY (decided_by) REFERENCES users(id) ON DELETE SET NULL
+)
+`;
+
+/**
+ * Obligations table - contract obligation tracking
+ * v32 addition
+ */
+export const CREATE_OBLIGATIONS_TABLE = `
+CREATE TABLE IF NOT EXISTS obligations (
+  id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
+  document_id TEXT NOT NULL,
+  extraction_id TEXT,
+  obligation_type TEXT NOT NULL CHECK(obligation_type IN ('payment', 'delivery', 'notification', 'renewal', 'termination', 'compliance', 'reporting', 'approval', 'other')),
+  description TEXT NOT NULL,
+  responsible_party TEXT,
+  due_date TEXT,
+  recurring TEXT,
+  status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active','fulfilled','overdue','waived','expired')),
+  source_chunk_id TEXT,
+  source_page INTEGER,
+  confidence REAL DEFAULT 1.0,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  metadata_json TEXT DEFAULT '{}',
+  FOREIGN KEY (document_id) REFERENCES documents(id) ON DELETE CASCADE,
+  FOREIGN KEY (extraction_id) REFERENCES extractions(id) ON DELETE SET NULL,
+  FOREIGN KEY (source_chunk_id) REFERENCES chunks(id) ON DELETE SET NULL
+)
+`;
+
+/**
+ * Playbooks table - preferred terms for deviation detection
+ * v32 addition
+ */
+export const CREATE_PLAYBOOKS_TABLE = `
+CREATE TABLE IF NOT EXISTS playbooks (
+  id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
+  name TEXT NOT NULL,
+  description TEXT,
+  clauses_json TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+  created_by TEXT,
+  FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL
+)
+`;
+
+/**
+ * Webhooks table - outbound event notifications
+ * v32 addition
+ */
+export const CREATE_WEBHOOKS_TABLE = `
+CREATE TABLE IF NOT EXISTS webhooks (
+  id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
+  url TEXT NOT NULL,
+  events TEXT NOT NULL,
+  secret TEXT,
+  is_active INTEGER NOT NULL DEFAULT 1,
+  created_by TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  last_triggered_at TEXT,
+  failure_count INTEGER DEFAULT 0,
+  FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL
+)
+`;
 
 /**
  * All required indexes for query performance
@@ -679,6 +886,39 @@ export const CREATE_INDEXES = [
   // Chunk performance indexes (v30)
   'CREATE INDEX IF NOT EXISTS idx_chunks_section_path ON chunks(section_path)',
   'CREATE INDEX IF NOT EXISTS idx_chunks_heading_level ON chunks(heading_level)',
+
+  // Users indexes (v32)
+  'CREATE INDEX IF NOT EXISTS idx_users_external_id ON users(external_id)',
+  'CREATE INDEX IF NOT EXISTS idx_users_role ON users(role)',
+
+  // Audit log indexes (v32)
+  'CREATE INDEX IF NOT EXISTS idx_audit_log_user ON audit_log(user_id)',
+  'CREATE INDEX IF NOT EXISTS idx_audit_log_action ON audit_log(action)',
+  'CREATE INDEX IF NOT EXISTS idx_audit_log_entity ON audit_log(entity_type, entity_id)',
+  'CREATE INDEX IF NOT EXISTS idx_audit_log_created ON audit_log(created_at)',
+
+  // Annotations indexes (v32)
+  'CREATE INDEX IF NOT EXISTS idx_annotations_document ON annotations(document_id)',
+  'CREATE INDEX IF NOT EXISTS idx_annotations_chunk ON annotations(chunk_id)',
+  'CREATE INDEX IF NOT EXISTS idx_annotations_user ON annotations(user_id)',
+  'CREATE INDEX IF NOT EXISTS idx_annotations_type ON annotations(annotation_type)',
+  'CREATE INDEX IF NOT EXISTS idx_annotations_status ON annotations(status)',
+
+  // Workflow states indexes (v32)
+  'CREATE INDEX IF NOT EXISTS idx_workflow_document ON workflow_states(document_id)',
+  'CREATE INDEX IF NOT EXISTS idx_workflow_state ON workflow_states(state)',
+  'CREATE INDEX IF NOT EXISTS idx_workflow_assigned ON workflow_states(assigned_to)',
+  'CREATE INDEX IF NOT EXISTS idx_workflow_due ON workflow_states(due_date)',
+
+  // Approval steps indexes (v32)
+  'CREATE INDEX IF NOT EXISTS idx_approval_steps_doc ON approval_steps(document_id)',
+  'CREATE INDEX IF NOT EXISTS idx_approval_steps_status ON approval_steps(status)',
+
+  // Obligations indexes (v32)
+  'CREATE INDEX IF NOT EXISTS idx_obligations_document ON obligations(document_id)',
+  'CREATE INDEX IF NOT EXISTS idx_obligations_type ON obligations(obligation_type)',
+  'CREATE INDEX IF NOT EXISTS idx_obligations_due ON obligations(due_date)',
+  'CREATE INDEX IF NOT EXISTS idx_obligations_status ON obligations(status)',
 ] as const;
 
 /**
@@ -701,6 +941,16 @@ export const TABLE_DEFINITIONS = [
   { name: 'saved_searches', sql: CREATE_SAVED_SEARCHES_TABLE },
   { name: 'tags', sql: CREATE_TAGS_TABLE },
   { name: 'entity_tags', sql: CREATE_ENTITY_TAGS_TABLE },
+  { name: 'users', sql: CREATE_USERS_TABLE },
+  { name: 'audit_log', sql: CREATE_AUDIT_LOG_TABLE },
+  { name: 'annotations', sql: CREATE_ANNOTATIONS_TABLE },
+  { name: 'document_locks', sql: CREATE_DOCUMENT_LOCKS_TABLE },
+  { name: 'workflow_states', sql: CREATE_WORKFLOW_STATES_TABLE },
+  { name: 'approval_chains', sql: CREATE_APPROVAL_CHAINS_TABLE },
+  { name: 'approval_steps', sql: CREATE_APPROVAL_STEPS_TABLE },
+  { name: 'obligations', sql: CREATE_OBLIGATIONS_TABLE },
+  { name: 'playbooks', sql: CREATE_PLAYBOOKS_TABLE },
+  { name: 'webhooks', sql: CREATE_WEBHOOKS_TABLE },
 ] as const;
 
 /**
@@ -730,6 +980,16 @@ export const REQUIRED_TABLES = [
   'tags',
   'entity_tags',
   'documents_fts',
+  'users',
+  'audit_log',
+  'annotations',
+  'document_locks',
+  'workflow_states',
+  'approval_chains',
+  'approval_steps',
+  'obligations',
+  'playbooks',
+  'webhooks',
 ] as const;
 
 /**
@@ -784,4 +1044,25 @@ export const REQUIRED_INDEXES = [
   'idx_entity_tags_tag',
   'idx_chunks_section_path',
   'idx_chunks_heading_level',
+  'idx_users_external_id',
+  'idx_users_role',
+  'idx_audit_log_user',
+  'idx_audit_log_action',
+  'idx_audit_log_entity',
+  'idx_audit_log_created',
+  'idx_annotations_document',
+  'idx_annotations_chunk',
+  'idx_annotations_user',
+  'idx_annotations_type',
+  'idx_annotations_status',
+  'idx_workflow_document',
+  'idx_workflow_state',
+  'idx_workflow_assigned',
+  'idx_workflow_due',
+  'idx_approval_steps_doc',
+  'idx_approval_steps_status',
+  'idx_obligations_document',
+  'idx_obligations_type',
+  'idx_obligations_due',
+  'idx_obligations_status',
 ] as const;

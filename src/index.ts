@@ -59,6 +59,12 @@ import { embeddingTools } from './tools/embeddings.js';
 import { tagTools } from './tools/tags.js';
 import { intelligenceTools } from './tools/intelligence.js';
 import { healthTools } from './tools/health.js';
+import { userTools } from './tools/users.js';
+import { collaborationTools } from './tools/collaboration.js';
+import { workflowTools } from './tools/workflow.js';
+import { eventTools } from './tools/events.js';
+import { clmTools } from './tools/clm.js';
+import { complianceTools } from './tools/compliance.js';
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // SERVER INITIALIZATION
@@ -96,6 +102,12 @@ const allToolModules: Record<string, ToolDefinition>[] = [
   tagTools,
   intelligenceTools,
   healthTools,
+  userTools,
+  collaborationTools,
+  workflowTools,
+  eventTools,
+  clmTools,
+  complianceTools,
 ];
 
 // Register tools with duplicate detection

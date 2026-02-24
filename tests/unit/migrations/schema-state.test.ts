@@ -216,6 +216,10 @@ describe('Schema State (read-only)', () => {
         'parent_ids',
         'chain_depth',
         'chain_path',
+        'user_id',
+        'agent_id',
+        'agent_metadata_json',
+        'chain_hash',
       ];
 
       it.skipIf(!sqliteVecAvailable)('should have all required columns', () => {

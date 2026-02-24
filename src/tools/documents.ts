@@ -20,10 +20,10 @@ import { successResult } from '../server/types.js';
 import {
   validateInput,
   sanitizePath,
-  DocumentListInput,
   DocumentGetInput,
   DocumentDeleteInput,
 } from '../utils/validation.js';
+import { listDocumentsWithCursor, encodeCursor } from '../services/storage/database/document-operations.js';
 import { documentNotFoundError, MCPError } from '../server/errors.js';
 import { formatResponse, handleError, fetchProvenanceChain, type ToolResponse, type ToolDefinition } from './shared.js';
 import { getComparisonSummariesByDocument } from '../services/storage/database/comparison-operations.js';
@@ -59,15 +59,36 @@ interface CodeBlockEntry {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
+// DOCUMENT LIST INPUT SCHEMA (with cursor support)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+const DocumentListInputWithCursor = z.object({
+  status_filter: z.enum(['pending', 'processing', 'complete', 'failed']).optional(),
+  limit: z.number().int().min(1).max(1000).default(50),
+  offset: z.number().int().min(0).default(0),
+  created_after: z.string().datetime().optional()
+    .describe('Filter documents created after this ISO 8601 timestamp'),
+  created_before: z.string().datetime().optional()
+    .describe('Filter documents created before this ISO 8601 timestamp'),
+  file_type: z.string().optional()
+    .describe('Filter by file type (e.g., "pdf", "docx")'),
+  cursor: z.string().optional()
+    .describe('Cursor from a previous response for keyset pagination. When provided, offset is ignored.'),
+});
+
+// ═══════════════════════════════════════════════════════════════════════════════
 // DOCUMENT TOOL HANDLERS
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /**
- * Handle ocr_document_list - List documents in the current database
+ * Handle ocr_document_list - List documents in the current database.
+ *
+ * Supports both offset-based and cursor-based pagination.
+ * When `cursor` is provided, keyset pagination is used (more efficient for large datasets).
  */
 export async function handleDocumentList(params: Record<string, unknown>): Promise<ToolResponse> {
   try {
-    const input = validateInput(DocumentListInput, params);
+    const input = validateInput(DocumentListInputWithCursor, params);
     const { db } = requireDatabase();
     const conn = db.getConnection();
 
@@ -92,6 +113,48 @@ export async function handleDocumentList(params: Record<string, unknown>): Promi
       queryParams.push(input.file_type);
     }
 
+    // When using cursor, delegate to the cursor-based pagination layer
+    // which handles keyset filtering internally
+    if (input.cursor) {
+      const cursorResult = listDocumentsWithCursor(conn, {
+        status: input.status_filter as 'pending' | 'processing' | 'complete' | 'failed' | undefined,
+        limit: input.limit,
+        cursor: input.cursor,
+      });
+
+      // Get total count with same filters (without cursor for accurate total)
+      const whereClause = conditions.length > 0 ? ' WHERE ' + conditions.join(' AND ') : '';
+      const countRow = conn
+        .prepare(`SELECT COUNT(*) as total FROM documents${whereClause}`)
+        .get(...queryParams) as { total: number };
+
+      const extrasStmt = conn.prepare('SELECT extras_json FROM ocr_results WHERE document_id = ? LIMIT 1');
+
+      return formatResponse(
+        successResult({
+          documents: cursorResult.documents.map((d) => ({
+            id: d.id,
+            file_name: d.file_name,
+            file_path: d.file_path,
+            file_size: d.file_size,
+            file_type: d.file_type,
+            status: d.status,
+            page_count: d.page_count,
+            doc_title: d.doc_title ?? null,
+            doc_author: d.doc_author ?? null,
+            doc_subject: d.doc_subject ?? null,
+            created_at: d.created_at,
+            structural_summary: getStructuralSummary(extrasStmt, d.id),
+          })),
+          total: countRow.total,
+          limit: input.limit,
+          next_cursor: cursorResult.next_cursor,
+          next_steps: buildDocumentListNextSteps(countRow.total),
+        })
+      );
+    }
+
+    // Standard offset-based pagination path
     const whereClause = conditions.length > 0 ? ' WHERE ' + conditions.join(' AND ') : '';
 
     // Get total count with same filters
@@ -101,12 +164,19 @@ export async function handleDocumentList(params: Record<string, unknown>): Promi
     const total = countRow.total;
 
     // Get paginated results
-    const dataQuery = `SELECT * FROM documents${whereClause} ORDER BY created_at DESC LIMIT ? OFFSET ?`;
+    const dataQuery = `SELECT * FROM documents${whereClause} ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?`;
     const dataParams = [...queryParams, input.limit, input.offset];
     const rows = conn.prepare(dataQuery).all(...dataParams) as Array<Record<string, unknown>>;
 
     // Phase 2: Prepared statement for structural summary from extras_json
     const extrasStmt = conn.prepare('SELECT extras_json FROM ocr_results WHERE document_id = ? LIMIT 1');
+
+    // Compute next_cursor from the last row for cursor-based pagination compatibility
+    let next_cursor: string | null = null;
+    if (rows.length > 0 && rows.length === input.limit) {
+      const lastRow = rows[rows.length - 1];
+      next_cursor = encodeCursor(lastRow.created_at as string, lastRow.id as string);
+    }
 
     return formatResponse(
       successResult({
@@ -122,41 +192,60 @@ export async function handleDocumentList(params: Record<string, unknown>): Promi
           doc_author: d.doc_author ?? null,
           doc_subject: d.doc_subject ?? null,
           created_at: d.created_at,
-          structural_summary: (() => {
-            try {
-              const ocrRow = extrasStmt.get(d.id as string) as { extras_json: string | null } | undefined;
-              if (!ocrRow?.extras_json) return null;
-              const extras = JSON.parse(ocrRow.extras_json) as Record<string, unknown>;
-              const fp = extras.structural_fingerprint as Record<string, unknown> | undefined;
-              if (!fp) return null;
-              const headingDepths = fp.heading_depths as Record<string, number> | undefined;
-              return {
-                table_count: fp.table_count ?? 0,
-                figure_count: fp.figure_count ?? 0,
-                heading_count: headingDepths ? Object.values(headingDepths).reduce((a: number, b: number) => a + b, 0) : 0,
-                content_types: fp.content_type_distribution ?? null,
-              };
-            } catch (error) { console.error(`[documents] Failed to parse structural fingerprint for document ${d.id}: ${error instanceof Error ? error.message : String(error)}`); return null; }
-          })(),
+          structural_summary: getStructuralSummary(extrasStmt, d.id as string),
         })),
         total,
         limit: input.limit,
         offset: input.offset,
-        next_steps: total === 0
-          ? [
-              { tool: 'ocr_ingest_files', description: 'Add documents to the database first' },
-              { tool: 'ocr_ingest_directory', description: 'Scan a directory for documents to ingest' },
-            ]
-          : [
-              { tool: 'ocr_document_get', description: 'Get details for a specific document by ID' },
-              { tool: 'ocr_search', description: 'Search within the corpus' },
-              { tool: 'ocr_document_structure', description: 'View a document outline (headings, tables)' },
-            ],
+        next_cursor,
+        next_steps: buildDocumentListNextSteps(total),
       })
     );
   } catch (error) {
     return handleError(error);
   }
+}
+
+/**
+ * Extract structural summary from extras_json for a document.
+ */
+function getStructuralSummary(
+  extrasStmt: import('better-sqlite3').Statement,
+  documentId: string,
+): Record<string, unknown> | null {
+  try {
+    const ocrRow = extrasStmt.get(documentId) as { extras_json: string | null } | undefined;
+    if (!ocrRow?.extras_json) return null;
+    const extras = JSON.parse(ocrRow.extras_json) as Record<string, unknown>;
+    const fp = extras.structural_fingerprint as Record<string, unknown> | undefined;
+    if (!fp) return null;
+    const headingDepths = fp.heading_depths as Record<string, number> | undefined;
+    return {
+      table_count: fp.table_count ?? 0,
+      figure_count: fp.figure_count ?? 0,
+      heading_count: headingDepths ? Object.values(headingDepths).reduce((a: number, b: number) => a + b, 0) : 0,
+      content_types: fp.content_type_distribution ?? null,
+    };
+  } catch (error) {
+    console.error(`[documents] Failed to parse structural fingerprint for document ${documentId}: ${error instanceof Error ? error.message : String(error)}`);
+    return null;
+  }
+}
+
+/**
+ * Build next_steps for document list based on total count.
+ */
+function buildDocumentListNextSteps(total: number): Array<{ tool: string; description: string }> {
+  return total === 0
+    ? [
+        { tool: 'ocr_ingest_files', description: 'Add documents to the database first' },
+        { tool: 'ocr_ingest_directory', description: 'Scan a directory for documents to ingest' },
+      ]
+    : [
+        { tool: 'ocr_document_get', description: 'Get details for a specific document by ID' },
+        { tool: 'ocr_search', description: 'Search within the corpus' },
+        { tool: 'ocr_document_structure', description: 'View a document outline (headings, tables)' },
+      ];
 }
 
 /**
@@ -1798,7 +1887,7 @@ async function handleDocumentWorkflow(params: Record<string, unknown>): Promise<
 export const documentTools: Record<string, ToolDefinition> = {
   ocr_document_list: {
     description:
-      '[ESSENTIAL] Use to browse documents in the current database. Returns metadata with structural summaries. Filter by status, date, or file type. Start here after ocr_db_select.',
+      '[ESSENTIAL] Use to browse documents in the current database. Returns metadata with structural summaries. Filter by status, date, or file type. Supports cursor-based pagination for large datasets. Start here after ocr_db_select.',
     inputSchema: {
       status_filter: z
         .enum(['pending', 'processing', 'complete', 'failed'])
@@ -1812,6 +1901,8 @@ export const documentTools: Record<string, ToolDefinition> = {
         .describe('Filter documents created before this ISO 8601 timestamp'),
       file_type: z.string().optional()
         .describe('Filter by file type (e.g., "pdf", "docx")'),
+      cursor: z.string().optional()
+        .describe('Cursor from previous response for efficient keyset pagination. When provided, offset is ignored. Use next_cursor from the response.'),
     },
     handler: handleDocumentList,
   },

@@ -28,6 +28,16 @@ import {
   CREATE_ENTITY_TAGS_TABLE,
   CREATE_DOCUMENTS_FTS_TABLE,
   CREATE_DOCUMENTS_FTS_TRIGGERS,
+  CREATE_USERS_TABLE,
+  CREATE_AUDIT_LOG_TABLE,
+  CREATE_ANNOTATIONS_TABLE,
+  CREATE_DOCUMENT_LOCKS_TABLE,
+  CREATE_WORKFLOW_STATES_TABLE,
+  CREATE_APPROVAL_CHAINS_TABLE,
+  CREATE_APPROVAL_STEPS_TABLE,
+  CREATE_OBLIGATIONS_TABLE,
+  CREATE_PLAYBOOKS_TABLE,
+  CREATE_WEBHOOKS_TABLE,
 } from './schema-definitions.js';
 
 // ─── Legacy entity/KG table definitions (inlined for migration chain v12→v25) ───
@@ -1340,6 +1350,11 @@ export function migrateToLatest(db: Database.Database): void {
     // M-6: bumpVersion is passed into migrateV30ToV31 so it runs inside the
     // same transaction as the migration body, making them atomic.
     migrateV30ToV31(db, bumpVersion);
+  }
+
+  if (currentVersion < 32) {
+    migrateV31ToV32(db);
+    bumpVersion(32);
   }
 }
 
@@ -3407,6 +3422,126 @@ function migrateV30ToV31(db: Database.Database, bumpVersion: (v: number) => void
     const cause = error instanceof Error ? error.message : String(error);
     throw new MigrationError(
       `Failed to migrate v30 to v31: ${cause}`, 'migrate', 'document_indexes', error
+    );
+  }
+}
+
+/**
+ * Migration v31 → v32: Multi-user, collaboration, workflow, CLM, and webhook tables
+ *
+ * Changes:
+ * - 10 new tables: users, audit_log, annotations, document_locks, workflow_states,
+ *   approval_chains, approval_steps, obligations, playbooks, webhooks
+ * - provenance: 4 new columns (user_id, agent_id, agent_metadata_json, chain_hash)
+ * - saved_searches: 4 new columns (user_id, is_shared, alert_enabled, last_alert_at)
+ * - 23 new indexes across all new tables
+ *
+ * @param db - Database instance from better-sqlite3
+ * @throws MigrationError if migration fails
+ */
+function migrateV31ToV32(db: Database.Database): void {
+  console.error('[MIGRATION] Applying v31 → v32: multi-user, collaboration, workflow, CLM, webhooks');
+  try {
+    db.exec('PRAGMA foreign_keys = OFF');
+
+    const transaction = db.transaction(() => {
+      // Step 1: Create all 10 new tables (users first, since others reference it)
+      db.exec(CREATE_USERS_TABLE);
+      db.exec(CREATE_AUDIT_LOG_TABLE);
+      db.exec(CREATE_ANNOTATIONS_TABLE);
+      db.exec(CREATE_DOCUMENT_LOCKS_TABLE);
+      db.exec(CREATE_WORKFLOW_STATES_TABLE);
+      db.exec(CREATE_APPROVAL_CHAINS_TABLE);
+      db.exec(CREATE_APPROVAL_STEPS_TABLE);
+      db.exec(CREATE_OBLIGATIONS_TABLE);
+      db.exec(CREATE_PLAYBOOKS_TABLE);
+      db.exec(CREATE_WEBHOOKS_TABLE);
+
+      // Step 2: Add new columns to provenance table (idempotent via PRAGMA table_info check)
+      const provColumns = db.prepare('PRAGMA table_info(provenance)').all() as { name: string }[];
+      const provColumnNames = new Set(provColumns.map((c) => c.name));
+      if (!provColumnNames.has('user_id')) {
+        db.exec('ALTER TABLE provenance ADD COLUMN user_id TEXT');
+      }
+      if (!provColumnNames.has('agent_id')) {
+        db.exec('ALTER TABLE provenance ADD COLUMN agent_id TEXT');
+      }
+      if (!provColumnNames.has('agent_metadata_json')) {
+        db.exec('ALTER TABLE provenance ADD COLUMN agent_metadata_json TEXT');
+      }
+      if (!provColumnNames.has('chain_hash')) {
+        db.exec('ALTER TABLE provenance ADD COLUMN chain_hash TEXT');
+      }
+
+      // Step 3: Add new columns to saved_searches table (idempotent via PRAGMA table_info check)
+      const ssColumns = db.prepare('PRAGMA table_info(saved_searches)').all() as { name: string }[];
+      const ssColumnNames = new Set(ssColumns.map((c) => c.name));
+      if (!ssColumnNames.has('user_id')) {
+        db.exec('ALTER TABLE saved_searches ADD COLUMN user_id TEXT');
+      }
+      if (!ssColumnNames.has('is_shared')) {
+        db.exec('ALTER TABLE saved_searches ADD COLUMN is_shared INTEGER DEFAULT 0');
+      }
+      if (!ssColumnNames.has('alert_enabled')) {
+        db.exec('ALTER TABLE saved_searches ADD COLUMN alert_enabled INTEGER DEFAULT 0');
+      }
+      if (!ssColumnNames.has('last_alert_at')) {
+        db.exec('ALTER TABLE saved_searches ADD COLUMN last_alert_at TEXT');
+      }
+
+      // Step 4: Create all new indexes
+      // Users indexes
+      db.exec('CREATE INDEX IF NOT EXISTS idx_users_external_id ON users(external_id)');
+      db.exec('CREATE INDEX IF NOT EXISTS idx_users_role ON users(role)');
+
+      // Audit log indexes
+      db.exec('CREATE INDEX IF NOT EXISTS idx_audit_log_user ON audit_log(user_id)');
+      db.exec('CREATE INDEX IF NOT EXISTS idx_audit_log_action ON audit_log(action)');
+      db.exec('CREATE INDEX IF NOT EXISTS idx_audit_log_entity ON audit_log(entity_type, entity_id)');
+      db.exec('CREATE INDEX IF NOT EXISTS idx_audit_log_created ON audit_log(created_at)');
+
+      // Annotations indexes
+      db.exec('CREATE INDEX IF NOT EXISTS idx_annotations_document ON annotations(document_id)');
+      db.exec('CREATE INDEX IF NOT EXISTS idx_annotations_chunk ON annotations(chunk_id)');
+      db.exec('CREATE INDEX IF NOT EXISTS idx_annotations_user ON annotations(user_id)');
+      db.exec('CREATE INDEX IF NOT EXISTS idx_annotations_type ON annotations(annotation_type)');
+      db.exec('CREATE INDEX IF NOT EXISTS idx_annotations_status ON annotations(status)');
+
+      // Workflow states indexes
+      db.exec('CREATE INDEX IF NOT EXISTS idx_workflow_document ON workflow_states(document_id)');
+      db.exec('CREATE INDEX IF NOT EXISTS idx_workflow_state ON workflow_states(state)');
+      db.exec('CREATE INDEX IF NOT EXISTS idx_workflow_assigned ON workflow_states(assigned_to)');
+      db.exec('CREATE INDEX IF NOT EXISTS idx_workflow_due ON workflow_states(due_date)');
+
+      // Approval steps indexes
+      db.exec('CREATE INDEX IF NOT EXISTS idx_approval_steps_doc ON approval_steps(document_id)');
+      db.exec('CREATE INDEX IF NOT EXISTS idx_approval_steps_status ON approval_steps(status)');
+
+      // Obligations indexes
+      db.exec('CREATE INDEX IF NOT EXISTS idx_obligations_document ON obligations(document_id)');
+      db.exec('CREATE INDEX IF NOT EXISTS idx_obligations_type ON obligations(obligation_type)');
+      db.exec('CREATE INDEX IF NOT EXISTS idx_obligations_due ON obligations(due_date)');
+      db.exec('CREATE INDEX IF NOT EXISTS idx_obligations_status ON obligations(status)');
+    });
+    transaction();
+
+    db.exec('PRAGMA foreign_keys = ON');
+    console.error('[MIGRATION] v32 migration complete: 10 new tables, provenance + saved_searches columns, 23 indexes');
+  } catch (error) {
+    try {
+      db.exec('PRAGMA foreign_keys = ON');
+    } catch (fkErr) {
+      console.error(
+        '[migrations] Failed to restore foreign_keys pragma:',
+        fkErr instanceof Error ? fkErr.message : String(fkErr)
+      );
+    }
+    const cause = error instanceof Error ? error.message : String(error);
+    throw new MigrationError(
+      `Failed to migrate v31 to v32 (multi-user, collaboration, workflow, CLM, webhooks): ${cause}`,
+      'migrate',
+      'users',
+      error
     );
   }
 }

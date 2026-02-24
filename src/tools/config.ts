@@ -11,7 +11,8 @@
  */
 
 import { z } from 'zod';
-import { state, getConfig, updateConfig } from '../server/state.js';
+import { state, getConfig, updateConfig, hasDatabase, requireDatabase } from '../server/state.js';
+import { persistConfigValue } from '../utils/config-persistence.js';
 import { successResult, type ServerConfig } from '../server/types.js';
 import { validateInput, ConfigGetInput, ConfigSetInput, ConfigKey } from '../utils/validation.js';
 import { validationError } from '../server/errors.js';
@@ -173,14 +174,30 @@ export async function handleConfigSet(params: Record<string, unknown>): Promise<
   try {
     const input = validateInput(ConfigSetInput, params);
 
-    // Apply the configuration change
+    // Apply the configuration change in memory
     setConfigValue(input.key, input.value);
+
+    // Persist to database if one is selected
+    let persisted = false;
+    if (hasDatabase()) {
+      try {
+        const { db } = requireDatabase();
+        const conn = db.getConnection();
+        persistConfigValue(conn, input.key, input.value);
+        persisted = true;
+      } catch (persistErr) {
+        console.error(
+          `[config] Failed to persist config to database: ${persistErr instanceof Error ? persistErr.message : String(persistErr)}`
+        );
+      }
+    }
 
     return formatResponse(
       successResult({
         key: input.key,
         value: input.value,
         updated: true,
+        persisted,
         next_steps: [
           { tool: 'ocr_config_get', description: 'Verify the updated configuration' },
           { tool: 'ocr_process_pending', description: 'Process documents with new settings' },
@@ -192,6 +209,9 @@ export async function handleConfigSet(params: Record<string, unknown>): Promise<
     return handleError(error);
   }
 }
+
+// Config persistence functions are in src/utils/config-persistence.ts
+// to avoid circular dependency between tools/config.ts and server/state.ts
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // TOOL DEFINITIONS FOR MCP REGISTRATION

@@ -403,9 +403,9 @@ describe('Gap Closure E2E', () => {
       }
     });
 
-    it('Schema version is 31', () => {
+    it('Schema version is 32', () => {
       const v = (conn.prepare('SELECT version FROM schema_version ORDER BY version DESC LIMIT 1').get() as { version: number }).version;
-      expect(v).toBe(31);
+      expect(v).toBe(32);
     });
 
     it('No orphaned embeddings', () => {
