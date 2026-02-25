@@ -36,7 +36,7 @@ Datalab handles the document-to-text conversion -- 18 file types including PDFs,
 
 1. Go to [datalab.to](https://www.datalab.to)
 2. Click **Sign Up** (or log in if you have an account)
-3. Go to your [Account page](https://www.datalab.to/account)
+3. Go to your Account page
 4. Copy your API key
 
 Datalab offers free credits to start. Their OCR supports three accuracy modes (fast, balanced, accurate) and handles scanned documents, handwriting, tables, charts, and multi-column layouts.
