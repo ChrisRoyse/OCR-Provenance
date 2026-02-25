@@ -8,8 +8,10 @@ Point this at a folder of PDFs, Word docs, spreadsheets, images, or presentation
 [![Node.js](https://img.shields.io/badge/Node.js-%3E%3D20-green)](https://nodejs.org/)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.5+-blue)](https://www.typescriptlang.org/)
 [![MCP](https://img.shields.io/badge/MCP-1.0-purple)](https://modelcontextprotocol.io/)
-[![Tools](https://img.shields.io/badge/MCP_Tools-124-orange)](#tool-reference-124-tools)
-[![Tests](https://img.shields.io/badge/Tests-2%2C364_passing-brightgreen)](#development)
+[![Tools](https://img.shields.io/badge/MCP_Tools-141-orange)](#tool-reference-141-tools)
+[![Tests](https://img.shields.io/badge/Tests-2%2C639_passing-brightgreen)](#development)
+[![Docker](https://img.shields.io/badge/Docker-ghcr.io-blue)](https://github.com/ChrisRoyse/OCR-Provenance/pkgs/container/ocr-provenance)
+[![Docker Build](https://img.shields.io/github/actions/workflow/status/ChrisRoyse/OCR-Provenance/docker-publish.yml?branch=main&label=Docker%20Build)](https://github.com/ChrisRoyse/OCR-Provenance/actions/workflows/docker-publish.yml)
 
 ---
 
@@ -323,7 +325,7 @@ cp .env.example .env
 # Edit .env with your DATALAB_API_KEY and GEMINI_API_KEY
 
 # Verify
-ocr-provenance-mcp  # Should print "Tools registered: 124" on stderr
+ocr-provenance-mcp  # Should print "Tools registered: 141" on stderr
 ```
 
 > **PyTorch GPU note:** If `pip install torch` gives you CPU-only, install the CUDA version explicitly:
@@ -401,6 +403,147 @@ Environment variables can be provided via `OCR_PROVENANCE_ENV_FILE`, direct env 
 
 ---
 
+## Docker Installation (Recommended)
+
+The fastest way to get started. No Node.js, Python, or model downloads needed -- everything is bundled in the Docker image.
+
+### Claude Code CLI
+
+```bash
+claude mcp add ocr-provenance \
+  -e DATALAB_API_KEY=your_key \
+  -e GEMINI_API_KEY=your_key \
+  -- docker run -i --rm \
+  -v $HOME:/host:ro \
+  -v ocr-data:/data \
+  ghcr.io/chrisroyse/ocr-provenance:latest
+```
+
+### Claude Desktop
+
+Add to `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS) or `%APPDATA%\Claude\claude_desktop_config.json` (Windows):
+
+```json
+{
+  "mcpServers": {
+    "ocr-provenance": {
+      "command": "docker",
+      "args": [
+        "run", "-i", "--rm",
+        "-e", "DATALAB_API_KEY=your_key_here",
+        "-e", "GEMINI_API_KEY=your_key_here",
+        "-v", "/Users/yourname:/host:ro",
+        "-v", "ocr-data:/data",
+        "ghcr.io/chrisroyse/ocr-provenance:latest"
+      ]
+    }
+  }
+}
+```
+
+### Cursor
+
+Add to `~/.cursor/mcp.json` (global) or `.cursor/mcp.json` (project):
+
+```json
+{
+  "mcpServers": {
+    "ocr-provenance": {
+      "command": "docker",
+      "args": [
+        "run", "-i", "--rm",
+        "-e", "DATALAB_API_KEY=your_key_here",
+        "-e", "GEMINI_API_KEY=your_key_here",
+        "-v", "/Users/yourname:/host:ro",
+        "-v", "ocr-data:/data",
+        "ghcr.io/chrisroyse/ocr-provenance:latest"
+      ]
+    }
+  }
+}
+```
+
+### VS Code (GitHub Copilot)
+
+Add to `.vscode/mcp.json`:
+
+```json
+{
+  "inputs": [
+    { "id": "datalab-key", "type": "promptString", "description": "Datalab API key", "password": true },
+    { "id": "gemini-key", "type": "promptString", "description": "Gemini API key", "password": true }
+  ],
+  "servers": {
+    "ocr-provenance": {
+      "type": "stdio",
+      "command": "docker",
+      "args": ["run", "-i", "--rm", "-v", "ocr-data:/data", "-e", "DATALAB_API_KEY", "-e", "GEMINI_API_KEY", "ghcr.io/chrisroyse/ocr-provenance:latest"],
+      "env": { "DATALAB_API_KEY": "${input:datalab-key}", "GEMINI_API_KEY": "${input:gemini-key}" }
+    }
+  }
+}
+```
+
+### Windsurf
+
+Add to `~/.codeium/windsurf/mcp_config.json`:
+
+```json
+{
+  "mcpServers": {
+    "ocr-provenance": {
+      "command": "docker",
+      "args": [
+        "run", "-i", "--rm",
+        "-e", "DATALAB_API_KEY=your_key_here",
+        "-e", "GEMINI_API_KEY=your_key_here",
+        "-v", "/Users/yourname:/host:ro",
+        "-v", "ocr-data:/data",
+        "ghcr.io/chrisroyse/ocr-provenance:latest"
+      ]
+    }
+  }
+}
+```
+
+### HTTP Mode (Remote Deployment)
+
+For remote/shared deployments, use HTTP transport with docker-compose:
+
+```bash
+# Start in HTTP mode
+docker compose up -d
+
+# Or with GPU support
+docker compose -f docker-compose.gpu.yml up -d
+```
+
+The server exposes port 3100 with health endpoint at `GET /health` and MCP endpoint at `POST /mcp`.
+
+### Docker Environment Variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `DATALAB_API_KEY` | (required) | Datalab OCR API key |
+| `GEMINI_API_KEY` | (required) | Google Gemini API key |
+| `MCP_TRANSPORT` | `stdio` | Transport mode: `stdio` or `http` |
+| `MCP_HTTP_PORT` | `3100` | HTTP server port |
+| `EMBEDDING_DEVICE` | `cpu` | Embedding device: `cpu`, `cuda`, `mps` |
+| `OCR_PROVENANCE_DATABASES_PATH` | `/data` | Database storage path |
+| `OCR_PROVENANCE_ALLOWED_DIRS` | `/host,/data` | Allowed directories for file access |
+
+### Backup and Restore
+
+```bash
+# Backup
+docker run --rm -v ocr-data:/data:ro -v $(pwd)/backup:/backup alpine cp -a /data/. /backup/
+
+# Restore
+docker run --rm -v ocr-data:/data -v $(pwd)/backup:/backup:ro alpine cp -a /backup/. /data/
+```
+
+---
+
 ## Configuration
 
 ```bash
@@ -431,7 +574,7 @@ STORAGE_DATABASES_PATH=~/.ocr-provenance/databases/
 
 ---
 
-## Tool Reference (102 Tools)
+## Tool Reference (141 Tools)
 
 <details>
 <summary><strong>Database Management (5)</strong></summary>
@@ -861,7 +1004,7 @@ File on disk
 
 ```bash
 npm run build             # Build TypeScript
-npm test                  # All tests (2,364 across 109 test suites)
+npm test                  # All tests (2,639 across 115 test suites)
 npm run test:unit         # Unit tests only
 npm run test:integration  # Integration tests only
 npm run lint:all          # TypeScript + Python linting
@@ -929,14 +1072,14 @@ docs/                   # System documentation and reports
 
 | Metric | Value |
 |--------|-------|
-| MCP tools | 124 |
+| MCP tools | 141 |
 | Tool modules | 22 |
 | Database tables | 18 core + FTS + vec |
-| Schema version | v31 (31 migrations) |
+| Schema version | v32 (32 migrations) |
 | Database operation files | 19 |
 | Service domains | 11 |
-| Test suites | 109 |
-| Tests passing | 2,364 |
+| Test suites | 115 |
+| Tests passing | 2,639 |
 | TypeScript source | ~46,000 lines |
 | Python source | ~4,700 lines |
 | Test code | ~65,000 lines |

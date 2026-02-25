@@ -104,6 +104,15 @@ FROM ${RUNTIME_BASE} AS runtime
 
 ARG RUNTIME_BASE=python:3.12-slim-bookworm
 
+# OCI standard labels for GHCR metadata and repository linking
+LABEL org.opencontainers.image.source="https://github.com/ChrisRoyse/OCR-Provenance"
+LABEL org.opencontainers.image.description="MCP server for document OCR, semantic search, comparison, clustering, and provenance tracking with 141 tools"
+LABEL org.opencontainers.image.licenses="SEE LICENSE IN LICENSE"
+LABEL org.opencontainers.image.title="OCR Provenance MCP Server"
+LABEL org.opencontainers.image.vendor="Chris Royse"
+LABEL org.opencontainers.image.url="https://github.com/ChrisRoyse/OCR-Provenance"
+LABEL org.opencontainers.image.documentation="https://github.com/ChrisRoyse/OCR-Provenance#readme"
+
 # Install system deps needed at runtime
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \

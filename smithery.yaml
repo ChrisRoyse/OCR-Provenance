@@ -1,0 +1,34 @@
+# Smithery configuration file: https://smithery.ai/docs/config#smitheryyaml
+startCommand:
+  type: stdio
+  configSchema:
+    type: object
+    required:
+      - datalabApiKey
+      - geminiApiKey
+    properties:
+      datalabApiKey:
+        type: string
+        description: "Datalab OCR API key from https://www.datalab.to"
+      geminiApiKey:
+        type: string
+        description: "Google Gemini API key from https://aistudio.google.com/"
+  commandFunction:
+    |-
+    (config) => ({
+      command: "docker",
+      args: [
+        "run", "-i", "--rm",
+        "-e", "DATALAB_API_KEY=" + config.datalabApiKey,
+        "-e", "GEMINI_API_KEY=" + config.geminiApiKey,
+        "-v", "ocr-data:/data",
+        "ghcr.io/chrisroyse/ocr-provenance:latest"
+      ]
+    })
+  exampleConfig:
+    datalabApiKey: "your_datalab_api_key"
+    geminiApiKey: "your_gemini_api_key"
+
+build:
+  dockerfile: Dockerfile
+  dockerBuildPath: .
