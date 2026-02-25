@@ -156,6 +156,6 @@ fullcase/
 reports/
 
 # -----------------------------------------------------------------------------
-# Scripts (ad-hoc testing scripts - not needed)
+# Scripts (ad-hoc testing scripts excluded, but docker-healthcheck.sh is tracked)
 # -----------------------------------------------------------------------------
-scripts/
+scripts/e2e-manual-test.mjs
