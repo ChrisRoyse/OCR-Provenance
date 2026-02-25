@@ -78,4 +78,3 @@ export function fetchProvenanceChain(
   if (!provenanceId) return undefined;
   return db.getProvenanceChain(provenanceId);
 }
-

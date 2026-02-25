@@ -87,21 +87,12 @@ const ComparisonDiscoverInput = z.object({
     .max(1)
     .default(0.7)
     .describe('Minimum cosine similarity threshold (0-1)'),
-  document_filter: z
-    .array(z.string())
-    .optional()
-    .describe('Only consider these document IDs'),
+  document_filter: z.array(z.string()).optional().describe('Only consider these document IDs'),
   exclude_existing: z
     .boolean()
     .default(true)
     .describe('Exclude document pairs that already have comparisons'),
-  limit: z
-    .number()
-    .int()
-    .min(1)
-    .max(100)
-    .default(20)
-    .describe('Maximum pairs to return'),
+  limit: z.number().int().min(1).max(100).default(20).describe('Maximum pairs to return'),
 });
 
 const ComparisonBatchInput = z.object({
@@ -114,10 +105,7 @@ const ComparisonBatchInput = z.object({
     )
     .optional()
     .describe('Explicit document pairs to compare'),
-  cluster_id: z
-    .string()
-    .optional()
-    .describe('Compare all documents within this cluster'),
+  cluster_id: z.string().optional().describe('Compare all documents within this cluster'),
   include_text_diff: z
     .boolean()
     .default(true)
@@ -256,7 +244,9 @@ function getBlockTypeStats(
   docId: string
 ): Record<string, number> | null {
   const row = conn
-    .prepare('SELECT extras_json FROM ocr_results WHERE document_id = ? ORDER BY processing_completed_at DESC LIMIT 1')
+    .prepare(
+      'SELECT extras_json FROM ocr_results WHERE document_id = ? ORDER BY processing_completed_at DESC LIMIT 1'
+    )
     .get(docId) as { extras_json: string | null } | undefined;
 
   if (!row?.extras_json) return null;
@@ -267,7 +257,9 @@ function getBlockTypeStats(
     if (!blockTypeStats || typeof blockTypeStats !== 'object') return null;
     return blockTypeStats;
   } catch (error) {
-    console.error(`[comparison] Failed to parse extras_json for block_type_stats of document ${docId}: ${error instanceof Error ? error.message : String(error)}`);
+    console.error(
+      `[comparison] Failed to parse extras_json for block_type_stats of document ${docId}: ${error instanceof Error ? error.message : String(error)}`
+    );
     return null;
   }
 }
@@ -381,7 +373,10 @@ async function handleDocumentCompare(params: Record<string, unknown>): Promise<T
         input.document_id_2
       );
     } catch (error) {
-      console.error('[comparison] Centroid similarity failed:', error instanceof Error ? error.message : String(error));
+      console.error(
+        '[comparison] Centroid similarity failed:',
+        error instanceof Error ? error.message : String(error)
+      );
       componentsFailed.push('centroid_similarity');
     }
 
@@ -393,16 +388,17 @@ async function handleDocumentCompare(params: Record<string, unknown>): Promise<T
         input.document_id_2
       );
     } catch (error) {
-      console.error('[comparison] Structural similarity failed:', error instanceof Error ? error.message : String(error));
+      console.error(
+        '[comparison] Structural similarity failed:',
+        error instanceof Error ? error.message : String(error)
+      );
       componentsFailed.push('structural_similarity');
     }
 
     // Quality alignment: how close are the OCR quality scores
     const q1 = (ocr1.parse_quality_score as number | null) ?? 0;
     const q2 = (ocr2.parse_quality_score as number | null) ?? 0;
-    const qualityAlignment = q1 > 0 && q2 > 0
-      ? 1 - Math.abs(q1 - q2) / Math.max(q1, q2)
-      : 0;
+    const qualityAlignment = q1 > 0 && q2 > 0 ? 1 - Math.abs(q1 - q2) / Math.max(q1, q2) : 0;
 
     // Composite similarity: weighted blend of all signals
     const compositeSimilarity =
@@ -480,9 +476,8 @@ async function handleDocumentCompare(params: Record<string, unknown>): Promise<T
       composite_similarity: Math.round(compositeSimilarity * 10000) / 10000,
       similarity_signals: {
         text_similarity: similarityRatio,
-        embedding_centroid_similarity: embeddingSimilarity !== null
-          ? Math.round(embeddingSimilarity * 10000) / 10000
-          : null,
+        embedding_centroid_similarity:
+          embeddingSimilarity !== null ? Math.round(embeddingSimilarity * 10000) / 10000 : null,
         structural_similarity: Math.round(structSimilarity * 10000) / 10000,
         quality_alignment: Math.round(qualityAlignment * 10000) / 10000,
         weights: { text: 0.4, embedding: 0.3, structural: 0.2, quality: 0.1 },
@@ -537,7 +532,10 @@ async function handleComparisonList(params: Record<string, unknown>): Promise<To
         count: results.length,
         offset: input.offset,
         limit: input.limit,
-        next_steps: [{ tool: 'ocr_comparison_get', description: 'View full diff data for a comparison' }, { tool: 'ocr_document_compare', description: 'Compare two new documents' }],
+        next_steps: [
+          { tool: 'ocr_comparison_get', description: 'View full diff data for a comparison' },
+          { tool: 'ocr_document_compare', description: 'Compare two new documents' },
+        ],
       })
     );
   } catch (error) {
@@ -570,7 +568,10 @@ async function handleComparisonGet(params: Record<string, unknown>): Promise<Too
           'structural_diff_json',
           input.comparison_id
         ),
-        next_steps: [{ tool: 'ocr_document_get', description: 'View one of the compared documents' }, { tool: 'ocr_comparison_list', description: 'Browse other comparisons' }],
+        next_steps: [
+          { tool: 'ocr_document_get', description: 'View one of the compared documents' },
+          { tool: 'ocr_comparison_list', description: 'Browse other comparisons' },
+        ],
       })
     );
   } catch (error) {
@@ -598,10 +599,7 @@ async function handleComparisonDiscover(params: Record<string, unknown>): Promis
     const limit = input.limit ?? 20;
 
     // Compute document centroid embeddings
-    const docEmbeddings = computeDocumentEmbeddings(
-      conn,
-      input.document_filter
-    );
+    const docEmbeddings = computeDocumentEmbeddings(conn, input.document_filter);
 
     if (docEmbeddings.length < 2) {
       return formatResponse(
@@ -613,7 +611,12 @@ async function handleComparisonDiscover(params: Record<string, unknown>): Promis
             docEmbeddings.length === 0
               ? 'No documents with embeddings found'
               : 'At least 2 documents with embeddings required for comparison discovery',
-          next_steps: [{ tool: 'ocr_process_pending', description: 'Process more documents to enable comparison' }],
+          next_steps: [
+            {
+              tool: 'ocr_process_pending',
+              description: 'Process more documents to enable comparison',
+            },
+          ],
         })
       );
     }
@@ -682,7 +685,10 @@ async function handleComparisonDiscover(params: Record<string, unknown>): Promis
         documents_analyzed: docEmbeddings.length,
         min_similarity: minSimilarity,
         exclude_existing: excludeExisting,
-        next_steps: [{ tool: 'ocr_document_compare', description: 'Compare a discovered similar pair' }, { tool: 'ocr_comparison_batch', description: 'Compare all discovered pairs at once' }],
+        next_steps: [
+          { tool: 'ocr_document_compare', description: 'Compare a discovered similar pair' },
+          { tool: 'ocr_comparison_batch', description: 'Compare all discovered pairs at once' },
+        ],
       })
     );
   } catch (error) {
@@ -717,7 +723,9 @@ async function handleComparisonBatch(params: Record<string, unknown>): Promise<T
             results: [],
             total_compared: 0,
             message: `Cluster has ${members.length} document(s), need at least 2 for comparison`,
-            next_steps: [{ tool: 'ocr_cluster_list', description: 'Find a cluster with more documents' }],
+            next_steps: [
+              { tool: 'ocr_cluster_list', description: 'Find a cluster with more documents' },
+            ],
           })
         );
       }
@@ -733,10 +741,7 @@ async function handleComparisonBatch(params: Record<string, unknown>): Promise<T
     } else if (input.pairs && input.pairs.length > 0) {
       pairsToCompare = input.pairs;
     } else {
-      throw new MCPError(
-        'VALIDATION_ERROR',
-        'Either pairs or cluster_id must be provided'
-      );
+      throw new MCPError('VALIDATION_ERROR', 'Either pairs or cluster_id must be provided');
     }
 
     if (pairsToCompare.length === 0) {
@@ -796,9 +801,7 @@ async function handleComparisonBatch(params: Record<string, unknown>): Promise<T
 
     // M-4: If every comparison failed, throw an error instead of returning success
     if (results.length === 0 && errors.length > 0) {
-      const errorDetails = errors
-        .map((e) => `  ${e.doc1} <-> ${e.doc2}: ${e.error}`)
-        .join('\n');
+      const errorDetails = errors.map((e) => `  ${e.doc1} <-> ${e.doc2}: ${e.error}`).join('\n');
       throw new MCPError(
         'INTERNAL_ERROR',
         `All ${errors.length} comparison(s) failed:\n${errorDetails}`
@@ -812,7 +815,10 @@ async function handleComparisonBatch(params: Record<string, unknown>): Promise<T
         total_compared: results.length,
         total_errors: errors.length,
         total_pairs_requested: pairsToCompare.length,
-        next_steps: [{ tool: 'ocr_comparison_list', description: 'List all comparison results' }, { tool: 'ocr_comparison_get', description: 'View details for a specific comparison' }],
+        next_steps: [
+          { tool: 'ocr_comparison_list', description: 'List all comparison results' },
+          { tool: 'ocr_comparison_get', description: 'View details for a specific comparison' },
+        ],
       })
     );
   } catch (error) {
@@ -825,9 +831,16 @@ async function handleComparisonBatch(params: Record<string, unknown>): Promise<T
 // ═══════════════════════════════════════════════════════════════════════════════
 
 const ComparisonMatrixInput = z.object({
-  document_ids: z.array(z.string()).optional()
+  document_ids: z
+    .array(z.string())
+    .optional()
     .describe('Document IDs to include (default: all documents with embeddings)'),
-  max_documents: z.number().int().min(2).max(100).default(50)
+  max_documents: z
+    .number()
+    .int()
+    .min(2)
+    .max(100)
+    .default(50)
     .describe('Maximum documents in matrix'),
 });
 
@@ -896,9 +909,8 @@ async function handleComparisonMatrix(params: Record<string, unknown>): Promise<
       matrix.push(row);
     }
 
-    const averageSimilarity = pairCount > 0
-      ? Math.round((totalSimilarity / pairCount) * 10000) / 10000
-      : 0;
+    const averageSimilarity =
+      pairCount > 0 ? Math.round((totalSimilarity / pairCount) * 10000) / 10000 : 0;
 
     return formatResponse(
       successResult({
@@ -909,7 +921,10 @@ async function handleComparisonMatrix(params: Record<string, unknown>): Promise<
         least_similar_pair: leastSimilarPair,
         average_similarity: averageSimilarity,
         documents_analyzed: n,
-        next_steps: [{ tool: 'ocr_document_compare', description: 'Compare the most similar pair in detail' }, { tool: 'ocr_cluster_documents', description: 'Cluster documents by similarity' }],
+        next_steps: [
+          { tool: 'ocr_document_compare', description: 'Compare the most similar pair in detail' },
+          { tool: 'ocr_cluster_documents', description: 'Cluster documents by similarity' },
+        ],
       })
     );
   } catch (error) {

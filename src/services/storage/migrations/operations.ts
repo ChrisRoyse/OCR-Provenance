@@ -2838,15 +2838,23 @@ function migrateV24ToV25(db: Database.Database): void {
     db.exec(CREATE_ENTITY_ROLES_TABLE);
 
     // Step 2: Create 6 new indexes
-    db.exec('CREATE INDEX IF NOT EXISTS idx_corpus_intelligence_database ON corpus_intelligence(database_name)');
-    db.exec('CREATE INDEX IF NOT EXISTS idx_document_narratives_document ON document_narratives(document_id)');
+    db.exec(
+      'CREATE INDEX IF NOT EXISTS idx_corpus_intelligence_database ON corpus_intelligence(database_name)'
+    );
+    db.exec(
+      'CREATE INDEX IF NOT EXISTS idx_document_narratives_document ON document_narratives(document_id)'
+    );
     db.exec('CREATE INDEX IF NOT EXISTS idx_entity_roles_node ON entity_roles(node_id)');
     db.exec('CREATE INDEX IF NOT EXISTS idx_entity_roles_theme ON entity_roles(theme)');
     db.exec('CREATE INDEX IF NOT EXISTS idx_entity_roles_role ON entity_roles(role)');
     db.exec('CREATE INDEX IF NOT EXISTS idx_entity_roles_scope ON entity_roles(scope, scope_id)');
 
     // Step 3: Expand knowledge_edges CHECK constraint with 6 new relationship types
-    const edgesTableExists = db.prepare("SELECT COUNT(*) as cnt FROM sqlite_master WHERE type='table' AND name='knowledge_edges'").get() as { cnt: number };
+    const edgesTableExists = db
+      .prepare(
+        "SELECT COUNT(*) as cnt FROM sqlite_master WHERE type='table' AND name='knowledge_edges'"
+      )
+      .get() as { cnt: number };
 
     if (edgesTableExists.cnt > 0) {
       db.exec(`
@@ -2891,7 +2899,9 @@ function migrateV24ToV25(db: Database.Database): void {
 
       db.exec('CREATE INDEX IF NOT EXISTS idx_ke_source_node ON knowledge_edges(source_node_id)');
       db.exec('CREATE INDEX IF NOT EXISTS idx_ke_target_node ON knowledge_edges(target_node_id)');
-      db.exec('CREATE INDEX IF NOT EXISTS idx_ke_relationship_type ON knowledge_edges(relationship_type)');
+      db.exec(
+        'CREATE INDEX IF NOT EXISTS idx_ke_relationship_type ON knowledge_edges(relationship_type)'
+      );
     }
 
     // Step 4: Add CORPUS_INTELLIGENCE to provenance type and source_type CHECK constraints
@@ -2929,7 +2939,9 @@ function migrateV24ToV25(db: Database.Database): void {
     db.exec('ALTER TABLE provenance_new RENAME TO provenance');
     db.exec('CREATE INDEX IF NOT EXISTS idx_provenance_source_id ON provenance(source_id)');
     db.exec('CREATE INDEX IF NOT EXISTS idx_provenance_type ON provenance(type)');
-    db.exec('CREATE INDEX IF NOT EXISTS idx_provenance_root_document_id ON provenance(root_document_id)');
+    db.exec(
+      'CREATE INDEX IF NOT EXISTS idx_provenance_root_document_id ON provenance(root_document_id)'
+    );
     db.exec('CREATE INDEX IF NOT EXISTS idx_provenance_parent_id ON provenance(parent_id)');
 
     // M-5: Verify FK integrity BEFORE commit so violations cause rollback
@@ -2947,7 +2959,10 @@ function migrateV24ToV25(db: Database.Database): void {
       db.exec('ROLLBACK');
       db.exec('PRAGMA foreign_keys = ON');
     } catch (rollbackErr) {
-      console.error('[migrations] Rollback failed:', rollbackErr instanceof Error ? rollbackErr.message : String(rollbackErr));
+      console.error(
+        '[migrations] Rollback failed:',
+        rollbackErr instanceof Error ? rollbackErr.message : String(rollbackErr)
+      );
     }
     const cause = error instanceof Error ? error.message : String(error);
     throw new MigrationError(
@@ -2987,17 +3002,32 @@ function migrateV25ToV26(db: Database.Database): void {
 
     // Step 2: Drop entity/KG indexes (IF EXISTS for safety)
     const entityKgIndexes = [
-      'idx_entities_document_id', 'idx_entities_entity_type', 'idx_entities_normalized_text',
-      'idx_entity_mentions_entity_id', 'idx_entity_mentions_document_id', 'idx_entity_mentions_chunk_id',
-      'idx_kn_entity_type', 'idx_kn_normalized_name', 'idx_kn_document_count',
-      'idx_ke_source_node', 'idx_ke_target_node', 'idx_ke_relationship_type',
-      'idx_nel_node_id', 'idx_nel_document_id',
+      'idx_entities_document_id',
+      'idx_entities_entity_type',
+      'idx_entities_normalized_text',
+      'idx_entity_mentions_entity_id',
+      'idx_entity_mentions_document_id',
+      'idx_entity_mentions_chunk_id',
+      'idx_kn_entity_type',
+      'idx_kn_normalized_name',
+      'idx_kn_document_count',
+      'idx_ke_source_node',
+      'idx_ke_target_node',
+      'idx_ke_relationship_type',
+      'idx_nel_node_id',
+      'idx_nel_document_id',
       'idx_knowledge_nodes_canonical_lower',
-      'idx_segments_document', 'idx_segments_status', 'idx_segments_doc_status',
-      'idx_entity_embeddings_node_id', 'idx_entity_embeddings_content_hash',
+      'idx_segments_document',
+      'idx_segments_status',
+      'idx_segments_doc_status',
+      'idx_entity_embeddings_node_id',
+      'idx_entity_embeddings_content_hash',
       'idx_corpus_intelligence_database',
       'idx_document_narratives_document',
-      'idx_entity_roles_node', 'idx_entity_roles_theme', 'idx_entity_roles_role', 'idx_entity_roles_scope',
+      'idx_entity_roles_node',
+      'idx_entity_roles_theme',
+      'idx_entity_roles_role',
+      'idx_entity_roles_scope',
     ];
     for (const idx of entityKgIndexes) {
       db.exec(`DROP INDEX IF EXISTS ${idx}`);
@@ -3058,7 +3088,9 @@ function migrateV25ToV26(db: Database.Database): void {
     db.exec('ALTER TABLE provenance_new RENAME TO provenance');
     db.exec('CREATE INDEX IF NOT EXISTS idx_provenance_source_id ON provenance(source_id)');
     db.exec('CREATE INDEX IF NOT EXISTS idx_provenance_type ON provenance(type)');
-    db.exec('CREATE INDEX IF NOT EXISTS idx_provenance_root_document_id ON provenance(root_document_id)');
+    db.exec(
+      'CREATE INDEX IF NOT EXISTS idx_provenance_root_document_id ON provenance(root_document_id)'
+    );
     db.exec('CREATE INDEX IF NOT EXISTS idx_provenance_parent_id ON provenance(parent_id)');
 
     // Step 5: Recreate comparisons table without entity_diff_json column
@@ -3093,7 +3125,9 @@ function migrateV25ToV26(db: Database.Database): void {
     // M-5: Verify FK integrity BEFORE commit so violations cause rollback
     const fkViolations = db.pragma('foreign_key_check') as unknown[];
     if (fkViolations.length > 0) {
-      console.error(`[Migration v25->v26] FK violations detected: ${JSON.stringify(fkViolations.slice(0, 5))}`);
+      console.error(
+        `[Migration v25->v26] FK violations detected: ${JSON.stringify(fkViolations.slice(0, 5))}`
+      );
       throw new Error(
         `Foreign key integrity check failed after v25->v26 migration: ${fkViolations.length} violation(s)`
       );
@@ -3104,7 +3138,13 @@ function migrateV25ToV26(db: Database.Database): void {
 
     console.error('[Migration] v25 -> v26: Removed entity extraction and knowledge graph tables');
   } catch (error) {
-    try { db.exec('ROLLBACK'); } catch (rollbackError) { console.error(`[migrations] CRITICAL: Failed to rollback v25->v26 migration: ${rollbackError instanceof Error ? rollbackError.message : String(rollbackError)}`); }
+    try {
+      db.exec('ROLLBACK');
+    } catch (rollbackError) {
+      console.error(
+        `[migrations] CRITICAL: Failed to rollback v25->v26 migration: ${rollbackError instanceof Error ? rollbackError.message : String(rollbackError)}`
+      );
+    }
     db.exec('PRAGMA foreign_keys = ON');
     const cause = error instanceof Error ? error.message : String(error);
     throw new MigrationError(
@@ -3156,7 +3196,9 @@ function migrateV26ToV27(db: Database.Database): void {
       db.exec('ALTER TABLE chunks ADD COLUMN is_atomic INTEGER NOT NULL DEFAULT 0');
     }
     if (!columnNames.has('chunking_strategy')) {
-      db.exec("ALTER TABLE chunks ADD COLUMN chunking_strategy TEXT NOT NULL DEFAULT 'hybrid_section'");
+      db.exec(
+        "ALTER TABLE chunks ADD COLUMN chunking_strategy TEXT NOT NULL DEFAULT 'hybrid_section'"
+      );
     }
 
     // M-5: FK integrity check inside transaction so violations cause rollback
@@ -3173,7 +3215,9 @@ function migrateV26ToV27(db: Database.Database): void {
     transaction();
     db.exec('PRAGMA foreign_keys = ON');
 
-    console.error('[Migration] v26 -> v27: Added hybrid section-aware chunking columns to chunks table');
+    console.error(
+      '[Migration] v26 -> v27: Added hybrid section-aware chunking columns to chunks table'
+    );
   } catch (error) {
     db.exec('PRAGMA foreign_keys = ON');
     const cause = error instanceof Error ? error.message : String(error);
@@ -3215,8 +3259,12 @@ function migrateV27ToV28(db: Database.Database): void {
         )
       `);
       db.exec('CREATE INDEX IF NOT EXISTS idx_saved_searches_name ON saved_searches(name)');
-      db.exec('CREATE INDEX IF NOT EXISTS idx_saved_searches_search_type ON saved_searches(search_type)');
-      db.exec('CREATE INDEX IF NOT EXISTS idx_saved_searches_created ON saved_searches(created_at DESC)');
+      db.exec(
+        'CREATE INDEX IF NOT EXISTS idx_saved_searches_search_type ON saved_searches(search_type)'
+      );
+      db.exec(
+        'CREATE INDEX IF NOT EXISTS idx_saved_searches_created ON saved_searches(created_at DESC)'
+      );
     });
     transaction();
     console.error('[MIGRATION] v28 migration complete: saved_searches table created');
@@ -3249,7 +3297,9 @@ function migrateV28ToV29(db: Database.Database): void {
     const transaction = db.transaction(() => {
       db.exec(CREATE_TAGS_TABLE);
       db.exec(CREATE_ENTITY_TAGS_TABLE);
-      db.exec('CREATE INDEX IF NOT EXISTS idx_entity_tags_entity ON entity_tags(entity_id, entity_type)');
+      db.exec(
+        'CREATE INDEX IF NOT EXISTS idx_entity_tags_entity ON entity_tags(entity_id, entity_type)'
+      );
       db.exec('CREATE INDEX IF NOT EXISTS idx_entity_tags_tag ON entity_tags(tag_id)');
     });
     transaction();
@@ -3278,7 +3328,9 @@ function migrateV28ToV29(db: Database.Database): void {
  * @throws MigrationError if migration fails
  */
 function migrateV29ToV30(db: Database.Database): void {
-  console.error('[MIGRATION] Applying v29 → v30: Documents FTS5, saved search analytics, chunk indexes');
+  console.error(
+    '[MIGRATION] Applying v29 → v30: Documents FTS5, saved search analytics, chunk indexes'
+  );
   try {
     // 1. Create documents_fts FTS5 virtual table
     // Note: FTS5 virtual table creation is outside the transaction because
@@ -3317,7 +3369,9 @@ function migrateV29ToV30(db: Database.Database): void {
     });
     transaction();
 
-    console.error('[MIGRATION] v30 migration complete: documents_fts, saved search analytics, chunk indexes');
+    console.error(
+      '[MIGRATION] v30 migration complete: documents_fts, saved search analytics, chunk indexes'
+    );
   } catch (error) {
     const cause = error instanceof Error ? error.message : String(error);
     throw new MigrationError(
@@ -3421,7 +3475,10 @@ function migrateV30ToV31(db: Database.Database, bumpVersion: (v: number) => void
   } catch (error) {
     const cause = error instanceof Error ? error.message : String(error);
     throw new MigrationError(
-      `Failed to migrate v30 to v31: ${cause}`, 'migrate', 'document_indexes', error
+      `Failed to migrate v30 to v31: ${cause}`,
+      'migrate',
+      'document_indexes',
+      error
     );
   }
 }
@@ -3440,7 +3497,9 @@ function migrateV30ToV31(db: Database.Database, bumpVersion: (v: number) => void
  * @throws MigrationError if migration fails
  */
 function migrateV31ToV32(db: Database.Database): void {
-  console.error('[MIGRATION] Applying v31 → v32: multi-user, collaboration, workflow, CLM, webhooks');
+  console.error(
+    '[MIGRATION] Applying v31 → v32: multi-user, collaboration, workflow, CLM, webhooks'
+  );
   try {
     db.exec('PRAGMA foreign_keys = OFF');
 
@@ -3497,7 +3556,9 @@ function migrateV31ToV32(db: Database.Database): void {
       // Audit log indexes
       db.exec('CREATE INDEX IF NOT EXISTS idx_audit_log_user ON audit_log(user_id)');
       db.exec('CREATE INDEX IF NOT EXISTS idx_audit_log_action ON audit_log(action)');
-      db.exec('CREATE INDEX IF NOT EXISTS idx_audit_log_entity ON audit_log(entity_type, entity_id)');
+      db.exec(
+        'CREATE INDEX IF NOT EXISTS idx_audit_log_entity ON audit_log(entity_type, entity_id)'
+      );
       db.exec('CREATE INDEX IF NOT EXISTS idx_audit_log_created ON audit_log(created_at)');
 
       // Annotations indexes
@@ -3526,7 +3587,9 @@ function migrateV31ToV32(db: Database.Database): void {
     transaction();
 
     db.exec('PRAGMA foreign_keys = ON');
-    console.error('[MIGRATION] v32 migration complete: 10 new tables, provenance + saved_searches columns, 23 indexes');
+    console.error(
+      '[MIGRATION] v32 migration complete: 10 new tables, provenance + saved_searches columns, 23 indexes'
+    );
   } catch (error) {
     try {
       db.exec('PRAGMA foreign_keys = ON');

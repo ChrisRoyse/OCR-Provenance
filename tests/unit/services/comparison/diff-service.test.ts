@@ -8,14 +8,8 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import {
-  compareText,
-  generateSummary,
-} from '../../../../src/services/comparison/diff-service.js';
-import type {
-  TextDiffResult,
-  StructuralDiff,
-} from '../../../../src/models/comparison.js';
+import { compareText, generateSummary } from '../../../../src/services/comparison/diff-service.js';
+import type { TextDiffResult, StructuralDiff } from '../../../../src/models/comparison.js';
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // compareText TESTS
@@ -262,12 +256,7 @@ describe('generateSummary', () => {
       doc2_ocr_mode: 'balanced',
     };
 
-    const summary = generateSummary(
-      textDiff,
-      structDiff,
-      'contract-v1.pdf',
-      'contract-v2.pdf'
-    );
+    const summary = generateSummary(textDiff, structDiff, 'contract-v1.pdf', 'contract-v2.pdf');
 
     // Should contain insertions, deletions, and unchanged counts
     expect(summary).toContain('3 insertions');

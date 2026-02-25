@@ -38,14 +38,8 @@ const ComplianceReportInputSchema = z.object({
 });
 
 const ComplianceHipaaInputSchema = z.object({
-  date_from: z
-    .string()
-    .optional()
-    .describe('Filter from this ISO 8601 datetime'),
-  date_to: z
-    .string()
-    .optional()
-    .describe('Filter up to this ISO 8601 datetime'),
+  date_from: z.string().optional().describe('Filter from this ISO 8601 datetime'),
+  date_to: z.string().optional().describe('Filter up to this ISO 8601 datetime'),
   limit: z
     .number()
     .int()
@@ -56,17 +50,9 @@ const ComplianceHipaaInputSchema = z.object({
 });
 
 const ComplianceExportInputSchema = z.object({
-  format: z
-    .enum(['soc2', 'hipaa', 'sox'])
-    .describe('Regulatory format to export'),
-  date_from: z
-    .string()
-    .optional()
-    .describe('Filter from this ISO 8601 datetime'),
-  date_to: z
-    .string()
-    .optional()
-    .describe('Filter up to this ISO 8601 datetime'),
+  format: z.enum(['soc2', 'hipaa', 'sox']).describe('Regulatory format to export'),
+  date_from: z.string().optional().describe('Filter from this ISO 8601 datetime'),
+  date_to: z.string().optional().describe('Filter up to this ISO 8601 datetime'),
 });
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -77,10 +63,7 @@ const ComplianceExportInputSchema = z.object({
  * Check whether a table exists in the database.
  * Returns false instead of throwing if the table is missing (pre-v32 databases).
  */
-function tableExists(
-  conn: import('better-sqlite3').Database,
-  tableName: string
-): boolean {
+function tableExists(conn: import('better-sqlite3').Database, tableName: string): boolean {
   const row = conn
     .prepare("SELECT COUNT(*) as cnt FROM sqlite_master WHERE type='table' AND name=?")
     .get(tableName) as { cnt: number } | undefined;
@@ -144,10 +127,12 @@ async function handleComplianceReport(params: Record<string, unknown>): Promise<
     );
 
     // -- Audit log action breakdown --
-    let auditActionBreakdown: Record<string, number> = {};
+    const auditActionBreakdown: Record<string, number> = {};
     if (tableExists(conn, 'audit_log') && totalAuditEntries > 0) {
       const actionRows = conn
-        .prepare('SELECT action, COUNT(*) as cnt FROM audit_log GROUP BY action ORDER BY cnt DESC LIMIT 20')
+        .prepare(
+          'SELECT action, COUNT(*) as cnt FROM audit_log GROUP BY action ORDER BY cnt DESC LIMIT 20'
+        )
         .all() as Array<{ action: string; cnt: number }>;
       for (const row of actionRows) {
         auditActionBreakdown[row.action] = row.cnt;
@@ -165,7 +150,7 @@ async function handleComplianceReport(params: Record<string, unknown>): Promise<
     }
 
     // -- Optional: hash-chain verification (sample up to 10 documents) --
-    let hashVerification: Array<{
+    const hashVerification: Array<{
       document_id: string;
       provenance_id: string;
       valid: boolean;
@@ -336,7 +321,7 @@ async function handleComplianceHipaa(params: Record<string, unknown>): Promise<T
 
     // -- User authentication summary --
     const totalUsers = safeCount(conn, 'users');
-    let userRoleBreakdown: Record<string, number> = {};
+    const userRoleBreakdown: Record<string, number> = {};
     if (tableExists(conn, 'users') && totalUsers > 0) {
       const roleRows = conn
         .prepare('SELECT role, COUNT(*) as cnt FROM users GROUP BY role')
@@ -456,23 +441,11 @@ async function handleComplianceExport(params: Record<string, unknown>): Promise<
         break;
 
       case 'hipaa':
-        exportData = buildHIPAAExport(
-          conn,
-          auditEntries,
-          users,
-          totalDocuments,
-          input
-        );
+        exportData = buildHIPAAExport(conn, auditEntries, users, totalDocuments, input);
         break;
 
       case 'sox':
-        exportData = buildSOXExport(
-          conn,
-          auditEntries,
-          users,
-          totalDocuments,
-          input
-        );
+        exportData = buildSOXExport(conn, auditEntries, users, totalDocuments, input);
         break;
     }
 
@@ -556,9 +529,7 @@ function buildSOC2Export(
       total_provenance_records: totalProvenance,
       records_with_content_hash: provenanceWithHash,
       hash_coverage_pct:
-        totalProvenance > 0
-          ? Math.round((provenanceWithHash / totalProvenance) * 10000) / 100
-          : 0,
+        totalProvenance > 0 ? Math.round((provenanceWithHash / totalProvenance) * 10000) / 100 : 0,
     },
   };
 }
@@ -746,14 +717,8 @@ export const complianceTools: Record<string, ToolDefinition> = {
     description:
       '[STATUS] Use to generate a HIPAA-specific compliance report. Returns PHI access log (search/read events), minimum necessary analysis (document access by distinct users), data retention info, encryption status, and user authentication summary.',
     inputSchema: {
-      date_from: z
-        .string()
-        .optional()
-        .describe('Filter from this ISO 8601 datetime'),
-      date_to: z
-        .string()
-        .optional()
-        .describe('Filter up to this ISO 8601 datetime'),
+      date_from: z.string().optional().describe('Filter from this ISO 8601 datetime'),
+      date_to: z.string().optional().describe('Filter up to this ISO 8601 datetime'),
       limit: z
         .number()
         .int()
@@ -769,17 +734,9 @@ export const complianceTools: Record<string, ToolDefinition> = {
     description:
       '[STATUS] Use to export the full audit trail in a regulatory format. Supports SOC 2 (access controls, audit trail, data integrity), HIPAA (PHI access, encryption, user auth), and SOX (financial document trail, approval chain evidence, workflow state).',
     inputSchema: {
-      format: z
-        .enum(['soc2', 'hipaa', 'sox'])
-        .describe('Regulatory format: soc2, hipaa, or sox'),
-      date_from: z
-        .string()
-        .optional()
-        .describe('Filter from this ISO 8601 datetime'),
-      date_to: z
-        .string()
-        .optional()
-        .describe('Filter up to this ISO 8601 datetime'),
+      format: z.enum(['soc2', 'hipaa', 'sox']).describe('Regulatory format: soc2, hipaa, or sox'),
+      date_from: z.string().optional().describe('Filter from this ISO 8601 datetime'),
+      date_to: z.string().optional().describe('Filter up to this ISO 8601 datetime'),
     },
     handler: handleComplianceExport,
   },

@@ -1,5 +1,8 @@
 import { describe, it, expect } from 'vitest';
-import { normalizeHeadingLevels, HeadingNormalizationConfig } from '../../../../src/services/chunking/heading-normalizer.js';
+import {
+  normalizeHeadingLevels,
+  HeadingNormalizationConfig,
+} from '../../../../src/services/chunking/heading-normalizer.js';
 import { MarkdownBlock } from '../../../../src/services/chunking/markdown-parser.js';
 import { buildSectionHierarchy } from '../../../../src/services/chunking/markdown-parser.js';
 
@@ -66,10 +69,7 @@ describe('normalizeHeadingLevels', () => {
   });
 
   it('respects minPatternCount threshold', () => {
-    const blocks = [
-      makeHeading('ARTICLE 1', 1, 0),
-      makeHeading('ARTICLE 2', 2, 1),
-    ];
+    const blocks = [makeHeading('ARTICLE 1', 1, 0), makeHeading('ARTICLE 2', 2, 1)];
     const config: HeadingNormalizationConfig = { enabled: true, minPatternCount: 3 };
     normalizeHeadingLevels(blocks, config);
     // Only 2 ARTICLEs, below threshold of 3 - no change
@@ -133,9 +133,9 @@ describe('normalizeHeadingLevels', () => {
       makeHeading('ARTICLE 2', 2, 1),
       makeHeading('ARTICLE 3', 2, 2),
     ];
-    const originalTexts = blocks.map(b => b.text);
+    const originalTexts = blocks.map((b) => b.text);
     normalizeHeadingLevels(blocks, enabledConfig);
-    expect(blocks.map(b => b.text)).toEqual(originalTexts);
+    expect(blocks.map((b) => b.text)).toEqual(originalTexts);
   });
 
   it('handles empty blocks array', () => {
@@ -373,10 +373,7 @@ describe('normalizeHeadingLevels - edge cases', () => {
   });
 
   it('fewer than minPatternCount (default 3) results in no normalization', () => {
-    const blocks = [
-      makeHeading('ARTICLE 1', 1, 0),
-      makeHeading('ARTICLE 2', 3, 1),
-    ];
+    const blocks = [makeHeading('ARTICLE 1', 1, 0), makeHeading('ARTICLE 2', 3, 1)];
     // Default minPatternCount is 3; only 2 ARTICLE headings
     normalizeHeadingLevels(blocks, enabledConfig);
     expect(blocks[0].headingLevel).toBe(1); // unchanged

@@ -188,7 +188,7 @@ export class RRFFusion {
   fuse(
     bm25Results: RankedResult[],
     semanticResults: RankedResult[],
-    limit: number,
+    limit: number
   ): RRFSearchResult[] {
     const { k, bm25Weight, semanticWeight } = this.config;
     // Use chunk_id/image_id as dedup key so the same chunk from BM25 and semantic
@@ -224,8 +224,6 @@ export class RRFFusion {
     // handlers individually before fusion. Re-applying here would double-penalize
     // low-quality results (e.g., 0.8x * 0.8x = 0.64x instead of intended 0.8x).
 
-    return results
-      .sort((a, b) => b.rrf_score - a.rrf_score)
-      .slice(0, limit);
+    return results.sort((a, b) => b.rrf_score - a.rrf_score).slice(0, limit);
   }
 }

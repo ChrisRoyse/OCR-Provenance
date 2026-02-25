@@ -72,17 +72,16 @@ const MAX_TABLE_COLUMN_TERMS = 5;
  * @param queryWords - Lowercased query words to match against column names
  * @returns Array of matching column name terms
  */
-export function getTableColumnExpansionTerms(
-  db: DatabaseService,
-  queryWords: string[]
-): string[] {
+export function getTableColumnExpansionTerms(db: DatabaseService, queryWords: string[]): string[] {
   const terms: string[] = [];
 
   try {
     const conn = db.getConnection();
-    const rows = conn.prepare(
-      "SELECT DISTINCT processing_params FROM provenance WHERE processing_params LIKE '%table_columns%' LIMIT 500"
-    ).all() as Array<{ processing_params: string }>;
+    const rows = conn
+      .prepare(
+        "SELECT DISTINCT processing_params FROM provenance WHERE processing_params LIKE '%table_columns%' LIMIT 500"
+      )
+      .all() as Array<{ processing_params: string }>;
 
     const allColumns = new Set<string>();
     for (const row of rows) {
@@ -97,7 +96,9 @@ export function getTableColumnExpansionTerms(
           }
         }
       } catch (error) {
-        console.error(`[query-expander] Failed to parse table_columns from processing_params: ${error instanceof Error ? error.message : String(error)}`);
+        console.error(
+          `[query-expander] Failed to parse table_columns from processing_params: ${error instanceof Error ? error.message : String(error)}`
+        );
       }
     }
 
@@ -107,9 +108,10 @@ export function getTableColumnExpansionTerms(
       for (const word of queryWords) {
         if (colLower.includes(word) || word.includes(colLower)) {
           // Add individual words from the column name, sanitized for FTS5 safety
-          const colWords = col.split(/\s+/)
-            .map(w => sanitizeFTS5Term(w))
-            .filter(w => w.length > 2);
+          const colWords = col
+            .split(/\s+/)
+            .map((w) => sanitizeFTS5Term(w))
+            .filter((w) => w.length > 2);
           terms.push(...colWords);
           break;
         }
@@ -159,7 +161,9 @@ export function getCorpusExpansionTerms(
           clusterTermSets.push(terms.map((t: unknown) => String(t).toLowerCase()));
         }
       } catch (error) {
-        console.error(`[query-expander] Failed to parse cluster top_terms_json: ${error instanceof Error ? error.message : String(error)}`);
+        console.error(
+          `[query-expander] Failed to parse cluster top_terms_json: ${error instanceof Error ? error.message : String(error)}`
+        );
       }
     }
 
@@ -200,7 +204,7 @@ export function getCorpusExpansionTerms(
 export function getExpandedTerms(
   query: string,
   db?: DatabaseService,
-  isTableQuery?: boolean,
+  isTableQuery?: boolean
 ): {
   original: string;
   expanded: string[];
@@ -244,7 +248,9 @@ export function getExpandedTerms(
     expanded,
     synonyms_found: synonymsFound,
     ...(corpusTerms && Object.keys(corpusTerms).length > 0 ? { corpus_terms: corpusTerms } : {}),
-    ...(tableColumnTerms && tableColumnTerms.length > 0 ? { table_column_terms: tableColumnTerms } : {}),
+    ...(tableColumnTerms && tableColumnTerms.length > 0
+      ? { table_column_terms: tableColumnTerms }
+      : {}),
   };
 }
 

@@ -183,7 +183,6 @@ export function createFTSTables(db: Database.Database): void {
     for (const trigger of CREATE_DOCUMENTS_FTS_TRIGGERS) {
       db.exec(trigger);
     }
-
   } catch (error) {
     throw new MigrationError('Failed to create FTS5 tables', 'create_table', 'chunks_fts', error);
   }

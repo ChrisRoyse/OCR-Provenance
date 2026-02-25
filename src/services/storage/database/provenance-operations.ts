@@ -99,7 +99,7 @@ export function getProvenanceChain(db: Database.Database, id: string): Provenanc
     if (++iterations > MAX_CHAIN_DEPTH) {
       throw new Error(
         `Provenance chain walk exceeded ${MAX_CHAIN_DEPTH} iterations at record ${currentId} — ` +
-        `possible circular reference. Chain collected so far: ${chain.length} records.`
+          `possible circular reference. Chain collected so far: ${chain.length} records.`
       );
     }
     const record = getProvenance(db, currentId);
@@ -150,7 +150,9 @@ export function getProvenanceByRootDocument(
  * @returns ProvenanceRecord[] - Array of child records
  */
 export function getProvenanceChildren(db: Database.Database, parentId: string): ProvenanceRecord[] {
-  const stmt = db.prepare('SELECT * FROM provenance WHERE parent_id = ? ORDER BY created_at LIMIT 10000');
+  const stmt = db.prepare(
+    'SELECT * FROM provenance WHERE parent_id = ? ORDER BY created_at LIMIT 10000'
+  );
   const rows = stmt.all(parentId) as ProvenanceRow[];
   return rows.map(rowToProvenance);
 }
@@ -242,7 +244,11 @@ export function queryProvenance(
   const total = countRow.count;
 
   // Validate and apply ordering with whitelist guard
-  const VALID_ORDER_COLUMNS = new Set(['created_at', 'processing_duration_ms', 'processing_quality_score']);
+  const VALID_ORDER_COLUMNS = new Set([
+    'created_at',
+    'processing_duration_ms',
+    'processing_quality_score',
+  ]);
   const orderBy = filters.order_by ?? 'created_at';
   if (!VALID_ORDER_COLUMNS.has(orderBy)) {
     throw new Error(`Invalid order column: ${orderBy}`);
@@ -350,9 +356,7 @@ export function getProvenanceProcessorStats(
     min_duration_ms: row.min_duration_ms,
     max_duration_ms: row.max_duration_ms,
     avg_quality_score:
-      row.avg_quality_score !== null
-        ? Math.round(row.avg_quality_score * 100) / 100
-        : null,
+      row.avg_quality_score !== null ? Math.round(row.avg_quality_score * 100) / 100 : null,
     total_processing_time_ms: row.total_processing_time_ms,
   }));
 }

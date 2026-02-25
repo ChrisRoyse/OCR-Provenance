@@ -547,9 +547,7 @@ export class ProvenanceVerifier {
           .prepare(
             'SELECT text_diff_json, structural_diff_json FROM comparisons WHERE provenance_id = ?'
           )
-          .get(record.id) as
-          | { text_diff_json: string; structural_diff_json: string }
-          | undefined;
+          .get(record.id) as { text_diff_json: string; structural_diff_json: string } | undefined;
 
         if (!comparison) {
           throw new VerifierError(

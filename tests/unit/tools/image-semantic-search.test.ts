@@ -29,10 +29,7 @@ import {
   ProvenanceType,
   computeHash,
 } from '../../integration/server/helpers.js';
-import {
-  handleImageReanalyze,
-  handleImageSearch,
-} from '../../../src/tools/images.js';
+import { handleImageReanalyze, handleImageSearch } from '../../../src/tools/images.js';
 
 // ===============================================================================
 // TEST HELPERS
@@ -139,7 +136,7 @@ describe('handleImageSearch mode=semantic', () => {
 
   describe('validation', () => {
     it('returns VALIDATION_ERROR when query is missing', async () => {
-      const response = await handleImageSearch({ mode: 'semantic',});
+      const response = await handleImageSearch({ mode: 'semantic' });
       const result = parseResponse(response);
 
       expect(result.success).toBe(false);
@@ -155,7 +152,11 @@ describe('handleImageSearch mode=semantic', () => {
     });
 
     it('returns VALIDATION_ERROR when similarity_threshold is above 1', async () => {
-      const response = await handleImageSearch({ mode: 'semantic', query: 'test', similarity_threshold: 1.5 });
+      const response = await handleImageSearch({
+        mode: 'semantic',
+        query: 'test',
+        similarity_threshold: 1.5,
+      });
       const result = parseResponse(response);
 
       expect(result.success).toBe(false);
@@ -163,7 +164,11 @@ describe('handleImageSearch mode=semantic', () => {
     });
 
     it('returns VALIDATION_ERROR when similarity_threshold is below 0', async () => {
-      const response = await handleImageSearch({ mode: 'semantic', query: 'test', similarity_threshold: -0.1 });
+      const response = await handleImageSearch({
+        mode: 'semantic',
+        query: 'test',
+        similarity_threshold: -0.1,
+      });
       const result = parseResponse(response);
 
       expect(result.success).toBe(false);
@@ -192,7 +197,8 @@ describe('handleImageSearch mode=semantic', () => {
       // This test requires the embedding service to be available.
       // The embedSearchQuery call needs GPU/model, so we skip if not available.
       try {
-        const response = await handleImageSearch({ mode: 'semantic',
+        const response = await handleImageSearch({
+          mode: 'semantic',
           query: 'a bar chart showing revenue',
           limit: 5,
         });
@@ -228,27 +234,31 @@ describe('handleImageSearch mode=semantic', () => {
       db.insertDocument(doc);
 
       const ocrProvId = uuidv4();
-      db.insertProvenance(createTestProvenance({
-        id: ocrProvId,
-        type: ProvenanceType.OCR_RESULT,
-        parent_id: docProvId,
-        root_document_id: docProvId,
-        chain_depth: 1,
-      }));
+      db.insertProvenance(
+        createTestProvenance({
+          id: ocrProvId,
+          type: ProvenanceType.OCR_RESULT,
+          parent_id: docProvId,
+          root_document_id: docProvId,
+          chain_depth: 1,
+        })
+      );
       const ocr = createTestOCRResult(docId, ocrProvId);
       ocrId = ocr.id;
       db.insertOCRResult(ocr);
 
       // Create image provenance
       const imgProvId = uuidv4();
-      db.insertProvenance(createTestProvenance({
-        id: imgProvId,
-        type: ProvenanceType.IMAGE,
-        parent_id: ocrProvId,
-        root_document_id: docProvId,
-        chain_depth: 2,
-        parent_ids: JSON.stringify([docProvId, ocrProvId]),
-      }));
+      db.insertProvenance(
+        createTestProvenance({
+          id: imgProvId,
+          type: ProvenanceType.IMAGE,
+          parent_id: ocrProvId,
+          root_document_id: docProvId,
+          chain_depth: 2,
+          parent_ids: JSON.stringify([docProvId, ocrProvId]),
+        })
+      );
 
       // Insert image
       imageId = uuidv4();
@@ -268,25 +278,29 @@ describe('handleImageSearch mode=semantic', () => {
 
       // Create VLM description provenance
       const vlmProvId = uuidv4();
-      db.insertProvenance(createTestProvenance({
-        id: vlmProvId,
-        type: ProvenanceType.VLM_DESCRIPTION,
-        parent_id: imgProvId,
-        root_document_id: docProvId,
-        chain_depth: 3,
-        parent_ids: JSON.stringify([docProvId, ocrProvId, imgProvId]),
-      }));
+      db.insertProvenance(
+        createTestProvenance({
+          id: vlmProvId,
+          type: ProvenanceType.VLM_DESCRIPTION,
+          parent_id: imgProvId,
+          root_document_id: docProvId,
+          chain_depth: 3,
+          parent_ids: JSON.stringify([docProvId, ocrProvId, imgProvId]),
+        })
+      );
 
       // Create embedding provenance
       const embProvId = uuidv4();
-      db.insertProvenance(createTestProvenance({
-        id: embProvId,
-        type: ProvenanceType.EMBEDDING,
-        parent_id: vlmProvId,
-        root_document_id: docProvId,
-        chain_depth: 4,
-        parent_ids: JSON.stringify([docProvId, ocrProvId, imgProvId, vlmProvId]),
-      }));
+      db.insertProvenance(
+        createTestProvenance({
+          id: embProvId,
+          type: ProvenanceType.EMBEDDING,
+          parent_id: vlmProvId,
+          root_document_id: docProvId,
+          chain_depth: 4,
+          parent_ids: JSON.stringify([docProvId, ocrProvId, imgProvId, vlmProvId]),
+        })
+      );
 
       // Create embedding record (image_id set, chunk_id null = VLM embedding)
       embeddingId = uuidv4();
@@ -313,7 +327,8 @@ describe('handleImageSearch mode=semantic', () => {
     it('finds VLM image when searching with related query', async () => {
       // This test requires GPU for embedding query generation
       try {
-        const response = await handleImageSearch({ mode: 'semantic',
+        const response = await handleImageSearch({
+          mode: 'semantic',
           query: 'revenue chart',
           limit: 10,
           similarity_threshold: 0.0, // Accept any similarity for test
@@ -342,7 +357,8 @@ describe('handleImageSearch mode=semantic', () => {
 
     it('respects document_filter parameter', async () => {
       try {
-        const response = await handleImageSearch({ mode: 'semantic',
+        const response = await handleImageSearch({
+          mode: 'semantic',
           query: 'revenue chart',
           document_filter: ['nonexistent-doc-id'],
           similarity_threshold: 0.0,
@@ -360,7 +376,8 @@ describe('handleImageSearch mode=semantic', () => {
 
     it('respects high similarity_threshold filtering', async () => {
       try {
-        const response = await handleImageSearch({ mode: 'semantic',
+        const response = await handleImageSearch({
+          mode: 'semantic',
           query: 'completely unrelated query about dinosaurs',
           similarity_threshold: 0.99, // Very high threshold
           limit: 10,
@@ -438,13 +455,15 @@ describe('handleImageReanalyze', () => {
       db.insertDocument(doc);
 
       const ocrProvId = uuidv4();
-      db.insertProvenance(createTestProvenance({
-        id: ocrProvId,
-        type: ProvenanceType.OCR_RESULT,
-        parent_id: docProvId,
-        root_document_id: docProvId,
-        chain_depth: 1,
-      }));
+      db.insertProvenance(
+        createTestProvenance({
+          id: ocrProvId,
+          type: ProvenanceType.OCR_RESULT,
+          parent_id: docProvId,
+          root_document_id: docProvId,
+          chain_depth: 1,
+        })
+      );
       const ocr = createTestOCRResult(doc.id, ocrProvId);
       db.insertOCRResult(ocr);
 
@@ -481,13 +500,15 @@ describe('handleImageReanalyze', () => {
       db.insertDocument(doc);
 
       const ocrProvId = uuidv4();
-      db.insertProvenance(createTestProvenance({
-        id: ocrProvId,
-        type: ProvenanceType.OCR_RESULT,
-        parent_id: docProvId,
-        root_document_id: docProvId,
-        chain_depth: 1,
-      }));
+      db.insertProvenance(
+        createTestProvenance({
+          id: ocrProvId,
+          type: ProvenanceType.OCR_RESULT,
+          parent_id: docProvId,
+          root_document_id: docProvId,
+          chain_depth: 1,
+        })
+      );
       const ocr = createTestOCRResult(doc.id, ocrProvId);
       db.insertOCRResult(ocr);
 
@@ -561,13 +582,15 @@ describe('handleImageSearch with vlm_description_query', () => {
     db.insertDocument(doc);
 
     const ocrProvId = uuidv4();
-    db.insertProvenance(createTestProvenance({
-      id: ocrProvId,
-      type: ProvenanceType.OCR_RESULT,
-      parent_id: docProvId,
-      root_document_id: docProvId,
-      chain_depth: 1,
-    }));
+    db.insertProvenance(
+      createTestProvenance({
+        id: ocrProvId,
+        type: ProvenanceType.OCR_RESULT,
+        parent_id: docProvId,
+        root_document_id: docProvId,
+        chain_depth: 1,
+      })
+    );
     const ocr = createTestOCRResult(doc.id, ocrProvId);
     db.insertOCRResult(ocr);
 
@@ -653,13 +676,15 @@ describe('handleImageSearch with vlm_description_query', () => {
     db.insertDocument(doc);
 
     const ocrProvId = uuidv4();
-    db.insertProvenance(createTestProvenance({
-      id: ocrProvId,
-      type: ProvenanceType.OCR_RESULT,
-      parent_id: docProvId,
-      root_document_id: docProvId,
-      chain_depth: 1,
-    }));
+    db.insertProvenance(
+      createTestProvenance({
+        id: ocrProvId,
+        type: ProvenanceType.OCR_RESULT,
+        parent_id: docProvId,
+        root_document_id: docProvId,
+        chain_depth: 1,
+      })
+    );
     const ocr = createTestOCRResult(doc.id, ocrProvId);
     db.insertOCRResult(ocr);
 
@@ -723,7 +748,7 @@ describe('handleImageSearch with vlm_description_query', () => {
 
 describe('Response structure verification', () => {
   it('handleImageSearch mode=semantic returns correct ToolResponse shape on error', async () => {
-    const response = await handleImageSearch({ mode: 'semantic',});
+    const response = await handleImageSearch({ mode: 'semantic' });
     expect(response).toHaveProperty('content');
     expect(Array.isArray(response.content)).toBe(true);
     expect(response.content).toHaveLength(1);

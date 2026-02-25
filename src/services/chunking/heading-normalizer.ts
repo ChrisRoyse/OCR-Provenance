@@ -97,7 +97,7 @@ export function normalizeHeadingLevels(
   const minCount = config.minPatternCount ?? 3;
 
   // Build pattern groups
-  const groups: PatternGroup[] = HEADING_PATTERNS.map(p => ({
+  const groups: PatternGroup[] = HEADING_PATTERNS.map((p) => ({
     name: p.name,
     blockIndices: [],
     levels: [],

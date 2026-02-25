@@ -287,7 +287,11 @@ describe('mergeHeadingOnlyChunks - edge cases', () => {
   });
 
   it('single chunk returns a NEW object, not same reference', () => {
-    const original = makeChunk({ index: 0, text: 'Some long body text that is well above the threshold.', contentTypes: ['text'] });
+    const original = makeChunk({
+      index: 0,
+      text: 'Some long body text that is well above the threshold.',
+      contentTypes: ['text'],
+    });
     const result = mergeHeadingOnlyChunks([original], 100);
     expect(result).toHaveLength(1);
     expect(result[0]).not.toBe(original);
@@ -328,7 +332,9 @@ describe('mergeHeadingOnlyChunks - edge cases', () => {
     const result = mergeHeadingOnlyChunks(chunks, 100);
     expect(result).toHaveLength(1);
     // Verify EXACT merge format: heading + \n\n + next
-    expect(result[0].text).toBe('## ARTICLE 7\n\nOfficers shall be elected annually by majority vote.');
+    expect(result[0].text).toBe(
+      '## ARTICLE 7\n\nOfficers shall be elected annually by majority vote.'
+    );
   });
 
   it('last heading-only chunk merged backward into previous', () => {
@@ -351,7 +357,9 @@ describe('mergeHeadingOnlyChunks - edge cases', () => {
     const result = mergeHeadingOnlyChunks(chunks, 100);
     expect(result).toHaveLength(1);
     // Backward merge: previous.text + \n\n + source.text
-    expect(result[0].text).toBe('The board of directors shall govern the organization.\n\n## EXHIBIT A');
+    expect(result[0].text).toBe(
+      'The board of directors shall govern the organization.\n\n## EXHIBIT A'
+    );
     expect(result[0].startOffset).toBe(0);
     expect(result[0].endOffset).toBe(67);
   });

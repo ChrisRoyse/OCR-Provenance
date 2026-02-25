@@ -116,19 +116,23 @@ describe('ocr_search_saved action=execute', () => {
 
     // Create a saved search entry directly in the database
     savedSearchId = uuidv4();
-    conn.prepare(`
+    conn
+      .prepare(
+        `
       INSERT INTO saved_searches (id, name, query, search_type, search_params, result_count, result_ids, created_at, notes)
       VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'), ?)
-    `).run(
-      savedSearchId,
-      'ML Search',
-      'machine learning',
-      'bm25',
-      JSON.stringify({ limit: 10, phrase_search: false, include_highlight: true }),
-      1,
-      JSON.stringify([chunkId]),
-      'Test saved search'
-    );
+    `
+      )
+      .run(
+        savedSearchId,
+        'ML Search',
+        'machine learning',
+        'bm25',
+        JSON.stringify({ limit: 10, phrase_search: false, include_highlight: true }),
+        1,
+        JSON.stringify([chunkId]),
+        'Test saved search'
+      );
   });
 
   afterAll(() => {

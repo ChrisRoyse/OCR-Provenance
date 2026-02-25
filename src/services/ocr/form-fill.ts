@@ -134,7 +134,12 @@ export class FormFillClient {
           }
           if (!settled) {
             settled = true;
-            reject(new OCRError(`Form fill timeout after ${this.timeout}ms (SIGKILL after 5s grace)`, 'FORM_FILL_TIMEOUT'));
+            reject(
+              new OCRError(
+                `Form fill timeout after ${this.timeout}ms (SIGKILL after 5s grace)`,
+                'FORM_FILL_TIMEOUT'
+              )
+            );
           }
         }, 5000);
       }, this.timeout);
@@ -173,7 +178,9 @@ export class FormFillClient {
           reject(
             new OCRError(
               `Form fill worker killed by signal ${exitSignal} (file: ${filePath}). ${signalDetail}`,
-              exitSignal === 'SIGTERM' || exitSignal === 'SIGALRM' ? 'FORM_FILL_TIMEOUT' : 'FORM_FILL_API_ERROR'
+              exitSignal === 'SIGTERM' || exitSignal === 'SIGALRM'
+                ? 'FORM_FILL_TIMEOUT'
+                : 'FORM_FILL_API_ERROR'
             )
           );
           return;

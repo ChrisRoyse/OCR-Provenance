@@ -40,11 +40,7 @@ import {
 } from '../../integration/server/helpers.js';
 
 import { vlmTools } from '../../../src/tools/vlm.js';
-import {
-  imageTools,
-  handleImageSearch,
-  handleImageDelete,
-} from '../../../src/tools/images.js';
+import { imageTools, handleImageSearch, handleImageDelete } from '../../../src/tools/images.js';
 import { structuredExtractionTools } from '../../../src/tools/extraction-structured.js';
 import { evaluationTools, handleEvaluate } from '../../../src/tools/evaluation.js';
 import { extractionTools, handleExtractImages } from '../../../src/tools/extraction.js';
@@ -64,9 +60,7 @@ interface ToolResponse {
   };
 }
 
-function parseResponse(response: {
-  content: Array<{ type: string; text: string }>;
-}): ToolResponse {
+function parseResponse(response: { content: Array<{ type: string; text: string }> }): ToolResponse {
   return JSON.parse(response.content[0].text);
 }
 
@@ -1088,9 +1082,7 @@ describe('V5 Merge Validation: Handler Dispatch With Database', () => {
       );
 
       const dOcrId = uuidv4();
-      db.insertOCRResult(
-        createTestOCRResult(dDocId, dOcrProvId, { id: dOcrId })
-      );
+      db.insertOCRResult(createTestOCRResult(dDocId, dOcrProvId, { id: dOcrId }));
 
       // Insert 2 images
       for (let i = 0; i < 2; i++) {

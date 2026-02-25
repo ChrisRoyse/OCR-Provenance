@@ -76,8 +76,16 @@ describe.skipIf(!sqliteVecAvailable)('VALUE ENHANCEMENT VERIFICATION: Phases 1-5
   });
 
   afterAll(() => {
-    try { if (db) db.close(); } catch { /* cleanup */ }
-    try { if (TEST_DB_DIR) fs.rmSync(TEST_DB_DIR, { recursive: true, force: true }); } catch { /* cleanup */ }
+    try {
+      if (db) db.close();
+    } catch {
+      /* cleanup */
+    }
+    try {
+      if (TEST_DB_DIR) fs.rmSync(TEST_DB_DIR, { recursive: true, force: true });
+    } catch {
+      /* cleanup */
+    }
   });
 
   // ─────────────────────────────────────────────────────────────────────────────
@@ -484,7 +492,8 @@ describe.skipIf(!sqliteVecAvailable)('VALUE ENHANCEMENT VERIFICATION: Phases 1-5
     });
 
     it('should chunk text with page offsets using hybrid chunker', async () => {
-      const { chunkHybridSectionAware, DEFAULT_CHUNKING_CONFIG } = await import('../../src/services/chunking/chunker.js');
+      const { chunkHybridSectionAware, DEFAULT_CHUNKING_CONFIG } =
+        await import('../../src/services/chunking/chunker.js');
 
       // Build text: ~122 chars page 1, ~122 chars page 2
       const page1Text = 'Page one content here. ' + 'x'.repeat(100);
@@ -869,14 +878,16 @@ describe.skipIf(!sqliteVecAvailable)('VALUE ENHANCEMENT VERIFICATION: Phases 1-5
     });
 
     it('should chunk empty text to empty array', async () => {
-      const { chunkHybridSectionAware, DEFAULT_CHUNKING_CONFIG } = await import('../../src/services/chunking/chunker.js');
+      const { chunkHybridSectionAware, DEFAULT_CHUNKING_CONFIG } =
+        await import('../../src/services/chunking/chunker.js');
 
       const chunks = chunkHybridSectionAware('', [], null, DEFAULT_CHUNKING_CONFIG);
       expect(chunks).toHaveLength(0);
     });
 
     it('should handle chunking with no page offsets', async () => {
-      const { chunkHybridSectionAware, DEFAULT_CHUNKING_CONFIG } = await import('../../src/services/chunking/chunker.js');
+      const { chunkHybridSectionAware, DEFAULT_CHUNKING_CONFIG } =
+        await import('../../src/services/chunking/chunker.js');
 
       const text = 'Hello world this is a test text that needs to be chunked.';
       const chunks = chunkHybridSectionAware(text, [], null, DEFAULT_CHUNKING_CONFIG);

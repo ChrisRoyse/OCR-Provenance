@@ -269,21 +269,21 @@ export function getEmbeddingsFiltered(
     params.push(filters.model_name);
   }
 
-  const whereClause = conditions.length > 0
-    ? 'WHERE ' + conditions.join(' AND ')
-    : '';
+  const whereClause = conditions.length > 0 ? 'WHERE ' + conditions.join(' AND ') : '';
 
   // Get total count
-  const countRow = db.prepare(
-    `SELECT COUNT(*) as total FROM embeddings e ${whereClause}`
-  ).get(...params) as { total: number };
+  const countRow = db
+    .prepare(`SELECT COUNT(*) as total FROM embeddings e ${whereClause}`)
+    .get(...params) as { total: number };
 
   const limit = filters.limit ?? 50;
   const offset = filters.offset ?? 0;
 
-  const rows = db.prepare(
-    `SELECT e.* FROM embeddings e ${whereClause} ORDER BY e.created_at DESC LIMIT ? OFFSET ?`
-  ).all(...params, limit, offset) as EmbeddingRow[];
+  const rows = db
+    .prepare(
+      `SELECT e.* FROM embeddings e ${whereClause} ORDER BY e.created_at DESC LIMIT ? OFFSET ?`
+    )
+    .all(...params, limit, offset) as EmbeddingRow[];
 
   return {
     embeddings: rows.map(rowToEmbedding),
@@ -317,12 +317,14 @@ export function getEmbeddingStats(
   const docParams: unknown[] = documentId ? [documentId] : [];
 
   // Total embeddings
-  const totalRow = db.prepare(
-    `SELECT COUNT(*) as total FROM embeddings${docFilter}`
-  ).get(...docParams) as { total: number };
+  const totalRow = db
+    .prepare(`SELECT COUNT(*) as total FROM embeddings${docFilter}`)
+    .get(...docParams) as { total: number };
 
   // By source type
-  const sourceTypeRows = db.prepare(`
+  const sourceTypeRows = db
+    .prepare(
+      `
     SELECT
       CASE
         WHEN chunk_id IS NOT NULL AND image_id IS NULL AND extraction_id IS NULL THEN 'chunk'
@@ -334,7 +336,9 @@ export function getEmbeddingStats(
       COALESCE(AVG(generation_duration_ms), 0) as avg_duration_ms
     FROM embeddings${docFilter}
     GROUP BY source_type
-  `).all(...docParams) as Array<{ source_type: string; count: number; avg_duration_ms: number }>;
+  `
+    )
+    .all(...docParams) as Array<{ source_type: string; count: number; avg_duration_ms: number }>;
 
   const by_source_type: Record<string, { count: number; avg_duration_ms: number }> = {};
   for (const row of sourceTypeRows) {
@@ -345,13 +349,17 @@ export function getEmbeddingStats(
   }
 
   // By device (from provenance processor field)
-  const deviceRows = db.prepare(`
+  const deviceRows = db
+    .prepare(
+      `
     SELECT
       COALESCE(e.gpu_device, 'unknown') as device,
       COUNT(*) as count
     FROM embeddings e${docFilter}
     GROUP BY device
-  `).all(...docParams) as Array<{ device: string; count: number }>;
+  `
+    )
+    .all(...docParams) as Array<{ device: string; count: number }>;
 
   const by_device: Record<string, number> = {};
   for (const row of deviceRows) {
@@ -359,18 +367,26 @@ export function getEmbeddingStats(
   }
 
   // Unembedded chunks: chunks with embedding_status != 'complete'
-  const unembeddedChunksRow = db.prepare(`
+  const unembeddedChunksRow = db
+    .prepare(
+      `
     SELECT COUNT(*) as count FROM chunks
     WHERE embedding_status != 'complete'${documentId ? ' AND document_id = ?' : ''}
-  `).get(...docParams) as { count: number };
+  `
+    )
+    .get(...docParams) as { count: number };
 
   // Unembedded images: images with vlm_status='complete' but no VLM embedding
-  const unembeddedImagesRow = db.prepare(`
+  const unembeddedImagesRow = db
+    .prepare(
+      `
     SELECT COUNT(*) as count FROM images i
     WHERE i.vlm_status = 'complete'
       AND i.vlm_embedding_id IS NULL
       ${documentId ? 'AND i.document_id = ?' : ''}
-  `).get(...docParams) as { count: number };
+  `
+    )
+    .get(...docParams) as { count: number };
 
   return {
     total_embeddings: totalRow.total,
@@ -388,10 +404,7 @@ export function getEmbeddingStats(
  * @param chunkId - Chunk ID
  * @returns number of embeddings deleted
  */
-export function deleteEmbeddingsByChunkId(
-  db: Database.Database,
-  chunkId: string
-): number {
+export function deleteEmbeddingsByChunkId(db: Database.Database, chunkId: string): number {
   const result = db.prepare('DELETE FROM embeddings WHERE chunk_id = ?').run(chunkId);
   return result.changes;
 }
@@ -403,10 +416,7 @@ export function deleteEmbeddingsByChunkId(
  * @param imageId - Image ID
  * @returns number of embeddings deleted
  */
-export function deleteEmbeddingsByImageId(
-  db: Database.Database,
-  imageId: string
-): number {
+export function deleteEmbeddingsByImageId(db: Database.Database, imageId: string): number {
   const result = db.prepare('DELETE FROM embeddings WHERE image_id = ?').run(imageId);
   return result.changes;
 }
@@ -418,10 +428,7 @@ export function deleteEmbeddingsByImageId(
  * @param documentId - Document ID
  * @returns number of embeddings deleted
  */
-export function deleteEmbeddingsByDocumentId(
-  db: Database.Database,
-  documentId: string
-): number {
+export function deleteEmbeddingsByDocumentId(db: Database.Database, documentId: string): number {
   const result = db.prepare('DELETE FROM embeddings WHERE document_id = ?').run(documentId);
   return result.changes;
 }

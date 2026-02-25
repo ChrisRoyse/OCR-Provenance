@@ -64,13 +64,13 @@ export interface WorkflowQueueFilters {
  */
 export const VALID_TRANSITIONS: Record<string, string[]> = {
   '': ['draft'],
-  'draft': ['submitted'],
-  'submitted': ['in_review'],
-  'in_review': ['approved', 'rejected', 'changes_requested'],
-  'changes_requested': ['submitted'],
-  'approved': ['executed', 'expired', 'archived'],
-  'rejected': ['archived'],
-  'executed': ['archived'],
+  draft: ['submitted'],
+  submitted: ['in_review'],
+  in_review: ['approved', 'rejected', 'changes_requested'],
+  changes_requested: ['submitted'],
+  approved: ['executed', 'expired', 'archived'],
+  rejected: ['archived'],
+  executed: ['archived'],
 };
 
 // =============================================================================
@@ -88,9 +88,13 @@ export function getLatestWorkflowState(
   conn: Database.Database,
   documentId: string
 ): WorkflowStateRow | null {
-  return (conn.prepare(
-    'SELECT * FROM workflow_states WHERE document_id = ? ORDER BY created_at DESC, rowid DESC LIMIT 1'
-  ).get(documentId) as WorkflowStateRow) ?? null;
+  return (
+    (conn
+      .prepare(
+        'SELECT * FROM workflow_states WHERE document_id = ? ORDER BY created_at DESC, rowid DESC LIMIT 1'
+      )
+      .get(documentId) as WorkflowStateRow) ?? null
+  );
 }
 
 /**
@@ -125,7 +129,7 @@ export function createWorkflowState(
     const allowedDisplay = allowed ? allowed.join(', ') : '(none)';
     throw new Error(
       `Invalid workflow transition: cannot move from "${currentDisplay}" to "${params.state}". ` +
-      `Allowed transitions from "${currentDisplay}": [${allowedDisplay}]`
+        `Allowed transitions from "${currentDisplay}": [${allowedDisplay}]`
     );
   }
 
@@ -133,21 +137,25 @@ export function createWorkflowState(
   const now = new Date().toISOString();
   const metadataJson = params.metadata ? JSON.stringify(params.metadata) : null;
 
-  conn.prepare(`
+  conn
+    .prepare(
+      `
     INSERT INTO workflow_states (id, document_id, state, assigned_to, assigned_by, reason, due_date, completed_at, created_at, metadata_json)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `).run(
-    id,
-    params.document_id,
-    params.state,
-    params.assigned_to ?? null,
-    params.assigned_by ?? null,
-    params.reason ?? null,
-    params.due_date ?? null,
-    null, // completed_at set when reaching terminal states
-    now,
-    metadataJson
-  );
+  `
+    )
+    .run(
+      id,
+      params.document_id,
+      params.state,
+      params.assigned_to ?? null,
+      params.assigned_by ?? null,
+      params.reason ?? null,
+      params.due_date ?? null,
+      null, // completed_at set when reaching terminal states
+      now,
+      metadataJson
+    );
 
   return conn.prepare('SELECT * FROM workflow_states WHERE id = ?').get(id) as WorkflowStateRow;
 }
@@ -183,9 +191,7 @@ export function listWorkflowQueue(
     params.push(filters.due_before);
   }
 
-  const whereClause = conditions.length > 0
-    ? `WHERE ${conditions.join(' AND ')}`
-    : '';
+  const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
 
   const limit = Math.min(filters.limit ?? 50, 200);
   const offset = filters.offset ?? 0;
@@ -235,7 +241,7 @@ export function getWorkflowHistory(
   conn: Database.Database,
   documentId: string
 ): WorkflowStateRow[] {
-  return conn.prepare(
-    'SELECT * FROM workflow_states WHERE document_id = ? ORDER BY created_at ASC'
-  ).all(documentId) as WorkflowStateRow[];
+  return conn
+    .prepare('SELECT * FROM workflow_states WHERE document_id = ? ORDER BY created_at ASC')
+    .all(documentId) as WorkflowStateRow[];
 }

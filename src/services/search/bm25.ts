@@ -75,7 +75,9 @@ interface BM25SearchResult {
 /**
  * Apply quality multiplier to BM25 results, re-sort, and re-rank.
  */
-function applyQualityAndRerank(results: Array<{ bm25_score: number; rank: number; ocr_quality_score?: number | null }>): void {
+function applyQualityAndRerank(
+  results: Array<{ bm25_score: number; rank: number; ocr_quality_score?: number | null }>
+): void {
   for (const r of results) {
     r.bm25_score *= computeQualityMultiplier(r.ocr_quality_score);
   }
@@ -124,7 +126,9 @@ export class BM25SearchService {
     } else if (preSanitized) {
       // M-7: Defense-in-depth: verify the pre-sanitized query is actually safe
       if (/["'()]/.test(query)) {
-        console.error(`[WARN] preSanitized query contains FTS5 metacharacters, falling back to sanitization: "${query}"`);
+        console.error(
+          `[WARN] preSanitized query contains FTS5 metacharacters, falling back to sanitization: "${query}"`
+        );
         ftsQuery = sanitizeFTS5Query(query);
       } else {
         ftsQuery = query;
@@ -272,7 +276,9 @@ export class BM25SearchService {
     } else if (preSanitized) {
       // M-7: Defense-in-depth: verify the pre-sanitized query is actually safe
       if (/["'()]/.test(query)) {
-        console.error(`[WARN] preSanitized query contains FTS5 metacharacters, falling back to sanitization: "${query}"`);
+        console.error(
+          `[WARN] preSanitized query contains FTS5 metacharacters, falling back to sanitization: "${query}"`
+        );
         ftsQuery = sanitizeFTS5Query(query);
       } else {
         ftsQuery = query;
@@ -396,7 +402,9 @@ export class BM25SearchService {
     } else if (preSanitized) {
       // M-7: Defense-in-depth: verify the pre-sanitized query is actually safe
       if (/["'()]/.test(query)) {
-        console.error(`[WARN] preSanitized query contains FTS5 metacharacters, falling back to sanitization: "${query}"`);
+        console.error(
+          `[WARN] preSanitized query contains FTS5 metacharacters, falling back to sanitization: "${query}"`
+        );
         ftsQuery = sanitizeFTS5Query(query);
       } else {
         ftsQuery = query;
@@ -722,7 +730,9 @@ export class BM25SearchService {
     // If all triggers exist, the index is in sync by definition.
     // If any trigger is missing, the index IS stale (sync mechanism is broken).
     const chunksTriggersOk = this.checkTriggersExist([
-      'chunks_fts_ai', 'chunks_fts_ad', 'chunks_fts_au',
+      'chunks_fts_ai',
+      'chunks_fts_ad',
+      'chunks_fts_au',
     ]);
 
     // Get VLM FTS metadata (id=2) if it exists
@@ -741,9 +751,7 @@ export class BM25SearchService {
 
     const vlmIndexed = vlmMeta?.chunks_indexed ?? 0;
 
-    const vlmTriggersOk = this.checkTriggersExist([
-      'vlm_fts_ai', 'vlm_fts_ad', 'vlm_fts_au',
-    ]);
+    const vlmTriggersOk = this.checkTriggersExist(['vlm_fts_ai', 'vlm_fts_ad', 'vlm_fts_au']);
 
     // Get extraction FTS metadata (id=3) if it exists
     const extractionMeta = this.db
@@ -768,7 +776,9 @@ export class BM25SearchService {
     const extractionsIndexed = extractionMeta?.chunks_indexed ?? 0;
 
     const extractionTriggersOk = this.checkTriggersExist([
-      'extractions_fts_ai', 'extractions_fts_ad', 'extractions_fts_au',
+      'extractions_fts_ai',
+      'extractions_fts_ad',
+      'extractions_fts_au',
     ]);
 
     return {

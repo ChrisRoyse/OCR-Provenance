@@ -964,11 +964,13 @@ describe('Edge Cases', () => {
 
         // Update doc1 to have an earlier timestamp via direct SQL
         const conn = db.getConnection();
-        conn.prepare('UPDATE documents SET created_at = ? WHERE id = ?')
+        conn
+          .prepare('UPDATE documents SET created_at = ? WHERE id = ?')
           .run('2025-01-01T00:00:00.000Z', docId1);
 
         insertTestDocument(db, docId2, 'doc2.txt', '/test/doc2.txt');
-        conn.prepare('UPDATE documents SET created_at = ? WHERE id = ?')
+        conn
+          .prepare('UPDATE documents SET created_at = ? WHERE id = ?')
           .run('2025-01-02T00:00:00.000Z', docId2);
 
         const response = await handleDocumentList({});
@@ -1341,7 +1343,16 @@ describe('handleFindSimilar', () => {
     // Create a 768-dim vector with known pattern
     const vec1 = new Float32Array(768);
     for (let i = 0; i < 768; i++) vec1[i] = 0.1;
-    insertTestEmbeddingWithVector(db, vec, emb1Id, chunk1Id, doc1Id, doc1ProvId, 'Document one text', vec1);
+    insertTestEmbeddingWithVector(
+      db,
+      vec,
+      emb1Id,
+      chunk1Id,
+      doc1Id,
+      doc1ProvId,
+      'Document one text',
+      vec1
+    );
 
     // Create doc2 with similar vector (close to doc1)
     const doc2Id = uuidv4();
@@ -1351,7 +1362,16 @@ describe('handleFindSimilar', () => {
     const emb2Id = uuidv4();
     const vec2 = new Float32Array(768);
     for (let i = 0; i < 768; i++) vec2[i] = 0.11; // Very similar to vec1
-    insertTestEmbeddingWithVector(db, vec, emb2Id, chunk2Id, doc2Id, doc2ProvId, 'Document two text', vec2);
+    insertTestEmbeddingWithVector(
+      db,
+      vec,
+      emb2Id,
+      chunk2Id,
+      doc2Id,
+      doc2ProvId,
+      'Document two text',
+      vec2
+    );
 
     // Create doc3 with different vector (far from doc1)
     const doc3Id = uuidv4();
@@ -1360,8 +1380,17 @@ describe('handleFindSimilar', () => {
     insertTestChunk(db, chunk3Id, doc3Id, doc3ProvId, 'Document three about cooking recipes', 0);
     const emb3Id = uuidv4();
     const vec3 = new Float32Array(768);
-    for (let i = 0; i < 768; i++) vec3[i] = (i % 2 === 0) ? -0.5 : 0.5; // Different pattern
-    insertTestEmbeddingWithVector(db, vec, emb3Id, chunk3Id, doc3Id, doc3ProvId, 'Document three text', vec3);
+    for (let i = 0; i < 768; i++) vec3[i] = i % 2 === 0 ? -0.5 : 0.5; // Different pattern
+    insertTestEmbeddingWithVector(
+      db,
+      vec,
+      emb3Id,
+      chunk3Id,
+      doc3Id,
+      doc3ProvId,
+      'Document three text',
+      vec3
+    );
 
     // Find similar to doc1
     const response = await handleFindSimilar({ document_id: doc1Id, min_similarity: 0.0 });
@@ -1377,7 +1406,7 @@ describe('handleFindSimilar', () => {
     expect(similar[0].document_id).toBe(doc2Id);
     expect(similar[0].file_name).toBe('doc2.txt');
     expect(typeof similar[0].avg_similarity).toBe('number');
-    expect((similar[0].avg_similarity as number)).toBeGreaterThan(0);
+    expect(similar[0].avg_similarity as number).toBeGreaterThan(0);
   });
 
   it.skipIf(!sqliteVecAvailable)('excludes source document from results', async () => {
@@ -1461,27 +1490,30 @@ describe('handleDocumentStructure', () => {
     expect(result.error?.category).toBe('VALIDATION_ERROR');
   });
 
-  it.skipIf(!sqliteVecAvailable)('returns empty structure for document with no OCR or chunks', async () => {
-    const db = DatabaseService.create(dbName, undefined, tempDir);
-    state.currentDatabase = db;
-    state.currentDatabaseName = dbName;
+  it.skipIf(!sqliteVecAvailable)(
+    'returns empty structure for document with no OCR or chunks',
+    async () => {
+      const db = DatabaseService.create(dbName, undefined, tempDir);
+      state.currentDatabase = db;
+      state.currentDatabaseName = dbName;
 
-    const docId = uuidv4();
-    insertTestDocument(db, docId, 'empty.txt', '/test/empty.txt');
+      const docId = uuidv4();
+      insertTestDocument(db, docId, 'empty.txt', '/test/empty.txt');
 
-    const response = await handleDocumentStructure({ document_id: docId });
-    const result = parseResponse(response);
+      const response = await handleDocumentStructure({ document_id: docId });
+      const result = parseResponse(response);
 
-    expect(result.success).toBe(true);
-    expect(result.data?.document_id).toBe(docId);
-    expect(result.data?.file_name).toBe('empty.txt');
-    expect(result.data?.source).toBe('chunks');
-    expect(result.data?.outline).toEqual([]);
-    expect((result.data?.tables as Record<string, unknown>).count).toBe(0);
-    expect((result.data?.figures as Record<string, unknown>).count).toBe(0);
-    expect((result.data?.code_blocks as Record<string, unknown>).count).toBe(0);
-    expect(result.data?.total_structural_elements).toBe(0);
-  });
+      expect(result.success).toBe(true);
+      expect(result.data?.document_id).toBe(docId);
+      expect(result.data?.file_name).toBe('empty.txt');
+      expect(result.data?.source).toBe('chunks');
+      expect(result.data?.outline).toEqual([]);
+      expect((result.data?.tables as Record<string, unknown>).count).toBe(0);
+      expect((result.data?.figures as Record<string, unknown>).count).toBe(0);
+      expect((result.data?.code_blocks as Record<string, unknown>).count).toBe(0);
+      expect(result.data?.total_structural_elements).toBe(0);
+    }
+  );
 
   it.skipIf(!sqliteVecAvailable)('builds outline from chunks with heading metadata', async () => {
     const db = DatabaseService.create(dbName, undefined, tempDir);
@@ -1942,18 +1974,42 @@ describe('handleDocumentList date-range and file_type filters', () => {
     const now = new Date().toISOString();
     const hash1 = computeHash('/test/doc1.pdf');
     db.insertProvenance({
-      id: provId1, type: 'DOCUMENT', created_at: now, processed_at: now,
-      source_file_created_at: null, source_file_modified_at: null,
-      source_type: 'FILE', source_path: '/test/doc1.pdf', source_id: null,
-      root_document_id: provId1, location: null, content_hash: hash1,
-      input_hash: null, file_hash: hash1, processor: 'test', processor_version: '1.0.0',
-      processing_params: {}, processing_duration_ms: null, processing_quality_score: null,
-      parent_id: null, parent_ids: '[]', chain_depth: 0, chain_path: '["DOCUMENT"]',
+      id: provId1,
+      type: 'DOCUMENT',
+      created_at: now,
+      processed_at: now,
+      source_file_created_at: null,
+      source_file_modified_at: null,
+      source_type: 'FILE',
+      source_path: '/test/doc1.pdf',
+      source_id: null,
+      root_document_id: provId1,
+      location: null,
+      content_hash: hash1,
+      input_hash: null,
+      file_hash: hash1,
+      processor: 'test',
+      processor_version: '1.0.0',
+      processing_params: {},
+      processing_duration_ms: null,
+      processing_quality_score: null,
+      parent_id: null,
+      parent_ids: '[]',
+      chain_depth: 0,
+      chain_path: '["DOCUMENT"]',
     });
     db.insertDocument({
-      id: docId1, file_path: '/test/doc1.pdf', file_name: 'doc1.pdf', file_hash: hash1,
-      file_size: 1000, file_type: 'pdf', status: 'complete', page_count: 1,
-      provenance_id: provId1, error_message: null, ocr_completed_at: now,
+      id: docId1,
+      file_path: '/test/doc1.pdf',
+      file_name: 'doc1.pdf',
+      file_hash: hash1,
+      file_size: 1000,
+      file_type: 'pdf',
+      status: 'complete',
+      page_count: 1,
+      provenance_id: provId1,
+      error_message: null,
+      ocr_completed_at: now,
     });
 
     insertTestDocument(db, uuidv4(), 'doc2.txt', '/test/doc2.txt');

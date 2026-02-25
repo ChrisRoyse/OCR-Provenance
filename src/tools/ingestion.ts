@@ -57,7 +57,11 @@ import {
 import { getProvenanceTracker } from '../services/provenance/index.js';
 import { createVLMPipeline } from '../services/vlm/pipeline.js';
 import { ImageExtractor } from '../services/images/extractor.js';
-import { computeBlockTypeStats, detectRepeatedHeadersFooters, isRepeatedHeaderFooter } from '../services/chunking/json-block-analyzer.js';
+import {
+  computeBlockTypeStats,
+  detectRepeatedHeadersFooters,
+  isRepeatedHeaderFooter,
+} from '../services/chunking/json-block-analyzer.js';
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // TYPE DEFINITIONS
@@ -125,14 +129,18 @@ function storeChunks(
         section_path: cr.sectionPath ?? null,
         is_atomic: cr.isAtomic,
         content_types: cr.contentTypes,
-        ...(cr.tableMetadata ? {
-          table_columns: cr.tableMetadata.columnHeaders,
-          table_row_count: cr.tableMetadata.rowCount,
-          table_column_count: cr.tableMetadata.columnCount,
-          ...(cr.tableMetadata.summary ? { table_summary: cr.tableMetadata.summary } : {}),
-          ...(cr.tableMetadata.caption ? { table_caption: cr.tableMetadata.caption } : {}),
-          ...(cr.tableMetadata.continuationOf !== undefined ? { table_continuation_of: cr.tableMetadata.continuationOf } : {}),
-        } : {}),
+        ...(cr.tableMetadata
+          ? {
+              table_columns: cr.tableMetadata.columnHeaders,
+              table_row_count: cr.tableMetadata.rowCount,
+              table_column_count: cr.tableMetadata.columnCount,
+              ...(cr.tableMetadata.summary ? { table_summary: cr.tableMetadata.summary } : {}),
+              ...(cr.tableMetadata.caption ? { table_caption: cr.tableMetadata.caption } : {}),
+              ...(cr.tableMetadata.continuationOf !== undefined
+                ? { table_continuation_of: cr.tableMetadata.continuationOf }
+                : {}),
+            }
+          : {}),
       },
       location: {
         chunk_index: i,
@@ -734,16 +742,26 @@ async function processOneDocument(
   if (processResult.jsonBlocks) {
     try {
       const headerFooterInfo = detectRepeatedHeadersFooters(processResult.jsonBlocks);
-      const allRepeated = [...headerFooterInfo.repeatedHeaders, ...headerFooterInfo.repeatedFooters];
+      const allRepeated = [
+        ...headerFooterInfo.repeatedHeaders,
+        ...headerFooterInfo.repeatedFooters,
+      ];
 
       if (allRepeated.length > 0) {
         const conn = db.getConnection();
-        let tagRow = conn.prepare("SELECT id FROM tags WHERE name = ?").get('system:repeated_header_footer') as { id: string } | undefined;
+        let tagRow = conn
+          .prepare('SELECT id FROM tags WHERE name = ?')
+          .get('system:repeated_header_footer') as { id: string } | undefined;
         if (!tagRow) {
           const tagId = uuidv4();
-          conn.prepare("INSERT INTO tags (id, name, description, color) VALUES (?, ?, ?, ?)").run(
-            tagId, 'system:repeated_header_footer', 'Auto-detected repeated page header or footer content', '#888888'
-          );
+          conn
+            .prepare('INSERT INTO tags (id, name, description, color) VALUES (?, ?, ?, ?)')
+            .run(
+              tagId,
+              'system:repeated_header_footer',
+              'Auto-detected repeated page header or footer content',
+              '#888888'
+            );
           tagRow = { id: tagId };
         }
 
@@ -751,20 +769,24 @@ async function processOneDocument(
         for (const chunk of chunks) {
           if (isRepeatedHeaderFooter(chunk.text, allRepeated)) {
             const entityTagId = uuidv4();
-            conn.prepare(
-              "INSERT OR IGNORE INTO entity_tags (id, tag_id, entity_id, entity_type) VALUES (?, ?, ?, 'chunk')"
-            ).run(entityTagId, tagRow.id, chunk.id);
+            conn
+              .prepare(
+                "INSERT OR IGNORE INTO entity_tags (id, tag_id, entity_id, entity_type) VALUES (?, ?, ?, 'chunk')"
+              )
+              .run(entityTagId, tagRow.id, chunk.id);
             taggedCount++;
           }
         }
-        console.error(`[T2.8] Tagged ${taggedCount} chunks as repeated header/footer (${allRepeated.length} patterns detected) for document ${doc.id}`);
+        console.error(
+          `[T2.8] Tagged ${taggedCount} chunks as repeated header/footer (${allRepeated.length} patterns detected) for document ${doc.id}`
+        );
       }
     } catch (tagError) {
       const tagErrMsg = tagError instanceof Error ? tagError.message : String(tagError);
-      console.error(
-        `[WARN] Header/footer tagging failed for ${doc.id}: ${tagErrMsg}`
+      console.error(`[WARN] Header/footer tagging failed for ${doc.id}: ${tagErrMsg}`);
+      warnings.push(
+        `Header/footer auto-tagging failed: ${tagErrMsg}. Chunks stored but repeated headers/footers not tagged.`
       );
-      warnings.push(`Header/footer auto-tagging failed: ${tagErrMsg}. Chunks stored but repeated headers/footers not tagged.`);
     }
   }
 
@@ -782,13 +804,16 @@ async function processOneDocument(
     }
 
     // Task 4.2: Extract structured hyperlinks from Datalab metadata
-    const metadataObj = (existingExtras.metadata ?? processResult.metadata ?? null) as Record<string, unknown> | null;
+    const metadataObj = (existingExtras.metadata ?? processResult.metadata ?? null) as Record<
+      string,
+      unknown
+    > | null;
     if (metadataObj) {
       // Datalab stores links under metadata.extras_features.links or metadata.links
       const extrasFeatures = metadataObj.extras_features as Record<string, unknown> | undefined;
-      const rawLinks = (extrasFeatures?.links ?? metadataObj.links ?? null) as
-        | Array<Record<string, unknown>>
-        | null;
+      const rawLinks = (extrasFeatures?.links ?? metadataObj.links ?? null) as Array<
+        Record<string, unknown>
+      > | null;
 
       if (Array.isArray(rawLinks) && rawLinks.length > 0) {
         const structuredLinks = rawLinks
@@ -797,9 +822,9 @@ async function processOneDocument(
             return url.length > 0;
           })
           .map((link) => ({
-            url: ((link.url ?? link.href) as string),
-            anchor_text: ((link.anchor_text ?? link.text ?? link.title ?? '') as string),
-            page_number: ((link.page_number ?? link.page ?? null) as number | null),
+            url: (link.url ?? link.href) as string,
+            anchor_text: (link.anchor_text ?? link.text ?? link.title ?? '') as string,
+            page_number: (link.page_number ?? link.page ?? null) as number | null,
           }));
 
         existingExtras.structured_links = structuredLinks;
@@ -841,12 +866,12 @@ async function processOneDocument(
       table_count: tableCount,
       figure_count: figureCount,
       heading_depths: headingDepths,
-      avg_chunk_size: chunkResults.length > 0
-        ? Math.round(totalChunkSize / chunkResults.length)
-        : 0,
-      atomic_chunk_ratio: chunkResults.length > 0
-        ? Math.round((atomicChunkCount / chunkResults.length) * 100) / 100
-        : 0,
+      avg_chunk_size:
+        chunkResults.length > 0 ? Math.round(totalChunkSize / chunkResults.length) : 0,
+      atomic_chunk_ratio:
+        chunkResults.length > 0
+          ? Math.round((atomicChunkCount / chunkResults.length) * 100) / 100
+          : 0,
       content_type_distribution: contentTypeDist,
     };
 
@@ -858,14 +883,14 @@ async function processOneDocument(
 
     console.error(
       `[INFO] Extras enriched: block_stats=${blockStats ? 'yes' : 'no'}, ` +
-      `links=${existingExtras.link_count ?? 0}, fingerprint=yes`
+        `links=${existingExtras.link_count ?? 0}, fingerprint=yes`
     );
   } catch (enrichError) {
     const enrichErrMsg = enrichError instanceof Error ? enrichError.message : String(enrichError);
-    console.error(
-      `[WARN] Extras enrichment failed for ${doc.id}: ${enrichErrMsg}`
+    console.error(`[WARN] Extras enrichment failed for ${doc.id}: ${enrichErrMsg}`);
+    warnings.push(
+      `Metadata enrichment failed: ${enrichErrMsg}. Document complete but block stats, links, and structural fingerprint are missing.`
     );
-    warnings.push(`Metadata enrichment failed: ${enrichErrMsg}. Document complete but block stats, links, and structural fingerprint are missing.`);
   }
 
   // Step 4: Generate embeddings for text chunks
@@ -878,12 +903,7 @@ async function processOneDocument(
     documentProvenanceId: doc.provenance_id,
   };
 
-  const embedResult = await embeddingService.embedDocumentChunks(
-    db,
-    vector,
-    chunks,
-    documentInfo
-  );
+  const embedResult = await embeddingService.embedDocumentChunks(db, vector, chunks, documentInfo);
 
   if (!embedResult.success) {
     throw new Error(embedResult.error ?? 'Embedding generation failed');
@@ -1079,7 +1099,9 @@ export async function handleIngestDirectory(
             continue;
           }
           // Version change detected - continue with normal ingestion flow below
-          console.error(`[Ingestion] Version update detected for ${filePath}: ${existingByPath.file_hash} -> ${fileHash}`);
+          console.error(
+            `[Ingestion] Version update detected for ${filePath}: ${existingByPath.file_hash} -> ${fileHash}`
+          );
         } else {
           // Check for duplicate by file hash (same content, different path)
           const existingByHash = db.getDocumentByHash(fileHash);
@@ -1268,7 +1290,9 @@ export async function handleIngestFiles(
             continue;
           }
           // Version change detected - continue with normal ingestion flow below
-          console.error(`[Ingestion] Version update detected for ${filePath}: ${existingByPath.file_hash} -> ${fileHash}`);
+          console.error(
+            `[Ingestion] Version update detected for ${filePath}: ${existingByPath.file_hash} -> ${fileHash}`
+          );
         } else {
           // Check for duplicate by file hash (same content, different path)
           const existingByHash = db.getDocumentByHash(fileHash);
@@ -1507,24 +1531,50 @@ export async function handleProcessPending(
       let autoClusterResult: Record<string, unknown> | undefined;
       const config = getConfig();
       if (config.autoClusterEnabled && results.processed > 0) {
-        const totalDocs = (conn.prepare('SELECT COUNT(*) as cnt FROM documents WHERE status = ?').get('complete') as { cnt: number }).cnt;
+        const totalDocs = (
+          conn
+            .prepare('SELECT COUNT(*) as cnt FROM documents WHERE status = ?')
+            .get('complete') as { cnt: number }
+        ).cnt;
         const threshold = config.autoClusterThreshold ?? 10;
 
         // Check if we have enough docs and no recent clustering run
-        const lastCluster = conn.prepare('SELECT MAX(created_at) as latest FROM clusters').get() as { latest: string | null };
+        const lastCluster = conn
+          .prepare('SELECT MAX(created_at) as latest FROM clusters')
+          .get() as { latest: string | null };
         const lastClusterDate = lastCluster?.latest ? new Date(lastCluster.latest) : null;
-        const hoursSinceLastCluster = lastClusterDate ? (Date.now() - lastClusterDate.getTime()) / 3600000 : Infinity;
+        const hoursSinceLastCluster = lastClusterDate
+          ? (Date.now() - lastClusterDate.getTime()) / 3600000
+          : Infinity;
 
         if (totalDocs >= threshold && hoursSinceLastCluster > 1) {
           try {
             const { runClustering } = await import('../services/clustering/clustering-service.js');
             const algorithm = config.autoClusterAlgorithm ?? 'hdbscan';
-            const clusterResult = await runClustering(db, vector, { algorithm, n_clusters: null, min_cluster_size: 3, distance_threshold: null, linkage: 'average' });
-            autoClusterResult = { triggered: true, run_id: clusterResult.run_id, clusters: clusterResult.n_clusters, algorithm };
-            console.error(`[Ingestion] Auto-clustering triggered: ${clusterResult.n_clusters} clusters via ${algorithm}`);
+            const clusterResult = await runClustering(db, vector, {
+              algorithm,
+              n_clusters: null,
+              min_cluster_size: 3,
+              distance_threshold: null,
+              linkage: 'average',
+            });
+            autoClusterResult = {
+              triggered: true,
+              run_id: clusterResult.run_id,
+              clusters: clusterResult.n_clusters,
+              algorithm,
+            };
+            console.error(
+              `[Ingestion] Auto-clustering triggered: ${clusterResult.n_clusters} clusters via ${algorithm}`
+            );
           } catch (e) {
-            console.error(`[Ingestion] Auto-clustering failed: ${e instanceof Error ? e.message : String(e)}`);
-            autoClusterResult = { triggered: true, error: e instanceof Error ? e.message : String(e) };
+            console.error(
+              `[Ingestion] Auto-clustering failed: ${e instanceof Error ? e.message : String(e)}`
+            );
+            autoClusterResult = {
+              triggered: true,
+              error: e instanceof Error ? e.message : String(e),
+            };
           }
         }
       }
@@ -1553,9 +1603,10 @@ export async function handleProcessPending(
             .get('complete') as { cnt: number }
         ).cnt;
         if (totalDocCount > 1) {
-          (response.next_steps as Array<{ tool: string; description: string }>).push(
-            { tool: 'ocr_document_compare', description: 'Compare differences between documents' }
-          );
+          (response.next_steps as Array<{ tool: string; description: string }>).push({
+            tool: 'ocr_document_compare',
+            description: 'Compare differences between documents',
+          });
         }
       } catch (error) {
         console.error(
@@ -1912,7 +1963,8 @@ async function handleReprocess(
  */
 export const ingestionTools: Record<string, ToolDefinition> = {
   ocr_ingest_directory: {
-    description: '[PROCESSING] Use to bulk-ingest all supported files from a directory. Returns per-file status (pending/skipped/error). Follow with ocr_process_pending to run OCR.',
+    description:
+      '[PROCESSING] Use to bulk-ingest all supported files from a directory. Returns per-file status (pending/skipped/error). Follow with ocr_process_pending to run OCR.',
     inputSchema: {
       directory_path: z.string().min(1).describe('Path to directory to scan'),
       recursive: z.boolean().default(true).describe('Scan subdirectories'),
@@ -1990,7 +2042,8 @@ export const ingestionTools: Record<string, ToolDefinition> = {
     handler: handleProcessPending,
   },
   ocr_status: {
-    description: '[STATUS] Use to check processing status of documents (pending/processing/complete/failed). Returns per-document status and summary counts.',
+    description:
+      '[STATUS] Use to check processing status of documents (pending/processing/complete/failed). Returns per-document status and summary counts.',
     inputSchema: {
       document_id: z.string().optional().describe('Specific document ID to check'),
       status_filter: z
@@ -2001,7 +2054,8 @@ export const ingestionTools: Record<string, ToolDefinition> = {
     handler: handleOCRStatus,
   },
   ocr_retry_failed: {
-    description: '[PROCESSING] Use to reset failed documents back to pending for reprocessing. Cleans derived data first. Follow with ocr_process_pending.',
+    description:
+      '[PROCESSING] Use to reset failed documents back to pending for reprocessing. Cleans derived data first. Follow with ocr_process_pending.',
     inputSchema: {
       document_id: z
         .string()
@@ -2011,7 +2065,8 @@ export const ingestionTools: Record<string, ToolDefinition> = {
     handler: handleRetryFailed,
   },
   ocr_reprocess: {
-    description: '[PROCESSING] Use to re-run OCR on a document with different settings. Cleans existing data first. Returns quality comparison (before/after).',
+    description:
+      '[PROCESSING] Use to re-run OCR on a document with different settings. Cleans existing data first. Returns quality comparison (before/after).',
     inputSchema: {
       document_id: z.string().min(1).describe('Document ID to reprocess'),
       ocr_mode: z.enum(['fast', 'balanced', 'accurate']).optional().describe('OCR mode override'),

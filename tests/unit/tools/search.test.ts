@@ -17,11 +17,7 @@ import { join } from 'path';
 import { tmpdir } from 'os';
 import { v4 as uuidv4 } from 'uuid';
 
-import {
-  handleSearchUnified,
-  handleFTSManage,
-  searchTools,
-} from '../../../src/tools/search.js';
+import { handleSearchUnified, handleFTSManage, searchTools } from '../../../src/tools/search.js';
 
 // Wrappers that route through the unified handler with mode parameter
 const handleSearch = (params: Record<string, unknown>) =>

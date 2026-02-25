@@ -23,9 +23,18 @@ import {
   DocumentGetInput,
   DocumentDeleteInput,
 } from '../utils/validation.js';
-import { listDocumentsWithCursor, encodeCursor } from '../services/storage/database/document-operations.js';
+import {
+  listDocumentsWithCursor,
+  encodeCursor,
+} from '../services/storage/database/document-operations.js';
 import { documentNotFoundError, MCPError } from '../server/errors.js';
-import { formatResponse, handleError, fetchProvenanceChain, type ToolResponse, type ToolDefinition } from './shared.js';
+import {
+  formatResponse,
+  handleError,
+  fetchProvenanceChain,
+  type ToolResponse,
+  type ToolDefinition,
+} from './shared.js';
 import { getComparisonSummariesByDocument } from '../services/storage/database/comparison-operations.js';
 import { getClusterSummariesForDocument } from '../services/storage/database/cluster-operations.js';
 import { getImagesByDocument } from '../services/storage/database/image-operations.js';
@@ -66,14 +75,23 @@ const DocumentListInputWithCursor = z.object({
   status_filter: z.enum(['pending', 'processing', 'complete', 'failed']).optional(),
   limit: z.number().int().min(1).max(1000).default(50),
   offset: z.number().int().min(0).default(0),
-  created_after: z.string().datetime().optional()
+  created_after: z
+    .string()
+    .datetime()
+    .optional()
     .describe('Filter documents created after this ISO 8601 timestamp'),
-  created_before: z.string().datetime().optional()
+  created_before: z
+    .string()
+    .datetime()
+    .optional()
     .describe('Filter documents created before this ISO 8601 timestamp'),
-  file_type: z.string().optional()
-    .describe('Filter by file type (e.g., "pdf", "docx")'),
-  cursor: z.string().optional()
-    .describe('Cursor from a previous response for keyset pagination. When provided, offset is ignored.'),
+  file_type: z.string().optional().describe('Filter by file type (e.g., "pdf", "docx")'),
+  cursor: z
+    .string()
+    .optional()
+    .describe(
+      'Cursor from a previous response for keyset pagination. When provided, offset is ignored.'
+    ),
 });
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -128,7 +146,9 @@ export async function handleDocumentList(params: Record<string, unknown>): Promi
         .prepare(`SELECT COUNT(*) as total FROM documents${whereClause}`)
         .get(...queryParams) as { total: number };
 
-      const extrasStmt = conn.prepare('SELECT extras_json FROM ocr_results WHERE document_id = ? LIMIT 1');
+      const extrasStmt = conn.prepare(
+        'SELECT extras_json FROM ocr_results WHERE document_id = ? LIMIT 1'
+      );
 
       return formatResponse(
         successResult({
@@ -169,7 +189,9 @@ export async function handleDocumentList(params: Record<string, unknown>): Promi
     const rows = conn.prepare(dataQuery).all(...dataParams) as Array<Record<string, unknown>>;
 
     // Phase 2: Prepared statement for structural summary from extras_json
-    const extrasStmt = conn.prepare('SELECT extras_json FROM ocr_results WHERE document_id = ? LIMIT 1');
+    const extrasStmt = conn.prepare(
+      'SELECT extras_json FROM ocr_results WHERE document_id = ? LIMIT 1'
+    );
 
     // Compute next_cursor from the last row for cursor-based pagination compatibility
     let next_cursor: string | null = null;
@@ -211,7 +233,7 @@ export async function handleDocumentList(params: Record<string, unknown>): Promi
  */
 function getStructuralSummary(
   extrasStmt: import('better-sqlite3').Statement,
-  documentId: string,
+  documentId: string
 ): Record<string, unknown> | null {
   try {
     const ocrRow = extrasStmt.get(documentId) as { extras_json: string | null } | undefined;
@@ -223,11 +245,15 @@ function getStructuralSummary(
     return {
       table_count: fp.table_count ?? 0,
       figure_count: fp.figure_count ?? 0,
-      heading_count: headingDepths ? Object.values(headingDepths).reduce((a: number, b: number) => a + b, 0) : 0,
+      heading_count: headingDepths
+        ? Object.values(headingDepths).reduce((a: number, b: number) => a + b, 0)
+        : 0,
       content_types: fp.content_type_distribution ?? null,
     };
   } catch (error) {
-    console.error(`[documents] Failed to parse structural fingerprint for document ${documentId}: ${error instanceof Error ? error.message : String(error)}`);
+    console.error(
+      `[documents] Failed to parse structural fingerprint for document ${documentId}: ${error instanceof Error ? error.message : String(error)}`
+    );
     return null;
   }
 }
@@ -244,7 +270,10 @@ function buildDocumentListNextSteps(total: number): Array<{ tool: string; descri
     : [
         { tool: 'ocr_document_get', description: 'Get details for a specific document by ID' },
         { tool: 'ocr_search', description: 'Search within the corpus' },
-        { tool: 'ocr_document_structure', description: 'View a document outline (headings, tables)' },
+        {
+          tool: 'ocr_document_structure',
+          description: 'View a document outline (headings, tables)',
+        },
       ];
 }
 
@@ -315,17 +344,19 @@ export async function handleDocumentGet(params: Record<string, unknown>): Promis
     }
 
     // Compute document_profile from block_type_stats (no additional DB queries)
-    const stats = result.block_type_stats as {
-      total_blocks: number;
-      text_blocks: number;
-      table_blocks: number;
-      figure_blocks: number;
-      code_blocks: number;
-      list_blocks: number;
-      tables_per_page: number;
-      figures_per_page: number;
-      text_density: number;
-    } | undefined;
+    const stats = result.block_type_stats as
+      | {
+          total_blocks: number;
+          text_blocks: number;
+          table_blocks: number;
+          figure_blocks: number;
+          code_blocks: number;
+          list_blocks: number;
+          tables_per_page: number;
+          figures_per_page: number;
+          text_density: number;
+        }
+      | undefined;
     if (stats) {
       const richBlockCount = stats.table_blocks + stats.figure_blocks + stats.code_blocks;
       let contentComplexity: 'high' | 'medium' | 'low';
@@ -490,33 +521,50 @@ export async function handleDocumentDelete(params: Record<string, unknown>): Pro
 
 const DocumentStructureInput = z.object({
   document_id: z.string().min(1).describe('Document ID'),
-  format: z.enum(['structure', 'tree', 'outline']).default('structure')
-    .describe('Output format: "structure" (headings/tables/figures/code), "tree" (hierarchical section tree with chunks), "outline" (flat numbered section list)'),
-  include_chunk_ids: z.boolean().default(true)
+  format: z
+    .enum(['structure', 'tree', 'outline'])
+    .default('structure')
+    .describe(
+      'Output format: "structure" (headings/tables/figures/code), "tree" (hierarchical section tree with chunks), "outline" (flat numbered section list)'
+    ),
+  include_chunk_ids: z
+    .boolean()
+    .default(true)
     .describe('Include chunk IDs in each section node (tree/outline formats only)'),
-  include_page_numbers: z.boolean().default(true)
+  include_page_numbers: z
+    .boolean()
+    .default(true)
     .describe('Include page numbers in each section node (tree/outline formats only)'),
 });
 
 const FindSimilarInput = z.object({
   document_id: z.string().min(1).describe('Source document ID'),
   limit: z.number().int().min(1).max(50).default(10),
-  min_similarity: z.number().min(0).max(1).default(0.5)
+  min_similarity: z
+    .number()
+    .min(0)
+    .max(1)
+    .default(0.5)
     .describe('Minimum similarity threshold (0-1)'),
 });
 
 const UpdateMetadataInput = z.object({
-  document_ids: z.array(z.string().min(1)).min(1)
-    .describe('Document IDs to update'),
+  document_ids: z.array(z.string().min(1)).min(1).describe('Document IDs to update'),
   doc_title: z.string().optional(),
   doc_author: z.string().optional(),
   doc_subject: z.string().optional(),
 });
 
 const DuplicateDetectionInput = z.object({
-  mode: z.enum(['exact', 'near']).default('near')
+  mode: z
+    .enum(['exact', 'near'])
+    .default('near')
     .describe('exact: same file_hash; near: high text similarity'),
-  similarity_threshold: z.number().min(0.5).max(1).default(0.9)
+  similarity_threshold: z
+    .number()
+    .min(0.5)
+    .max(1)
+    .default(0.9)
     .describe('Minimum similarity for near-duplicate detection'),
   limit: z.number().int().min(1).max(100).default(20),
 });
@@ -541,7 +589,8 @@ export async function handleFindSimilar(params: Record<string, unknown>): Promis
     }
 
     // Get all chunk embeddings for source document
-    const embeddingRows = db.getConnection()
+    const embeddingRows = db
+      .getConnection()
       .prepare('SELECT id FROM embeddings WHERE document_id = ? AND chunk_id IS NOT NULL')
       .all(input.document_id) as Array<{ id: string }>;
 
@@ -630,7 +679,9 @@ export async function handleFindSimilar(params: Record<string, unknown>): Promis
           }
         }
       } catch (error) {
-        console.error(`[documents] Failed to enrich structural fingerprint for document ${r.document_id}: ${error instanceof Error ? error.message : String(error)}`);
+        console.error(
+          `[documents] Failed to enrich structural fingerprint for document ${r.document_id}: ${error instanceof Error ? error.message : String(error)}`
+        );
       }
 
       return {
@@ -650,7 +701,10 @@ export async function handleFindSimilar(params: Record<string, unknown>): Promis
         source_chunk_count: vectors.length,
         similar_documents: similarDocuments,
         total: similarDocuments.length,
-        next_steps: [{ tool: 'ocr_document_get', description: 'Get details for a similar document' }, { tool: 'ocr_document_compare', description: 'Compare two similar documents' }],
+        next_steps: [
+          { tool: 'ocr_document_get', description: 'Get details for a similar document' },
+          { tool: 'ocr_document_compare', description: 'Compare two similar documents' },
+        ],
       })
     );
   } catch (error) {
@@ -727,7 +781,9 @@ export async function handleUpdateMetadata(params: Record<string, unknown>): Pro
 /**
  * Handle ocr_document_duplicates - Detect duplicate documents
  */
-export async function handleDuplicateDetection(params: Record<string, unknown>): Promise<ToolResponse> {
+export async function handleDuplicateDetection(
+  params: Record<string, unknown>
+): Promise<ToolResponse> {
   try {
     const input = validateInput(DuplicateDetectionInput, params);
     const { db } = requireDatabase();
@@ -767,7 +823,10 @@ export async function handleDuplicateDetection(params: Record<string, unknown>):
           total_groups: duplicateGroups.length,
           total_duplicate_documents: duplicateGroups.reduce((sum, g) => sum + g.count, 0),
           groups: duplicateGroups,
-          next_steps: [{ tool: 'ocr_document_compare', description: 'Compare a duplicate pair in detail' }, { tool: 'ocr_document_delete', description: 'Delete a confirmed duplicate' }],
+          next_steps: [
+            { tool: 'ocr_document_compare', description: 'Compare a duplicate pair in detail' },
+            { tool: 'ocr_document_delete', description: 'Delete a confirmed duplicate' },
+          ],
         })
       );
     } else {
@@ -810,7 +869,10 @@ export async function handleDuplicateDetection(params: Record<string, unknown>):
             similarity_ratio: c.similarity_ratio,
             summary: c.summary,
           })),
-          next_steps: [{ tool: 'ocr_document_compare', description: 'Compare a duplicate pair in detail' }, { tool: 'ocr_document_delete', description: 'Delete a confirmed duplicate' }],
+          next_steps: [
+            { tool: 'ocr_document_compare', description: 'Compare a duplicate pair in detail' },
+            { tool: 'ocr_document_delete', description: 'Delete a confirmed duplicate' },
+          ],
         })
       );
     }
@@ -903,7 +965,9 @@ function walkBlocks(
  * - 'tree': hierarchical section tree with chunk_ids, page_numbers (merged from ocr_document_sections)
  * - 'outline': flat numbered outline with chunk counts (merged from ocr_document_sections)
  */
-export async function handleDocumentStructure(params: Record<string, unknown>): Promise<ToolResponse> {
+export async function handleDocumentStructure(
+  params: Record<string, unknown>
+): Promise<ToolResponse> {
   try {
     const input = validateInput(DocumentStructureInput, params);
     const { db } = requireDatabase();
@@ -934,24 +998,30 @@ export async function handleDocumentStructure(params: Record<string, unknown>): 
 
     if (ocrRow?.json_blocks) {
       try {
-        const parsed = JSON.parse(ocrRow.json_blocks) as Record<string, unknown> | Array<Record<string, unknown>>;
+        const parsed = JSON.parse(ocrRow.json_blocks) as
+          | Record<string, unknown>
+          | Array<Record<string, unknown>>;
         // Handle both formats: array of blocks or {children: [...]} object
-        const blocks = Array.isArray(parsed) ? parsed
-          : (Array.isArray((parsed as Record<string, unknown>).children) ? (parsed as Record<string, unknown>).children as Array<Record<string, unknown>> : null);
+        const blocks = Array.isArray(parsed)
+          ? parsed
+          : Array.isArray((parsed as Record<string, unknown>).children)
+            ? ((parsed as Record<string, unknown>).children as Array<Record<string, unknown>>)
+            : null;
         if (blocks && blocks.length > 0) {
           walkBlocks(blocks, outline, tables, figures, codeBlocks);
           source = 'json_blocks';
 
           // Build document map with table column details
           try {
-            const ocrTextRow = conn.prepare('SELECT extracted_text FROM ocr_results WHERE document_id = ?')
+            const ocrTextRow = conn
+              .prepare('SELECT extracted_text FROM ocr_results WHERE document_id = ?')
               .get(input.document_id) as { extracted_text: string | null } | undefined;
 
             if (ocrTextRow?.extracted_text) {
               // Pass the original parsed object (or wrap array in {children:...})
               const jsonBlocksRoot = Array.isArray(parsed)
-                ? { children: parsed } as Record<string, unknown>
-                : parsed as Record<string, unknown>;
+                ? ({ children: parsed } as Record<string, unknown>)
+                : (parsed as Record<string, unknown>);
               const tableStructures = extractTableStructures(
                 jsonBlocksRoot,
                 ocrTextRow.extracted_text,
@@ -959,22 +1029,22 @@ export async function handleDocumentStructure(params: Record<string, unknown>): 
               );
 
               documentMap = {
-                sections: outline.map(o => ({
+                sections: outline.map((o) => ({
                   heading: o.text,
                   level: o.level,
                   page: o.page,
                 })),
-                tables: tableStructures.map(ts => ({
+                tables: tableStructures.map((ts) => ({
                   page: ts.pageNumber,
                   columns: ts.columnHeaders,
                   row_count: ts.rowCount,
                   column_count: ts.columnCount,
                 })),
-                figures: figures.map(f => ({
+                figures: figures.map((f) => ({
                   page: f.page,
                   caption: f.caption ?? null,
                 })),
-                code_blocks: codeBlocks.map(cb => ({
+                code_blocks: codeBlocks.map((cb) => ({
                   page: cb.page,
                   language: cb.language ?? null,
                 })),
@@ -985,7 +1055,9 @@ export async function handleDocumentStructure(params: Record<string, unknown>): 
           }
         }
       } catch (parseErr) {
-        console.error(`[DocumentStructure] Failed to parse json_blocks for ${input.document_id}: ${String(parseErr)}`);
+        console.error(
+          `[DocumentStructure] Failed to parse json_blocks for ${input.document_id}: ${String(parseErr)}`
+        );
         // Fall through to chunk-based analysis
       }
     }
@@ -1012,8 +1084,13 @@ export async function handleDocumentStructure(params: Record<string, unknown>): 
       tables: { count: tables.length, items: tables },
       figures: { count: figures.length, items: figures },
       code_blocks: { count: codeBlocks.length, items: codeBlocks },
-      total_structural_elements: outline.length + tables.length + figures.length + codeBlocks.length,
-      next_steps: [{ tool: 'ocr_document_page', description: 'Read a specific page from the document' }, { tool: 'ocr_search', description: 'Search within the document' }, { tool: 'ocr_document_tables', description: 'Extract table data from the document' }],
+      total_structural_elements:
+        outline.length + tables.length + figures.length + codeBlocks.length,
+      next_steps: [
+        { tool: 'ocr_document_page', description: 'Read a specific page from the document' },
+        { tool: 'ocr_search', description: 'Search within the document' },
+        { tool: 'ocr_document_tables', description: 'Extract table data from the document' },
+      ],
     };
     if (documentMap) {
       responseData.document_map = documentMap;
@@ -1067,7 +1144,12 @@ function flattenToOutline(nodes: SectionNode[], prefix = ''): string[] {
 async function handleDocumentSectionsInternal(
   db: DatabaseService,
   doc: Document,
-  input: { document_id: string; format?: string; include_chunk_ids?: boolean; include_page_numbers?: boolean }
+  input: {
+    document_id: string;
+    format?: string;
+    include_chunk_ids?: boolean;
+    include_page_numbers?: boolean;
+  }
 ): Promise<ToolResponse> {
   try {
     const chunks = db.getChunksByDocumentId(input.document_id);
@@ -1088,7 +1170,10 @@ async function handleDocumentSectionsInternal(
     let chunksWithoutSections = 0;
 
     /** Helper to update chunk index range on a node */
-    const updateChunkIndexRange = (node: SectionNode, chunkIndex: number | null | undefined): void => {
+    const updateChunkIndexRange = (
+      node: SectionNode,
+      chunkIndex: number | null | undefined
+    ): void => {
       if (chunkIndex == null) return;
       if (node.first_chunk_index === null || chunkIndex < node.first_chunk_index) {
         node.first_chunk_index = chunkIndex;
@@ -1118,7 +1203,10 @@ async function handleDocumentSectionsInternal(
       chunksWithSections++;
 
       // Parse section_path: "Heading 1 > Heading 2 > Heading 3"
-      const parts = chunk.section_path.split(' > ').map((s) => s.trim()).filter((s) => s.length > 0);
+      const parts = chunk.section_path
+        .split(' > ')
+        .map((s) => s.trim())
+        .filter((s) => s.length > 0);
 
       let current = root;
       for (let i = 0; i < parts.length; i++) {
@@ -1203,7 +1291,11 @@ async function handleDocumentSectionsInternal(
           total_sections: totalSections,
           root_chunks: root.chunk_count,
           outline,
-          next_steps: [{ tool: 'ocr_document_page', description: 'Read a specific page from the document' }, { tool: 'ocr_search', description: 'Search within the document' }, { tool: 'ocr_document_tables', description: 'Extract table data from the document' }],
+          next_steps: [
+            { tool: 'ocr_document_page', description: 'Read a specific page from the document' },
+            { tool: 'ocr_search', description: 'Search within the document' },
+            { tool: 'ocr_document_tables', description: 'Extract table data from the document' },
+          ],
         })
       );
     }
@@ -1220,7 +1312,11 @@ async function handleDocumentSectionsInternal(
         total_sections: totalSections,
         sections: root.children,
         root_chunks: root.chunk_count,
-        next_steps: [{ tool: 'ocr_document_page', description: 'Read a specific page from the document' }, { tool: 'ocr_search', description: 'Search within the document' }, { tool: 'ocr_document_tables', description: 'Extract table data from the document' }],
+        next_steps: [
+          { tool: 'ocr_document_page', description: 'Read a specific page from the document' },
+          { tool: 'ocr_search', description: 'Search within the document' },
+          { tool: 'ocr_document_tables', description: 'Extract table data from the document' },
+        ],
       })
     );
   } catch (error) {
@@ -1233,18 +1329,28 @@ async function handleDocumentSectionsInternal(
 // ═══════════════════════════════════════════════════════════════════════════════
 
 const ExportInput = z.object({
-  document_id: z.string().min(1).optional()
+  document_id: z
+    .string()
+    .min(1)
+    .optional()
     .describe('Document ID to export. Omit to export entire corpus.'),
-  format: z.enum(['json', 'markdown', 'csv']).default('json')
+  format: z
+    .enum(['json', 'markdown', 'csv'])
+    .default('json')
     .describe('Export format: json/markdown for single doc, json/csv for corpus'),
   output_path: z.string().min(1).describe('Path to save exported file'),
-  include_images: z.boolean().default(true)
-    .describe('Include image data in export'),
-  include_extractions: z.boolean().default(true)
+  include_images: z.boolean().default(true).describe('Include image data in export'),
+  include_extractions: z
+    .boolean()
+    .default(true)
     .describe('Include structured extractions (single doc only)'),
-  include_provenance: z.boolean().default(false)
+  include_provenance: z
+    .boolean()
+    .default(false)
     .describe('Include provenance chain (single doc only)'),
-  include_chunks: z.boolean().default(false)
+  include_chunks: z
+    .boolean()
+    .default(false)
     .describe('Include chunk list per document (corpus only)'),
 });
 
@@ -1264,27 +1370,37 @@ export async function handleExport(params: Record<string, unknown>): Promise<Too
     if (input.document_id) {
       // Format validation for single doc
       if (input.format === 'csv') {
-        throw new MCPError('VALIDATION_ERROR', 'CSV format only supported for corpus export, not single document. Use json or markdown.');
+        throw new MCPError(
+          'VALIDATION_ERROR',
+          'CSV format only supported for corpus export, not single document. Use json or markdown.'
+        );
       }
-      return handleDocumentExportInternal(input as {
-        document_id: string;
-        format: 'json' | 'markdown';
-        output_path: string;
-        include_images: boolean;
-        include_extractions: boolean;
-        include_provenance: boolean;
-      });
+      return handleDocumentExportInternal(
+        input as {
+          document_id: string;
+          format: 'json' | 'markdown';
+          output_path: string;
+          include_images: boolean;
+          include_extractions: boolean;
+          include_provenance: boolean;
+        }
+      );
     } else {
       // Format validation for corpus
       if (input.format === 'markdown') {
-        throw new MCPError('VALIDATION_ERROR', 'Markdown format only supported for single document export, not corpus. Use json or csv.');
+        throw new MCPError(
+          'VALIDATION_ERROR',
+          'Markdown format only supported for single document export, not corpus. Use json or csv.'
+        );
       }
-      return handleCorpusExportInternal(input as {
-        format: 'json' | 'csv';
-        output_path: string;
-        include_images: boolean;
-        include_chunks: boolean;
-      });
+      return handleCorpusExportInternal(
+        input as {
+          format: 'json' | 'csv';
+          output_path: string;
+          include_images: boolean;
+          include_chunks: boolean;
+        }
+      );
     }
   } catch (error) {
     return handleError(error);
@@ -1622,7 +1738,17 @@ async function handleCorpusExportInternal(input: {
       // CSV format: one row per document
       const csvQuote = (value: string): string => `"${value.replace(/"/g, '""')}"`;
 
-      const headers = ['id', 'file_path', 'file_name', 'file_type', 'status', 'page_count', 'chunk_count', 'image_count', 'created_at'];
+      const headers = [
+        'id',
+        'file_path',
+        'file_name',
+        'file_type',
+        'status',
+        'page_count',
+        'chunk_count',
+        'image_count',
+        'created_at',
+      ];
       const csvLines: string[] = [headers.map(csvQuote).join(',')];
 
       for (const doc of documents) {
@@ -1635,17 +1761,19 @@ async function handleCorpusExportInternal(input: {
         const imageCount = imageCountRow?.count ?? 0;
         totalImages += imageCount;
 
-        csvLines.push([
-          csvQuote(doc.id),
-          csvQuote(doc.file_path),
-          csvQuote(doc.file_name),
-          csvQuote(doc.file_type),
-          csvQuote(doc.status),
-          csvQuote(String(doc.page_count ?? '')),
-          csvQuote(String(chunkCount)),
-          csvQuote(String(imageCount)),
-          csvQuote(doc.created_at),
-        ].join(','));
+        csvLines.push(
+          [
+            csvQuote(doc.id),
+            csvQuote(doc.file_path),
+            csvQuote(doc.file_name),
+            csvQuote(doc.file_type),
+            csvQuote(doc.status),
+            csvQuote(String(doc.page_count ?? '')),
+            csvQuote(String(chunkCount)),
+            csvQuote(String(imageCount)),
+            csvQuote(doc.created_at),
+          ].join(',')
+        );
       }
 
       writeFileSync(safePath, csvLines.join('\n'), 'utf-8');
@@ -1658,7 +1786,9 @@ async function handleCorpusExportInternal(input: {
         document_count: documents.length,
         total_chunks: totalChunks,
         total_images: totalImages,
-        next_steps: [{ tool: 'ocr_report_overview', description: 'Get quality and corpus analytics' }],
+        next_steps: [
+          { tool: 'ocr_report_overview', description: 'Get quality and corpus analytics' },
+        ],
       })
     );
   } catch (error) {
@@ -1718,7 +1848,10 @@ async function handleDocumentVersions(params: Record<string, unknown>): Promise<
           ocr_completed_at: v.ocr_completed_at,
         })),
         total_versions: versions.length,
-        next_steps: [{ tool: 'ocr_document_get', description: 'Get details for a specific version' }, { tool: 'ocr_document_compare', description: 'Compare two versions' }],
+        next_steps: [
+          { tool: 'ocr_document_get', description: 'Get details for a specific version' },
+          { tool: 'ocr_document_compare', description: 'Compare two versions' },
+        ],
       })
     );
   } catch (error) {
@@ -1741,8 +1874,12 @@ const WORKFLOW_COLORS: Record<string, string> = {
 
 const DocumentWorkflowInput = z.object({
   document_id: z.string().min(1).describe('Document ID'),
-  action: z.enum(['get', 'set', 'history']).describe('Action: get current state, set new state, or view history'),
-  state: z.enum(['draft', 'review', 'approved', 'rejected', 'archived']).optional()
+  action: z
+    .enum(['get', 'set', 'history'])
+    .describe('Action: get current state, set new state, or view history'),
+  state: z
+    .enum(['draft', 'review', 'approved', 'rejected', 'archived'])
+    .optional()
     .describe('New workflow state (required for action=set)'),
   note: z.string().max(500).optional().describe('Optional note for state transition'),
 });
@@ -1787,7 +1924,16 @@ async function handleDocumentWorkflow(params: Record<string, unknown>): Promise<
         successResult({
           document_id: input.document_id,
           current_state: getCurrentWorkflowState(conn, input.document_id),
-          next_steps: [{ tool: 'ocr_document_get', description: 'View document details after workflow change' }, { tool: 'ocr_tag_search', description: 'Find other documents in the same workflow state' }],
+          next_steps: [
+            {
+              tool: 'ocr_document_get',
+              description: 'View document details after workflow change',
+            },
+            {
+              tool: 'ocr_tag_search',
+              description: 'Find other documents in the same workflow state',
+            },
+          ],
         })
       );
     }
@@ -1820,9 +1966,7 @@ async function handleDocumentWorkflow(params: Record<string, unknown>): Promise<
         );
 
       // Get the tag ID (may have been pre-existing)
-      const tag = conn
-        .prepare('SELECT id FROM tags WHERE name = ?')
-        .get(tagName) as { id: string };
+      const tag = conn.prepare('SELECT id FROM tags WHERE name = ?').get(tagName) as { id: string };
 
       // Apply tag to document
       conn
@@ -1839,7 +1983,16 @@ async function handleDocumentWorkflow(params: Record<string, unknown>): Promise<
           new_state: input.state,
           transitioned_at: now,
           note: input.note ?? null,
-          next_steps: [{ tool: 'ocr_document_get', description: 'View document details after workflow change' }, { tool: 'ocr_tag_search', description: 'Find other documents in the same workflow state' }],
+          next_steps: [
+            {
+              tool: 'ocr_document_get',
+              description: 'View document details after workflow change',
+            },
+            {
+              tool: 'ocr_tag_search',
+              description: 'Find other documents in the same workflow state',
+            },
+          ],
         })
       );
     }
@@ -1857,9 +2010,10 @@ async function handleDocumentWorkflow(params: Record<string, unknown>): Promise<
       .all(input.document_id) as Array<{ name: string; created_at: string }>;
 
     // Get current state (last entry)
-    const currentState = historyRows.length > 0
-      ? historyRows[historyRows.length - 1].name.replace(WORKFLOW_PREFIX, '')
-      : 'none';
+    const currentState =
+      historyRows.length > 0
+        ? historyRows[historyRows.length - 1].name.replace(WORKFLOW_PREFIX, '')
+        : 'none';
 
     return formatResponse(
       successResult({
@@ -1869,7 +2023,13 @@ async function handleDocumentWorkflow(params: Record<string, unknown>): Promise<
           state: r.name.replace(WORKFLOW_PREFIX, ''),
           applied_at: r.created_at,
         })),
-        next_steps: [{ tool: 'ocr_document_get', description: 'View document details after workflow change' }, { tool: 'ocr_tag_search', description: 'Find other documents in the same workflow state' }],
+        next_steps: [
+          { tool: 'ocr_document_get', description: 'View document details after workflow change' },
+          {
+            tool: 'ocr_tag_search',
+            description: 'Find other documents in the same workflow state',
+          },
+        ],
       })
     );
   } catch (error) {
@@ -1895,14 +2055,23 @@ export const documentTools: Record<string, ToolDefinition> = {
         .describe('Filter by status'),
       limit: z.number().int().min(1).max(1000).default(50).describe('Maximum results'),
       offset: z.number().int().min(0).default(0).describe('Offset for pagination'),
-      created_after: z.string().datetime().optional()
+      created_after: z
+        .string()
+        .datetime()
+        .optional()
         .describe('Filter documents created after this ISO 8601 timestamp'),
-      created_before: z.string().datetime().optional()
+      created_before: z
+        .string()
+        .datetime()
+        .optional()
         .describe('Filter documents created before this ISO 8601 timestamp'),
-      file_type: z.string().optional()
-        .describe('Filter by file type (e.g., "pdf", "docx")'),
-      cursor: z.string().optional()
-        .describe('Cursor from previous response for efficient keyset pagination. When provided, offset is ignored. Use next_cursor from the response.'),
+      file_type: z.string().optional().describe('Filter by file type (e.g., "pdf", "docx")'),
+      cursor: z
+        .string()
+        .optional()
+        .describe(
+          'Cursor from previous response for efficient keyset pagination. When provided, offset is ignored. Use next_cursor from the response.'
+        ),
     },
     handler: handleDocumentList,
   },

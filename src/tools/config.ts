@@ -98,9 +98,12 @@ const CONFIG_VALIDATORS: Record<string, (value: unknown) => void> = {
   },
   auto_cluster_algorithm: (v) => {
     if (typeof v !== 'string' || !['hdbscan', 'agglomerative', 'kmeans'].includes(v))
-      throw validationError('auto_cluster_algorithm must be "hdbscan", "agglomerative", or "kmeans"', {
-        value: v,
-      });
+      throw validationError(
+        'auto_cluster_algorithm must be "hdbscan", "agglomerative", or "kmeans"',
+        {
+          value: v,
+        }
+      );
   },
 };
 
@@ -222,14 +225,16 @@ export async function handleConfigSet(params: Record<string, unknown>): Promise<
  */
 export const configTools: Record<string, ToolDefinition> = {
   ocr_config_get: {
-    description: '[STATUS] Use to view current system configuration (OCR mode, chunk size, embedding settings, auto-clustering). Returns all or one specific key.',
+    description:
+      '[STATUS] Use to view current system configuration (OCR mode, chunk size, embedding settings, auto-clustering). Returns all or one specific key.',
     inputSchema: {
       key: ConfigKey.optional().describe('Specific config key to retrieve'),
     },
     handler: handleConfigGet,
   },
   ocr_config_set: {
-    description: '[SETUP] Use to change a system configuration setting (OCR mode, chunk size, concurrency, auto-clustering). Returns updated value.',
+    description:
+      '[SETUP] Use to change a system configuration setting (OCR mode, chunk size, concurrency, auto-clustering). Returns updated value.',
     inputSchema: {
       key: ConfigKey.describe('Configuration key to update'),
       value: z.union([z.string(), z.number(), z.boolean()]).describe('New value'),

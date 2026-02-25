@@ -15,10 +15,7 @@ import {
   DEFAULT_CHUNKING_CONFIG,
   ChunkingConfig,
 } from '../../../src/services/chunking/chunker.js';
-import {
-  getOverlapCharacters,
-  getStepSize,
-} from '../../../src/models/chunk.js';
+import { getOverlapCharacters, getStepSize } from '../../../src/models/chunk.js';
 import { ProvenanceType, PROVENANCE_CHAIN_DEPTH } from '../../../src/models/provenance.js';
 import { computeHash, isValidHashFormat } from '../../../src/utils/hash.js';
 import { PageOffset } from '../../../src/models/document.js';
@@ -106,7 +103,7 @@ describe('chunkHybridSectionAware', () => {
 
       expect(chunks.length).toBeGreaterThanOrEqual(1);
       // All text should be covered
-      const totalText = chunks.map(c => c.text).join('');
+      const totalText = chunks.map((c) => c.text).join('');
       expect(totalText.length).toBeGreaterThanOrEqual(input.length - 10); // Allow minor trim
       expect(chunks[0].index).toBe(0);
     });
@@ -208,12 +205,13 @@ describe('chunkHybridSectionAware', () => {
 
   describe('section-aware features', () => {
     it('produces heading context for chunks after headings', () => {
-      const text = '# Introduction\n\nThis is the introduction section with enough text to form a chunk.\n\n## Background\n\nSome background information here.';
+      const text =
+        '# Introduction\n\nThis is the introduction section with enough text to form a chunk.\n\n## Background\n\nSome background information here.';
       const chunks = chunkHybridSectionAware(text, [], null, DEFAULT_CHUNKING_CONFIG);
 
       expect(chunks.length).toBeGreaterThanOrEqual(1);
       // At least one chunk should have heading context
-      const hasHeading = chunks.some(c => c.headingContext !== null);
+      const hasHeading = chunks.some((c) => c.headingContext !== null);
       expect(hasHeading).toBe(true);
     });
 
@@ -222,16 +220,17 @@ describe('chunkHybridSectionAware', () => {
       const chunks = chunkHybridSectionAware(text, [], null, DEFAULT_CHUNKING_CONFIG);
 
       expect(chunks.length).toBeGreaterThanOrEqual(1);
-      const hasPath = chunks.some(c => c.sectionPath !== null && c.sectionPath.includes('>'));
+      const hasPath = chunks.some((c) => c.sectionPath !== null && c.sectionPath.includes('>'));
       expect(hasPath).toBe(true);
     });
 
     it('small tables are merged into surrounding content (not atomic)', () => {
-      const text = 'Some text before.\n\n| Col A | Col B |\n|-------|-------|\n| 1     | 2     |\n\nSome text after.';
+      const text =
+        'Some text before.\n\n| Col A | Col B |\n|-------|-------|\n| 1     | 2     |\n\nSome text after.';
       const chunks = chunkHybridSectionAware(text, [], null, DEFAULT_CHUNKING_CONFIG);
 
       // Small table (< chunkSize/4 = 500) merged into content
-      const chunkWithTable = chunks.find(c => c.text.includes('| Col A |'));
+      const chunkWithTable = chunks.find((c) => c.text.includes('| Col A |'));
       expect(chunkWithTable).toBeDefined();
       expect(chunkWithTable!.isAtomic).toBe(false);
     });
@@ -241,7 +240,7 @@ describe('chunkHybridSectionAware', () => {
       const chunks = chunkHybridSectionAware(text, [], null, DEFAULT_CHUNKING_CONFIG);
 
       // Small code block merged into content
-      const chunkWithCode = chunks.find(c => c.text.includes('print("hello")'));
+      const chunkWithCode = chunks.find((c) => c.text.includes('print("hello")'));
       expect(chunkWithCode).toBeDefined();
       expect(chunkWithCode!.isAtomic).toBe(false);
     });
@@ -277,7 +276,7 @@ describe('chunkHybridSectionAware', () => {
       const chunks = chunkHybridSectionAware(input, pageOffsets, null, DEFAULT_CHUNKING_CONFIG);
 
       // At least one chunk should span pages
-      const multiPage = chunks.find(c => c.pageRange !== null);
+      const multiPage = chunks.find((c) => c.pageRange !== null);
       if (chunks.length === 1) {
         // If text fits in one chunk, it should span pages
         expect(chunks[0].pageRange).toBe('1-2');
@@ -289,7 +288,11 @@ describe('chunkHybridSectionAware', () => {
 
   describe('custom config', () => {
     it('respects custom chunk size', () => {
-      const customConfig: ChunkingConfig = { chunkSize: 1000, overlapPercent: 10, maxChunkSize: 4000 };
+      const customConfig: ChunkingConfig = {
+        chunkSize: 1000,
+        overlapPercent: 10,
+        maxChunkSize: 4000,
+      };
       const input = generateTestText(3000);
 
       const chunks = chunkText(input, customConfig);
@@ -303,14 +306,18 @@ describe('chunkHybridSectionAware', () => {
     });
 
     it('respects custom overlap percent', () => {
-      const customConfig: ChunkingConfig = { chunkSize: 2000, overlapPercent: 20, maxChunkSize: 8000 };
+      const customConfig: ChunkingConfig = {
+        chunkSize: 2000,
+        overlapPercent: 20,
+        maxChunkSize: 8000,
+      };
       const input = generateTestText(5000);
 
       const chunks = chunkText(input, customConfig);
 
       if (chunks.length > 1) {
         // Non-atomic middle chunks should have overlap
-        const nonAtomicChunks = chunks.filter(c => !c.isAtomic);
+        const nonAtomicChunks = chunks.filter((c) => !c.isAtomic);
         if (nonAtomicChunks.length > 1) {
           expect(nonAtomicChunks[1].overlapWithPrevious).toBeGreaterThan(0);
         }
@@ -416,7 +423,12 @@ describe('createChunkProvenance', () => {
       { page: 1, charStart: 0, charEnd: 1500 },
       { page: 2, charStart: 1500, charEnd: 3000 },
     ];
-    const chunks = chunkHybridSectionAware(generateTestText(2500), pageOffsets, null, DEFAULT_CHUNKING_CONFIG);
+    const chunks = chunkHybridSectionAware(
+      generateTestText(2500),
+      pageOffsets,
+      null,
+      DEFAULT_CHUNKING_CONFIG
+    );
     const chunk = chunks[0];
     const params: ChunkProvenanceParams = {
       chunk,

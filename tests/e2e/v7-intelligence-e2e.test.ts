@@ -48,9 +48,14 @@ type ToolModule = Record<string, { handler: (p: Record<string, unknown>) => Prom
 
 async function callTool(tools: ToolModule, name: string, params: Record<string, unknown> = {}) {
   const tool = tools[name];
-  if (!tool) throw new Error(`Tool not found: ${name}. Available: ${Object.keys(tools).join(', ')}`);
+  if (!tool)
+    throw new Error(`Tool not found: ${name}. Available: ${Object.keys(tools).join(', ')}`);
   const raw = (await tool.handler(params)) as { content: Array<{ type: string; text: string }> };
-  return JSON.parse(raw.content[0].text) as { success: boolean; data?: Record<string, unknown>; error?: Record<string, unknown> };
+  return JSON.parse(raw.content[0].text) as {
+    success: boolean;
+    data?: Record<string, unknown>;
+    error?: Record<string, unknown>;
+  };
 }
 
 function ok(result: { success: boolean; data?: Record<string, unknown> }): Record<string, unknown> {
@@ -79,13 +84,20 @@ describe('V7 Intelligence Optimization E2E', () => {
     await callTool(ingestionTools, 'ocr_ingest_files', { file_paths: [TEST_FILE] });
     await callTool(ingestionTools, 'ocr_process_pending', { limit: 5, generate_embeddings: true });
 
-    const docs = conn.prepare('SELECT id, file_name, status FROM documents ORDER BY created_at').all() as Array<{ id: string; file_name: string; status: string }>;
-    documentIds = docs.map(d => d.id);
-    console.error(`[V7-E2E] Docs: ${docs.map(d => `${d.id.slice(0, 8)} (${d.file_name}, ${d.status})`).join(', ')}`);
-    expect(docs.filter(d => d.status === 'complete').length).toBeGreaterThanOrEqual(1);
+    const docs = conn
+      .prepare('SELECT id, file_name, status FROM documents ORDER BY created_at')
+      .all() as Array<{ id: string; file_name: string; status: string }>;
+    documentIds = docs.map((d) => d.id);
+    console.error(
+      `[V7-E2E] Docs: ${docs.map((d) => `${d.id.slice(0, 8)} (${d.file_name}, ${d.status})`).join(', ')}`
+    );
+    expect(docs.filter((d) => d.status === 'complete').length).toBeGreaterThanOrEqual(1);
 
-    const chunkCount = (conn.prepare('SELECT COUNT(*) as cnt FROM chunks').get() as { cnt: number }).cnt;
-    const embCount = (conn.prepare('SELECT COUNT(*) as cnt FROM embeddings').get() as { cnt: number }).cnt;
+    const chunkCount = (conn.prepare('SELECT COUNT(*) as cnt FROM chunks').get() as { cnt: number })
+      .cnt;
+    const embCount = (
+      conn.prepare('SELECT COUNT(*) as cnt FROM embeddings').get() as { cnt: number }
+    ).cnt;
     console.error(`[V7-E2E] Chunks: ${chunkCount}, Embeddings: ${embCount}`);
     expect(chunkCount).toBeGreaterThan(0);
     expect(embCount).toBeGreaterThan(0);
@@ -96,15 +108,36 @@ describe('V7 Intelligence Optimization E2E', () => {
 
   afterAll(() => {
     // Cleanup export directory and all its contents
-    try { rmSync(EXPORT_DIR, { recursive: true, force: true }); } catch { /* cleanup */ }
+    try {
+      rmSync(EXPORT_DIR, { recursive: true, force: true });
+    } catch {
+      /* cleanup */
+    }
     // Checkpoint WAL before closing to ensure clean state for deletion
-    try { conn?.pragma('wal_checkpoint(TRUNCATE)'); } catch { /* ok if closed */ }
-    try { clearDatabase(); } catch { /* cleanup */ }
-    try { deleteDatabase(DB_NAME); } catch { /* cleanup */ }
+    try {
+      conn?.pragma('wal_checkpoint(TRUNCATE)');
+    } catch {
+      /* ok if closed */
+    }
+    try {
+      clearDatabase();
+    } catch {
+      /* cleanup */
+    }
+    try {
+      deleteDatabase(DB_NAME);
+    } catch {
+      /* cleanup */
+    }
     // Filesystem fallback if deleteDatabase failed
     const dbDir = join(homedir(), '.ocr-provenance', 'databases');
     for (const suffix of ['', '-wal', '-shm']) {
-      try { const p = `${dbDir}/${DB_NAME}.db${suffix}`; if (existsSync(p)) rmSync(p); } catch { /* cleanup */ }
+      try {
+        const p = `${dbDir}/${DB_NAME}.db${suffix}`;
+        if (existsSync(p)) rmSync(p);
+      } catch {
+        /* cleanup */
+      }
     }
   });
 
@@ -124,7 +157,7 @@ describe('V7 Intelligence Optimization E2E', () => {
       expect(steps).toBeDefined();
       expect(steps.length).toBeGreaterThanOrEqual(2);
       // Should suggest trying different search and ingesting more
-      const toolNames = steps.map(s => s.tool);
+      const toolNames = steps.map((s) => s.tool);
       expect(toolNames).toContain('ocr_search');
       expect(toolNames).toContain('ocr_ingest_files');
     }, 30_000);
@@ -140,7 +173,7 @@ describe('V7 Intelligence Optimization E2E', () => {
       if ((data.total_results as number) >= 1) {
         const steps = data.next_steps as Array<{ tool: string }>;
         expect(steps).toBeDefined();
-        const toolNames = steps.map(s => s.tool);
+        const toolNames = steps.map((s) => s.tool);
         expect(toolNames).toContain('ocr_document_find_similar');
       }
     }, 30_000);
@@ -155,7 +188,7 @@ describe('V7 Intelligence Optimization E2E', () => {
       if ((data.total_results as number) > 1) {
         const steps = data.next_steps as Array<{ tool: string }>;
         expect(steps).toBeDefined();
-        const toolNames = steps.map(s => s.tool);
+        const toolNames = steps.map((s) => s.tool);
         expect(toolNames).toContain('ocr_chunk_context');
         expect(toolNames).toContain('ocr_document_get');
       }
@@ -173,7 +206,7 @@ describe('V7 Intelligence Optimization E2E', () => {
       // When no next_steps with db_select, or if it exists, check description
       const steps = data.next_steps as Array<{ tool: string; description: string }> | undefined;
       if (steps) {
-        const selectStep = steps.find(s => s.tool === 'ocr_db_select');
+        const selectStep = steps.find((s) => s.tool === 'ocr_db_select');
         if (selectStep) {
           // Should NOT list individual DB names - that's redundant with database_names field
           expect(selectStep.description).not.toMatch(/Available:/);
@@ -285,7 +318,7 @@ describe('V7 Intelligence Optimization E2E', () => {
       const results = data.results as Array<Record<string, unknown>>;
       if (results.length > 0) {
         // At least some results should have provenance_summary
-        const withSummary = results.filter(r => r.provenance_summary);
+        const withSummary = results.filter((r) => r.provenance_summary);
         expect(withSummary.length).toBeGreaterThan(0);
         // Summary should be a string with → arrows
         const summary = withSummary[0].provenance_summary as string;
@@ -323,7 +356,7 @@ describe('V7 Intelligence Optimization E2E', () => {
         expect(first).toHaveProperty('score');
         expect(first).not.toHaveProperty('bm25_score');
         // Provenance summary attached to compact results
-        const withSummary = results.filter(r => r.provenance_summary);
+        const withSummary = results.filter((r) => r.provenance_summary);
         expect(withSummary.length).toBeGreaterThan(0);
       }
     }, 30_000);
@@ -353,11 +386,11 @@ describe('V7 Intelligence Optimization E2E', () => {
     it('document_list with data → standard navigation', async () => {
       const result = await callTool(documentTools, 'ocr_document_list', {});
       const data = ok(result);
-      expect((data.total as number)).toBeGreaterThan(0);
+      expect(data.total as number).toBeGreaterThan(0);
       const steps = data.next_steps as Array<{ tool: string }>;
       expect(steps).toBeDefined();
       // Should suggest document_get for browsing
-      expect(steps.map(s => s.tool)).toContain('ocr_document_get');
+      expect(steps.map((s) => s.tool)).toContain('ocr_document_get');
     }, 30_000);
 
     it('tag_list with no tags → suggests tag_create', async () => {
@@ -366,7 +399,7 @@ describe('V7 Intelligence Optimization E2E', () => {
       const steps = data.next_steps as Array<{ tool: string }>;
       expect(steps).toBeDefined();
       if ((data.tags as unknown[]).length === 0) {
-        expect(steps.map(s => s.tool)).toContain('ocr_tag_create');
+        expect(steps.map((s) => s.tool)).toContain('ocr_tag_create');
       }
     }, 30_000);
 
@@ -376,7 +409,7 @@ describe('V7 Intelligence Optimization E2E', () => {
       const steps = data.next_steps as Array<{ tool: string }>;
       expect(steps).toBeDefined();
       if ((data.items as unknown[] | undefined)?.length === 0) {
-        expect(steps.map(s => s.tool)).toContain('ocr_cluster_documents');
+        expect(steps.map((s) => s.tool)).toContain('ocr_cluster_documents');
       }
     }, 30_000);
   });
@@ -401,7 +434,7 @@ describe('V7 Intelligence Optimization E2E', () => {
           expect(snapshot).toHaveProperty('embedding_coverage');
           expect(snapshot).toHaveProperty('vlm_coverage');
           expect(typeof snapshot.embedding_coverage).toBe('string');
-          expect((snapshot.embedding_coverage as string)).toMatch(/^\d+%$/);
+          expect(snapshot.embedding_coverage as string).toMatch(/^\d+%$/);
         }
       }
     }, 30_000);
@@ -409,11 +442,13 @@ describe('V7 Intelligence Optimization E2E', () => {
     it('includes workflow_chains', async () => {
       const result = await callTool(intelligenceTools, 'ocr_guide', {});
       const data = ok(result);
-      const chains = data.workflow_chains as Array<{ name: string; steps: string[]; description: string }> | undefined;
+      const chains = data.workflow_chains as
+        | Array<{ name: string; steps: string[]; description: string }>
+        | undefined;
       expect(chains).toBeDefined();
       if (chains) {
         expect(chains.length).toBe(3);
-        const chainNames = chains.map(c => c.name);
+        const chainNames = chains.map((c) => c.name);
         expect(chainNames).toContain('find_and_read');
         expect(chainNames).toContain('compare_documents');
         expect(chainNames).toContain('process_new');
@@ -511,7 +546,9 @@ describe('V7 Intelligence Optimization E2E', () => {
       savedSearchId = data.saved_search_id as string;
 
       // Verify in database
-      const row = conn.prepare('SELECT * FROM saved_searches WHERE id = ?').get(savedSearchId) as Record<string, unknown>;
+      const row = conn
+        .prepare('SELECT * FROM saved_searches WHERE id = ?')
+        .get(savedSearchId) as Record<string, unknown>;
       expect(row).toBeDefined();
       expect(row.name).toBe('V7 test search');
       expect(row.query).toBe('contract agreement');
@@ -526,7 +563,7 @@ describe('V7 Intelligence Optimization E2E', () => {
       const searches = data.saved_searches as Array<Record<string, unknown>>;
       expect(searches).toBeDefined();
       expect(searches.length).toBeGreaterThan(0);
-      const found = searches.find(s => s.name === 'V7 test search');
+      const found = searches.find((s) => s.name === 'V7 test search');
       expect(found).toBeDefined();
     }, 30_000);
 
@@ -585,12 +622,12 @@ describe('V7 Intelligence Optimization E2E', () => {
     it('quality next_steps suggest volume and vice versa', async () => {
       const qualResult = await callTool(reportTools, 'ocr_trends', { metric: 'quality' });
       const qualData = ok(qualResult);
-      const qualSteps = (qualData.next_steps as Array<{ tool: string }>).map(s => s.tool);
+      const qualSteps = (qualData.next_steps as Array<{ tool: string }>).map((s) => s.tool);
       expect(qualSteps).toContain('ocr_trends');
 
       const volResult = await callTool(reportTools, 'ocr_trends', { metric: 'volume' });
       const volData = ok(volResult);
-      const volSteps = (volData.next_steps as Array<{ tool: string }>).map(s => s.tool);
+      const volSteps = (volData.next_steps as Array<{ tool: string }>).map((s) => s.tool);
       expect(volSteps).toContain('ocr_trends');
     }, 30_000);
   });
@@ -608,7 +645,7 @@ describe('V7 Intelligence Optimization E2E', () => {
       const data = ok(result);
       if ((data.total_results as number) === 0) {
         const steps = data.next_steps as Array<{ tool: string }>;
-        const toolNames = steps.map(s => s.tool);
+        const toolNames = steps.map((s) => s.tool);
         expect(toolNames).toContain('ocr_search');
         expect(toolNames).toContain('ocr_ingest_files');
       }
@@ -622,7 +659,7 @@ describe('V7 Intelligence Optimization E2E', () => {
       const data = ok(result);
       if ((data.total_results as number) === 0) {
         const steps = data.next_steps as Array<{ tool: string }>;
-        const toolNames = steps.map(s => s.tool);
+        const toolNames = steps.map((s) => s.tool);
         expect(toolNames).toContain('ocr_search');
         expect(toolNames).toContain('ocr_ingest_files');
       }
@@ -651,11 +688,11 @@ describe('V7 Intelligence Optimization E2E', () => {
       expect(steps).toBeDefined();
       // With embeddings present, suggests rebuild and list
       if ((data.total_embeddings as number) > 0) {
-        expect(steps.map(s => s.tool)).toContain('ocr_embedding_rebuild');
-        expect(steps.map(s => s.tool)).toContain('ocr_embedding_list');
+        expect(steps.map((s) => s.tool)).toContain('ocr_embedding_rebuild');
+        expect(steps.map((s) => s.tool)).toContain('ocr_embedding_list');
       } else {
         // No embeddings → suggests processing
-        expect(steps.map(s => s.tool)).toContain('ocr_process_pending');
+        expect(steps.map((s) => s.tool)).toContain('ocr_process_pending');
       }
     }, 30_000);
 

@@ -355,46 +355,37 @@ describe('Phase 6: Temporal Analytics Tools', () => {
     const conn = db.getConnection();
 
     // Documents: doc1 & doc2 on Jan 15, doc3 on Feb 10
-    conn.prepare('UPDATE documents SET created_at = ? WHERE id = ?').run(
-      '2026-01-15T10:00:00.000Z',
-      doc1.id
-    );
-    conn.prepare('UPDATE documents SET created_at = ? WHERE id = ?').run(
-      '2026-01-15T14:00:00.000Z',
-      doc2.id
-    );
-    conn.prepare('UPDATE documents SET created_at = ? WHERE id = ?').run(
-      '2026-02-10T09:00:00.000Z',
-      doc3.id
-    );
+    conn
+      .prepare('UPDATE documents SET created_at = ? WHERE id = ?')
+      .run('2026-01-15T10:00:00.000Z', doc1.id);
+    conn
+      .prepare('UPDATE documents SET created_at = ? WHERE id = ?')
+      .run('2026-01-15T14:00:00.000Z', doc2.id);
+    conn
+      .prepare('UPDATE documents SET created_at = ? WHERE id = ?')
+      .run('2026-02-10T09:00:00.000Z', doc3.id);
 
     // Chunks: update based on document_id
-    conn.prepare('UPDATE chunks SET created_at = ? WHERE document_id = ?').run(
-      '2026-01-15T10:02:00.000Z',
-      doc1.id
-    );
-    conn.prepare('UPDATE chunks SET created_at = ? WHERE document_id = ?').run(
-      '2026-01-15T14:02:00.000Z',
-      doc2.id
-    );
-    conn.prepare('UPDATE chunks SET created_at = ? WHERE document_id = ?').run(
-      '2026-02-10T09:02:00.000Z',
-      doc3.id
-    );
+    conn
+      .prepare('UPDATE chunks SET created_at = ? WHERE document_id = ?')
+      .run('2026-01-15T10:02:00.000Z', doc1.id);
+    conn
+      .prepare('UPDATE chunks SET created_at = ? WHERE document_id = ?')
+      .run('2026-01-15T14:02:00.000Z', doc2.id);
+    conn
+      .prepare('UPDATE chunks SET created_at = ? WHERE document_id = ?')
+      .run('2026-02-10T09:02:00.000Z', doc3.id);
 
     // Embeddings: update based on document_id
-    conn.prepare('UPDATE embeddings SET created_at = ? WHERE document_id = ?').run(
-      '2026-01-15T10:03:00.000Z',
-      doc1.id
-    );
-    conn.prepare('UPDATE embeddings SET created_at = ? WHERE document_id = ?').run(
-      '2026-01-15T14:03:00.000Z',
-      doc2.id
-    );
-    conn.prepare('UPDATE embeddings SET created_at = ? WHERE document_id = ?').run(
-      '2026-02-10T09:03:00.000Z',
-      doc3.id
-    );
+    conn
+      .prepare('UPDATE embeddings SET created_at = ? WHERE document_id = ?')
+      .run('2026-01-15T10:03:00.000Z', doc1.id);
+    conn
+      .prepare('UPDATE embeddings SET created_at = ? WHERE document_id = ?')
+      .run('2026-01-15T14:03:00.000Z', doc2.id);
+    conn
+      .prepare('UPDATE embeddings SET created_at = ? WHERE document_id = ?')
+      .run('2026-02-10T09:03:00.000Z', doc3.id);
   });
 
   afterAll(() => {
@@ -653,8 +644,7 @@ describe('Phase 6: Temporal Analytics Tools', () => {
 
       // Find the 'fast' entry for Jan 15
       const fastJan = parsed.data.data.find(
-        (d: { period: string; group: string }) =>
-          d.period === '2026-01-15' && d.group === 'fast'
+        (d: { period: string; group: string }) => d.period === '2026-01-15' && d.group === 'fast'
       );
       expect(fastJan).toBeDefined();
       expect(fastJan.avg_quality).toBe(3.8);

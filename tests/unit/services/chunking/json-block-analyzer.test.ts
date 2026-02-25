@@ -209,7 +209,8 @@ describe('findAtomicRegions', () => {
         },
       ],
     };
-    const markdown = 'Introduction.\n\n| Col A | Col B |\n|-------|-------|\n| val1  | val2  |\n\nConclusion.';
+    const markdown =
+      'Introduction.\n\n| Col A | Col B |\n|-------|-------|\n| val1  | val2  |\n\nConclusion.';
 
     const regions = findAtomicRegions(tableBlocks, markdown, []);
     const tableRegions = regions.filter((r) => r.blockType === 'Table');
@@ -247,11 +248,7 @@ describe('findAtomicRegions', () => {
   });
 
   it('finds Code blocks as atomic regions', () => {
-    const regions = findAtomicRegions(
-      JSON_BLOCKS_WITH_CODE,
-      MARKDOWN_WITH_CODE,
-      []
-    );
+    const regions = findAtomicRegions(JSON_BLOCKS_WITH_CODE, MARKDOWN_WITH_CODE, []);
 
     const codeRegions = regions.filter((r) => r.blockType === 'Code');
     expect(codeRegions.length).toBeGreaterThanOrEqual(1);
@@ -262,11 +259,7 @@ describe('findAtomicRegions', () => {
   });
 
   it('finds Figure blocks as atomic regions when HTML has text content', () => {
-    const regions = findAtomicRegions(
-      JSON_BLOCKS_WITH_FIGURE,
-      MARKDOWN_WITH_FIGURE,
-      []
-    );
+    const regions = findAtomicRegions(JSON_BLOCKS_WITH_FIGURE, MARKDOWN_WITH_FIGURE, []);
 
     const figureRegions = regions.filter((r) => r.blockType === 'Figure');
     expect(figureRegions.length).toBeGreaterThanOrEqual(1);
@@ -301,14 +294,13 @@ describe('findAtomicRegions', () => {
         },
       ],
     };
-    const markdown = 'Intro text.\n\n| Item | Count |\n|------|-------|\n| Widget A | 150 |\n\nEnd text.';
+    const markdown =
+      'Intro text.\n\n| Item | Count |\n|------|-------|\n| Widget A | 150 |\n\nEnd text.';
 
     const regions = findAtomicRegions(nestedBlocks, markdown, []);
     const atomicTypes = regions.map((r) => r.blockType);
     // At least one of TableGroup or Table should be found
-    const hasTableRelated = atomicTypes.some(
-      (t) => t === 'Table' || t === 'TableGroup'
-    );
+    const hasTableRelated = atomicTypes.some((t) => t === 'Table' || t === 'TableGroup');
     expect(hasTableRelated).toBe(true);
     expect(regions.length).toBeGreaterThanOrEqual(1);
   });
@@ -348,11 +340,7 @@ describe('findAtomicRegions', () => {
   });
 
   it('returns sorted regions by startOffset', () => {
-    const regions = findAtomicRegions(
-      JSON_BLOCKS_WITH_CODE,
-      MARKDOWN_WITH_CODE,
-      []
-    );
+    const regions = findAtomicRegions(JSON_BLOCKS_WITH_CODE, MARKDOWN_WITH_CODE, []);
 
     for (let i = 1; i < regions.length; i++) {
       expect(regions[i].startOffset).toBeGreaterThanOrEqual(regions[i - 1].startOffset);
@@ -364,11 +352,7 @@ describe('findAtomicRegions', () => {
       { page: 1, charStart: 0, charEnd: MARKDOWN_WITH_CODE.length },
     ];
 
-    const regions = findAtomicRegions(
-      JSON_BLOCKS_WITH_CODE,
-      MARKDOWN_WITH_CODE,
-      pageOffsets
-    );
+    const regions = findAtomicRegions(JSON_BLOCKS_WITH_CODE, MARKDOWN_WITH_CODE, pageOffsets);
 
     if (regions.length > 0) {
       expect(regions[0].pageNumber).toBe(1);
@@ -688,7 +672,8 @@ describe('findAtomicRegions - Section 3.2 edge cases', () => {
       ],
     };
     // Place both lines contiguously so their regions are adjacent
-    const markdown = 'const alpha = createAlphaHandler(config);\nconst beta = createBetaHandler(config);';
+    const markdown =
+      'const alpha = createAlphaHandler(config);\nconst beta = createBetaHandler(config);';
 
     const regions = findAtomicRegions(blocks, markdown, []);
     // After merging, no two consecutive regions should overlap or be adjacent
@@ -714,7 +699,8 @@ describe('findAtomicRegions - Section 3.2 edge cases', () => {
         },
       ],
     };
-    const markdown = '| Name | Value |\n|------|-------|\n| Alpha | 100 |\n| Beta | 200 |\n\nTrailing text about results.';
+    const markdown =
+      '| Name | Value |\n|------|-------|\n| Alpha | 100 |\n| Beta | 200 |\n\nTrailing text about results.';
 
     const regions = findAtomicRegions(blocks, markdown, []);
     expect(regions.length).toBe(1);

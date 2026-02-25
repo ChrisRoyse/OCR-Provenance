@@ -70,11 +70,11 @@ export function mergeHeadingOnlyChunks(
   minChunkSize: number = 100
 ): ChunkResult[] {
   if (chunks.length <= 1) {
-    return chunks.map(c => ({ ...c, contentTypes: [...c.contentTypes] }));
+    return chunks.map((c) => ({ ...c, contentTypes: [...c.contentTypes] }));
   }
 
   // Work on a shallow copy so we can splice without affecting the original
-  const result = chunks.map(c => ({ ...c, contentTypes: [...c.contentTypes] }));
+  const result = chunks.map((c) => ({ ...c, contentTypes: [...c.contentTypes] }));
   let i = 0;
 
   while (i < result.length) {

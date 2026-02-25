@@ -126,9 +126,7 @@ export function initWebhookDelivery(getConnection: () => Database.Database): voi
 
     let webhooks: WebhookRow[];
     try {
-      webhooks = conn
-        .prepare('SELECT * FROM webhooks WHERE is_active = 1')
-        .all() as WebhookRow[];
+      webhooks = conn.prepare('SELECT * FROM webhooks WHERE is_active = 1').all() as WebhookRow[];
     } catch (error) {
       console.error(
         `[Webhook] Failed to query webhooks: ${error instanceof Error ? error.message : String(error)}`

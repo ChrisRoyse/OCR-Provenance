@@ -30,10 +30,7 @@ import {
   listPlaybooks,
   compareWithPlaybook,
 } from '../services/storage/database/playbook-operations.js';
-import {
-  getSchemasByName,
-  ALL_CONTRACT_SCHEMAS,
-} from '../services/clm/contract-schemas.js';
+import { getSchemasByName, ALL_CONTRACT_SCHEMAS } from '../services/clm/contract-schemas.js';
 import type { ContractSchema } from '../services/clm/contract-schemas.js';
 import { summarizeDocument } from '../services/clm/summarization.js';
 import type { ChunkInput } from '../services/clm/summarization.js';
@@ -69,9 +66,9 @@ async function handleContractExtract(params: Record<string, unknown>): Promise<T
     const conn = db.getConnection();
 
     // Verify document exists
-    const doc = conn.prepare(
-      'SELECT id, file_name, status FROM documents WHERE id = ?'
-    ).get(input.document_id) as { id: string; file_name: string; status: string } | undefined;
+    const doc = conn
+      .prepare('SELECT id, file_name, status FROM documents WHERE id = ?')
+      .get(input.document_id) as { id: string; file_name: string; status: string } | undefined;
 
     if (!doc) {
       throw new Error(`Document not found: ${input.document_id}`);
@@ -81,11 +78,15 @@ async function handleContractExtract(params: Record<string, unknown>): Promise<T
     const schemas = getSchemasByName(input.schemas);
 
     // Get all chunks for the document
-    const chunks = conn.prepare(`
+    const chunks = conn
+      .prepare(
+        `
       SELECT id, text, page_number, heading_context, section_path, content_types
       FROM chunks WHERE document_id = ?
       ORDER BY chunk_index ASC
-    `).all(input.document_id) as Array<{
+    `
+      )
+      .all(input.document_id) as Array<{
       id: string;
       text: string;
       page_number: number | null;
@@ -95,7 +96,9 @@ async function handleContractExtract(params: Record<string, unknown>): Promise<T
     }>;
 
     if (chunks.length === 0) {
-      throw new Error(`No chunks found for document ${input.document_id}. Process the document first.`);
+      throw new Error(
+        `No chunks found for document ${input.document_id}. Process the document first.`
+      );
     }
 
     // Extract data for each schema
@@ -155,7 +158,9 @@ async function handleObligationList(params: Record<string, unknown>): Promise<To
 
     const result = listObligations(conn, {
       document_id: input.document_id,
-      obligation_type: input.obligation_type as Parameters<typeof listObligations>[1]['obligation_type'],
+      obligation_type: input.obligation_type as Parameters<
+        typeof listObligations
+      >[1]['obligation_type'],
       status: input.status as Parameters<typeof listObligations>[1]['status'],
       due_before: input.due_before,
       due_after: input.due_after,
@@ -176,11 +181,19 @@ async function handleObligationList(params: Record<string, unknown>): Promise<To
         offset,
         has_more: hasMore,
         next_steps: hasMore
-          ? [{ tool: 'ocr_obligation_list', description: `Get next page with offset=${offset + limit}` }]
+          ? [
+              {
+                tool: 'ocr_obligation_list',
+                description: `Get next page with offset=${offset + limit}`,
+              },
+            ]
           : [
               { tool: 'ocr_obligation_update', description: 'Update an obligation status' },
               { tool: 'ocr_obligation_calendar', description: 'View obligation calendar' },
-              { tool: 'ocr_contract_extract', description: 'Extract more obligations from a document' },
+              {
+                tool: 'ocr_contract_extract',
+                description: 'Extract more obligations from a document',
+              },
             ],
       })
     );
@@ -211,7 +224,7 @@ async function handleObligationUpdate(params: Record<string, unknown>): Promise<
       conn,
       input.obligation_id,
       input.status as Parameters<typeof updateObligationStatus>[2],
-      input.reason,
+      input.reason
     );
 
     return formatResponse(
@@ -288,12 +301,16 @@ async function handlePlaybookCreate(params: Record<string, unknown>): Promise<To
       z.object({
         name: z.string().min(1).max(200),
         description: z.string().max(2000).optional(),
-        clauses: z.array(z.object({
-          clause_name: z.string().min(1).max(200),
-          preferred_text: z.string().min(1).max(5000),
-          severity: ClauseSeveritySchema,
-          alternatives: z.array(z.string().max(5000)).default([]),
-        })).min(1),
+        clauses: z
+          .array(
+            z.object({
+              clause_name: z.string().min(1).max(200),
+              preferred_text: z.string().min(1).max(5000),
+              severity: ClauseSeveritySchema,
+              alternatives: z.array(z.string().max(5000)).default([]),
+            })
+          )
+          .min(1),
       }),
       params
     );
@@ -384,12 +401,21 @@ async function handlePlaybookList(params: Record<string, unknown>): Promise<Tool
           updated_at: p.updated_at,
         })),
         total: playbooks.length,
-        next_steps: playbooks.length === 0
-          ? [{ tool: 'ocr_playbook_create', description: 'Create a playbook with preferred contract terms' }]
-          : [
-              { tool: 'ocr_playbook_compare', description: 'Compare a document against a playbook' },
-              { tool: 'ocr_playbook_create', description: 'Create a new playbook' },
-            ],
+        next_steps:
+          playbooks.length === 0
+            ? [
+                {
+                  tool: 'ocr_playbook_create',
+                  description: 'Create a playbook with preferred contract terms',
+                },
+              ]
+            : [
+                {
+                  tool: 'ocr_playbook_compare',
+                  description: 'Compare a document against a playbook',
+                },
+                { tool: 'ocr_playbook_create', description: 'Create a new playbook' },
+              ],
       })
     );
   } catch (error) {
@@ -414,23 +440,29 @@ async function handleDocumentSummarize(params: Record<string, unknown>): Promise
     const conn = db.getConnection();
 
     // Verify document exists
-    const doc = conn.prepare(
-      'SELECT id, file_name, status FROM documents WHERE id = ?'
-    ).get(input.document_id) as { id: string; file_name: string; status: string } | undefined;
+    const doc = conn
+      .prepare('SELECT id, file_name, status FROM documents WHERE id = ?')
+      .get(input.document_id) as { id: string; file_name: string; status: string } | undefined;
 
     if (!doc) {
       throw new Error(`Document not found: ${input.document_id}`);
     }
 
     // Get all chunks with relevant columns
-    const chunks = conn.prepare(`
+    const chunks = conn
+      .prepare(
+        `
       SELECT text, page_number, heading_context, section_path, content_types
       FROM chunks WHERE document_id = ?
       ORDER BY chunk_index ASC
-    `).all(input.document_id) as ChunkInput[];
+    `
+      )
+      .all(input.document_id) as ChunkInput[];
 
     if (chunks.length === 0) {
-      throw new Error(`No chunks found for document ${input.document_id}. Process the document first.`);
+      throw new Error(
+        `No chunks found for document ${input.document_id}. Process the document first.`
+      );
     }
 
     const summary = summarizeDocument(chunks);
@@ -471,13 +503,17 @@ async function handleCorpusSummarize(params: Record<string, unknown>): Promise<T
     const conn = db.getConnection();
 
     // Get document summaries
-    const documents = conn.prepare(`
+    const documents = conn
+      .prepare(
+        `
       SELECT d.id, d.file_name, d.status, d.page_count,
         (SELECT COUNT(*) FROM chunks WHERE document_id = d.id) as chunk_count
       FROM documents d
       ORDER BY d.created_at DESC
       LIMIT ?
-    `).all(input.limit) as Array<{
+    `
+      )
+      .all(input.limit) as Array<{
       id: string;
       file_name: string;
       status: string;
@@ -490,11 +526,15 @@ async function handleCorpusSummarize(params: Record<string, unknown>): Promise<T
     const totalPages = documents.reduce((sum, d) => sum + (d.page_count ?? 0), 0);
 
     // Get content type distribution across all chunks
-    const contentTypeRows = conn.prepare(`
+    const contentTypeRows = conn
+      .prepare(
+        `
       SELECT content_types FROM chunks
       WHERE content_types IS NOT NULL AND content_types != ''
       LIMIT 10000
-    `).all() as Array<{ content_types: string }>;
+    `
+      )
+      .all() as Array<{ content_types: string }>;
 
     const contentTypeDist: Record<string, number> = {};
     for (const row of contentTypeRows) {
@@ -507,20 +547,28 @@ async function handleCorpusSummarize(params: Record<string, unknown>): Promise<T
     }
 
     // Get top sections across corpus
-    const sectionRows = conn.prepare(`
+    const sectionRows = conn
+      .prepare(
+        `
       SELECT DISTINCT heading_context FROM chunks
       WHERE heading_context IS NOT NULL AND heading_context != ''
       LIMIT 50
-    `).all() as Array<{ heading_context: string }>;
+    `
+      )
+      .all() as Array<{ heading_context: string }>;
 
     const topSections = sectionRows.map((r) => r.heading_context);
 
     // Get total word count (approximate from chunk count * avg words)
-    const wordCountRow = conn.prepare(`
+    const wordCountRow = conn
+      .prepare(
+        `
       SELECT SUM(LENGTH(text) - LENGTH(REPLACE(text, ' ', '')) + 1) as total_words
       FROM chunks
       LIMIT 10000
-    `).get() as { total_words: number | null };
+    `
+      )
+      .get() as { total_words: number | null };
 
     return formatResponse(
       successResult({
@@ -559,7 +607,12 @@ async function handleCorpusSummarize(params: Record<string, unknown>): Promise<T
  */
 function extractSchemaFields(
   schema: ContractSchema,
-  chunks: Array<{ id: string; text: string; page_number: number | null; heading_context: string | null }>
+  chunks: Array<{
+    id: string;
+    text: string;
+    page_number: number | null;
+    heading_context: string | null;
+  }>
 ): Record<string, unknown> {
   const result: Record<string, unknown> = {};
 
@@ -575,10 +628,20 @@ function extractSchemaFields(
  */
 function extractField(
   field: { name: string; type: string; description: string },
-  chunks: Array<{ id: string; text: string; page_number: number | null; heading_context: string | null }>
+  chunks: Array<{
+    id: string;
+    text: string;
+    page_number: number | null;
+    heading_context: string | null;
+  }>
 ): unknown {
   const fieldPatterns = getFieldPatterns(field.name, field.type);
-  const matches: Array<{ text: string; chunk_id: string; page: number | null; confidence: number }> = [];
+  const matches: Array<{
+    text: string;
+    chunk_id: string;
+    page: number | null;
+    confidence: number;
+  }> = [];
 
   for (const chunk of chunks) {
     for (const pattern of fieldPatterns) {
@@ -668,22 +731,14 @@ function getFieldPatterns(fieldName: string, _fieldType: string): string[] {
       '(?:penalty|penalties|liquidated damages|late fee)\\s*[:.]?\\s*([^\\n]+)',
       '(?:interest|surcharge)\\s+(?:of|at)\\s+([^\\n]+)',
     ],
-    interest_rate: [
-      '(?:interest|apr|rate)\\s*[:.]?\\s*(\\d+\\.?\\d*\\s*%)',
-    ],
+    interest_rate: ['(?:interest|apr|rate)\\s*[:.]?\\s*(\\d+\\.?\\d*\\s*%)'],
     deadlines: [
       '(?:deadline|due date|by|before|no later than)\\s*[:.]?\\s*([^\\n]+)',
       '(?:within|\\d+)\\s+(?:business\\s+)?days',
     ],
-    deliverables: [
-      '(?:deliverable|milestone|shall deliver|shall provide)\\s*[:.]?\\s*([^\\n]+)',
-    ],
-    responsibilities: [
-      '(?:responsible for|shall|obligation|duty|must)\\s+([^\\n]+)',
-    ],
-    auto_renewal: [
-      '(?:auto(?:-|\\s)?renew|automatically\\s+renew)',
-    ],
+    deliverables: ['(?:deliverable|milestone|shall deliver|shall provide)\\s*[:.]?\\s*([^\\n]+)'],
+    responsibilities: ['(?:responsible for|shall|obligation|duty|must)\\s+([^\\n]+)'],
+    auto_renewal: ['(?:auto(?:-|\\s)?renew|automatically\\s+renew)'],
     renewal_notice_period: [
       '(?:renewal|non-renewal)\\s+notice\\s*[:.]?\\s*([^\\n]+)',
       '(?:notice of)\\s+(?:renewal|non-renewal)\\s+([^\\n]+)',
@@ -704,9 +759,7 @@ function getFieldPatterns(fieldName: string, _fieldType: string): string[] {
       '(?:limit(?:ation)?\\s+(?:of\\s+)?liability)\\s*[:.]?\\s*([^\\n]+)',
       '(?:aggregate liability|total liability|maximum liability)\\s*[:.]?\\s*([^\\n]+)',
     ],
-    force_majeure: [
-      '(?:force majeure|act of god|unforeseeable circumstances)',
-    ],
+    force_majeure: ['(?:force majeure|act of god|unforeseeable circumstances)'],
     confidentiality: [
       '(?:confidential(?:ity)?|non-disclosure|proprietary information)\\s*[:.]?\\s*([^\\n]+)',
     ],
@@ -715,9 +768,7 @@ function getFieldPatterns(fieldName: string, _fieldType: string): string[] {
     ],
   };
 
-  return patternMap[fieldName] ?? [
-    `(?:${fieldName.replace(/_/g, '\\s+')})\\s*[:.]?\\s*([^\\n]+)`,
-  ];
+  return patternMap[fieldName] ?? [`(?:${fieldName.replace(/_/g, '\\s+')})\\s*[:.]?\\s*([^\\n]+)`];
 }
 
 /**
@@ -744,9 +795,12 @@ export const clmTools: Record<string, ToolDefinition> = {
       '[PROCESSING] Extract contract-specific information using predefined schemas (contract_metadata, financial_terms, obligations, renewal_termination, compliance_clauses). Uses pattern matching on document chunks - no external API calls. Returns extracted fields organized by schema.',
     inputSchema: {
       document_id: z.string().min(1).describe('Document ID to extract contract information from'),
-      schemas: z.array(z.string()).optional().describe(
-        `Schema names to extract (default: all). Available: ${ALL_CONTRACT_SCHEMAS.map((s) => s.name).join(', ')}`
-      ),
+      schemas: z
+        .array(z.string())
+        .optional()
+        .describe(
+          `Schema names to extract (default: all). Available: ${ALL_CONTRACT_SCHEMAS.map((s) => s.name).join(', ')}`
+        ),
     },
     handler: handleContractExtract,
   },
@@ -759,7 +813,9 @@ export const clmTools: Record<string, ToolDefinition> = {
       obligation_type: ObligationTypeSchema.optional().describe(
         'Filter by type: payment, delivery, notification, renewal, termination, compliance, reporting, approval, other'
       ),
-      status: ObligationStatusSchema.optional().describe('Filter by status: active, fulfilled, overdue, waived, expired'),
+      status: ObligationStatusSchema.optional().describe(
+        'Filter by status: active, fulfilled, overdue, waived, expired'
+      ),
       due_before: z.string().optional().describe('Filter obligations due before this ISO date'),
       due_after: z.string().optional().describe('Filter obligations due after this ISO date'),
       responsible_party: z.string().optional().describe('Filter by responsible party name'),
@@ -774,8 +830,14 @@ export const clmTools: Record<string, ToolDefinition> = {
       '[MANAGE] Update obligation status (active, fulfilled, overdue, waived, expired). Optionally provide a reason which is recorded in status history.',
     inputSchema: {
       obligation_id: z.string().min(1).describe('Obligation ID to update'),
-      status: ObligationStatusSchema.describe('New status: active, fulfilled, overdue, waived, or expired'),
-      reason: z.string().max(1000).optional().describe('Reason for status change (recorded in history)'),
+      status: ObligationStatusSchema.describe(
+        'New status: active, fulfilled, overdue, waived, or expired'
+      ),
+      reason: z
+        .string()
+        .max(1000)
+        .optional()
+        .describe('Reason for status change (recorded in history)'),
     },
     handler: handleObligationUpdate,
   },
@@ -784,7 +846,13 @@ export const clmTools: Record<string, ToolDefinition> = {
     description:
       '[STATUS] Calendar view of upcoming obligation deadlines grouped by month. Auto-marks overdue obligations. Filter by status or document.',
     inputSchema: {
-      months_ahead: z.number().int().min(1).max(24).default(3).describe('Number of months to look ahead (1-24, default 3)'),
+      months_ahead: z
+        .number()
+        .int()
+        .min(1)
+        .max(24)
+        .default(3)
+        .describe('Number of months to look ahead (1-24, default 3)'),
       status: ObligationStatusSchema.optional().describe('Filter by status'),
       document_id: z.string().min(1).optional().describe('Filter by document ID'),
     },
@@ -797,12 +865,22 @@ export const clmTools: Record<string, ToolDefinition> = {
     inputSchema: {
       name: z.string().min(1).max(200).describe('Playbook name'),
       description: z.string().max(2000).optional().describe('Playbook description'),
-      clauses: z.array(z.object({
-        clause_name: z.string().min(1).max(200).describe('Clause identifier name'),
-        preferred_text: z.string().min(1).max(5000).describe('Preferred contract language'),
-        severity: ClauseSeveritySchema.describe('Deviation severity: critical, major, or minor'),
-        alternatives: z.array(z.string().max(5000)).default([]).describe('Acceptable alternative texts'),
-      })).min(1).describe('Array of clause definitions'),
+      clauses: z
+        .array(
+          z.object({
+            clause_name: z.string().min(1).max(200).describe('Clause identifier name'),
+            preferred_text: z.string().min(1).max(5000).describe('Preferred contract language'),
+            severity: ClauseSeveritySchema.describe(
+              'Deviation severity: critical, major, or minor'
+            ),
+            alternatives: z
+              .array(z.string().max(5000))
+              .default([])
+              .describe('Acceptable alternative texts'),
+          })
+        )
+        .min(1)
+        .describe('Array of clause definitions'),
     },
     handler: handlePlaybookCreate,
   },
@@ -837,7 +915,13 @@ export const clmTools: Record<string, ToolDefinition> = {
     description:
       '[ANALYSIS] Summarize the entire document corpus. Returns document count, total pages/words, content type distribution, and top sections across all documents.',
     inputSchema: {
-      limit: z.number().int().min(1).max(500).default(100).describe('Max documents to include (1-500, default 100)'),
+      limit: z
+        .number()
+        .int()
+        .min(1)
+        .max(500)
+        .default(100)
+        .describe('Max documents to include (1-500, default 100)'),
     },
     handler: handleCorpusSummarize,
   },

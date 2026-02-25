@@ -65,7 +65,13 @@ const FileGetInput = z.object({
 
 const FileDownloadInput = z.object({
   file_id: z.string().min(1).describe('Uploaded file record ID'),
-  expires_in: z.number().int().min(60).max(86400).default(3600).describe('Download URL expiry in seconds (default: 3600, min: 60, max: 86400)'),
+  expires_in: z
+    .number()
+    .int()
+    .min(60)
+    .max(86400)
+    .default(3600)
+    .describe('Download URL expiry in seconds (default: 3600, min: 60, max: 86400)'),
 });
 
 const FileDeleteInput = z.object({
@@ -103,7 +109,9 @@ async function handleFileUpload(params: Record<string, unknown>) {
             created_at: existing.created_at,
           },
           message: 'File with identical hash already uploaded',
-          next_steps: [{ tool: 'ocr_file_get', description: 'View details of the existing upload' }],
+          next_steps: [
+            { tool: 'ocr_file_get', description: 'View details of the existing upload' },
+          ],
         })
       );
     }
@@ -181,7 +189,16 @@ async function handleFileUpload(params: Record<string, unknown>) {
           upload_status: 'complete',
           provenance_id: provId,
           processing_duration_ms: result.processingDurationMs,
-          next_steps: [{ tool: 'ocr_file_ingest_uploaded', description: 'Convert uploaded file into a document record for OCR' }, { tool: 'ocr_process_pending', description: 'Process ingested documents through OCR pipeline' }],
+          next_steps: [
+            {
+              tool: 'ocr_file_ingest_uploaded',
+              description: 'Convert uploaded file into a document record for OCR',
+            },
+            {
+              tool: 'ocr_process_pending',
+              description: 'Process ingested documents through OCR pipeline',
+            },
+          ],
         })
       );
     } catch (uploadError) {
@@ -280,10 +297,18 @@ async function handleFileList(params: Record<string, unknown>) {
       }
     }
 
-    return formatResponse(successResult({
-      ...response,
-      next_steps: [{ tool: 'ocr_file_get', description: 'Get details for a specific uploaded file' }, { tool: 'ocr_file_ingest_uploaded', description: 'Ingest uploaded files for OCR processing' }],
-    }));
+    return formatResponse(
+      successResult({
+        ...response,
+        next_steps: [
+          { tool: 'ocr_file_get', description: 'Get details for a specific uploaded file' },
+          {
+            tool: 'ocr_file_ingest_uploaded',
+            description: 'Ingest uploaded files for OCR processing',
+          },
+        ],
+      })
+    );
   } catch (error) {
     return handleError(error);
   }
@@ -306,10 +331,15 @@ async function handleFileGet(params: Record<string, unknown>) {
       response.provenance_chain = fetchProvenanceChain(db, file.provenance_id, 'file-management');
     }
 
-    return formatResponse(successResult({
-      ...response,
-      next_steps: [{ tool: 'ocr_file_ingest_uploaded', description: 'Ingest this file for OCR processing' }, { tool: 'ocr_file_download', description: 'Get a download URL for this file' }],
-    }));
+    return formatResponse(
+      successResult({
+        ...response,
+        next_steps: [
+          { tool: 'ocr_file_ingest_uploaded', description: 'Ingest this file for OCR processing' },
+          { tool: 'ocr_file_download', description: 'Get a download URL for this file' },
+        ],
+      })
+    );
   } catch (error) {
     return handleError(error);
   }
@@ -387,10 +417,12 @@ async function handleFileDelete(params: Record<string, unknown>) {
     if (datalabDeleteError) {
       response.datalab_delete_error = datalabDeleteError;
     }
-    return formatResponse(successResult({
-      ...response,
-      next_steps: [{ tool: 'ocr_file_list', description: 'List remaining uploaded files' }],
-    }));
+    return formatResponse(
+      successResult({
+        ...response,
+        next_steps: [{ tool: 'ocr_file_list', description: 'List remaining uploaded files' }],
+      })
+    );
   } catch (error) {
     return handleError(error);
   }
@@ -401,16 +433,11 @@ async function handleFileDelete(params: Record<string, unknown>) {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 const FileIngestUploadedInput = z.object({
-  file_ids: z
-    .array(z.string().min(1))
-    .optional()
-    .describe('Specific uploaded file IDs to ingest'),
+  file_ids: z.array(z.string().min(1)).optional().describe('Specific uploaded file IDs to ingest'),
   ingest_all_pending: z
     .boolean()
     .default(false)
-    .describe(
-      'Ingest all completed uploads that do not yet have matching document records'
-    ),
+    .describe('Ingest all completed uploads that do not yet have matching document records'),
 });
 
 /**
@@ -467,9 +494,10 @@ async function handleFileIngestUploaded(params: Record<string, unknown>) {
           ingested_count: 0,
           skipped_count: 0,
           files: [],
-          message:
-            'No action taken. Provide file_ids or set ingest_all_pending=true.',
-          next_steps: [{ tool: 'ocr_file_list', description: 'List uploaded files to select for ingestion' }],
+          message: 'No action taken. Provide file_ids or set ingest_all_pending=true.',
+          next_steps: [
+            { tool: 'ocr_file_list', description: 'List uploaded files to select for ingestion' },
+          ],
         })
       );
     }
@@ -581,7 +609,12 @@ async function handleFileIngestUploaded(params: Record<string, unknown>) {
         files: fileDetails,
         next_steps:
           ingestedCount > 0
-            ? [{ tool: 'ocr_process_pending', description: 'Process ingested documents through OCR pipeline' }]
+            ? [
+                {
+                  tool: 'ocr_process_pending',
+                  description: 'Process ingested documents through OCR pipeline',
+                },
+              ]
             : [{ tool: 'ocr_file_list', description: 'List uploaded files' }],
       })
     );

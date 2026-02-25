@@ -101,7 +101,14 @@ function createTestEntities(db: ReturnType<typeof requireDatabase>['db']) {
        content_hash, provenance_id, created_at)
        VALUES (?, ?, ?, '{}', '{"key": "value"}', ?, ?, ?)`
     )
-    .run(extractionId, docId, ocrId, computeHash('extraction-' + extractionId), extProvId, new Date().toISOString());
+    .run(
+      extractionId,
+      docId,
+      ocrId,
+      computeHash('extraction-' + extractionId),
+      extProvId,
+      new Date().toISOString()
+    );
 
   // Cluster
   const clusterProv = createTestProvenance({
@@ -119,7 +126,13 @@ function createTestEntities(db: ReturnType<typeof requireDatabase>['db']) {
        document_count, top_terms_json, content_hash, provenance_id, created_at)
        VALUES (?, ?, 0, 'hdbscan', '{}', 1, '[]', ?, ?, ?)`
     )
-    .run(clusterId, runId, computeHash('cluster-' + clusterId), clusterProvId, new Date().toISOString());
+    .run(
+      clusterId,
+      runId,
+      computeHash('cluster-' + clusterId),
+      clusterProvId,
+      new Date().toISOString()
+    );
 
   return { docId, chunkId, imageId, extractionId, clusterId };
 }
@@ -391,16 +404,12 @@ describe('Phase 9: Cross-Entity Tagging Tools', () => {
 
       expect(parsed.success).toBe(true);
 
-      const importantTag = parsed.data.tags.find(
-        (t: { name: string }) => t.name === 'important'
-      );
+      const importantTag = parsed.data.tags.find((t: { name: string }) => t.name === 'important');
       expect(importantTag).toBeDefined();
       // 'important' was applied to document, chunk, image, extraction, cluster = 5
       expect(importantTag.usage_count).toBe(5);
 
-      const reviewTag = parsed.data.tags.find(
-        (t: { name: string }) => t.name === 'review-needed'
-      );
+      const reviewTag = parsed.data.tags.find((t: { name: string }) => t.name === 'review-needed');
       expect(reviewTag).toBeDefined();
       // 'review-needed' was applied to document = 1
       expect(reviewTag.usage_count).toBe(1);
@@ -419,11 +428,7 @@ describe('Phase 9: Cross-Entity Tagging Tools', () => {
       entities = createTestEntities(db);
 
       // Apply a tag to remove later
-      db.applyTag(
-        db.getTagByName('important')!.id,
-        entities.docId,
-        'document'
-      );
+      db.applyTag(db.getTagByName('important')!.id, entities.docId, 'document');
     });
 
     it('should remove a tag from an entity', async () => {
@@ -537,9 +542,7 @@ describe('Phase 9: Cross-Entity Tagging Tools', () => {
       expect(parsed.data.results.length).toBeGreaterThanOrEqual(3);
 
       // Should include doc, chunk, extraction (all have tag-a)
-      const entityIds = parsed.data.results.map(
-        (r: { entity_id: string }) => r.entity_id
-      );
+      const entityIds = parsed.data.results.map((r: { entity_id: string }) => r.entity_id);
       expect(entityIds).toContain(searchEntities.docId);
       expect(entityIds).toContain(searchEntities.chunkId);
       expect(entityIds).toContain(searchEntities.extractionId);
@@ -566,9 +569,7 @@ describe('Phase 9: Cross-Entity Tagging Tools', () => {
 
       expect(parsed.success).toBe(true);
       // Only doc and extraction have both tag-a AND tag-b
-      const entityIds = parsed.data.results.map(
-        (r: { entity_id: string }) => r.entity_id
-      );
+      const entityIds = parsed.data.results.map((r: { entity_id: string }) => r.entity_id);
       expect(entityIds).toContain(searchEntities.docId);
       expect(entityIds).toContain(searchEntities.extractionId);
       // chunk only has tag-a, image only has tag-b
@@ -642,9 +643,9 @@ describe('Phase 9: Cross-Entity Tagging Tools', () => {
       // Verify 2 associations exist
       const conn = db.getConnection();
       const beforeCount = (
-        conn
-          .prepare('SELECT COUNT(*) as cnt FROM entity_tags WHERE tag_id = ?')
-          .get(tag.id) as { cnt: number }
+        conn.prepare('SELECT COUNT(*) as cnt FROM entity_tags WHERE tag_id = ?').get(tag.id) as {
+          cnt: number;
+        }
       ).cnt;
       expect(beforeCount).toBe(2);
 
@@ -665,9 +666,9 @@ describe('Phase 9: Cross-Entity Tagging Tools', () => {
 
       // Verify entity_tags are gone (CASCADE)
       const afterCount = (
-        conn
-          .prepare('SELECT COUNT(*) as cnt FROM entity_tags WHERE tag_id = ?')
-          .get(tag.id) as { cnt: number }
+        conn.prepare('SELECT COUNT(*) as cnt FROM entity_tags WHERE tag_id = ?').get(tag.id) as {
+          cnt: number;
+        }
       ).cnt;
       expect(afterCount).toBe(0);
     });
@@ -734,9 +735,7 @@ describe('Phase 9: Cross-Entity Tagging Tools', () => {
       const conn = db.getConnection();
 
       const indexes = conn
-        .prepare(
-          "SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='entity_tags'"
-        )
+        .prepare("SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='entity_tags'")
         .all() as Array<{ name: string }>;
       const indexNames = indexes.map((i) => i.name);
 
@@ -773,12 +772,12 @@ describe('Phase 9: Cross-Entity Tagging Tools', () => {
 
       const uniqueName = 'unique-test-' + Date.now();
       conn
-        .prepare('INSERT INTO tags (id, name, created_at) VALUES (?, ?, datetime(\'now\'))')
+        .prepare("INSERT INTO tags (id, name, created_at) VALUES (?, ?, datetime('now'))")
         .run(uuidv4(), uniqueName);
 
       expect(() => {
         conn
-          .prepare('INSERT INTO tags (id, name, created_at) VALUES (?, ?, datetime(\'now\'))')
+          .prepare("INSERT INTO tags (id, name, created_at) VALUES (?, ?, datetime('now'))")
           .run(uuidv4(), uniqueName);
       }).toThrow();
     });
@@ -791,7 +790,7 @@ describe('Phase 9: Cross-Entity Tagging Tools', () => {
 
       // Insert tag first (FK constraint)
       conn
-        .prepare('INSERT INTO tags (id, name, created_at) VALUES (?, ?, datetime(\'now\'))')
+        .prepare("INSERT INTO tags (id, name, created_at) VALUES (?, ?, datetime('now'))")
         .run(tagId, 'unique-et-test-' + Date.now());
 
       conn

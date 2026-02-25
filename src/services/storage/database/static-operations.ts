@@ -256,7 +256,13 @@ export function deleteDatabase(name: string, storagePath?: string): void {
         for (const { id } of docs) {
           const imageDir = join(imagesBaseDir, id);
           if (existsSync(imageDir)) {
-            try { rmSync(imageDir, { recursive: true, force: true }); } catch (error) { console.error(`[static-operations] Failed to delete image directory ${imageDir}: ${error instanceof Error ? error.message : String(error)}`); }
+            try {
+              rmSync(imageDir, { recursive: true, force: true });
+            } catch (error) {
+              console.error(
+                `[static-operations] Failed to delete image directory ${imageDir}: ${error instanceof Error ? error.message : String(error)}`
+              );
+            }
           }
         }
       }
@@ -264,7 +270,9 @@ export function deleteDatabase(name: string, storagePath?: string): void {
       db.close();
     }
   } catch (error) {
-    console.error(`[static-operations] Failed to query database ${dbPath} for image cleanup (DB may be corrupt or missing tables): ${error instanceof Error ? error.message : String(error)}`);
+    console.error(
+      `[static-operations] Failed to query database ${dbPath} for image cleanup (DB may be corrupt or missing tables): ${error instanceof Error ? error.message : String(error)}`
+    );
   }
 
   unlinkSync(dbPath);

@@ -56,7 +56,7 @@ def rerank(query: str, passages: list[dict]) -> list[dict]:
     )
 
     results = []
-    for passage, score in zip(passages, scores):
+    for passage, score in zip(passages, scores, strict=False):
         results.append(
             {
                 "index": passage["index"],

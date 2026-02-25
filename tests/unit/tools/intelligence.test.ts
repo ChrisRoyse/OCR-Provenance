@@ -207,24 +207,36 @@ describe('Intelligence Tools', () => {
       })
     );
 
-    conn.prepare(`
+    conn
+      .prepare(
+        `
       INSERT INTO clusters (id, run_id, cluster_index, label, description, document_count,
         algorithm, algorithm_params_json, content_hash, provenance_id, created_at)
       VALUES (?, ?, 0, 'test-cluster', 'Test cluster for recommendations', 2,
         'manual', '{}', ?, ?, datetime('now'))
-    `).run(clusterId, runId, computeHash('test-cluster'), clusterProvId);
+    `
+      )
+      .run(clusterId, runId, computeHash('test-cluster'), clusterProvId);
 
     const dc1Id = uuidv4();
-    conn.prepare(`
+    conn
+      .prepare(
+        `
       INSERT INTO document_clusters (id, document_id, cluster_id, run_id, similarity_to_centroid, assigned_at)
       VALUES (?, ?, ?, ?, 0.9, datetime('now'))
-    `).run(dc1Id, docId, clusterId, runId);
+    `
+      )
+      .run(dc1Id, docId, clusterId, runId);
 
     const dc2Id = uuidv4();
-    conn.prepare(`
+    conn
+      .prepare(
+        `
       INSERT INTO document_clusters (id, document_id, cluster_id, run_id, similarity_to_centroid, assigned_at)
       VALUES (?, ?, ?, ?, 0.85, datetime('now'))
-    `).run(dc2Id, doc2Id, clusterId, runId);
+    `
+      )
+      .run(dc2Id, doc2Id, clusterId, runId);
   });
 
   afterAll(() => {

@@ -80,7 +80,11 @@ describe('ocr_file_ingest_uploaded', () => {
     const conn = db.getConnection();
 
     // Create a real file on disk
-    const testFilePath = createTestFile(tempDir, 'test-upload-1.pdf', 'PDF content for ingest test');
+    const testFilePath = createTestFile(
+      tempDir,
+      'test-upload-1.pdf',
+      'PDF content for ingest test'
+    );
     const fileHash = computeHash('PDF content for ingest test');
 
     // Create provenance for uploaded file
@@ -137,7 +141,11 @@ describe('ocr_file_ingest_uploaded', () => {
     const conn = db.getConnection();
 
     const fileHash = computeHash('duplicate content for dedup test');
-    const testFilePath = createTestFile(tempDir, 'test-dedup.pdf', 'duplicate content for dedup test');
+    const testFilePath = createTestFile(
+      tempDir,
+      'test-dedup.pdf',
+      'duplicate content for dedup test'
+    );
 
     // Insert an existing document with same hash
     const existingProvId = uuidv4();
@@ -388,9 +396,7 @@ describe('ocr_embedding_rebuild (document re-embed, merged from ocr_reembed_docu
       })
     );
     const ocrId = uuidv4();
-    db.insertOCRResult(
-      createTestOCRResult(docId, ocrProvId, { id: ocrId })
-    );
+    db.insertOCRResult(createTestOCRResult(docId, ocrProvId, { id: ocrId }));
 
     const chunkProvId = uuidv4();
     db.insertProvenance(

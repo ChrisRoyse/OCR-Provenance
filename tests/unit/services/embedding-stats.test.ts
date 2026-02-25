@@ -137,12 +137,16 @@ describe('getEmbeddingsFiltered', () => {
     // We need an image record first
     const conn = db.getConnection();
     const imgId = uuidv4();
-    conn.prepare(`
+    conn
+      .prepare(
+        `
       INSERT INTO images (id, document_id, ocr_result_id, page_number,
         bbox_x, bbox_y, bbox_width, bbox_height, image_index, format,
         width, height, vlm_status, created_at)
       VALUES (?, ?, ?, 1, 0, 0, 100, 100, 0, 'png', 100, 100, 'complete', datetime('now'))
-    `).run(imgId, doc1.id, ocr1.id);
+    `
+      )
+      .run(imgId, doc1.id, ocr1.id);
 
     const imgEmbProv = createTestProvenance({
       id: uuidv4(),
@@ -179,7 +183,7 @@ describe('getEmbeddingsFiltered', () => {
     const { db } = requireDatabase();
     const result = db.getEmbeddingsFiltered({ document_id: docId1 });
     expect(result.total).toBe(2); // chunk + image embedding
-    expect(result.embeddings.every(e => e.document_id === docId1)).toBe(true);
+    expect(result.embeddings.every((e) => e.document_id === docId1)).toBe(true);
   });
 
   it('should filter by source_type chunk', () => {
@@ -221,9 +225,9 @@ describe('getEmbeddingsFiltered', () => {
     expect(page2.embeddings).toHaveLength(1);
 
     // IDs should not overlap
-    const page1Ids = page1.embeddings.map(e => e.id);
-    const page2Ids = page2.embeddings.map(e => e.id);
-    expect(page1Ids.some(id => page2Ids.includes(id))).toBe(false);
+    const page1Ids = page1.embeddings.map((e) => e.id);
+    const page2Ids = page2.embeddings.map((e) => e.id);
+    expect(page1Ids.some((id) => page2Ids.includes(id))).toBe(false);
   });
 
   it('should combine filters', () => {
@@ -327,12 +331,16 @@ describe('getEmbeddingStats', () => {
     // Image with vlm_status=complete but no embedding (unembedded)
     const conn = db.getConnection();
     const imgId = uuidv4();
-    conn.prepare(`
+    conn
+      .prepare(
+        `
       INSERT INTO images (id, document_id, ocr_result_id, page_number,
         bbox_x, bbox_y, bbox_width, bbox_height, image_index, format,
         width, height, vlm_status, vlm_description, created_at)
       VALUES (?, ?, ?, 1, 0, 0, 100, 100, 0, 'png', 100, 100, 'complete', 'test description', datetime('now'))
-    `).run(imgId, doc.id, ocr.id);
+    `
+      )
+      .run(imgId, doc.id, ocr.id);
 
     const stats = db.getEmbeddingStats();
     expect(stats.total_embeddings).toBe(1);

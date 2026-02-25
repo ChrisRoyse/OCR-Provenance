@@ -8,11 +8,7 @@
  */
 
 import { diffLines } from 'diff';
-import type {
-  TextDiffOperation,
-  TextDiffResult,
-  StructuralDiff,
-} from '../../models/comparison.js';
+import type { TextDiffOperation, TextDiffResult, StructuralDiff } from '../../models/comparison.js';
 
 /**
  * Input shape for a document's structural metadata used in compareStructure()

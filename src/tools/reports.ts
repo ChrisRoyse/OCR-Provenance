@@ -66,18 +66,23 @@ const ErrorAnalyticsInput = z.object({
 
 // MERGE-C: Unified trends schema (ocr_quality_trends + ocr_timeline_analytics → ocr_trends)
 const TrendsInput = z.object({
-  metric: z.enum(['quality', 'volume']).describe('Trend type: quality (OCR scores over time) or volume (processing counts over time)'),
+  metric: z
+    .enum(['quality', 'volume'])
+    .describe('Trend type: quality (OCR scores over time) or volume (processing counts over time)'),
   bucket: z.enum(['hourly', 'daily', 'weekly', 'monthly']).default('daily'),
   created_after: z.string().optional(),
   created_before: z.string().optional(),
   // quality-specific
-  group_by: z.enum(['none', 'ocr_mode', 'processor']).default('none')
+  group_by: z
+    .enum(['none', 'ocr_mode', 'processor'])
+    .default('none')
     .describe('(quality only) Group by OCR mode or processor'),
   // volume-specific
-  volume_metric: z.enum(['documents', 'pages', 'chunks', 'embeddings', 'images', 'cost']).default('documents')
+  volume_metric: z
+    .enum(['documents', 'pages', 'chunks', 'embeddings', 'images', 'cost'])
+    .default('documents')
     .describe('(volume only) Which metric to track over time'),
 });
-
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // REPORT TOOL HANDLERS
@@ -503,9 +508,9 @@ export async function handleReportOverview(params: Record<string, unknown>): Pro
       };
 
       const formFillCost = (
-        conn
-          .prepare('SELECT COALESCE(SUM(cost_cents), 0) as total FROM form_fills')
-          .get() as { total: number }
+        conn.prepare('SELECT COALESCE(SUM(cost_cents), 0) as total FROM form_fills').get() as {
+          total: number;
+        }
       ).total;
 
       const comparisonStats = conn
@@ -1167,12 +1172,10 @@ export async function handleReportPerformance(
           total_images_processed: totalImages,
           total_ocr_duration_ms: totalOcrMs,
           total_embedding_duration_ms: totalEmbMs,
-          overall_avg_ms_per_page: totalPages > 0
-            ? Math.round((totalOcrMs / totalPages) * 100) / 100
-            : 0,
-          overall_avg_ms_per_embedding: totalEmbeddings > 0
-            ? Math.round((totalEmbMs / totalEmbeddings) * 100) / 100
-            : 0,
+          overall_avg_ms_per_page:
+            totalPages > 0 ? Math.round((totalOcrMs / totalPages) * 100) / 100 : 0,
+          overall_avg_ms_per_embedding:
+            totalEmbeddings > 0 ? Math.round((totalEmbMs / totalEmbeddings) * 100) / 100 : 0,
         },
         data,
       };
@@ -1270,9 +1273,8 @@ export async function handleReportPerformance(
           min_duration_ms: p.min_duration_ms,
           max_duration_ms: p.max_duration_ms,
           total_duration_ms: p.total_duration_ms,
-          pct_of_total: grandTotal > 0
-            ? Math.round((p.total_duration_ms / grandTotal) * 10000) / 100
-            : 0,
+          pct_of_total:
+            grandTotal > 0 ? Math.round((p.total_duration_ms / grandTotal) * 10000) / 100 : 0,
         })),
         by_chain_depth: byChainDepth.map((d) => ({
           chain_depth: d.chain_depth,
@@ -1311,9 +1313,7 @@ export async function handleReportPerformance(
 /**
  * Handle ocr_error_analytics - Get error and recovery analytics
  */
-export async function handleErrorAnalytics(
-  params: Record<string, unknown>
-): Promise<ToolResponse> {
+export async function handleErrorAnalytics(params: Record<string, unknown>): Promise<ToolResponse> {
   try {
     const input = validateInput(ErrorAnalyticsInput, params);
     const { db } = requireDatabase();
@@ -1340,7 +1340,8 @@ export async function handleErrorAnalytics(
       processing: number;
     };
 
-    const docFailureRate = docFailures.total > 0 ? (docFailures.failed / docFailures.total) * 100 : 0;
+    const docFailureRate =
+      docFailures.total > 0 ? (docFailures.failed / docFailures.total) * 100 : 0;
 
     // 2. Failure by file type
     const failureByFileType = conn
@@ -1388,9 +1389,7 @@ export async function handleErrorAnalytics(
     };
 
     const vlmFailureRate =
-      vlmFailures.total_images > 0
-        ? (vlmFailures.failed / vlmFailures.total_images) * 100
-        : 0;
+      vlmFailures.total_images > 0 ? (vlmFailures.failed / vlmFailures.total_images) * 100 : 0;
 
     // 6. Embedding failure stats (from chunks embedding_status)
     const embeddingFailures = conn
@@ -1481,7 +1480,6 @@ export async function handleErrorAnalytics(
     return handleError(error);
   }
 }
-
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // UNIFIED TRENDS HANDLER (MERGE-C)
@@ -1749,7 +1747,8 @@ export const reportTools: Record<string, ToolDefinition> = {
   },
 
   ocr_cost_summary: {
-    description: '[STATUS] Use to get cost analytics for OCR and form fill operations. Returns costs grouped by document, mode, month, or total.',
+    description:
+      '[STATUS] Use to get cost analytics for OCR and form fill operations. Returns costs grouped by document, mode, month, or total.',
     inputSchema: {
       group_by: z
         .enum(['document', 'mode', 'month', 'total'])
@@ -1771,7 +1770,13 @@ export const reportTools: Record<string, ToolDefinition> = {
         .enum(['total', 'document', 'mode', 'file_type'])
         .default('total')
         .describe('(pipeline) How to group performance data'),
-      limit: z.number().int().min(1).max(100).default(20).describe('(pipeline) Max items per group'),
+      limit: z
+        .number()
+        .int()
+        .min(1)
+        .max(100)
+        .default(20)
+        .describe('(pipeline) Max items per group'),
       bucket: z
         .enum(['hourly', 'daily', 'weekly', 'monthly'])
         .default('daily')

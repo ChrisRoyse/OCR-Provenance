@@ -87,7 +87,11 @@ describe('Search Schemas', () => {
     });
 
     it('should accept phrase_search flag', () => {
-      const result = SearchUnifiedInput.parse({ query: 'exact phrase', mode: 'keyword', phrase_search: true });
+      const result = SearchUnifiedInput.parse({
+        query: 'exact phrase',
+        mode: 'keyword',
+        phrase_search: true,
+      });
       expect(result.phrase_search).toBe(true);
     });
   });
@@ -134,7 +138,9 @@ describe('Search Schemas', () => {
     });
 
     it('should reject weights above 2', () => {
-      expect(() => SearchUnifiedInput.parse({ query: 'test', mode: 'hybrid', bm25_weight: 2.5 })).toThrow();
+      expect(() =>
+        SearchUnifiedInput.parse({ query: 'test', mode: 'hybrid', bm25_weight: 2.5 })
+      ).toThrow();
     });
 
     it('should accept custom rrf_k', () => {

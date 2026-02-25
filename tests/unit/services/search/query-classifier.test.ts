@@ -8,7 +8,10 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { classifyQuery, type QueryClassification } from '../../../../src/services/search/query-classifier.js';
+import {
+  classifyQuery,
+  type QueryClassification,
+} from '../../../../src/services/search/query-classifier.js';
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // EXACT QUERY PATTERN TESTS
@@ -33,7 +36,7 @@ describe('classifyQuery - exact patterns', () => {
     const result = classifyQuery('DOC-456');
     expect(result.query_type).toBe('exact');
     expect(result.recommended_strategy).toBe('bm25');
-    expect(result.detected_patterns.some(p => p.startsWith('exact:'))).toBe(true);
+    expect(result.detected_patterns.some((p) => p.startsWith('exact:'))).toBe(true);
   });
 
   it('classifies date patterns as exact', () => {
@@ -140,8 +143,8 @@ describe('classifyQuery - mixed/default patterns', () => {
     const result = classifyQuery('what did John Smith say about the contract from 2024-01-15');
     expect(result.detected_patterns.length).toBeGreaterThan(1);
     // Should have both exact and semantic patterns detected
-    const hasExact = result.detected_patterns.some(p => p.startsWith('exact:'));
-    const hasSemantic = result.detected_patterns.some(p => p.startsWith('semantic:'));
+    const hasExact = result.detected_patterns.some((p) => p.startsWith('exact:'));
+    const hasSemantic = result.detected_patterns.some((p) => p.startsWith('semantic:'));
     expect(hasExact).toBe(true);
     expect(hasSemantic).toBe(true);
   });

@@ -59,15 +59,23 @@ function insertTestDocument(id: string, fileName: string): void {
   const now = new Date().toISOString();
   const provenanceId = `prov-${id}`;
 
-  conn.prepare(`
+  conn
+    .prepare(
+      `
     INSERT INTO provenance (id, type, created_at, processed_at, source_type, source_path, root_document_id, content_hash, processor, processor_version, processing_params, parent_ids, chain_depth)
     VALUES (?, 'DOCUMENT', ?, ?, 'FILE', ?, ?, 'test-hash-' || ?, 'test', '1.0', '{}', '[]', 0)
-  `).run(provenanceId, now, now, `/test/${fileName}`, id, id);
+  `
+    )
+    .run(provenanceId, now, now, `/test/${fileName}`, id, id);
 
-  conn.prepare(`
+  conn
+    .prepare(
+      `
     INSERT INTO documents (id, file_path, file_name, file_hash, file_size, file_type, status, provenance_id, created_at)
     VALUES (?, ?, ?, 'hash-' || ?, 1000, 'pdf', 'complete', ?, ?)
-  `).run(id, `/test/${fileName}`, fileName, id, provenanceId, now);
+  `
+    )
+    .run(id, `/test/${fileName}`, fileName, id, provenanceId, now);
 }
 
 /** Insert a dummy OCR result (FK dependency for chunks) */
@@ -80,15 +88,23 @@ function insertTestOCRResult(docId: string, ocrId: string): void {
   const existing = conn.prepare('SELECT id FROM ocr_results WHERE id = ?').get(ocrId);
   if (existing) return;
 
-  conn.prepare(`
+  conn
+    .prepare(
+      `
     INSERT INTO provenance (id, type, created_at, processed_at, source_type, root_document_id, content_hash, processor, processor_version, processing_params, parent_ids, chain_depth)
     VALUES (?, 'OCR_RESULT', ?, ?, 'OCR', ?, 'ocr-hash-' || ?, 'datalab', '1.0', '{}', '[]', 1)
-  `).run(provId, now, now, docId, docId);
+  `
+    )
+    .run(provId, now, now, docId, docId);
 
-  conn.prepare(`
+  conn
+    .prepare(
+      `
     INSERT INTO ocr_results (id, provenance_id, document_id, extracted_text, text_length, datalab_request_id, datalab_mode, page_count, content_hash, processing_started_at, processing_completed_at, processing_duration_ms)
     VALUES (?, ?, ?, 'Full extracted text for testing', 32, 'req-test', 'balanced', 3, 'ocr-content-hash-' || ?, ?, ?, 100)
-  `).run(ocrId, provId, docId, docId, now, now);
+  `
+    )
+    .run(ocrId, provId, docId, docId, now, now);
 }
 
 /** Insert test chunks for a document */
@@ -101,15 +117,35 @@ function insertTestChunks(docId: string, ocrId: string, chunkTexts: string[]): v
     const chunkId = `chunk-${docId}-${i}`;
     const chunkProvId = `prov-chunk-${docId}-${i}`;
 
-    conn.prepare(`
+    conn
+      .prepare(
+        `
       INSERT INTO provenance (id, type, created_at, processed_at, source_type, source_id, root_document_id, content_hash, processor, processor_version, processing_params, parent_ids, chain_depth)
       VALUES (?, 'CHUNK', ?, ?, 'CHUNKING', ?, ?, 'chunk-hash-' || ?, 'chunker', '1.0', '{}', '[]', 2)
-    `).run(chunkProvId, now, now, `prov-ocr-${docId}`, docId, chunkId);
+    `
+      )
+      .run(chunkProvId, now, now, `prov-ocr-${docId}`, docId, chunkId);
 
-    conn.prepare(`
+    conn
+      .prepare(
+        `
       INSERT INTO chunks (id, document_id, ocr_result_id, text, text_hash, chunk_index, character_start, character_end, page_number, overlap_previous, overlap_next, provenance_id, created_at, embedding_status)
       VALUES (?, ?, ?, ?, 'thash-' || ?, ?, ?, ?, ?, 0, 0, ?, ?, 'pending')
-    `).run(chunkId, docId, ocrId, chunkTexts[i], chunkId, i, i * 1000, (i + 1) * 1000, i + 1, chunkProvId, now);
+    `
+      )
+      .run(
+        chunkId,
+        docId,
+        ocrId,
+        chunkTexts[i],
+        chunkId,
+        i,
+        i * 1000,
+        (i + 1) * 1000,
+        i + 1,
+        chunkProvId,
+        now
+      );
   }
 }
 
@@ -205,7 +241,10 @@ describe('COLLAB-CLM-SYSOPT FULL STATE VERIFICATION', () => {
       // VERIFY: Direct DB check
       const { db } = requireDatabase();
       const conn = db.getConnection();
-      const dbRow = conn.prepare('SELECT * FROM users WHERE id = ?').get(userId) as Record<string, unknown>;
+      const dbRow = conn.prepare('SELECT * FROM users WHERE id = ?').get(userId) as Record<
+        string,
+        unknown
+      >;
       expect(dbRow).toBeDefined();
       expect(dbRow.display_name).toBe('Alice Admin');
       expect(dbRow.role).toBe('admin');
@@ -283,7 +322,9 @@ describe('COLLAB-CLM-SYSOPT FULL STATE VERIFICATION', () => {
       // VERIFY: Direct DB check
       const { db } = requireDatabase();
       const conn = db.getConnection();
-      const dbRow = conn.prepare('SELECT * FROM annotations WHERE id = ?').get(annotationId) as Record<string, unknown>;
+      const dbRow = conn
+        .prepare('SELECT * FROM annotations WHERE id = ?')
+        .get(annotationId) as Record<string, unknown>;
       expect(dbRow).toBeDefined();
       expect(dbRow.annotation_type).toBe('comment');
       expect(dbRow.status).toBe('open');
@@ -308,7 +349,9 @@ describe('COLLAB-CLM-SYSOPT FULL STATE VERIFICATION', () => {
       // VERIFY: Direct DB check
       const { db } = requireDatabase();
       const conn = db.getConnection();
-      const dbRow = conn.prepare('SELECT * FROM annotations WHERE id = ?').get(replyAnnotationId) as Record<string, unknown>;
+      const dbRow = conn
+        .prepare('SELECT * FROM annotations WHERE id = ?')
+        .get(replyAnnotationId) as Record<string, unknown>;
       expect(dbRow).toBeDefined();
       expect(dbRow.parent_id).toBe(annotationId);
     });
@@ -339,7 +382,9 @@ describe('COLLAB-CLM-SYSOPT FULL STATE VERIFICATION', () => {
       // VERIFY: Direct DB check
       const { db } = requireDatabase();
       const conn = db.getConnection();
-      const dbRow = conn.prepare('SELECT * FROM annotations WHERE id = ?').get(annotationId) as Record<string, unknown>;
+      const dbRow = conn
+        .prepare('SELECT * FROM annotations WHERE id = ?')
+        .get(annotationId) as Record<string, unknown>;
       expect(dbRow.status).toBe('resolved');
       expect(dbRow.updated_at).not.toBe(dbRow.created_at);
     });
@@ -387,7 +432,9 @@ describe('COLLAB-CLM-SYSOPT FULL STATE VERIFICATION', () => {
       const dbRow = conn.prepare('SELECT * FROM annotations WHERE id = ?').get(replyAnnotationId);
       expect(dbRow).toBeUndefined();
 
-      const countRow = conn.prepare('SELECT COUNT(*) as c FROM annotations WHERE document_id = ?').get(DOC_ID_1) as { c: number };
+      const countRow = conn
+        .prepare('SELECT COUNT(*) as c FROM annotations WHERE document_id = ?')
+        .get(DOC_ID_1) as { c: number };
       expect(countRow.c).toBe(1);
     });
 
@@ -411,7 +458,9 @@ describe('COLLAB-CLM-SYSOPT FULL STATE VERIFICATION', () => {
       // VERIFY: Direct DB check
       const { db } = requireDatabase();
       const conn = db.getConnection();
-      const dbRow = conn.prepare('SELECT * FROM document_locks WHERE document_id = ?').get(DOC_ID_1) as Record<string, unknown>;
+      const dbRow = conn
+        .prepare('SELECT * FROM document_locks WHERE document_id = ?')
+        .get(DOC_ID_1) as Record<string, unknown>;
       expect(dbRow).toBeDefined();
       expect(dbRow.lock_type).toBe('exclusive');
     });
@@ -453,7 +502,9 @@ describe('COLLAB-CLM-SYSOPT FULL STATE VERIFICATION', () => {
       // VERIFY: Direct DB check
       const { db } = requireDatabase();
       const conn = db.getConnection();
-      const dbRow = conn.prepare('SELECT * FROM document_locks WHERE document_id = ?').get(DOC_ID_1);
+      const dbRow = conn
+        .prepare('SELECT * FROM document_locks WHERE document_id = ?')
+        .get(DOC_ID_1);
       expect(dbRow).toBeUndefined();
     });
   });
@@ -477,9 +528,9 @@ describe('COLLAB-CLM-SYSOPT FULL STATE VERIFICATION', () => {
       // VERIFY: Direct DB check - should have draft + submitted
       const { db } = requireDatabase();
       const conn = db.getConnection();
-      const rows = conn.prepare(
-        'SELECT state FROM workflow_states WHERE document_id = ? ORDER BY created_at ASC'
-      ).all(DOC_ID_1) as Array<{ state: string }>;
+      const rows = conn
+        .prepare('SELECT state FROM workflow_states WHERE document_id = ? ORDER BY created_at ASC')
+        .all(DOC_ID_1) as Array<{ state: string }>;
       expect(rows).toHaveLength(2);
       expect(rows[0].state).toBe('draft');
       expect(rows[1].state).toBe('submitted');
@@ -498,9 +549,11 @@ describe('COLLAB-CLM-SYSOPT FULL STATE VERIFICATION', () => {
       // VERIFY: Direct DB check
       const { db } = requireDatabase();
       const conn = db.getConnection();
-      const latest = conn.prepare(
-        'SELECT * FROM workflow_states WHERE document_id = ? ORDER BY created_at DESC, rowid DESC LIMIT 1'
-      ).get(DOC_ID_1) as Record<string, unknown>;
+      const latest = conn
+        .prepare(
+          'SELECT * FROM workflow_states WHERE document_id = ? ORDER BY created_at DESC, rowid DESC LIMIT 1'
+        )
+        .get(DOC_ID_1) as Record<string, unknown>;
       expect(latest.state).toBe('in_review');
       expect(latest.assigned_to).toBe(userId);
     });
@@ -533,9 +586,11 @@ describe('COLLAB-CLM-SYSOPT FULL STATE VERIFICATION', () => {
       // VERIFY: Direct DB check
       const { db } = requireDatabase();
       const conn = db.getConnection();
-      const latest = conn.prepare(
-        'SELECT state FROM workflow_states WHERE document_id = ? ORDER BY created_at DESC, rowid DESC LIMIT 1'
-      ).get(DOC_ID_1) as { state: string };
+      const latest = conn
+        .prepare(
+          'SELECT state FROM workflow_states WHERE document_id = ? ORDER BY created_at DESC, rowid DESC LIMIT 1'
+        )
+        .get(DOC_ID_1) as { state: string };
       expect(latest.state).toBe('approved');
     });
 
@@ -570,11 +625,7 @@ describe('COLLAB-CLM-SYSOPT FULL STATE VERIFICATION', () => {
       const result = await workflowTools.ocr_approval_chain_create.handler({
         name: 'Legal Review Chain',
         description: 'Standard legal review process',
-        steps: [
-          { role: 'reviewer' },
-          { role: 'legal' },
-          { role: 'manager' },
-        ],
+        steps: [{ role: 'reviewer' }, { role: 'legal' }, { role: 'manager' }],
         created_by: userId,
       });
       expect(result.isError).toBeUndefined();
@@ -588,7 +639,9 @@ describe('COLLAB-CLM-SYSOPT FULL STATE VERIFICATION', () => {
       // VERIFY: Direct DB check
       const { db } = requireDatabase();
       const conn = db.getConnection();
-      const dbRow = conn.prepare('SELECT * FROM approval_chains WHERE id = ?').get(approvalChainId) as Record<string, unknown>;
+      const dbRow = conn
+        .prepare('SELECT * FROM approval_chains WHERE id = ?')
+        .get(approvalChainId) as Record<string, unknown>;
       expect(dbRow).toBeDefined();
       expect(dbRow.name).toBe('Legal Review Chain');
       const steps = JSON.parse(dbRow.steps_json as string);
@@ -608,9 +661,11 @@ describe('COLLAB-CLM-SYSOPT FULL STATE VERIFICATION', () => {
       // VERIFY: Direct DB check
       const { db } = requireDatabase();
       const conn = db.getConnection();
-      const steps = conn.prepare(
-        'SELECT * FROM approval_steps WHERE document_id = ? AND chain_id = ? ORDER BY step_order ASC'
-      ).all(DOC_ID_1, approvalChainId) as Array<Record<string, unknown>>;
+      const steps = conn
+        .prepare(
+          'SELECT * FROM approval_steps WHERE document_id = ? AND chain_id = ? ORDER BY step_order ASC'
+        )
+        .all(DOC_ID_1, approvalChainId) as Array<Record<string, unknown>>;
       expect(steps).toHaveLength(3);
       expect(steps[0].required_role).toBe('reviewer');
       expect(steps[0].status).toBe('pending');
@@ -641,9 +696,11 @@ describe('COLLAB-CLM-SYSOPT FULL STATE VERIFICATION', () => {
       // VERIFY: Direct DB check
       const { db } = requireDatabase();
       const conn = db.getConnection();
-      const dbStep = conn.prepare(
-        "SELECT * FROM approval_steps WHERE document_id = ? AND chain_id = ? AND step_order = 1"
-      ).get(DOC_ID_1, approvalChainId) as Record<string, unknown>;
+      const dbStep = conn
+        .prepare(
+          'SELECT * FROM approval_steps WHERE document_id = ? AND chain_id = ? AND step_order = 1'
+        )
+        .get(DOC_ID_1, approvalChainId) as Record<string, unknown>;
       expect(dbStep.status).toBe('approved');
       expect(dbStep.decided_by).toBe(userId);
     });
@@ -690,7 +747,10 @@ describe('COLLAB-CLM-SYSOPT FULL STATE VERIFICATION', () => {
       // VERIFY: Direct DB check
       const { db } = requireDatabase();
       const conn = db.getConnection();
-      const dbRow = conn.prepare('SELECT * FROM playbooks WHERE id = ?').get(playbookId) as Record<string, unknown>;
+      const dbRow = conn.prepare('SELECT * FROM playbooks WHERE id = ?').get(playbookId) as Record<
+        string,
+        unknown
+      >;
       expect(dbRow).toBeDefined();
       const clauses = JSON.parse(dbRow.clauses_json as string);
       expect(clauses).toHaveLength(3);
@@ -721,7 +781,9 @@ describe('COLLAB-CLM-SYSOPT FULL STATE VERIFICATION', () => {
       expect(comparison.document_id).toBe(DOC_ID_1);
       expect(comparison.playbook_id).toBe(playbookId);
       expect(comparison.total_clauses).toBe(3);
-      expect((comparison.matches as number) + (comparison.alternative_matches as number)).toBeGreaterThanOrEqual(1);
+      expect(
+        (comparison.matches as number) + (comparison.alternative_matches as number)
+      ).toBeGreaterThanOrEqual(1);
 
       const clauseResults = comparison.clause_results as Array<Record<string, unknown>>;
       expect(clauseResults).toHaveLength(3);
@@ -730,7 +792,8 @@ describe('COLLAB-CLM-SYSOPT FULL STATE VERIFICATION', () => {
     it('27. Should create obligation manually', async () => {
       const { db } = requireDatabase();
       const conn = db.getConnection();
-      const { createObligation } = await import('../../src/services/storage/database/obligation-operations.js');
+      const { createObligation } =
+        await import('../../src/services/storage/database/obligation-operations.js');
 
       const futureDate = new Date();
       futureDate.setMonth(futureDate.getMonth() + 1);
@@ -748,7 +811,9 @@ describe('COLLAB-CLM-SYSOPT FULL STATE VERIFICATION', () => {
       obligationId = obligation.id;
 
       // VERIFY: Direct DB check
-      const dbRow = conn.prepare('SELECT * FROM obligations WHERE id = ?').get(obligationId) as Record<string, unknown>;
+      const dbRow = conn
+        .prepare('SELECT * FROM obligations WHERE id = ?')
+        .get(obligationId) as Record<string, unknown>;
       expect(dbRow).toBeDefined();
       expect(dbRow.obligation_type).toBe('payment');
       expect(dbRow.status).toBe('active');
@@ -784,7 +849,9 @@ describe('COLLAB-CLM-SYSOPT FULL STATE VERIFICATION', () => {
       // VERIFY: Direct DB check
       const { db } = requireDatabase();
       const conn = db.getConnection();
-      const dbRow = conn.prepare('SELECT * FROM obligations WHERE id = ?').get(obligationId) as Record<string, unknown>;
+      const dbRow = conn
+        .prepare('SELECT * FROM obligations WHERE id = ?')
+        .get(obligationId) as Record<string, unknown>;
       expect(dbRow.status).toBe('fulfilled');
 
       const metadata = JSON.parse(dbRow.metadata_json as string) as Record<string, unknown>;
@@ -798,7 +865,8 @@ describe('COLLAB-CLM-SYSOPT FULL STATE VERIFICATION', () => {
     it('30. Should get obligation calendar', async () => {
       const { db } = requireDatabase();
       const conn = db.getConnection();
-      const { createObligation } = await import('../../src/services/storage/database/obligation-operations.js');
+      const { createObligation } =
+        await import('../../src/services/storage/database/obligation-operations.js');
 
       const futureDate = new Date();
       futureDate.setDate(futureDate.getDate() + 14);
@@ -832,7 +900,7 @@ describe('COLLAB-CLM-SYSOPT FULL STATE VERIFICATION', () => {
       expect(data.file_name).toBe('contract-alpha.pdf');
       const summary = data.summary as Record<string, unknown>;
       expect(summary.total_chunks).toBe(3);
-      expect((summary.word_count as number)).toBeGreaterThan(0);
+      expect(summary.word_count as number).toBeGreaterThan(0);
     });
 
     it('32. Should summarize corpus', async () => {
@@ -842,7 +910,7 @@ describe('COLLAB-CLM-SYSOPT FULL STATE VERIFICATION', () => {
 
       expect(data.total_documents).toBe(3);
       expect(data.total_chunks).toBe(9);
-      expect((data.total_words as number)).toBeGreaterThan(0);
+      expect(data.total_words as number).toBeGreaterThan(0);
     });
   });
 
@@ -870,7 +938,10 @@ describe('COLLAB-CLM-SYSOPT FULL STATE VERIFICATION', () => {
       // VERIFY: Direct DB check
       const { db } = requireDatabase();
       const conn = db.getConnection();
-      const dbRow = conn.prepare('SELECT * FROM webhooks WHERE id = ?').get(webhookId) as Record<string, unknown>;
+      const dbRow = conn.prepare('SELECT * FROM webhooks WHERE id = ?').get(webhookId) as Record<
+        string,
+        unknown
+      >;
       expect(dbRow).toBeDefined();
       expect(dbRow.url).toBe('https://example.com/webhook');
       expect(dbRow.events).toBe('document.ingested,workflow.state_changed');
@@ -980,11 +1051,7 @@ describe('COLLAB-CLM-SYSOPT FULL STATE VERIFICATION', () => {
       expect(docs3[0].id).not.toBe(docs2[0].id);
 
       // Verify all 3 unique documents
-      const allIds = new Set([
-        docs1[0].id as string,
-        docs2[0].id as string,
-        docs3[0].id as string,
-      ]);
+      const allIds = new Set([docs1[0].id as string, docs2[0].id as string, docs3[0].id as string]);
       expect(allIds.size).toBe(3);
 
       // Fourth page should be empty
@@ -1020,7 +1087,7 @@ describe('COLLAB-CLM-SYSOPT FULL STATE VERIFICATION', () => {
       expect(users.total).toBe(2); // Alice + Bob
 
       const provenance = data.provenance as Record<string, unknown>;
-      expect((provenance.total_records as number)).toBeGreaterThan(0);
+      expect(provenance.total_records as number).toBeGreaterThan(0);
     });
 
     it('40. Should generate HIPAA report', async () => {
@@ -1071,7 +1138,7 @@ describe('COLLAB-CLM-SYSOPT FULL STATE VERIFICATION', () => {
       expect(exportData.workflow_evidence).toBeDefined();
 
       const approvalEvidence = exportData.approval_chain_evidence as Record<string, unknown>;
-      expect((approvalEvidence.total_chains as number)).toBeGreaterThanOrEqual(1);
+      expect(approvalEvidence.total_chains as number).toBeGreaterThanOrEqual(1);
     });
   });
 

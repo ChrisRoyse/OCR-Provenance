@@ -324,7 +324,9 @@ async function main(): Promise<void> {
     // Default: stdio mode -- used by AI clients with "docker run -i --rm"
     await startStdio();
   } else {
-    console.error(`[FATAL] Unknown MCP_TRANSPORT value: "${TRANSPORT}". Must be "stdio" or "http".`);
+    console.error(
+      `[FATAL] Unknown MCP_TRANSPORT value: "${TRANSPORT}". Must be "stdio" or "http".`
+    );
     process.exit(1);
   }
 }

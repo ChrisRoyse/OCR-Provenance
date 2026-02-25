@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+/* eslint-disable no-console */
 /**
  * OCR Provenance MCP Server — Interactive Setup Wizard
  *
@@ -92,12 +93,17 @@ function httpsRequest(
   return new Promise((resolve, reject) => {
     const req = https.request(options, (res) => {
       let data = '';
-      res.on('data', (chunk: Buffer) => { data += chunk.toString(); });
+      res.on('data', (chunk: Buffer) => {
+        data += chunk.toString();
+      });
       res.on('end', () => resolve({ status: res.statusCode ?? 0, body: data }));
     });
 
     req.on('error', (err: Error) => reject(err));
-    req.setTimeout(15000, () => { req.destroy(); reject(new Error('Request timed out (15s)')); });
+    req.setTimeout(15000, () => {
+      req.destroy();
+      reject(new Error('Request timed out (15s)'));
+    });
 
     if (body) req.write(body);
     req.end();
@@ -106,15 +112,18 @@ function httpsRequest(
 
 async function validateDatalabKey(key: string): Promise<{ valid: boolean; error?: string }> {
   try {
-    const res = await httpsRequest({
-      hostname: 'www.datalab.to',
-      path: '/api/v1/marker',
-      method: 'POST',
-      headers: {
-        'X-Api-Key': key,
-        'Content-Type': 'application/json',
+    const res = await httpsRequest(
+      {
+        hostname: 'www.datalab.to',
+        path: '/api/v1/marker',
+        method: 'POST',
+        headers: {
+          'X-Api-Key': key,
+          'Content-Type': 'application/json',
+        },
       },
-    }, '{}');
+      '{}'
+    );
 
     // 401/403 = bad key. Any other status (400, 422, 405, 200) = key accepted
     if (res.status === 401 || res.status === 403) {
@@ -252,17 +261,31 @@ function registerClaudeCode(datalabKey: string, geminiKey: string, imageRef: str
 
   try {
     // Remove existing registration if present (idempotent)
-    try { execSync('claude mcp remove ocr-provenance', { stdio: 'pipe' }); } catch { /* not registered yet */ }
+    try {
+      execSync('claude mcp remove ocr-provenance', { stdio: 'pipe' });
+    } catch {
+      /* not registered yet */
+    }
 
     const args = [
-      'mcp', 'add', 'ocr-provenance',
-      '-s', 'user',
-      '-e', `DATALAB_API_KEY=${datalabKey}`,
-      '-e', `GEMINI_API_KEY=${geminiKey}`,
+      'mcp',
+      'add',
+      'ocr-provenance',
+      '-s',
+      'user',
+      '-e',
+      `DATALAB_API_KEY=${datalabKey}`,
+      '-e',
+      `GEMINI_API_KEY=${geminiKey}`,
       '--',
-      'docker', 'run', '-i', '--rm',
-      '-v', hostMount,
-      '-v', 'ocr-data:/data',
+      'docker',
+      'run',
+      '-i',
+      '--rm',
+      '-v',
+      hostMount,
+      '-v',
+      'ocr-data:/data',
       imageRef,
     ];
 
@@ -282,35 +305,52 @@ interface ClientConfig {
 
 const CLIENT_INFO: Record<string, ClientConfig> = {
   'claude-desktop-mac': {
-    configPath: path.join(os.homedir(), 'Library', 'Application Support', 'Claude', 'claude_desktop_config.json'),
+    configPath: path.join(
+      os.homedir(),
+      'Library',
+      'Application Support',
+      'Claude',
+      'claude_desktop_config.json'
+    ),
     configKey: 'mcpServers',
   },
   'claude-desktop-win': {
     configPath: path.join(process.env.APPDATA ?? '', 'Claude', 'claude_desktop_config.json'),
     configKey: 'mcpServers',
   },
-  'cursor': {
+  cursor: {
     configPath: path.join(os.homedir(), '.cursor', 'mcp.json'),
     configKey: 'mcpServers',
   },
-  'windsurf': {
+  windsurf: {
     configPath: path.join(os.homedir(), '.codeium', 'windsurf', 'mcp_config.json'),
     configKey: 'mcpServers',
   },
 };
 
-function generateJsonConfig(datalabKey: string, geminiKey: string, configKey: string, imageRef: string): object {
+function generateJsonConfig(
+  datalabKey: string,
+  geminiKey: string,
+  configKey: string,
+  imageRef: string
+): object {
   const homePath = os.homedir();
   return {
     [configKey]: {
       'ocr-provenance': {
         command: 'docker',
         args: [
-          'run', '-i', '--rm',
-          '-e', 'DATALAB_API_KEY',
-          '-e', 'GEMINI_API_KEY',
-          '-v', `${homePath}:/host:ro`,
-          '-v', 'ocr-data:/data',
+          'run',
+          '-i',
+          '--rm',
+          '-e',
+          'DATALAB_API_KEY',
+          '-e',
+          'GEMINI_API_KEY',
+          '-v',
+          `${homePath}:/host:ro`,
+          '-v',
+          'ocr-data:/data',
           imageRef,
         ],
         env: {
@@ -334,10 +374,17 @@ function generateVsCodeConfig(imageRef: string): object {
         type: 'stdio',
         command: 'docker',
         args: [
-          'run', '-i', '--rm',
-          '-v', `${homePath}:/host:ro`,
-          '-v', 'ocr-data:/data',
-          '-e', 'DATALAB_API_KEY', '-e', 'GEMINI_API_KEY',
+          'run',
+          '-i',
+          '--rm',
+          '-v',
+          `${homePath}:/host:ro`,
+          '-v',
+          'ocr-data:/data',
+          '-e',
+          'DATALAB_API_KEY',
+          '-e',
+          'GEMINI_API_KEY',
           imageRef,
         ],
         env: {
@@ -362,16 +409,27 @@ function verifyDocker(datalabKey: string, geminiKey: string, imageRef: string): 
       },
     });
 
-    const proc = spawn('docker', [
-      'run', '-i', '--rm',
-      '-e', `DATALAB_API_KEY=${datalabKey}`,
-      '-e', `GEMINI_API_KEY=${geminiKey}`,
-      '-v', 'ocr-data:/data',
-      imageRef,
-    ], { stdio: ['pipe', 'pipe', 'pipe'] });
+    const proc = spawn(
+      'docker',
+      [
+        'run',
+        '-i',
+        '--rm',
+        '-e',
+        `DATALAB_API_KEY=${datalabKey}`,
+        '-e',
+        `GEMINI_API_KEY=${geminiKey}`,
+        '-v',
+        'ocr-data:/data',
+        imageRef,
+      ],
+      { stdio: ['pipe', 'pipe', 'pipe'] }
+    );
 
     let stdout = '';
-    const timeout = setTimeout(() => { proc.kill(); }, 20000);
+    const timeout = setTimeout(() => {
+      proc.kill();
+    }, 20000);
 
     proc.stdout.on('data', (chunk: Buffer) => {
       stdout += chunk.toString();
@@ -389,11 +447,15 @@ function verifyDocker(datalabKey: string, geminiKey: string, imageRef: string): 
         const response = JSON.parse(firstLine);
         if (response.result?.serverInfo?.name === 'ocr-provenance-mcp') {
           const toolCount = response.result.capabilities?.tools ? 'tools available' : '';
-          console.log(`  ${green('Connected')} — ${response.result.serverInfo.name} v${response.result.serverInfo.version} ${toolCount}`);
+          console.log(
+            `  ${green('Connected')} — ${response.result.serverInfo.name} v${response.result.serverInfo.version} ${toolCount}`
+          );
           resolve(true);
           return;
         }
-      } catch { /* parse error */ }
+      } catch {
+        /* parse error */
+      }
       console.error(`  ${red('Verification failed')} — server did not respond correctly`);
       if (stdout) console.error(`  Response: ${stdout.slice(0, 200)}`);
       resolve(false);
@@ -486,7 +548,9 @@ async function main(): Promise<void> {
   const dockerAvailable = hasDocker();
   if (!dockerAvailable) {
     console.error(`  ${red('Docker not found or not running.')}`);
-    console.error(`  Install Docker Desktop: ${cyan('https://docker.com/products/docker-desktop')}`);
+    console.error(
+      `  Install Docker Desktop: ${cyan('https://docker.com/products/docker-desktop')}`
+    );
     console.error(`  Then re-run: ${bold('ocr-provenance-mcp-setup')}`);
     console.error('');
     console.error(dim('  Alternatively, install natively (requires Python 3.12+):'));
@@ -502,9 +566,13 @@ async function main(): Promise<void> {
     const output = execSync(
       'docker images ghcr.io/chrisroyse/ocr-provenance:latest --format "{{.Repository}}:{{.Tag}}"',
       { stdio: 'pipe' }
-    ).toString().trim();
+    )
+      .toString()
+      .trim();
     imageReady = output.includes('ghcr.io/chrisroyse/ocr-provenance');
-  } catch { /* not available */ }
+  } catch {
+    /* not available */
+  }
 
   if (imageReady) {
     console.log(`  ${green('Docker image already available')}`);
@@ -514,12 +582,18 @@ async function main(): Promise<void> {
       const output = execSync(
         'docker images ocr-provenance-mcp:cpu --format "{{.Repository}}:{{.Tag}}"',
         { stdio: 'pipe' }
-      ).toString().trim();
+      )
+        .toString()
+        .trim();
       if (output.includes('ocr-provenance-mcp:cpu')) {
-        console.log(`  ${green('Local Docker image available')} ${dim('(ocr-provenance-mcp:cpu)')}`);
+        console.log(
+          `  ${green('Local Docker image available')} ${dim('(ocr-provenance-mcp:cpu)')}`
+        );
         imageReady = true;
       }
-    } catch { /* not available */ }
+    } catch {
+      /* not available */
+    }
   }
 
   if (!imageReady) {
@@ -552,7 +626,9 @@ async function main(): Promise<void> {
       const ghcrOutput = execSync(
         'docker images ghcr.io/chrisroyse/ocr-provenance:latest --format "{{.Repository}}"',
         { stdio: 'pipe' }
-      ).toString().trim();
+      )
+        .toString()
+        .trim();
       if (!ghcrOutput.includes('ghcr.io')) {
         imageRef = 'ocr-provenance-mcp:cpu';
       }
@@ -614,12 +690,14 @@ async function main(): Promise<void> {
     default: {
       console.log('  Docker command (stdio):');
       const home = os.homedir();
-      console.log(cyan(`  docker run -i --rm \\
+      console.log(
+        cyan(`  docker run -i --rm \\
     -e DATALAB_API_KEY=${datalabKey} \\
     -e GEMINI_API_KEY=${geminiKey} \\
     -v ${home}:/host:ro \\
     -v ocr-data:/data \\
-    ${imageRef}`));
+    ${imageRef}`)
+      );
       console.log('');
       break;
     }
@@ -633,7 +711,9 @@ async function main(): Promise<void> {
   const verified = await verifyDocker(datalabKey, geminiKey, imageRef);
   if (!verified) {
     console.error(`\n  ${red('Verification failed.')} The server did not respond.`);
-    console.error(`  Try running manually: docker run -i --rm -e DATALAB_API_KEY=test -e GEMINI_API_KEY=test -v ocr-data:/data ${imageRef}`);
+    console.error(
+      `  Try running manually: docker run -i --rm -e DATALAB_API_KEY=test -e GEMINI_API_KEY=test -v ocr-data:/data ${imageRef}`
+    );
     process.exit(1);
   }
 

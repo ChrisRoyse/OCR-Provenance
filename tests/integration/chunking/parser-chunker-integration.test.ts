@@ -145,7 +145,12 @@ describe('Parser → Chunker Integration', () => {
 
     // Now run through the full chunker
     const pageOffsets = extractPageOffsetsFromText(LEGAL_DOCUMENT);
-    const chunks = chunkHybridSectionAware(LEGAL_DOCUMENT, pageOffsets, null, DEFAULT_CHUNKING_CONFIG);
+    const chunks = chunkHybridSectionAware(
+      LEGAL_DOCUMENT,
+      pageOffsets,
+      null,
+      DEFAULT_CHUNKING_CONFIG
+    );
 
     expect(chunks.length).toBeGreaterThan(0);
 
@@ -157,15 +162,20 @@ describe('Parser → Chunker Integration', () => {
 
   it('section hierarchy paths appear in chunk.sectionPath', () => {
     const pageOffsets = extractPageOffsetsFromText(LEGAL_DOCUMENT);
-    const chunks = chunkHybridSectionAware(LEGAL_DOCUMENT, pageOffsets, null, DEFAULT_CHUNKING_CONFIG);
+    const chunks = chunkHybridSectionAware(
+      LEGAL_DOCUMENT,
+      pageOffsets,
+      null,
+      DEFAULT_CHUNKING_CONFIG
+    );
 
     // Find chunk containing section 3.2.1 content
-    const presidentChunk = chunks.find(c => c.text.includes('preside at all meetings'));
+    const presidentChunk = chunks.find((c) => c.text.includes('preside at all meetings'));
     expect(presidentChunk).toBeDefined();
     expect(presidentChunk!.sectionPath).toContain('ARTICLE 3');
 
     // Find chunk under Article 2
-    const membershipChunk = chunks.find(c => c.text.includes('eligible for membership'));
+    const membershipChunk = chunks.find((c) => c.text.includes('eligible for membership'));
     expect(membershipChunk).toBeDefined();
     expect(membershipChunk!.sectionPath).toContain('ARTICLE 2');
   });
@@ -174,10 +184,15 @@ describe('Parser → Chunker Integration', () => {
     const pageOffsets = extractPageOffsetsFromText(LEGAL_DOCUMENT);
     expect(pageOffsets.length).toBeGreaterThanOrEqual(2);
 
-    const chunks = chunkHybridSectionAware(LEGAL_DOCUMENT, pageOffsets, null, DEFAULT_CHUNKING_CONFIG);
+    const chunks = chunkHybridSectionAware(
+      LEGAL_DOCUMENT,
+      pageOffsets,
+      null,
+      DEFAULT_CHUNKING_CONFIG
+    );
 
     // Multiple distinct pages should be represented
-    const distinctPages = new Set(chunks.map(c => c.pageNumber).filter(p => p !== null));
+    const distinctPages = new Set(chunks.map((c) => c.pageNumber).filter((p) => p !== null));
     expect(distinctPages.size).toBeGreaterThan(1);
   });
 
@@ -198,7 +213,12 @@ describe('Parser → Chunker Integration', () => {
 describe('Chunker → Provenance Integration', () => {
   it('createChunkProvenance produces valid provenance for every chunk', () => {
     const pageOffsets = extractPageOffsetsFromText(LEGAL_DOCUMENT);
-    const chunks = chunkHybridSectionAware(LEGAL_DOCUMENT, pageOffsets, null, DEFAULT_CHUNKING_CONFIG);
+    const chunks = chunkHybridSectionAware(
+      LEGAL_DOCUMENT,
+      pageOffsets,
+      null,
+      DEFAULT_CHUNKING_CONFIG
+    );
 
     for (const chunk of chunks) {
       const prov = createChunkProvenance({
@@ -235,7 +255,12 @@ describe('Chunker → Provenance Integration', () => {
 
 describe('Config → Chunker Integration', () => {
   it('smaller chunkSize produces more chunks', () => {
-    const defaultChunks = chunkHybridSectionAware(LEGAL_DOCUMENT, [], null, DEFAULT_CHUNKING_CONFIG);
+    const defaultChunks = chunkHybridSectionAware(
+      LEGAL_DOCUMENT,
+      [],
+      null,
+      DEFAULT_CHUNKING_CONFIG
+    );
 
     const smallConfig: ChunkingConfig = {
       chunkSize: 500,
@@ -248,7 +273,12 @@ describe('Config → Chunker Integration', () => {
   });
 
   it('larger chunkSize produces fewer chunks', () => {
-    const defaultChunks = chunkHybridSectionAware(LEGAL_DOCUMENT, [], null, DEFAULT_CHUNKING_CONFIG);
+    const defaultChunks = chunkHybridSectionAware(
+      LEGAL_DOCUMENT,
+      [],
+      null,
+      DEFAULT_CHUNKING_CONFIG
+    );
 
     const largeConfig: ChunkingConfig = {
       chunkSize: 5000,
@@ -282,7 +312,8 @@ describe('Config → Chunker Integration', () => {
 describe('Heading Normalizer → Section Hierarchy Integration', () => {
   it('normalizing inconsistent ARTICLE levels fixes section paths', () => {
     // Simulate Datalab giving inconsistent heading levels
-    const text = '# ARTICLE 1\n\nContent A.\n\n### ARTICLE 2\n\nContent B.\n\n### ARTICLE 3\n\nContent C.';
+    const text =
+      '# ARTICLE 1\n\nContent A.\n\n### ARTICLE 2\n\nContent B.\n\n### ARTICLE 3\n\nContent C.';
 
     // Without normalization
     const chunksWithout = chunkHybridSectionAware(text, [], null, DEFAULT_CHUNKING_CONFIG);
@@ -300,7 +331,7 @@ describe('Heading Normalizer → Section Hierarchy Integration', () => {
 
     // With normalization, ARTICLE 2 should be at the same level as ARTICLE 1
     // so its section path should just be "ARTICLE 2", not nested under ARTICLE 1
-    const art2Chunk = chunksWith.find(c => c.text.includes('Content B'));
+    const art2Chunk = chunksWith.find((c) => c.text.includes('Content B'));
     if (art2Chunk && art2Chunk.sectionPath) {
       // After normalization, all articles at same level (mode)
       // ARTICLE 2 should NOT be nested under ARTICLE 1
@@ -334,15 +365,15 @@ describe('Full Pipeline Integration', () => {
     }
 
     // Page numbers should be assigned
-    const withPageNum = chunks.filter(c => c.pageNumber !== null);
+    const withPageNum = chunks.filter((c) => c.pageNumber !== null);
     expect(withPageNum.length).toBeGreaterThan(0);
 
     // Heading context should be populated for most chunks
-    const withHeading = chunks.filter(c => c.headingContext !== null);
+    const withHeading = chunks.filter((c) => c.headingContext !== null);
     expect(withHeading.length).toBeGreaterThan(chunks.length * 0.5);
 
     // Section paths should exist
-    const withSection = chunks.filter(c => c.sectionPath !== null);
+    const withSection = chunks.filter((c) => c.sectionPath !== null);
     expect(withSection.length).toBeGreaterThan(0);
 
     // All chunks should have content types
@@ -388,8 +419,8 @@ describe('Full Pipeline Integration', () => {
     expect(allTypes.has('heading')).toBe(true);
     expect(allTypes.has('text')).toBe(true);
     // Small code/table blocks get merged, so they show up as mixed content types
-    const hasCode = chunks.some(c => c.contentTypes.includes('code'));
-    const hasTable = chunks.some(c => c.contentTypes.includes('table'));
+    const hasCode = chunks.some((c) => c.contentTypes.includes('code'));
+    const hasTable = chunks.some((c) => c.contentTypes.includes('table'));
     expect(hasCode || hasTable).toBe(true);
   });
 
@@ -399,10 +430,15 @@ describe('Full Pipeline Integration', () => {
     const pageOffsets = extractPageOffsetsFromText(LEGAL_DOCUMENT);
     expect(pageOffsets.length).toBeGreaterThanOrEqual(2); // At least Page 2 and Page 3
 
-    const chunks = chunkHybridSectionAware(LEGAL_DOCUMENT, pageOffsets, null, DEFAULT_CHUNKING_CONFIG);
+    const chunks = chunkHybridSectionAware(
+      LEGAL_DOCUMENT,
+      pageOffsets,
+      null,
+      DEFAULT_CHUNKING_CONFIG
+    );
 
     // Chunks should span multiple pages
-    const pages = new Set(chunks.map(c => c.pageNumber).filter(p => p !== null));
+    const pages = new Set(chunks.map((c) => c.pageNumber).filter((p) => p !== null));
     expect(pages.size).toBeGreaterThanOrEqual(2);
   });
 });
@@ -442,39 +478,104 @@ describe('Chunker → Storage Integration', () => {
       ocrResultId = uuidv4();
 
       // Insert document provenance (chain_depth=0)
-      db.db.prepare(`INSERT INTO provenance (id, type, created_at, processed_at, source_type, root_document_id, content_hash, file_hash, processor, processor_version, processing_params, parent_ids, chain_depth) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
-        provDocId, 'DOCUMENT', now, now, 'FILE', provDocId,
-        computeHash('doc-content'), computeHash('doc-file'),
-        'test', '1.0.0', '{}', '[]', 0
-      );
+      db.db
+        .prepare(
+          `INSERT INTO provenance (id, type, created_at, processed_at, source_type, root_document_id, content_hash, file_hash, processor, processor_version, processing_params, parent_ids, chain_depth) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        )
+        .run(
+          provDocId,
+          'DOCUMENT',
+          now,
+          now,
+          'FILE',
+          provDocId,
+          computeHash('doc-content'),
+          computeHash('doc-file'),
+          'test',
+          '1.0.0',
+          '{}',
+          '[]',
+          0
+        );
 
       // Insert OCR provenance (chain_depth=1)
-      db.db.prepare(`INSERT INTO provenance (id, type, created_at, processed_at, source_type, root_document_id, content_hash, file_hash, processor, processor_version, processing_params, parent_ids, chain_depth) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
-        provOcrId, 'OCR_RESULT', now, now, 'OCR', provDocId,
-        computeHash('ocr-content'), computeHash('doc-file'),
-        'datalab', '1.0.0', '{}', JSON.stringify([provDocId]), 1
-      );
+      db.db
+        .prepare(
+          `INSERT INTO provenance (id, type, created_at, processed_at, source_type, root_document_id, content_hash, file_hash, processor, processor_version, processing_params, parent_ids, chain_depth) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        )
+        .run(
+          provOcrId,
+          'OCR_RESULT',
+          now,
+          now,
+          'OCR',
+          provDocId,
+          computeHash('ocr-content'),
+          computeHash('doc-file'),
+          'datalab',
+          '1.0.0',
+          '{}',
+          JSON.stringify([provDocId]),
+          1
+        );
 
       // Insert chunk provenance (chain_depth=2)
-      db.db.prepare(`INSERT INTO provenance (id, type, created_at, processed_at, source_type, root_document_id, content_hash, file_hash, processor, processor_version, processing_params, parent_ids, chain_depth) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
-        provChunkId, 'CHUNK', now, now, 'CHUNKING', provDocId,
-        computeHash('chunk-content'), computeHash('doc-file'),
-        'chunker', '2.0.0', '{}', JSON.stringify([provOcrId]), 2
-      );
+      db.db
+        .prepare(
+          `INSERT INTO provenance (id, type, created_at, processed_at, source_type, root_document_id, content_hash, file_hash, processor, processor_version, processing_params, parent_ids, chain_depth) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        )
+        .run(
+          provChunkId,
+          'CHUNK',
+          now,
+          now,
+          'CHUNKING',
+          provDocId,
+          computeHash('chunk-content'),
+          computeHash('doc-file'),
+          'chunker',
+          '2.0.0',
+          '{}',
+          JSON.stringify([provOcrId]),
+          2
+        );
 
       // Insert document
-      db.db.prepare(`INSERT INTO documents (id, file_path, file_name, file_hash, file_size, file_type, status, provenance_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
-        docId, '/test/doc.pdf', 'doc.pdf', computeHash('doc-file'),
-        1024, 'pdf', 'complete', provDocId, now
-      );
+      db.db
+        .prepare(
+          `INSERT INTO documents (id, file_path, file_name, file_hash, file_size, file_type, status, provenance_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        )
+        .run(
+          docId,
+          '/test/doc.pdf',
+          'doc.pdf',
+          computeHash('doc-file'),
+          1024,
+          'pdf',
+          'complete',
+          provDocId,
+          now
+        );
 
       // Insert OCR result
-      db.db.prepare(`INSERT INTO ocr_results (id, provenance_id, document_id, extracted_text, text_length, datalab_request_id, datalab_mode, page_count, content_hash, processing_started_at, processing_completed_at, processing_duration_ms) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
-        ocrResultId, provOcrId, docId,
-        LEGAL_DOCUMENT, LEGAL_DOCUMENT.length,
-        'req-test', 'balanced', 3,
-        computeHash('ocr-content'), now, now, 1000
-      );
+      db.db
+        .prepare(
+          `INSERT INTO ocr_results (id, provenance_id, document_id, extracted_text, text_length, datalab_request_id, datalab_mode, page_count, content_hash, processing_started_at, processing_completed_at, processing_duration_ms) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        )
+        .run(
+          ocrResultId,
+          provOcrId,
+          docId,
+          LEGAL_DOCUMENT,
+          LEGAL_DOCUMENT.length,
+          'req-test',
+          'balanced',
+          3,
+          computeHash('ocr-content'),
+          now,
+          now,
+          1000
+        );
     });
 
     afterEach(() => {
@@ -484,7 +585,12 @@ describe('Chunker → Storage Integration', () => {
 
     it('all ChunkResult fields stored correctly in database', () => {
       const pageOffsets = extractPageOffsetsFromText(LEGAL_DOCUMENT);
-      const chunks = chunkHybridSectionAware(LEGAL_DOCUMENT, pageOffsets, null, DEFAULT_CHUNKING_CONFIG);
+      const chunks = chunkHybridSectionAware(
+        LEGAL_DOCUMENT,
+        pageOffsets,
+        null,
+        DEFAULT_CHUNKING_CONFIG
+      );
       expect(chunks.length).toBeGreaterThan(0);
 
       // Insert the first chunk into the DB
@@ -605,11 +711,25 @@ describe('Chunker → Storage Integration', () => {
       // Insert non-atomic chunk (isAtomic=false -> 0)
       const nonAtomicProvId = uuidv4();
       const now = new Date().toISOString();
-      db.db.prepare(`INSERT INTO provenance (id, type, created_at, processed_at, source_type, root_document_id, content_hash, file_hash, processor, processor_version, processing_params, parent_ids, chain_depth) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
-        nonAtomicProvId, 'CHUNK', now, now, 'CHUNKING', provDocId,
-        computeHash('non-atomic'), computeHash('doc-file'),
-        'chunker', '2.0.0', '{}', JSON.stringify([provOcrId]), 2
-      );
+      db.db
+        .prepare(
+          `INSERT INTO provenance (id, type, created_at, processed_at, source_type, root_document_id, content_hash, file_hash, processor, processor_version, processing_params, parent_ids, chain_depth) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        )
+        .run(
+          nonAtomicProvId,
+          'CHUNK',
+          now,
+          now,
+          'CHUNKING',
+          provDocId,
+          computeHash('non-atomic'),
+          computeHash('doc-file'),
+          'chunker',
+          '2.0.0',
+          '{}',
+          JSON.stringify([provOcrId]),
+          2
+        );
       const nonAtomicId = uuidv4();
       db.insertChunk({
         id: nonAtomicId,
@@ -637,8 +757,8 @@ describe('Chunker → Storage Integration', () => {
       const retrieved = db.getChunksByDocumentId(docId);
       expect(retrieved.length).toBe(2);
 
-      const atomicChunk = retrieved.find(c => c.id === atomicId)!;
-      const nonAtomicChunk = retrieved.find(c => c.id === nonAtomicId)!;
+      const atomicChunk = retrieved.find((c) => c.id === atomicId)!;
+      const nonAtomicChunk = retrieved.find((c) => c.id === nonAtomicId)!;
 
       // is_atomic is stored as INTEGER (0/1) and retrieved as number
       expect(typeof atomicChunk.is_atomic).toBe('number');
@@ -681,7 +801,8 @@ describe('Chunker → Storage Integration', () => {
     });
 
     it('section_path with > separator stored/retrieved correctly', () => {
-      const sectionPath = 'ARTICLE 3 - OFFICERS > Section 3.2 Duties of Officers > Section 3.2.1 President';
+      const sectionPath =
+        'ARTICLE 3 - OFFICERS > Section 3.2 Duties of Officers > Section 3.2.1 President';
       const chunkId = uuidv4();
 
       db.insertChunk({
@@ -750,24 +871,96 @@ describe('Storage → API Integration', () => {
       docId = uuidv4();
       ocrResultId = uuidv4();
 
-      db.db.prepare(`INSERT INTO provenance (id, type, created_at, processed_at, source_type, root_document_id, content_hash, file_hash, processor, processor_version, processing_params, parent_ids, chain_depth) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
-        provDocId, 'DOCUMENT', now, now, 'FILE', provDocId,
-        computeHash('doc'), computeHash('file'), 'test', '1.0.0', '{}', '[]', 0
-      );
-      db.db.prepare(`INSERT INTO provenance (id, type, created_at, processed_at, source_type, root_document_id, content_hash, file_hash, processor, processor_version, processing_params, parent_ids, chain_depth) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
-        provOcrId, 'OCR_RESULT', now, now, 'OCR', provDocId,
-        computeHash('ocr'), computeHash('file'), 'datalab', '1.0.0', '{}', JSON.stringify([provDocId]), 1
-      );
-      db.db.prepare(`INSERT INTO provenance (id, type, created_at, processed_at, source_type, root_document_id, content_hash, file_hash, processor, processor_version, processing_params, parent_ids, chain_depth) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
-        provChunkId, 'CHUNK', now, now, 'CHUNKING', provDocId,
-        computeHash('chunk'), computeHash('file'), 'chunker', '2.0.0', '{}', JSON.stringify([provOcrId]), 2
-      );
-      db.db.prepare(`INSERT INTO documents (id, file_path, file_name, file_hash, file_size, file_type, status, provenance_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
-        docId, '/test/api.pdf', 'api.pdf', computeHash('file'), 2048, 'pdf', 'complete', provDocId, now
-      );
-      db.db.prepare(`INSERT INTO ocr_results (id, provenance_id, document_id, extracted_text, text_length, datalab_request_id, datalab_mode, page_count, content_hash, processing_started_at, processing_completed_at, processing_duration_ms) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
-        ocrResultId, provOcrId, docId, 'Test text.', 10, 'req-api', 'balanced', 1, computeHash('text'), now, now, 500
-      );
+      db.db
+        .prepare(
+          `INSERT INTO provenance (id, type, created_at, processed_at, source_type, root_document_id, content_hash, file_hash, processor, processor_version, processing_params, parent_ids, chain_depth) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        )
+        .run(
+          provDocId,
+          'DOCUMENT',
+          now,
+          now,
+          'FILE',
+          provDocId,
+          computeHash('doc'),
+          computeHash('file'),
+          'test',
+          '1.0.0',
+          '{}',
+          '[]',
+          0
+        );
+      db.db
+        .prepare(
+          `INSERT INTO provenance (id, type, created_at, processed_at, source_type, root_document_id, content_hash, file_hash, processor, processor_version, processing_params, parent_ids, chain_depth) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        )
+        .run(
+          provOcrId,
+          'OCR_RESULT',
+          now,
+          now,
+          'OCR',
+          provDocId,
+          computeHash('ocr'),
+          computeHash('file'),
+          'datalab',
+          '1.0.0',
+          '{}',
+          JSON.stringify([provDocId]),
+          1
+        );
+      db.db
+        .prepare(
+          `INSERT INTO provenance (id, type, created_at, processed_at, source_type, root_document_id, content_hash, file_hash, processor, processor_version, processing_params, parent_ids, chain_depth) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        )
+        .run(
+          provChunkId,
+          'CHUNK',
+          now,
+          now,
+          'CHUNKING',
+          provDocId,
+          computeHash('chunk'),
+          computeHash('file'),
+          'chunker',
+          '2.0.0',
+          '{}',
+          JSON.stringify([provOcrId]),
+          2
+        );
+      db.db
+        .prepare(
+          `INSERT INTO documents (id, file_path, file_name, file_hash, file_size, file_type, status, provenance_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        )
+        .run(
+          docId,
+          '/test/api.pdf',
+          'api.pdf',
+          computeHash('file'),
+          2048,
+          'pdf',
+          'complete',
+          provDocId,
+          now
+        );
+      db.db
+        .prepare(
+          `INSERT INTO ocr_results (id, provenance_id, document_id, extracted_text, text_length, datalab_request_id, datalab_mode, page_count, content_hash, processing_started_at, processing_completed_at, processing_duration_ms) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        )
+        .run(
+          ocrResultId,
+          provOcrId,
+          docId,
+          'Test text.',
+          10,
+          'req-api',
+          'balanced',
+          1,
+          computeHash('text'),
+          now,
+          now,
+          500
+        );
     });
 
     afterEach(() => {
@@ -801,7 +994,10 @@ describe('Storage → API Integration', () => {
       });
 
       // Query raw row directly to verify raw column values
-      const rawRow = db.db.prepare('SELECT * FROM chunks WHERE id = ?').get(chunkId) as Record<string, unknown>;
+      const rawRow = db.db.prepare('SELECT * FROM chunks WHERE id = ?').get(chunkId) as Record<
+        string,
+        unknown
+      >;
       expect(rawRow).toBeDefined();
       expect(rawRow.heading_context).toBe('Test Heading');
       expect(rawRow.heading_level).toBe(2);
@@ -885,7 +1081,9 @@ describe('Storage → API Integration', () => {
       });
 
       // Check raw SQLite types via typeof() SQL function
-      const typeRow = db.db.prepare(`
+      const typeRow = db.db
+        .prepare(
+          `
         SELECT
           typeof(content_types) as content_types_type,
           typeof(heading_context) as heading_context_type,
@@ -896,7 +1094,9 @@ describe('Storage → API Integration', () => {
           is_atomic,
           chunking_strategy
         FROM chunks WHERE id = ?
-      `).get(chunkId) as Record<string, unknown>;
+      `
+        )
+        .get(chunkId) as Record<string, unknown>;
 
       // content_types: TEXT (JSON string)
       expect(typeRow.content_types_type).toBe('text');
@@ -923,7 +1123,12 @@ describe('Storage → API Integration', () => {
 
 describe('Config → Chunker Integration (extended)', () => {
   it('non-default chunkSize (300) produces different results from default (2000)', () => {
-    const defaultChunks = chunkHybridSectionAware(LEGAL_DOCUMENT, [], null, DEFAULT_CHUNKING_CONFIG);
+    const defaultChunks = chunkHybridSectionAware(
+      LEGAL_DOCUMENT,
+      [],
+      null,
+      DEFAULT_CHUNKING_CONFIG
+    );
 
     const customConfig: ChunkingConfig = {
       chunkSize: 300,
@@ -938,7 +1143,8 @@ describe('Config → Chunker Integration (extended)', () => {
 
   it('maxChunkSize enforcement - no chunk exceeds maxChunkSize', () => {
     // Create a very long text that will need splitting
-    const longParagraph = 'This is a long sentence that needs to be repeated many times to exceed the maximum chunk size. ';
+    const longParagraph =
+      'This is a long sentence that needs to be repeated many times to exceed the maximum chunk size. ';
     const veryLongText = `# Long Document\n\n${longParagraph.repeat(200)}`;
 
     const config: ChunkingConfig = {
@@ -991,7 +1197,7 @@ describe('Migration Integration (v27 schema)', () => {
         pk: number;
       }>;
 
-      const columnMap = new Map(columns.map(c => [c.name, c]));
+      const columnMap = new Map(columns.map((c) => [c.name, c]));
 
       // Verify all 6 new columns exist with correct types
       expect(columnMap.has('heading_context')).toBe(true);
@@ -1024,7 +1230,7 @@ describe('Migration Integration (v27 schema)', () => {
       const columns = secondDb!.db.pragma('table_info(chunks)') as Array<{
         name: string;
       }>;
-      const columnNames = new Set(columns.map(c => c.name));
+      const columnNames = new Set(columns.map((c) => c.name));
 
       expect(columnNames.has('heading_context')).toBe(true);
       expect(columnNames.has('heading_level')).toBe(true);
@@ -1037,7 +1243,9 @@ describe('Migration Integration (v27 schema)', () => {
     });
 
     it('schema version is at least 27', () => {
-      const versionRow = db.db.prepare('SELECT version FROM schema_version').get() as { version: number } | undefined;
+      const versionRow = db.db.prepare('SELECT version FROM schema_version').get() as
+        | { version: number }
+        | undefined;
       expect(versionRow).toBeDefined();
       expect(versionRow!.version).toBeGreaterThanOrEqual(27);
     });

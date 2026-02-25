@@ -77,7 +77,7 @@ export function backoffSleep(attempt: number, config?: Partial<BackoffConfig>): 
 export async function withRetry<T>(
   fn: () => Promise<T>,
   shouldRetry: (error: unknown) => boolean,
-  config?: Partial<BackoffConfig>,
+  config?: Partial<BackoffConfig>
 ): Promise<T> {
   const cfg = { ...DEFAULT_BACKOFF, ...config };
   let lastError: unknown;

@@ -34,7 +34,14 @@ import {
 // SCHEMAS
 // ═══════════════════════════════════════════════════════════════════════════════
 
-const AnnotationTypeSchema = z.enum(['comment', 'correction', 'question', 'highlight', 'flag', 'approval']);
+const AnnotationTypeSchema = z.enum([
+  'comment',
+  'correction',
+  'question',
+  'highlight',
+  'flag',
+  'approval',
+]);
 const AnnotationStatusSchema = z.enum(['open', 'resolved', 'dismissed']);
 const LockTypeSchema = z.enum(['exclusive', 'shared']);
 
@@ -75,7 +82,10 @@ async function handleAnnotationCreate(params: Record<string, unknown>): Promise<
         annotation,
         next_steps: [
           { tool: 'ocr_annotation_list', description: 'List all annotations on this document' },
-          { tool: 'ocr_annotation_get', description: 'Get this annotation with its thread replies' },
+          {
+            tool: 'ocr_annotation_get',
+            description: 'Get this annotation with its thread replies',
+          },
           { tool: 'ocr_annotation_update', description: 'Edit or resolve this annotation' },
         ],
       })
@@ -129,10 +139,18 @@ async function handleAnnotationList(params: Record<string, unknown>): Promise<To
         offset,
         has_more: hasMore,
         next_steps: hasMore
-          ? [{ tool: 'ocr_annotation_list', description: `Get next page with offset=${offset + limit}` }]
+          ? [
+              {
+                tool: 'ocr_annotation_list',
+                description: `Get next page with offset=${offset + limit}`,
+              },
+            ]
           : [
               { tool: 'ocr_annotation_create', description: 'Add a new annotation' },
-              { tool: 'ocr_annotation_summary', description: 'Get annotation summary for this document' },
+              {
+                tool: 'ocr_annotation_summary',
+                description: 'Get annotation summary for this document',
+              },
             ],
       })
     );
@@ -168,7 +186,10 @@ async function handleAnnotationGet(params: Record<string, unknown>): Promise<Too
         replies: result.replies,
         reply_count: result.replies.length,
         next_steps: [
-          { tool: 'ocr_annotation_create', description: 'Reply to this annotation (set parent_id)' },
+          {
+            tool: 'ocr_annotation_create',
+            description: 'Reply to this annotation (set parent_id)',
+          },
           { tool: 'ocr_annotation_update', description: 'Edit or resolve this annotation' },
           { tool: 'ocr_annotation_delete', description: 'Delete this annotation' },
         ],
@@ -243,9 +264,7 @@ async function handleAnnotationDelete(params: Record<string, unknown>): Promise<
       successResult({
         deleted: true,
         annotation_id: input.annotation_id,
-        next_steps: [
-          { tool: 'ocr_annotation_list', description: 'List remaining annotations' },
-        ],
+        next_steps: [{ tool: 'ocr_annotation_list', description: 'List remaining annotations' }],
       })
     );
   } catch (error) {
@@ -387,11 +406,12 @@ async function handleDocumentLockStatus(params: Record<string, unknown>): Promis
         next_steps: lock
           ? [
               { tool: 'ocr_document_unlock', description: 'Release this lock' },
-              { tool: 'ocr_document_lock', description: 'Acquire a lock (if expired or not locked)' },
+              {
+                tool: 'ocr_document_lock',
+                description: 'Acquire a lock (if expired or not locked)',
+              },
             ]
-          : [
-              { tool: 'ocr_document_lock', description: 'Acquire a lock on this document' },
-            ],
+          : [{ tool: 'ocr_document_lock', description: 'Acquire a lock on this document' }],
       })
     );
   } catch (error) {
@@ -417,17 +437,17 @@ async function handleSearchAlertEnable(params: Record<string, unknown>): Promise
     const conn = db.getConnection();
 
     // Verify saved search exists
-    const row = conn.prepare(
-      'SELECT id, name, query FROM saved_searches WHERE id = ?'
-    ).get(input.saved_search_id) as { id: string; name: string; query: string } | undefined;
+    const row = conn
+      .prepare('SELECT id, name, query FROM saved_searches WHERE id = ?')
+      .get(input.saved_search_id) as { id: string; name: string; query: string } | undefined;
 
     if (!row) {
       throw new Error(`Saved search not found: ${input.saved_search_id}`);
     }
 
-    conn.prepare(
-      'UPDATE saved_searches SET alert_enabled = ? WHERE id = ?'
-    ).run(input.enabled ? 1 : 0, input.saved_search_id);
+    conn
+      .prepare('UPDATE saved_searches SET alert_enabled = ? WHERE id = ?')
+      .run(input.enabled ? 1 : 0, input.saved_search_id);
 
     return formatResponse(
       successResult({
@@ -463,34 +483,50 @@ async function handleSearchAlertCheck(params: Record<string, unknown>): Promise<
 
     // If specific search ID given, check just that one
     if (input.saved_search_id) {
-      const row = conn.prepare(
-        'SELECT id, name, query, search_type, result_count, result_ids, alert_enabled, last_alert_at FROM saved_searches WHERE id = ?'
-      ).get(input.saved_search_id) as {
-        id: string; name: string; query: string; search_type: string;
-        result_count: number; result_ids: string; alert_enabled: number; last_alert_at: string | null;
-      } | undefined;
+      const row = conn
+        .prepare(
+          'SELECT id, name, query, search_type, result_count, result_ids, alert_enabled, last_alert_at FROM saved_searches WHERE id = ?'
+        )
+        .get(input.saved_search_id) as
+        | {
+            id: string;
+            name: string;
+            query: string;
+            search_type: string;
+            result_count: number;
+            result_ids: string;
+            alert_enabled: number;
+            last_alert_at: string | null;
+          }
+        | undefined;
 
       if (!row) {
         throw new Error(`Saved search not found: ${input.saved_search_id}`);
       }
 
       if (!row.alert_enabled) {
-        throw new Error(`Alerts are not enabled for saved search "${row.name}". Use ocr_search_alert_enable first.`);
+        throw new Error(
+          `Alerts are not enabled for saved search "${row.name}". Use ocr_search_alert_enable first.`
+        );
       }
 
       // Find new documents since last alert
       const since = row.last_alert_at ?? row.query; // If never alerted, use creation baseline
-      const newDocs = conn.prepare(`
+      const newDocs = conn
+        .prepare(
+          `
         SELECT id, file_name, created_at FROM documents
         WHERE created_at > ?
         ORDER BY created_at DESC
         LIMIT 50
-      `).all(since) as { id: string; file_name: string; created_at: string }[];
+      `
+        )
+        .all(since) as { id: string; file_name: string; created_at: string }[];
 
       // Update last_alert_at
-      conn.prepare(
-        'UPDATE saved_searches SET last_alert_at = ? WHERE id = ?'
-      ).run(new Date().toISOString(), row.id);
+      conn
+        .prepare('UPDATE saved_searches SET last_alert_at = ? WHERE id = ?')
+        .run(new Date().toISOString(), row.id);
 
       return formatResponse(
         successResult({
@@ -501,31 +537,45 @@ async function handleSearchAlertCheck(params: Record<string, unknown>): Promise<
           new_documents: newDocs,
           last_alert_at: row.last_alert_at,
           checked_at: new Date().toISOString(),
-          next_steps: newDocs.length > 0
-            ? [
-                { tool: 'ocr_search', description: `Re-run search "${row.query}" to find matches in new documents` },
-                { tool: 'ocr_search_saved', description: 'Execute saved search to get updated results' },
-              ]
-            : [
-                { tool: 'ocr_search_saved', description: 'List saved searches' },
-              ],
+          next_steps:
+            newDocs.length > 0
+              ? [
+                  {
+                    tool: 'ocr_search',
+                    description: `Re-run search "${row.query}" to find matches in new documents`,
+                  },
+                  {
+                    tool: 'ocr_search_saved',
+                    description: 'Execute saved search to get updated results',
+                  },
+                ]
+              : [{ tool: 'ocr_search_saved', description: 'List saved searches' }],
         })
       );
     }
 
     // No specific ID - check all alert-enabled searches
-    const alertSearches = conn.prepare(
-      'SELECT id, name, query, search_type, result_count, alert_enabled, last_alert_at FROM saved_searches WHERE alert_enabled = 1'
-    ).all() as {
-      id: string; name: string; query: string; search_type: string;
-      result_count: number; alert_enabled: number; last_alert_at: string | null;
+    const alertSearches = conn
+      .prepare(
+        'SELECT id, name, query, search_type, result_count, alert_enabled, last_alert_at FROM saved_searches WHERE alert_enabled = 1'
+      )
+      .all() as {
+      id: string;
+      name: string;
+      query: string;
+      search_type: string;
+      result_count: number;
+      alert_enabled: number;
+      last_alert_at: string | null;
     }[];
 
     const results = alertSearches.map((row) => {
       const since = row.last_alert_at ?? '1970-01-01T00:00:00.000Z';
-      const newDocCount = (conn.prepare(
-        'SELECT COUNT(*) as c FROM documents WHERE created_at > ?'
-      ).get(since) as { c: number }).c;
+      const newDocCount = (
+        conn.prepare('SELECT COUNT(*) as c FROM documents WHERE created_at > ?').get(since) as {
+          c: number;
+        }
+      ).c;
 
       return {
         saved_search_id: row.id,
@@ -544,12 +594,16 @@ async function handleSearchAlertCheck(params: Record<string, unknown>): Promise<
         total_alert_searches: results.length,
         total_new_documents: totalNew,
         checked_at: new Date().toISOString(),
-        next_steps: results.length === 0
-          ? [{ tool: 'ocr_search_alert_enable', description: 'Enable alerts on a saved search' }]
-          : [
-              { tool: 'ocr_search_alert_check', description: 'Check a specific search with saved_search_id' },
-              { tool: 'ocr_search_saved', description: 'Execute a saved search' },
-            ],
+        next_steps:
+          results.length === 0
+            ? [{ tool: 'ocr_search_alert_enable', description: 'Enable alerts on a saved search' }]
+            : [
+                {
+                  tool: 'ocr_search_alert_check',
+                  description: 'Check a specific search with saved_search_id',
+                },
+                { tool: 'ocr_search_saved', description: 'Execute a saved search' },
+              ],
       })
     );
   } catch (error) {
@@ -568,9 +622,20 @@ export const collaborationTools: Record<string, ToolDefinition> = {
     inputSchema: {
       document_id: z.string().min(1).describe('Document ID to annotate'),
       user_id: z.string().min(1).optional().describe('User ID of the annotator'),
-      chunk_id: z.string().min(1).optional().describe('Chunk ID to annotate (optional, for chunk-level annotations)'),
-      page_number: z.number().int().min(0).optional().describe('Page number (0-indexed) for page-level annotations'),
-      annotation_type: AnnotationTypeSchema.describe('Type: comment, correction, question, highlight, flag, or approval'),
+      chunk_id: z
+        .string()
+        .min(1)
+        .optional()
+        .describe('Chunk ID to annotate (optional, for chunk-level annotations)'),
+      page_number: z
+        .number()
+        .int()
+        .min(0)
+        .optional()
+        .describe('Page number (0-indexed) for page-level annotations'),
+      annotation_type: AnnotationTypeSchema.describe(
+        'Type: comment, correction, question, highlight, flag, or approval'
+      ),
       content: z.string().min(1).max(10000).describe('Annotation text content'),
       parent_id: z.string().min(1).optional().describe('Parent annotation ID for threaded replies'),
     },
@@ -582,8 +647,12 @@ export const collaborationTools: Record<string, ToolDefinition> = {
       '[STATUS] List annotations on a document with optional filters. Filter by type, status, user, or page. Returns paginated results.',
     inputSchema: {
       document_id: z.string().min(1).describe('Document ID to list annotations for'),
-      annotation_type: AnnotationTypeSchema.optional().describe('Filter by type: comment, correction, question, highlight, flag, approval'),
-      status: AnnotationStatusSchema.optional().describe('Filter by status: open, resolved, dismissed'),
+      annotation_type: AnnotationTypeSchema.optional().describe(
+        'Filter by type: comment, correction, question, highlight, flag, approval'
+      ),
+      status: AnnotationStatusSchema.optional().describe(
+        'Filter by status: open, resolved, dismissed'
+      ),
       user_id: z.string().min(1).optional().describe('Filter by user ID'),
       page_number: z.number().int().min(0).optional().describe('Filter by page number'),
       limit: z.number().int().min(1).max(200).default(50).describe('Max results (1-200)'),
@@ -607,7 +676,9 @@ export const collaborationTools: Record<string, ToolDefinition> = {
     inputSchema: {
       annotation_id: z.string().min(1).describe('Annotation ID to update'),
       content: z.string().min(1).max(10000).optional().describe('New annotation content'),
-      status: AnnotationStatusSchema.optional().describe('New status: open, resolved, or dismissed'),
+      status: AnnotationStatusSchema.optional().describe(
+        'New status: open, resolved, or dismissed'
+      ),
     },
     handler: handleAnnotationUpdate,
   },
@@ -640,7 +711,13 @@ export const collaborationTools: Record<string, ToolDefinition> = {
       session_id: z.string().min(1).describe('Session ID for the lock'),
       lock_type: LockTypeSchema.default('exclusive').describe('Lock type: exclusive or shared'),
       reason: z.string().max(500).optional().describe('Reason for locking'),
-      ttl_minutes: z.number().int().min(1).max(1440).default(30).describe('Lock TTL in minutes (1-1440, default 30)'),
+      ttl_minutes: z
+        .number()
+        .int()
+        .min(1)
+        .max(1440)
+        .default(30)
+        .describe('Lock TTL in minutes (1-1440, default 30)'),
     },
     handler: handleDocumentLock,
   },
@@ -677,7 +754,11 @@ export const collaborationTools: Record<string, ToolDefinition> = {
     description:
       '[STATUS] Check for new documents since the last alert on alert-enabled saved searches. If saved_search_id is given, checks that one; otherwise checks all alert-enabled searches.',
     inputSchema: {
-      saved_search_id: z.string().min(1).optional().describe('Specific saved search ID to check (omit to check all)'),
+      saved_search_id: z
+        .string()
+        .min(1)
+        .optional()
+        .describe('Specific saved search ID to check (omit to check all)'),
     },
     handler: handleSearchAlertCheck,
   },

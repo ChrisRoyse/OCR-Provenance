@@ -463,11 +463,7 @@ export async function runClustering(
 
   // Step 3: Call Python clustering worker
   console.error(`[CLUSTER] Running ${config.algorithm} clustering...`);
-  const workerResult = await runClusteringWorker(
-    embeddingMatrix,
-    orderedDocIds,
-    config
-  );
+  const workerResult = await runClusteringWorker(embeddingMatrix, orderedDocIds, config);
 
   if (!workerResult.success) {
     throw new ClusteringError(`Clustering worker failed: ${workerResult.error}`, 'WORKER_FAILED', {

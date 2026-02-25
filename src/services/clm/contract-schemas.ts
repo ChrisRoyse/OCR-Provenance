@@ -43,7 +43,11 @@ export const CONTRACT_METADATA_SCHEMA: ContractSchema = {
     { name: 'effective_date', type: 'date', description: 'Contract effective/start date' },
     { name: 'expiration_date', type: 'date', description: 'Contract expiration/end date' },
     { name: 'governing_law', type: 'string', description: 'Governing law/jurisdiction' },
-    { name: 'contract_type', type: 'string', description: 'Type of contract (NDA, MSA, SOW, etc.)' },
+    {
+      name: 'contract_type',
+      type: 'string',
+      description: 'Type of contract (NDA, MSA, SOW, etc.)',
+    },
   ],
 };
 
@@ -73,9 +77,17 @@ export const RENEWAL_TERMINATION_SCHEMA: ContractSchema = {
   description: 'Extract renewal and termination terms',
   fields: [
     { name: 'auto_renewal', type: 'boolean', description: 'Whether contract auto-renews' },
-    { name: 'renewal_notice_period', type: 'string', description: 'Notice period for renewal/non-renewal' },
+    {
+      name: 'renewal_notice_period',
+      type: 'string',
+      description: 'Notice period for renewal/non-renewal',
+    },
     { name: 'termination_triggers', type: 'list', description: 'Events that trigger termination' },
-    { name: 'termination_notice_period', type: 'string', description: 'Notice required for termination' },
+    {
+      name: 'termination_notice_period',
+      type: 'string',
+      description: 'Notice required for termination',
+    },
   ],
 };
 

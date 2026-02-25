@@ -32,13 +32,18 @@ export interface Obligation {
 }
 
 export const OBLIGATION_TYPES = [
-  'payment', 'delivery', 'notification', 'renewal',
-  'termination', 'compliance', 'reporting', 'approval', 'other',
+  'payment',
+  'delivery',
+  'notification',
+  'renewal',
+  'termination',
+  'compliance',
+  'reporting',
+  'approval',
+  'other',
 ] as const;
 
-export const OBLIGATION_STATUSES = [
-  'active', 'fulfilled', 'overdue', 'waived', 'expired',
-] as const;
+export const OBLIGATION_STATUSES = ['active', 'fulfilled', 'overdue', 'waived', 'expired'] as const;
 
 export type ObligationType = (typeof OBLIGATION_TYPES)[number];
 export type ObligationStatus = (typeof OBLIGATION_STATUSES)[number];
@@ -94,12 +99,14 @@ export function createObligation(
   const id = uuidv4();
   const now = new Date().toISOString();
 
-  db.prepare(`
+  db.prepare(
+    `
     INSERT INTO obligations (id, document_id, extraction_id, obligation_type, description,
       responsible_party, due_date, recurring, status, source_chunk_id, source_page,
       confidence, created_at, metadata_json)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `).run(
+  `
+  ).run(
     id,
     params.document_id,
     params.extraction_id ?? null,
@@ -113,7 +120,7 @@ export function createObligation(
     params.source_page ?? null,
     params.confidence ?? 1.0,
     now,
-    params.metadata_json ?? '{}',
+    params.metadata_json ?? '{}'
   );
 
   return {
@@ -175,19 +182,23 @@ export function listObligations(
 
   const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
 
-  const countRow = db.prepare(
-    `SELECT COUNT(*) as cnt FROM obligations o ${whereClause}`
-  ).get(...queryParams) as { cnt: number };
+  const countRow = db
+    .prepare(`SELECT COUNT(*) as cnt FROM obligations o ${whereClause}`)
+    .get(...queryParams) as { cnt: number };
 
   const limit = filters.limit ?? 50;
   const offset = filters.offset ?? 0;
 
-  const obligations = db.prepare(`
+  const obligations = db
+    .prepare(
+      `
     SELECT o.* FROM obligations o
     ${whereClause}
     ORDER BY o.due_date ASC NULLS LAST, o.created_at DESC
     LIMIT ? OFFSET ?
-  `).all(...queryParams, limit, offset) as Obligation[];
+  `
+    )
+    .all(...queryParams, limit, offset) as Obligation[];
 
   return { obligations, total: countRow.cnt };
 }
@@ -206,7 +217,9 @@ export function updateObligationStatus(
   status: ObligationStatus,
   reason?: string
 ): Obligation {
-  const existing = db.prepare('SELECT * FROM obligations WHERE id = ?').get(id) as Obligation | undefined;
+  const existing = db.prepare('SELECT * FROM obligations WHERE id = ?').get(id) as
+    | Obligation
+    | undefined;
   if (!existing) {
     throw new Error(`Obligation not found: ${id}`);
   }
@@ -230,9 +243,11 @@ export function updateObligationStatus(
     metadata.status_history = statusHistory;
   }
 
-  db.prepare(`
+  db.prepare(
+    `
     UPDATE obligations SET status = ?, metadata_json = ? WHERE id = ?
-  `).run(status, JSON.stringify(metadata), id);
+  `
+  ).run(status, JSON.stringify(metadata), id);
 
   return {
     ...existing,
@@ -257,15 +272,8 @@ export function getObligationCalendar(
   const endDate = new Date(now);
   endDate.setMonth(endDate.getMonth() + monthsAhead);
 
-  const conditions: string[] = [
-    'o.due_date IS NOT NULL',
-    'o.due_date >= ?',
-    'o.due_date <= ?',
-  ];
-  const queryParams: (string | number)[] = [
-    now.toISOString(),
-    endDate.toISOString(),
-  ];
+  const conditions: string[] = ['o.due_date IS NOT NULL', 'o.due_date >= ?', 'o.due_date <= ?'];
+  const queryParams: (string | number)[] = [now.toISOString(), endDate.toISOString()];
 
   if (options.status) {
     conditions.push('o.status = ?');
@@ -278,11 +286,15 @@ export function getObligationCalendar(
 
   const whereClause = `WHERE ${conditions.join(' AND ')}`;
 
-  const obligations = db.prepare(`
+  const obligations = db
+    .prepare(
+      `
     SELECT o.* FROM obligations o
     ${whereClause}
     ORDER BY o.due_date ASC
-  `).all(...queryParams) as Obligation[];
+  `
+    )
+    .all(...queryParams) as Obligation[];
 
   // Group by month
   const monthMap = new Map<string, Obligation[]>();
@@ -316,13 +328,17 @@ export function getObligationCalendar(
  * @returns Number of obligations marked overdue
  */
 export function markOverdueObligations(db: Database.Database): number {
-  const result = db.prepare(`
+  const result = db
+    .prepare(
+      `
     UPDATE obligations
     SET status = 'overdue'
     WHERE due_date < datetime('now')
       AND status = 'active'
       AND due_date IS NOT NULL
-  `).run();
+  `
+    )
+    .run();
 
   return result.changes;
 }

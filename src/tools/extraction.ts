@@ -234,7 +234,10 @@ export async function handleExtractImages(params: Record<string, unknown>): Prom
           ...(vlmResult ? { vlm_processing: vlmResult } : {}),
           ...(provenanceChains ? { provenance_chains: provenanceChains } : {}),
           next_steps: [
-            { tool: 'ocr_vlm_process', description: 'Generate AI descriptions for the extracted images' },
+            {
+              tool: 'ocr_vlm_process',
+              description: 'Generate AI descriptions for the extracted images',
+            },
           ],
         })
       );
@@ -338,7 +341,8 @@ export async function handleExtractImages(params: Record<string, unknown>): Prom
             provenance_id: null,
             block_type: null,
             is_header_footer: false,
-            content_hash: img.path && fs.existsSync(img.path) ? computeFileHashSync(img.path) : null,
+            content_hash:
+              img.path && fs.existsSync(img.path) ? computeFileHashSync(img.path) : null,
           }));
 
           if (imageRefs.length > 0) {
@@ -458,7 +462,10 @@ export const extractionTools: Record<string, ToolDefinition> = {
     description:
       '[PROCESSING] Use to extract images from PDF/DOCX files. Pass document_id for single file or omit for batch. Follow with ocr_vlm_process.',
     inputSchema: {
-      document_id: z.string().optional().describe('Document ID (omit for batch extraction of all documents)'),
+      document_id: z
+        .string()
+        .optional()
+        .describe('Document ID (omit for batch extraction of all documents)'),
       min_size: z
         .number()
         .int()
@@ -485,7 +492,13 @@ export const extractionTools: Record<string, ToolDefinition> = {
         .boolean()
         .default(false)
         .describe('Include provenance chain (single document mode only)'),
-      limit: z.number().int().min(1).max(100).default(50).describe('Maximum documents to process (batch mode only)'),
+      limit: z
+        .number()
+        .int()
+        .min(1)
+        .max(100)
+        .default(50)
+        .describe('Maximum documents to process (batch mode only)'),
       status: z
         .enum(['pending', 'processing', 'complete', 'failed', 'all'])
         .default('complete')

@@ -165,13 +165,17 @@ describe('Health Check Tools', () => {
       );
 
       const imgId = uuidv4();
-      conn.prepare(`
+      conn
+        .prepare(
+          `
         INSERT INTO images (id, document_id, ocr_result_id, page_number, bbox_x, bbox_y,
           bbox_width, bbox_height, image_index, format, width, height,
           extracted_path, vlm_status, provenance_id, created_at)
         VALUES (?, ?, ?, 1, 0.0, 0.0, 100.0, 100.0, 0, 'png', 100, 100,
           '/tmp/test.png', 'pending', ?, datetime('now'))
-      `).run(imgId, docId, ocrId, imgProvId);
+      `
+        )
+        .run(imgId, docId, ocrId, imgProvId);
     });
 
     afterAll(() => {

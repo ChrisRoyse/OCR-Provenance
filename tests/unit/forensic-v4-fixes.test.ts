@@ -13,10 +13,20 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { v4 as uuidv4 } from 'uuid';
 import {
-  createTempDir, cleanupTempDir, createUniqueName,
-  createTestProvenance, createTestDocument, createTestOCRResult, createTestChunk,
-  createDatabase, selectDatabase, resetState, requireDatabase, updateConfig,
-  ProvenanceType, computeHash,
+  createTempDir,
+  cleanupTempDir,
+  createUniqueName,
+  createTestProvenance,
+  createTestDocument,
+  createTestOCRResult,
+  createTestChunk,
+  createDatabase,
+  selectDatabase,
+  resetState,
+  requireDatabase,
+  updateConfig,
+  ProvenanceType,
+  computeHash,
 } from '../integration/server/helpers.js';
 import { handleSearchUnified, searchTools } from '../../src/tools/search.js';
 import { comparisonTools } from '../../src/tools/comparison.js';
@@ -50,21 +60,27 @@ function insertCompleteDocument(text: string, fileName: string) {
   const docProvId = uuidv4();
   db.insertProvenance({
     ...createTestProvenance({ id: docProvId }),
-    type: ProvenanceType.DOCUMENT, chain_depth: 0, root_document_id: docProvId,
+    type: ProvenanceType.DOCUMENT,
+    chain_depth: 0,
+    root_document_id: docProvId,
   });
 
   const ocrProvId = uuidv4();
   db.insertProvenance({
     ...createTestProvenance({ id: ocrProvId }),
-    type: ProvenanceType.OCR_RESULT, chain_depth: 1,
-    parent_id: docProvId, root_document_id: docProvId,
+    type: ProvenanceType.OCR_RESULT,
+    chain_depth: 1,
+    parent_id: docProvId,
+    root_document_id: docProvId,
   });
 
   const chunkProvId = uuidv4();
   db.insertProvenance({
     ...createTestProvenance({ id: chunkProvId }),
-    type: ProvenanceType.CHUNK, chain_depth: 2,
-    parent_id: ocrProvId, root_document_id: docProvId,
+    type: ProvenanceType.CHUNK,
+    chain_depth: 2,
+    parent_id: ocrProvId,
+    root_document_id: docProvId,
   });
 
   const docId = uuidv4();
@@ -75,8 +91,10 @@ function insertCompleteDocument(text: string, fileName: string) {
   const ocrId = uuidv4();
   db.insertOCRResult({
     ...createTestOCRResult(docId, ocrProvId, {
-      id: ocrId, extracted_text: text,
-      text_length: text.length, content_hash: computeHash(text),
+      id: ocrId,
+      extracted_text: text,
+      text_length: text.length,
+      content_hash: computeHash(text),
     }),
   });
   db.updateDocumentStatus(docId, 'complete');
@@ -84,7 +102,9 @@ function insertCompleteDocument(text: string, fileName: string) {
   const chunkId = uuidv4();
   db.insertChunk({
     ...createTestChunk(docId, ocrId, chunkProvId, {
-      id: chunkId, text, text_hash: computeHash(text),
+      id: chunkId,
+      text,
+      text_hash: computeHash(text),
     }),
   });
 
@@ -167,17 +187,22 @@ describe('Forensic V4 Fix Verification', () => {
       const conn = db.getConnection();
 
       const { docId, chunkId } = insertCompleteDocument(
-        'Entity tag cascade delete test content.', 'cascade-test.pdf'
+        'Entity tag cascade delete test content.',
+        'cascade-test.pdf'
       );
 
       // Create and apply tag to both document and chunk
       const tagName = `cascade-tag-${docId.slice(0, 8)}`;
       await tagTools.ocr_tag_create.handler({ name: tagName });
       await tagTools.ocr_tag_apply.handler({
-        tag_name: tagName, entity_id: docId, entity_type: 'document',
+        tag_name: tagName,
+        entity_id: docId,
+        entity_type: 'document',
       });
       await tagTools.ocr_tag_apply.handler({
-        tag_name: tagName, entity_id: chunkId, entity_type: 'chunk',
+        tag_name: tagName,
+        entity_id: chunkId,
+        entity_type: 'chunk',
       });
 
       // Verify entity_tags exist before delete
@@ -206,14 +231,18 @@ describe('Forensic V4 Fix Verification', () => {
 
       // Documents with no embeddings -- centroid similarity will fail
       const { docId: docId1 } = insertCompleteDocument(
-        'Alpha unique text for comparison testing.', 'compare-a.pdf'
+        'Alpha unique text for comparison testing.',
+        'compare-a.pdf'
       );
       const { docId: docId2 } = insertCompleteDocument(
-        'Beta unique text for comparison testing different.', 'compare-b.pdf'
+        'Beta unique text for comparison testing different.',
+        'compare-b.pdf'
       );
 
       const response = await comparisonTools.ocr_document_compare.handler({
-        document_id_1: docId1, document_id_2: docId2, include_text_diff: true,
+        document_id_1: docId1,
+        document_id_2: docId2,
+        include_text_diff: true,
       });
       const result = parseResult(response);
       expect(result.success).toBe(true);

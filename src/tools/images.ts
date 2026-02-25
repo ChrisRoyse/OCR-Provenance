@@ -16,7 +16,13 @@ import { v4 as uuidv4 } from 'uuid';
 import { requireDatabase } from '../server/state.js';
 import { successResult } from '../server/types.js';
 import { MCPError } from '../server/errors.js';
-import { formatResponse, handleError, fetchProvenanceChain, type ToolResponse, type ToolDefinition } from './shared.js';
+import {
+  formatResponse,
+  handleError,
+  fetchProvenanceChain,
+  type ToolResponse,
+  type ToolDefinition,
+} from './shared.js';
 import { validateInput } from '../utils/validation.js';
 import {
   getImage,
@@ -138,15 +144,16 @@ export async function handleImageList(params: Record<string, unknown>): Promise<
               description: img.vlm_description,
             }),
         })),
-        next_steps: images.length === 0
-          ? [
-              { tool: 'ocr_extract_images', description: 'Extract images from documents first' },
-              { tool: 'ocr_document_get', description: 'Check document processing status' },
-            ]
-          : [
-              { tool: 'ocr_image_get', description: 'Get full details for a specific image' },
-              { tool: 'ocr_vlm_process', description: 'Run VLM analysis on document images' },
-            ],
+        next_steps:
+          images.length === 0
+            ? [
+                { tool: 'ocr_extract_images', description: 'Extract images from documents first' },
+                { tool: 'ocr_document_get', description: 'Check document processing status' },
+              ]
+            : [
+                { tool: 'ocr_image_get', description: 'Get full details for a specific image' },
+                { tool: 'ocr_vlm_process', description: 'Run VLM analysis on document images' },
+              ],
       })
     );
   } catch (error) {
@@ -198,7 +205,10 @@ export async function handleImageGet(params: Record<string, unknown>): Promise<T
         created_at: img.created_at,
       },
       next_steps: [
-        { tool: 'ocr_image_search', description: 'Find similar images (mode=semantic for meaning-based)' },
+        {
+          tool: 'ocr_image_search',
+          description: 'Find similar images (mode=semantic for meaning-based)',
+        },
         { tool: 'ocr_image_reanalyze', description: 'Re-run VLM analysis with custom prompt' },
         { tool: 'ocr_document_page', description: 'View the page containing this image' },
       ],
@@ -253,13 +263,22 @@ export async function handleImageStats(params: Record<string, unknown>): Promise
 export async function handleImageDelete(params: Record<string, unknown>): Promise<ToolResponse> {
   try {
     const input = validateInput(ImageDeleteInput, params);
-    const { image_id: imageId, document_id: documentId, confirm, delete_files: deleteFiles } = input;
+    const {
+      image_id: imageId,
+      document_id: documentId,
+      confirm,
+      delete_files: deleteFiles,
+    } = input;
 
     if (!imageId && !documentId) {
       throw new MCPError('VALIDATION_ERROR', 'Must provide either image_id or document_id', {});
     }
     if (imageId && documentId) {
-      throw new MCPError('VALIDATION_ERROR', 'Provide only one of image_id or document_id, not both', {});
+      throw new MCPError(
+        'VALIDATION_ERROR',
+        'Provide only one of image_id or document_id, not both',
+        {}
+      );
     }
     if (!confirm) {
       throw new MCPError('VALIDATION_ERROR', 'Destructive operation requires confirm=true', {});
@@ -271,7 +290,9 @@ export async function handleImageDelete(params: Record<string, unknown>): Promis
       // ── Single image delete ──
       const img = getImage(db.getConnection(), imageId);
       if (!img) {
-        throw new MCPError('VALIDATION_ERROR', `Image not found: ${imageId}`, { image_id: imageId });
+        throw new MCPError('VALIDATION_ERROR', `Image not found: ${imageId}`, {
+          image_id: imageId,
+        });
       }
 
       if (deleteFiles && img.extracted_path && fs.existsSync(img.extracted_path)) {
@@ -385,7 +406,7 @@ export async function handleImageSearch(params: Record<string, unknown>): Promis
         documentFilter: input.document_filter,
       });
 
-      const vlmResults = searchResults.filter(r => r.image_id !== null);
+      const vlmResults = searchResults.filter((r) => r.image_id !== null);
 
       const results = [];
       for (const r of vlmResults) {
@@ -424,23 +445,29 @@ export async function handleImageSearch(params: Record<string, unknown>): Promis
         }
 
         if (input.include_provenance && img.provenance_id) {
-          result.provenance_chain = fetchProvenanceChain(db, img.provenance_id, '[image_search_semantic]');
+          result.provenance_chain = fetchProvenanceChain(
+            db,
+            img.provenance_id,
+            '[image_search_semantic]'
+          );
         }
 
         results.push(result);
       }
 
-      return formatResponse(successResult({
-        mode: 'semantic',
-        query: input.query,
-        total: results.length,
-        similarity_threshold: input.similarity_threshold,
-        results,
-        next_steps: [
-          { tool: 'ocr_image_get', description: 'Get full details for a matched image' },
-          { tool: 'ocr_document_page', description: 'View the page containing a matched image' },
-        ],
-      }));
+      return formatResponse(
+        successResult({
+          mode: 'semantic',
+          query: input.query,
+          total: results.length,
+          similarity_threshold: input.similarity_threshold,
+          results,
+          next_steps: [
+            { tool: 'ocr_image_get', description: 'Get full details for a matched image' },
+            { tool: 'ocr_document_page', description: 'View the page containing a matched image' },
+          ],
+        })
+      );
     } else {
       // ── Keyword search mode ──
       const { db } = requireDatabase();
@@ -485,13 +512,15 @@ export async function handleImageSearch(params: Record<string, unknown>): Promis
 
       const rows = conn.prepare(sql).all(...sqlParams) as Record<string, unknown>[];
 
-      const results = rows.map(r => {
+      const results = rows.map((r) => {
         let structured: Record<string, unknown> | null = null;
         if (r.vlm_structured_data) {
           try {
             structured = JSON.parse(r.vlm_structured_data as string);
           } catch (error) {
-            console.error(`[images] Failed to parse vlm_structured_data for image ${r.id}: ${error instanceof Error ? error.message : String(error)}`);
+            console.error(
+              `[images] Failed to parse vlm_structured_data for image ${r.id}: ${error instanceof Error ? error.message : String(error)}`
+            );
           }
         }
 
@@ -595,15 +624,21 @@ export async function handleImageReanalyze(params: Record<string, unknown>): Pro
     // Get image record
     const img = getImage(conn, input.image_id);
     if (!img) {
-      throw new MCPError('VALIDATION_ERROR', `Image not found: ${input.image_id}`, { image_id: input.image_id });
+      throw new MCPError('VALIDATION_ERROR', `Image not found: ${input.image_id}`, {
+        image_id: input.image_id,
+      });
     }
 
     // Verify extracted_path exists on disk
     if (!img.extracted_path || !fs.existsSync(img.extracted_path)) {
-      throw new MCPError('PATH_NOT_FOUND', `Image file not found on disk: ${img.extracted_path ?? '(no path)'}`, {
-        image_id: input.image_id,
-        extracted_path: img.extracted_path,
-      });
+      throw new MCPError(
+        'PATH_NOT_FOUND',
+        `Image file not found on disk: ${img.extracted_path ?? '(no path)'}`,
+        {
+          image_id: input.image_id,
+          extracted_path: img.extracted_path,
+        }
+      );
     }
 
     // Store previous description
@@ -631,7 +666,8 @@ export async function handleImageReanalyze(params: Record<string, unknown>): Pro
     const processingDurationMs = Date.now() - startMs;
 
     // Generate new embedding for the VLM description
-    const { getEmbeddingClient, MODEL_NAME: EMBEDDING_MODEL } = await import('../services/embedding/nomic.js');
+    const { getEmbeddingClient, MODEL_NAME: EMBEDDING_MODEL } =
+      await import('../services/embedding/nomic.js');
     const embeddingClient = getEmbeddingClient();
     const vectors = await embeddingClient.embedChunks([vlmResult.description], 1);
 
@@ -721,7 +757,13 @@ export async function handleImageReanalyze(params: Record<string, unknown>): Pro
           parent_id: vlmDescProvId,
           parent_ids: JSON.stringify(embParentIds),
           chain_depth: 4,
-          chain_path: JSON.stringify(['DOCUMENT', 'OCR_RESULT', 'IMAGE', 'VLM_DESCRIPTION', 'EMBEDDING']),
+          chain_path: JSON.stringify([
+            'DOCUMENT',
+            'OCR_RESULT',
+            'IMAGE',
+            'VLM_DESCRIPTION',
+            'EMBEDDING',
+          ]),
         });
       }
     }
@@ -760,28 +802,36 @@ export async function handleImageReanalyze(params: Record<string, unknown>): Pro
     // Update image record with new VLM results
     updateImageVLMResult(conn, img.id, {
       description: vlmResult.description,
-      structuredData: { ...vlmResult.analysis, imageType: vlmResult.analysis?.imageType ?? 'unknown' },
+      structuredData: {
+        ...vlmResult.analysis,
+        imageType: vlmResult.analysis?.imageType ?? 'unknown',
+      },
       embeddingId: embId,
       model: vlmResult.model,
       confidence: vlmResult.analysis?.confidence ?? 0,
       tokensUsed: vlmResult.tokensUsed,
     });
 
-    return formatResponse(successResult({
-      image_id: img.id,
-      extracted_path: img.extracted_path,
-      previous_description: previousDescription,
-      new_description: vlmResult.description,
-      new_confidence: vlmResult.analysis?.confidence ?? null,
-      new_embedding_id: embId,
-      provenance_id: vlmDescProvId,
-      processing_time_ms: processingDurationMs,
-      tokens_used: vlmResult.tokensUsed,
-      next_steps: [
-        { tool: 'ocr_image_get', description: 'View the updated image details' },
-        { tool: 'ocr_image_search', description: 'Search for similar images (mode=semantic for meaning-based)' },
-      ],
-    }));
+    return formatResponse(
+      successResult({
+        image_id: img.id,
+        extracted_path: img.extracted_path,
+        previous_description: previousDescription,
+        new_description: vlmResult.description,
+        new_confidence: vlmResult.analysis?.confidence ?? null,
+        new_embedding_id: embId,
+        provenance_id: vlmDescProvId,
+        processing_time_ms: processingDurationMs,
+        tokens_used: vlmResult.tokensUsed,
+        next_steps: [
+          { tool: 'ocr_image_get', description: 'View the updated image details' },
+          {
+            tool: 'ocr_image_search',
+            description: 'Search for similar images (mode=semantic for meaning-based)',
+          },
+        ],
+      })
+    );
   } catch (error) {
     return handleError(error);
   }
@@ -796,7 +846,8 @@ export async function handleImageReanalyze(params: Record<string, unknown>): Pro
  */
 export const imageTools: Record<string, ToolDefinition> = {
   ocr_image_list: {
-    description: '[ANALYSIS] Use to list all images from a document with optional VLM status filter. Returns image metadata and optionally descriptions.',
+    description:
+      '[ANALYSIS] Use to list all images from a document with optional VLM status filter. Returns image metadata and optionally descriptions.',
     inputSchema: {
       document_id: z.string().min(1).describe('Document ID'),
       include_descriptions: z.boolean().default(false).describe('Include VLM descriptions'),
@@ -809,7 +860,8 @@ export const imageTools: Record<string, ToolDefinition> = {
   },
 
   ocr_image_get: {
-    description: '[ANALYSIS] Use to get full details for a single image (path, dimensions, VLM description, confidence, provenance). Returns complete image record.',
+    description:
+      '[ANALYSIS] Use to get full details for a single image (path, dimensions, VLM description, confidence, provenance). Returns complete image record.',
     inputSchema: {
       image_id: z.string().min(1).describe('Image ID'),
     },
@@ -817,24 +869,33 @@ export const imageTools: Record<string, ToolDefinition> = {
   },
 
   ocr_image_stats: {
-    description: '[STATUS] Use to get image processing statistics (total, by status, by type). Returns aggregate counts across all documents.',
+    description:
+      '[STATUS] Use to get image processing statistics (total, by status, by type). Returns aggregate counts across all documents.',
     inputSchema: {},
     handler: handleImageStats,
   },
 
   ocr_image_delete: {
-    description: '[DESTRUCTIVE] Use to delete images. Pass image_id for one image, or document_id for all document images. Requires confirm=true.',
+    description:
+      '[DESTRUCTIVE] Use to delete images. Pass image_id for one image, or document_id for all document images. Requires confirm=true.',
     inputSchema: {
       image_id: z.string().optional().describe('Image ID (for single image delete)'),
-      document_id: z.string().optional().describe('Document ID (to delete all images for document)'),
+      document_id: z
+        .string()
+        .optional()
+        .describe('Document ID (to delete all images for document)'),
       confirm: z.boolean().default(false).describe('Must be true to confirm deletion'),
-      delete_files: z.boolean().default(false).describe('Also delete the extracted image files from disk'),
+      delete_files: z
+        .boolean()
+        .default(false)
+        .describe('Also delete the extracted image files from disk'),
     },
     handler: handleImageDelete,
   },
 
   ocr_image_reset_failed: {
-    description: '[PROCESSING] Use to reset failed VLM images back to pending for retry. Returns reset count. Follow with ocr_vlm_process.',
+    description:
+      '[PROCESSING] Use to reset failed VLM images back to pending for retry. Returns reset count. Follow with ocr_vlm_process.',
     inputSchema: {
       document_id: z.string().optional().describe('Document ID (omit for all documents)'),
     },
@@ -842,7 +903,8 @@ export const imageTools: Record<string, ToolDefinition> = {
   },
 
   ocr_image_pending: {
-    description: '[STATUS] Use to list images that still need VLM processing. Returns pending image IDs and metadata. Check before running ocr_vlm_process.',
+    description:
+      '[STATUS] Use to list images that still need VLM processing. Returns pending image IDs and metadata. Check before running ocr_vlm_process.',
     inputSchema: {
       limit: z.number().int().min(1).max(1000).default(100).describe('Maximum images to return'),
     },
@@ -850,33 +912,57 @@ export const imageTools: Record<string, ToolDefinition> = {
   },
 
   ocr_image_search: {
-    description: '[SEARCH] Use to find images by keyword in descriptions (mode=keyword) or by semantic similarity (mode=semantic). Returns image metadata with VLM data.',
+    description:
+      '[SEARCH] Use to find images by keyword in descriptions (mode=keyword) or by semantic similarity (mode=semantic). Returns image metadata with VLM data.',
     inputSchema: {
-      mode: z.enum(['keyword', 'semantic']).default('keyword')
+      mode: z
+        .enum(['keyword', 'semantic'])
+        .default('keyword')
         .describe('Search mode: keyword for SQL filters, semantic for vector similarity'),
       // keyword mode params
-      image_type: z.string().optional()
-        .describe('Filter by VLM image type (keyword mode, e.g., "chart", "diagram", "photograph")'),
-      block_type: z.string().optional()
-        .describe('Filter by Datalab block type (keyword mode)'),
-      min_confidence: z.number().min(0).max(1).optional()
+      image_type: z
+        .string()
+        .optional()
+        .describe(
+          'Filter by VLM image type (keyword mode, e.g., "chart", "diagram", "photograph")'
+        ),
+      block_type: z.string().optional().describe('Filter by Datalab block type (keyword mode)'),
+      min_confidence: z
+        .number()
+        .min(0)
+        .max(1)
+        .optional()
         .describe('Minimum VLM confidence score (keyword mode)'),
-      document_id: z.string().optional()
-        .describe('Filter to specific document (keyword mode)'),
-      exclude_headers_footers: z.boolean().default(false)
+      document_id: z.string().optional().describe('Filter to specific document (keyword mode)'),
+      exclude_headers_footers: z
+        .boolean()
+        .default(false)
         .describe('Exclude header/footer images (keyword mode)'),
-      page_number: z.number().int().min(1).optional()
+      page_number: z
+        .number()
+        .int()
+        .min(1)
+        .optional()
         .describe('Filter to specific page (keyword mode)'),
-      vlm_description_query: z.string().optional()
+      vlm_description_query: z
+        .string()
+        .optional()
         .describe('Filter by VLM description text LIKE match (keyword mode)'),
       // semantic mode params
-      query: z.string().optional()
-        .describe('Search query (required for semantic mode)'),
-      document_filter: z.array(z.string().min(1)).optional()
+      query: z.string().optional().describe('Search query (required for semantic mode)'),
+      document_filter: z
+        .array(z.string().min(1))
+        .optional()
         .describe('Filter to specific document IDs (semantic mode)'),
-      similarity_threshold: z.number().min(0).max(1).default(0.5)
+      similarity_threshold: z
+        .number()
+        .min(0)
+        .max(1)
+        .default(0.5)
         .describe('Minimum similarity score (semantic mode)'),
-      include_provenance: z.boolean().default(false)
+      include_provenance: z
+        .boolean()
+        .default(false)
         .describe('Include provenance chain (semantic mode)'),
       // shared
       limit: z.number().int().min(1).max(100).default(50).describe('Maximum results'),
@@ -885,12 +971,14 @@ export const imageTools: Record<string, ToolDefinition> = {
   },
 
   ocr_image_reanalyze: {
-    description: '[PROCESSING] Use to re-run VLM analysis on a specific image with optional custom prompt. Returns new description while preserving audit trail.',
+    description:
+      '[PROCESSING] Use to re-run VLM analysis on a specific image with optional custom prompt. Returns new description while preserving audit trail.',
     inputSchema: {
       image_id: z.string().min(1).describe('Image ID to reanalyze'),
-      custom_prompt: z.string().optional()
-        .describe('Custom context/prompt for the VLM analysis'),
-      use_thinking: z.boolean().default(false)
+      custom_prompt: z.string().optional().describe('Custom context/prompt for the VLM analysis'),
+      use_thinking: z
+        .boolean()
+        .default(false)
         .describe('Use extended reasoning (thinking mode) for deeper analysis'),
     },
     handler: handleImageReanalyze,

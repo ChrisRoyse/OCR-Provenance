@@ -166,7 +166,10 @@ export async function handleProvenanceGet(params: Record<string, unknown>): Prom
         chain: enrichedChain,
         root_document_id: chain[0].root_document_id,
         next_steps: [
-          { tool: 'ocr_provenance_verify', description: 'Verify content integrity of this provenance chain' },
+          {
+            tool: 'ocr_provenance_verify',
+            description: 'Verify content integrity of this provenance chain',
+          },
           { tool: 'ocr_document_get', description: 'Get details for the root document' },
         ],
       })
@@ -280,7 +283,11 @@ export async function handleProvenanceVerify(
       result.hashes_failed = chainResult.hashes_failed;
     }
 
-    result.next_steps = [{ tool: 'ocr_provenance_get', description: 'View the full provenance chain' }, { tool: 'ocr_document_get', description: 'Get details for the root document' }, { tool: 'ocr_reprocess', description: 'Reprocess the document if integrity failed' }];
+    result.next_steps = [
+      { tool: 'ocr_provenance_get', description: 'View the full provenance chain' },
+      { tool: 'ocr_document_get', description: 'Get details for the root document' },
+      { tool: 'ocr_reprocess', description: 'Reprocess the document if integrity failed' },
+    ];
     return formatResponse(successResult(result));
   } catch (error) {
     return handleError(error);
@@ -448,7 +455,9 @@ export async function handleProvenanceExport(
         document_id: input.document_id,
         record_count: records.length,
         data,
-        next_steps: [{ tool: 'ocr_provenance_query', description: 'Query provenance with filters' }],
+        next_steps: [
+          { tool: 'ocr_provenance_query', description: 'Query provenance with filters' },
+        ],
       })
     );
   } catch (error) {
@@ -489,12 +498,28 @@ export async function handleProvenanceQuery(
           .optional()
           .describe('Filter by provenance type'),
         chain_depth: z.number().int().min(0).optional().describe('Filter by exact chain depth'),
-        created_after: z.string().optional().describe('Filter records created after this ISO 8601 timestamp'),
-        created_before: z.string().optional().describe('Filter records created before this ISO 8601 timestamp'),
-        min_quality_score: z.number().min(0).optional().describe('Minimum processing quality score'),
+        created_after: z
+          .string()
+          .optional()
+          .describe('Filter records created after this ISO 8601 timestamp'),
+        created_before: z
+          .string()
+          .optional()
+          .describe('Filter records created before this ISO 8601 timestamp'),
+        min_quality_score: z
+          .number()
+          .min(0)
+          .optional()
+          .describe('Minimum processing quality score'),
         min_duration_ms: z.number().min(0).optional().describe('Minimum processing duration in ms'),
         root_document_id: z.string().optional().describe('Filter by root document provenance ID'),
-        limit: z.number().int().min(1).max(100).default(50).describe('Maximum results (default 50)'),
+        limit: z
+          .number()
+          .int()
+          .min(1)
+          .max(100)
+          .default(50)
+          .describe('Maximum results (default 50)'),
         offset: z.number().int().min(0).default(0).describe('Offset for pagination'),
         order_by: z
           .enum(['created_at', 'processing_duration_ms', 'processing_quality_score'])
@@ -529,9 +554,11 @@ export async function handleProvenanceQuery(
     if (input.chain_depth !== undefined) filtersApplied.chain_depth = input.chain_depth;
     if (input.created_after !== undefined) filtersApplied.created_after = input.created_after;
     if (input.created_before !== undefined) filtersApplied.created_before = input.created_before;
-    if (input.min_quality_score !== undefined) filtersApplied.min_quality_score = input.min_quality_score;
+    if (input.min_quality_score !== undefined)
+      filtersApplied.min_quality_score = input.min_quality_score;
     if (input.min_duration_ms !== undefined) filtersApplied.min_duration_ms = input.min_duration_ms;
-    if (input.root_document_id !== undefined) filtersApplied.root_document_id = input.root_document_id;
+    if (input.root_document_id !== undefined)
+      filtersApplied.root_document_id = input.root_document_id;
 
     const formattedRecords = records.map((r) => ({
       id: r.id,
@@ -554,7 +581,10 @@ export async function handleProvenanceQuery(
         limit: input.limit,
         offset: input.offset,
         filters_applied: filtersApplied,
-        next_steps: [{ tool: 'ocr_provenance_get', description: 'View full chain for a specific record' }, { tool: 'ocr_document_get', description: 'Get document details for a provenance record' }],
+        next_steps: [
+          { tool: 'ocr_provenance_get', description: 'View full chain for a specific record' },
+          { tool: 'ocr_document_get', description: 'Get document details for a provenance record' },
+        ],
       })
     );
   } catch (error) {
@@ -601,7 +631,10 @@ export async function handleProvenanceTimeline(
           total_processing_time_ms: 0,
           steps_count: 0,
           timeline: [],
-          next_steps: [{ tool: 'ocr_provenance_query', description: 'Query specific provenance records' }, { tool: 'ocr_trends', description: 'View processing volume trends (metric=volume)' }],
+          next_steps: [
+            { tool: 'ocr_provenance_query', description: 'Query specific provenance records' },
+            { tool: 'ocr_trends', description: 'View processing volume trends (metric=volume)' },
+          ],
         })
       );
     }
@@ -649,7 +682,10 @@ export async function handleProvenanceTimeline(
         total_processing_time_ms: totalProcessingTimeMs,
         steps_count: timeline.length,
         timeline,
-        next_steps: [{ tool: 'ocr_provenance_query', description: 'Query specific provenance records' }, { tool: 'ocr_trends', description: 'View processing volume trends (metric=volume)' }],
+        next_steps: [
+          { tool: 'ocr_provenance_query', description: 'Query specific provenance records' },
+          { tool: 'ocr_trends', description: 'View processing volume trends (metric=volume)' },
+        ],
       })
     );
   } catch (error) {
@@ -670,8 +706,14 @@ export async function handleProvenanceProcessorStats(
     const input = validateInput(
       z.object({
         processor: z.string().optional().describe('Filter by specific processor name'),
-        created_after: z.string().optional().describe('Filter records created after this ISO 8601 timestamp'),
-        created_before: z.string().optional().describe('Filter records created before this ISO 8601 timestamp'),
+        created_after: z
+          .string()
+          .optional()
+          .describe('Filter records created after this ISO 8601 timestamp'),
+        created_before: z
+          .string()
+          .optional()
+          .describe('Filter records created before this ISO 8601 timestamp'),
       }),
       params
     );
@@ -688,7 +730,13 @@ export async function handleProvenanceProcessorStats(
       successResult({
         stats,
         total_processors: stats.length,
-        next_steps: [{ tool: 'ocr_report_performance', description: 'Get detailed pipeline performance analytics' }, { tool: 'ocr_provenance_query', description: 'Query provenance by processor' }],
+        next_steps: [
+          {
+            tool: 'ocr_report_performance',
+            description: 'Get detailed pipeline performance analytics',
+          },
+          { tool: 'ocr_provenance_query', description: 'Query provenance by processor' },
+        ],
       })
     );
   } catch (error) {
@@ -773,8 +821,14 @@ export const provenanceTools: Record<string, ToolDefinition> = {
         .optional()
         .describe('Filter by provenance type'),
       chain_depth: z.number().int().min(0).optional().describe('Filter by exact chain depth'),
-      created_after: z.string().optional().describe('Filter records created after this ISO 8601 timestamp'),
-      created_before: z.string().optional().describe('Filter records created before this ISO 8601 timestamp'),
+      created_after: z
+        .string()
+        .optional()
+        .describe('Filter records created after this ISO 8601 timestamp'),
+      created_before: z
+        .string()
+        .optional()
+        .describe('Filter records created before this ISO 8601 timestamp'),
       min_quality_score: z.number().min(0).optional().describe('Minimum processing quality score'),
       min_duration_ms: z.number().min(0).optional().describe('Minimum processing duration in ms'),
       root_document_id: z.string().optional().describe('Filter by root document provenance ID'),
@@ -805,8 +859,14 @@ export const provenanceTools: Record<string, ToolDefinition> = {
       '[STATUS] Use to get aggregate performance stats per processor (operation counts, durations, quality). Returns processor-level analytics.',
     inputSchema: {
       processor: z.string().optional().describe('Filter by specific processor name'),
-      created_after: z.string().optional().describe('Filter records created after this ISO 8601 timestamp'),
-      created_before: z.string().optional().describe('Filter records created before this ISO 8601 timestamp'),
+      created_after: z
+        .string()
+        .optional()
+        .describe('Filter records created after this ISO 8601 timestamp'),
+      created_before: z
+        .string()
+        .optional()
+        .describe('Filter records created before this ISO 8601 timestamp'),
     },
     handler: handleProvenanceProcessorStats,
   },

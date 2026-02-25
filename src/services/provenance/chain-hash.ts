@@ -44,9 +44,7 @@ export interface BackfillResult {
  * @returns Hex-encoded SHA-256 chain hash
  */
 export function computeChainHash(contentHash: string, parentChainHash: string | null): string {
-  const input = parentChainHash
-    ? `${contentHash}:${parentChainHash}`
-    : contentHash;
+  const input = parentChainHash ? `${contentHash}:${parentChainHash}` : contentHash;
   return createHash('sha256').update(input).digest('hex');
 }
 
@@ -70,12 +68,16 @@ export function verifyChainHashes(
   conn: Database.Database,
   rootDocumentId: string
 ): ChainVerificationResult {
-  const records = conn.prepare(`
+  const records = conn
+    .prepare(
+      `
     SELECT id, content_hash, chain_hash, parent_id
     FROM provenance
     WHERE root_document_id = ?
     ORDER BY chain_depth ASC, created_at ASC
-  `).all(rootDocumentId) as Array<{
+  `
+    )
+    .all(rootDocumentId) as Array<{
     id: string;
     content_hash: string;
     chain_hash: string | null;
@@ -87,7 +89,7 @@ export function verifyChainHashes(
   }
 
   // Build a map for fast parent lookups
-  const recordMap = new Map(records.map(r => [r.id, r]));
+  const recordMap = new Map(records.map((r) => [r.id, r]));
   let verified = 0;
 
   for (const record of records) {
@@ -135,12 +137,16 @@ export function verifyChainHashes(
  * @returns Count of updated records and errors
  */
 export function backfillChainHashes(conn: Database.Database): BackfillResult {
-  const records = conn.prepare(`
+  const records = conn
+    .prepare(
+      `
     SELECT id, content_hash, parent_id, chain_hash
     FROM provenance
     WHERE chain_hash IS NULL
     ORDER BY chain_depth ASC, created_at ASC
-  `).all() as Array<{
+  `
+    )
+    .all() as Array<{
     id: string;
     content_hash: string;
     parent_id: string | null;
@@ -152,9 +158,9 @@ export function backfillChainHashes(conn: Database.Database): BackfillResult {
   const hashMap = new Map<string, string>();
 
   // Also load existing chain hashes for parent lookups
-  const existing = conn.prepare(
-    'SELECT id, chain_hash FROM provenance WHERE chain_hash IS NOT NULL'
-  ).all() as Array<{ id: string; chain_hash: string }>;
+  const existing = conn
+    .prepare('SELECT id, chain_hash FROM provenance WHERE chain_hash IS NOT NULL')
+    .all() as Array<{ id: string; chain_hash: string }>;
   for (const r of existing) {
     hashMap.set(r.id, r.chain_hash);
   }
@@ -163,9 +169,7 @@ export function backfillChainHashes(conn: Database.Database): BackfillResult {
 
   for (const record of records) {
     try {
-      const parentChainHash = record.parent_id
-        ? (hashMap.get(record.parent_id) ?? null)
-        : null;
+      const parentChainHash = record.parent_id ? (hashMap.get(record.parent_id) ?? null) : null;
       const chainHash = computeChainHash(record.content_hash, parentChainHash);
       updateStmt.run(chainHash, record.id);
       hashMap.set(record.id, chainHash);

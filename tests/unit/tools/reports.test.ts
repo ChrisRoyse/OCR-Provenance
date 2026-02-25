@@ -386,7 +386,10 @@ describe('handleReportOverview', () => {
   });
 
   it('returns VALIDATION_ERROR for non-boolean include_section_frequency', async () => {
-    const response = await handleReportOverview({ section: 'corpus', include_section_frequency: 'yes' });
+    const response = await handleReportOverview({
+      section: 'corpus',
+      include_section_frequency: 'yes',
+    });
     const result = parseResponse(response);
 
     expect(result.success).toBe(false);
@@ -448,7 +451,11 @@ describe('handleReportPerformance', () => {
   });
 
   it('returns DATABASE_NOT_SELECTED with section=pipeline when no database', async () => {
-    const response = await handleReportPerformance({ section: 'pipeline', group_by: 'mode', limit: 10 });
+    const response = await handleReportPerformance({
+      section: 'pipeline',
+      group_by: 'mode',
+      limit: 10,
+    });
     const result = parseResponse(response);
 
     expect(result.success).toBe(false);

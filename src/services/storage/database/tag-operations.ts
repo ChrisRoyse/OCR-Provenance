@@ -128,9 +128,7 @@ export function applyTag(
     ).run(id, tagId, entityId, entityType, now);
   } catch (error) {
     if (error instanceof Error && error.message.includes('UNIQUE constraint failed')) {
-      throw new Error(
-        `Tag is already applied to this ${entityType} (entity_id: ${entityId})`
-      );
+      throw new Error(`Tag is already applied to this ${entityType} (entity_id: ${entityId})`);
     }
     throw error;
   }
@@ -149,9 +147,7 @@ export function removeTag(
   entityType: string
 ): boolean {
   const result = db
-    .prepare(
-      `DELETE FROM entity_tags WHERE tag_id = ? AND entity_id = ? AND entity_type = ?`
-    )
+    .prepare(`DELETE FROM entity_tags WHERE tag_id = ? AND entity_id = ? AND entity_type = ?`)
     .run(tagId, entityId, entityType);
   return result.changes > 0;
 }
@@ -201,9 +197,7 @@ export function searchByTags(
     params.push(entityType);
   }
 
-  const havingClause = matchAll
-    ? `HAVING COUNT(DISTINCT t.name) = ?`
-    : '';
+  const havingClause = matchAll ? `HAVING COUNT(DISTINCT t.name) = ?` : '';
 
   if (matchAll) {
     params.push(tagNames.length);

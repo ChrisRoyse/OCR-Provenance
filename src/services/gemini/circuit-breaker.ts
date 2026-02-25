@@ -52,7 +52,9 @@ export function isServerError(error: unknown): boolean {
   }
 
   // Server overloaded / unavailable messages from Gemini
-  if (/server.?(error|overloaded|unavailable)|service.?unavailable|internal.?server/i.test(combined)) {
+  if (
+    /server.?(error|overloaded|unavailable)|service.?unavailable|internal.?server/i.test(combined)
+  ) {
     return true;
   }
 
@@ -151,7 +153,9 @@ export class CircuitBreaker {
       const elapsed = Date.now() - this.lastFailureTime;
       const recoveryTime = this.getRecoveryTimeMs();
       if (elapsed >= recoveryTime) {
-        console.error(`[CircuitBreaker] Transitioning from OPEN to HALF_OPEN (recovery: ${recoveryTime}ms, trip #${this.consecutiveTrips})`);
+        console.error(
+          `[CircuitBreaker] Transitioning from OPEN to HALF_OPEN (recovery: ${recoveryTime}ms, trip #${this.consecutiveTrips})`
+        );
         this.state = CircuitState.HALF_OPEN;
         this.successCount = 0;
       }
@@ -196,7 +200,9 @@ export class CircuitBreaker {
     if (this.state === CircuitState.HALF_OPEN) {
       // Any failure in HALF_OPEN immediately opens the circuit
       this.consecutiveTrips++;
-      console.error(`[CircuitBreaker] Failure in HALF_OPEN, transitioning to OPEN (consecutive trip #${this.consecutiveTrips}, recovery: ${this.getRecoveryTimeMs()}ms)`);
+      console.error(
+        `[CircuitBreaker] Failure in HALF_OPEN, transitioning to OPEN (consecutive trip #${this.consecutiveTrips}, recovery: ${this.getRecoveryTimeMs()}ms)`
+      );
       this.state = CircuitState.OPEN;
       this.successCount = 0;
     } else if (this.failureCount >= this.config.failureThreshold) {

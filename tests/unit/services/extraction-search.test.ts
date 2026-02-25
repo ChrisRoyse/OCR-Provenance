@@ -80,9 +80,7 @@ describe('Extraction Operations', () => {
     );
 
     ocrId = uuidv4();
-    db.insertOCRResult(
-      createTestOCRResult(docId, ocrProvId, { id: ocrId })
-    );
+    db.insertOCRResult(createTestOCRResult(docId, ocrProvId, { id: ocrId }));
 
     // Create document 2
     doc2ProvId = uuidv4();
@@ -118,9 +116,7 @@ describe('Extraction Operations', () => {
     );
 
     ocr2Id = uuidv4();
-    db.insertOCRResult(
-      createTestOCRResult(doc2Id, ocrProv2Id, { id: ocr2Id })
-    );
+    db.insertOCRResult(createTestOCRResult(doc2Id, ocrProv2Id, { id: ocr2Id }));
 
     // Create 3 extractions with different JSON content
     const extractionData = [
@@ -136,7 +132,12 @@ describe('Extraction Operations', () => {
         document_id: docId,
         ocr_result_id: ocrId,
         schema_json: '{"type":"object","properties":{"items":{"type":"array"}}}',
-        extraction_json: JSON.stringify({ items: [{ name: 'Widget', qty: 10 }, { name: 'Gadget', qty: 5 }] }),
+        extraction_json: JSON.stringify({
+          items: [
+            { name: 'Widget', qty: 10 },
+            { name: 'Gadget', qty: 5 },
+          ],
+        }),
         parentProvId: ocrProvId,
         rootDocId: docProvId,
       },
@@ -144,7 +145,10 @@ describe('Extraction Operations', () => {
         document_id: doc2Id,
         ocr_result_id: ocr2Id,
         schema_json: '{"type":"object","properties":{"parties":{"type":"array"}}}',
-        extraction_json: JSON.stringify({ parties: ['Alpha LLC', 'Beta Inc'], effective_date: '2026-03-01' }),
+        extraction_json: JSON.stringify({
+          parties: ['Alpha LLC', 'Beta Inc'],
+          effective_date: '2026-03-01',
+        }),
         parentProvId: ocrProv2Id,
         rootDocId: doc2ProvId,
       },

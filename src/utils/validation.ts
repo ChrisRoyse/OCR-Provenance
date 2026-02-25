@@ -291,45 +291,70 @@ export const PageRangeFilter = z
  * Groups all filter parameters into a single `filters` object to reduce
  * the top-level parameter count and improve schema clarity.
  */
-export const SearchFilters = z.object({
-  document_filter: z.array(z.string()).optional()
-    .describe('Restrict results to specific document IDs'),
-  metadata_filter: MetadataFilter
-    .describe('Filter by document metadata (doc_title, doc_author, doc_subject)'),
-  cluster_id: z.string().optional()
-    .describe('Filter results to documents in this cluster'),
-  content_type_filter: z
-    .array(z.string())
-    .optional()
-    .describe('Filter by chunk content types (e.g., ["table", "code", "heading"])'),
-  section_path_filter: z
-    .string()
-    .optional()
-    .describe('Filter by section path prefix (e.g., "Section 3" matches "Section 3 > 3.1 > Definitions")'),
-  heading_filter: z
-    .string()
-    .optional()
-    .describe('Filter by heading context text (LIKE match)'),
-  page_range_filter: PageRangeFilter.describe('Filter results to specific page range'),
-  is_atomic_filter: z.boolean().optional()
-    .describe('When true, return only atomic chunks (complete tables, figures, code blocks). When false, exclude atomic chunks.'),
-  heading_level_filter: z.object({
-    min_level: z.number().int().min(1).max(6).optional(),
-    max_level: z.number().int().min(1).max(6).optional(),
-  }).optional().describe('Filter by heading level (1=h1 top-level, 6=h6 deepest)'),
-  min_page_count: z.number().int().min(1).optional()
-    .describe('Only include results from documents with at least this many pages'),
-  max_page_count: z.number().int().min(1).optional()
-    .describe('Only include results from documents with at most this many pages'),
-  table_columns_contain: z.string().optional()
-    .describe('Filter to table chunks whose column headers contain this text (case-insensitive match on stored table_columns in processing_params)'),
-  min_quality_score: z
-    .number()
-    .min(0.01)
-    .max(5)
-    .optional()
-    .describe('Minimum OCR quality score (0.01-5). Filters to documents with quality >= threshold. Use 0.01 for "all scored documents".'),
-}).optional().default({});
+export const SearchFilters = z
+  .object({
+    document_filter: z
+      .array(z.string())
+      .optional()
+      .describe('Restrict results to specific document IDs'),
+    metadata_filter: MetadataFilter.describe(
+      'Filter by document metadata (doc_title, doc_author, doc_subject)'
+    ),
+    cluster_id: z.string().optional().describe('Filter results to documents in this cluster'),
+    content_type_filter: z
+      .array(z.string())
+      .optional()
+      .describe('Filter by chunk content types (e.g., ["table", "code", "heading"])'),
+    section_path_filter: z
+      .string()
+      .optional()
+      .describe(
+        'Filter by section path prefix (e.g., "Section 3" matches "Section 3 > 3.1 > Definitions")'
+      ),
+    heading_filter: z.string().optional().describe('Filter by heading context text (LIKE match)'),
+    page_range_filter: PageRangeFilter.describe('Filter results to specific page range'),
+    is_atomic_filter: z
+      .boolean()
+      .optional()
+      .describe(
+        'When true, return only atomic chunks (complete tables, figures, code blocks). When false, exclude atomic chunks.'
+      ),
+    heading_level_filter: z
+      .object({
+        min_level: z.number().int().min(1).max(6).optional(),
+        max_level: z.number().int().min(1).max(6).optional(),
+      })
+      .optional()
+      .describe('Filter by heading level (1=h1 top-level, 6=h6 deepest)'),
+    min_page_count: z
+      .number()
+      .int()
+      .min(1)
+      .optional()
+      .describe('Only include results from documents with at least this many pages'),
+    max_page_count: z
+      .number()
+      .int()
+      .min(1)
+      .optional()
+      .describe('Only include results from documents with at most this many pages'),
+    table_columns_contain: z
+      .string()
+      .optional()
+      .describe(
+        'Filter to table chunks whose column headers contain this text (case-insensitive match on stored table_columns in processing_params)'
+      ),
+    min_quality_score: z
+      .number()
+      .min(0.01)
+      .max(5)
+      .optional()
+      .describe(
+        'Minimum OCR quality score (0.01-5). Filters to documents with quality >= threshold. Use 0.01 for "all scored documents".'
+      ),
+  })
+  .optional()
+  .default({});
 
 /**
  * Unified search schema - single schema for keyword, semantic, and hybrid search.
@@ -342,47 +367,85 @@ export const SearchFilters = z.object({
 export const SearchUnifiedInput = z.object({
   // ── Core parameters ─────────────────────────────────────────────────────
   query: z.string().min(1, 'Query is required').max(1000, 'Query must be 1000 characters or less'),
-  mode: z.enum(['keyword', 'semantic', 'hybrid']).default('hybrid')
-    .describe('Search mode: keyword (BM25), semantic (vector), or hybrid (BM25+semantic fusion). Default: hybrid.'),
+  mode: z
+    .enum(['keyword', 'semantic', 'hybrid'])
+    .default('hybrid')
+    .describe(
+      'Search mode: keyword (BM25), semantic (vector), or hybrid (BM25+semantic fusion). Default: hybrid.'
+    ),
   limit: z.number().int().min(1).max(100).default(10),
   include_provenance: z.boolean().default(false),
   rerank: z
     .boolean()
     .default(false)
     .describe('Re-rank results using local cross-encoder model for contextual relevance scoring'),
-  include_context_chunks: z.number().int().min(0).max(3).default(0)
-    .describe('Number of neighboring chunks to include before and after each result (0=none, max 3). Adds context_before and context_after arrays.'),
-  group_by_document: z.boolean().default(false)
+  include_context_chunks: z
+    .number()
+    .int()
+    .min(0)
+    .max(3)
+    .default(0)
+    .describe(
+      'Number of neighboring chunks to include before and after each result (0=none, max 3). Adds context_before and context_after arrays.'
+    ),
+  group_by_document: z
+    .boolean()
+    .default(false)
     .describe('Group results by source document with document-level statistics'),
 
   // ── Filters (grouped) ──────────────────────────────────────────────────
   filters: SearchFilters,
 
   // ── Keyword-mode specific ───────────────────────────────────────────────
-  phrase_search: z.boolean().default(false)
-    .describe('(keyword mode) Treat query as exact phrase'),
-  include_highlight: z.boolean().default(true)
+  phrase_search: z.boolean().default(false).describe('(keyword mode) Treat query as exact phrase'),
+  include_highlight: z
+    .boolean()
+    .default(true)
     .describe('(keyword mode) Include highlighted snippets'),
 
   // ── Semantic-mode specific ──────────────────────────────────────────────
-  similarity_threshold: z.number().min(0).max(1).optional()
-    .describe('(semantic mode) Minimum similarity score (0-1). When omitted, uses adaptive threshold that adjusts based on result distribution. When explicitly set (e.g. 0.7), uses that exact value.'),
+  similarity_threshold: z
+    .number()
+    .min(0)
+    .max(1)
+    .optional()
+    .describe(
+      '(semantic mode) Minimum similarity score (0-1). When omitted, uses adaptive threshold that adjusts based on result distribution. When explicitly set (e.g. 0.7), uses that exact value.'
+    ),
 
   // ── Hybrid-mode specific ────────────────────────────────────────────────
-  bm25_weight: z.number().min(0).max(2).default(1.0)
-    .describe('(hybrid mode) BM25 result weight'),
-  semantic_weight: z.number().min(0).max(2).default(1.0)
+  bm25_weight: z.number().min(0).max(2).default(1.0).describe('(hybrid mode) BM25 result weight'),
+  semantic_weight: z
+    .number()
+    .min(0)
+    .max(2)
+    .default(1.0)
     .describe('(hybrid mode) Semantic result weight'),
-  rrf_k: z.number().int().min(1).max(100).default(60)
+  rrf_k: z
+    .number()
+    .int()
+    .min(1)
+    .max(100)
+    .default(60)
     .describe('(hybrid mode) RRF smoothing constant'),
-  auto_route: z.boolean().default(true)
+  auto_route: z
+    .boolean()
+    .default(true)
     .describe('(hybrid mode) Auto-adjust BM25/semantic weights based on query classification'),
 
   // ── V7 Intelligence Optimization ──────────────────────────────────────
-  compact: z.boolean().default(false)
-    .describe('When true, return only essential fields per result (document_id, chunk_id, original_text, source_file_name, page_number, score, result_type) for ~77% token reduction'),
-  include_provenance_summary: z.boolean().default(false)
-    .describe('When true, add a one-line provenance_summary string to each result showing the data lineage chain'),
+  compact: z
+    .boolean()
+    .default(false)
+    .describe(
+      'When true, return only essential fields per result (document_id, chunk_id, original_text, source_file_name, page_number, score, result_type) for ~77% token reduction'
+    ),
+  include_provenance_summary: z
+    .boolean()
+    .default(false)
+    .describe(
+      'When true, add a one-line provenance_summary string to each result showing the data lineage chain'
+    ),
 });
 
 /**
@@ -403,12 +466,17 @@ export const DocumentListInput = z.object({
   status_filter: z.enum(['pending', 'processing', 'complete', 'failed']).optional(),
   limit: z.number().int().min(1).max(1000).default(50),
   offset: z.number().int().min(0).default(0),
-  created_after: z.string().datetime().optional()
+  created_after: z
+    .string()
+    .datetime()
+    .optional()
     .describe('Filter documents created after this ISO 8601 timestamp'),
-  created_before: z.string().datetime().optional()
+  created_before: z
+    .string()
+    .datetime()
+    .optional()
     .describe('Filter documents created before this ISO 8601 timestamp'),
-  file_type: z.string().optional()
-    .describe('Filter by file type (e.g., "pdf", "docx")'),
+  file_type: z.string().optional().describe('Filter by file type (e.g., "pdf", "docx")'),
 });
 
 /**
@@ -514,8 +582,9 @@ function getDefaultAllowedBaseDirs(): string[] {
   // module resolution failures (M-8: createRequire fails during vitest because
   // it resolves .js from src/ where only .ts files exist). This matches the
   // value in src/services/storage/database/helpers.ts DEFAULT_STORAGE_PATH.
-  const storagePath = process.env.OCR_PROVENANCE_DATABASES_PATH
-    || path.join(homedir(), '.ocr-provenance', 'databases');
+  const storagePath =
+    process.env.OCR_PROVENANCE_DATABASES_PATH ||
+    path.join(homedir(), '.ocr-provenance', 'databases');
 
   const dirs = [
     path.resolve(storagePath),
@@ -566,18 +635,17 @@ export function sanitizePath(filePath: string, allowedBaseDirs?: string[]): stri
   if (process.platform !== 'win32' && /^[a-zA-Z]:[/\\]/.test(filePath)) {
     throw new ValidationError(
       `Windows-style path detected: "${filePath}". ` +
-      `In Docker, files must be accessed via container mount paths. ` +
-      `If your host directory is mounted at /host, use "/host/${filePath.slice(3).replace(/\\/g, '/')}" instead. ` +
-      `Check your Docker volume mounts with: docker inspect <container_id>`
+        `In Docker, files must be accessed via container mount paths. ` +
+        `If your host directory is mounted at /host, use "/host/${filePath.slice(3).replace(/\\/g, '/')}" instead. ` +
+        `Check your Docker volume mounts with: docker inspect <container_id>`
     );
   }
 
   const resolved = path.resolve(filePath);
 
   // SEC-002: ALWAYS enforce path restrictions. Use defaults when none provided.
-  const baseDirs = (allowedBaseDirs && allowedBaseDirs.length > 0)
-    ? allowedBaseDirs
-    : getDefaultAllowedBaseDirs();
+  const baseDirs =
+    allowedBaseDirs && allowedBaseDirs.length > 0 ? allowedBaseDirs : getDefaultAllowedBaseDirs();
 
   const resolvedBases = baseDirs.map((d) => path.resolve(d));
   const withinAllowed = resolvedBases.some(

@@ -368,15 +368,11 @@ describe('Phase 5: Provenance Query Tools', () => {
       }
 
       // Verify step numbers
-      const steps = parsed.data.timeline.map(
-        (s: Record<string, unknown>) => s.step as number
-      );
+      const steps = parsed.data.timeline.map((s: Record<string, unknown>) => s.step as number);
       expect(steps).toEqual([1, 2, 3, 4, 5, 6]);
 
       // Verify types appear in expected pipeline order
-      const types = parsed.data.timeline.map(
-        (s: Record<string, unknown>) => s.type as string
-      );
+      const types = parsed.data.timeline.map((s: Record<string, unknown>) => s.type as string);
       expect(types[0]).toBe('DOCUMENT');
       expect(types[1]).toBe('OCR_RESULT');
       expect(types[2]).toBe('CHUNK');

@@ -165,11 +165,19 @@ function createDocumentWithChunk(
 
 import { sanitizeFTS5Query } from '../../src/services/search/bm25.js';
 import { expandQuery, sanitizeFTS5Term } from '../../src/services/search/query-expander.js';
-import { rowToDocument, rowToProvenance, rowToImage } from '../../src/services/storage/database/converters.js';
+import {
+  rowToDocument,
+  rowToProvenance,
+  rowToImage,
+} from '../../src/services/storage/database/converters.js';
 import { GeminiRateLimiter } from '../../src/services/gemini/rate-limiter.js';
 import { comparisonTools } from '../../src/tools/comparison.js';
 import { healthTools } from '../../src/tools/health.js';
-import { insertCluster, insertDocumentCluster, mergeClusters } from '../../src/services/storage/database/cluster-operations.js';
+import {
+  insertCluster,
+  insertDocumentCluster,
+  mergeClusters,
+} from '../../src/services/storage/database/cluster-operations.js';
 import { getChunksFiltered } from '../../src/services/storage/database/chunk-operations.js';
 import { beginDatabaseOperation, endDatabaseOperation } from '../../src/server/state.js';
 
@@ -238,9 +246,15 @@ describe('Forensic V3 Manual Verification', () => {
       const conn = db.getConnection();
 
       // Verify all records exist before delete
-      const chunkBefore = conn.prepare('SELECT id FROM chunks WHERE document_id = ?').get(doc.docId);
-      const embBefore = conn.prepare('SELECT id FROM embeddings WHERE document_id = ?').get(doc.docId);
-      const ocrBefore = conn.prepare('SELECT id FROM ocr_results WHERE document_id = ?').get(doc.docId);
+      const chunkBefore = conn
+        .prepare('SELECT id FROM chunks WHERE document_id = ?')
+        .get(doc.docId);
+      const embBefore = conn
+        .prepare('SELECT id FROM embeddings WHERE document_id = ?')
+        .get(doc.docId);
+      const ocrBefore = conn
+        .prepare('SELECT id FROM ocr_results WHERE document_id = ?')
+        .get(doc.docId);
       expect(chunkBefore).toBeDefined();
       expect(embBefore).toBeDefined();
       expect(ocrBefore).toBeDefined();
@@ -251,8 +265,12 @@ describe('Forensic V3 Manual Verification', () => {
       // ALL derived data should be gone
       const docAfter = conn.prepare('SELECT id FROM documents WHERE id = ?').get(doc.docId);
       const chunkAfter = conn.prepare('SELECT id FROM chunks WHERE document_id = ?').get(doc.docId);
-      const embAfter = conn.prepare('SELECT id FROM embeddings WHERE document_id = ?').get(doc.docId);
-      const ocrAfter = conn.prepare('SELECT id FROM ocr_results WHERE document_id = ?').get(doc.docId);
+      const embAfter = conn
+        .prepare('SELECT id FROM embeddings WHERE document_id = ?')
+        .get(doc.docId);
+      const ocrAfter = conn
+        .prepare('SELECT id FROM ocr_results WHERE document_id = ?')
+        .get(doc.docId);
 
       expect(docAfter).toBeUndefined();
       expect(chunkAfter).toBeUndefined();
@@ -273,7 +291,8 @@ describe('Forensic V3 Manual Verification', () => {
 
       // Update the chunk's content_types to have "context_text" only
       const conn = db.getConnection();
-      conn.prepare('UPDATE chunks SET content_types = ? WHERE id = ?')
+      conn
+        .prepare('UPDATE chunks SET content_types = ? WHERE id = ?')
         .run('["context_text"]', doc.chunkId);
 
       // Filtering for "text" should NOT match "context_text"
@@ -281,14 +300,14 @@ describe('Forensic V3 Manual Verification', () => {
         content_type_filter: ['text'],
       });
 
-      const matchingChunk = results.chunks.find(r => r.id === doc.chunkId);
+      const matchingChunk = results.chunks.find((r) => r.id === doc.chunkId);
       expect(matchingChunk).toBeUndefined();
 
       // But filtering for "context_text" SHOULD match
       const results2 = getChunksFiltered(conn, doc.docId, {
         content_type_filter: ['context_text'],
       });
-      const matchingChunk2 = results2.chunks.find(r => r.id === doc.chunkId);
+      const matchingChunk2 = results2.chunks.find((r) => r.id === doc.chunkId);
       expect(matchingChunk2).toBeDefined();
     });
   });
@@ -320,9 +339,7 @@ describe('Forensic V3 Manual Verification', () => {
       const doc = createDocumentWithChunk('Batch fail test document.');
 
       const result = await comparisonTools.ocr_comparison_batch.handler({
-        pairs: [
-          { doc1: doc.docId, doc2: 'nonexistent-doc-id-xyz' },
-        ],
+        pairs: [{ doc1: doc.docId, doc2: 'nonexistent-doc-id-xyz' }],
       });
 
       const parsed = parseResult(result);
@@ -388,45 +405,90 @@ describe('Forensic V3 Manual Verification', () => {
       const provId1 = uuidv4();
       const provId2 = uuidv4();
 
-      db.insertProvenance({ ...createTestProvenance({ id: provId1 }), type: ProvenanceType.CLUSTERING, chain_depth: 2 });
-      db.insertProvenance({ ...createTestProvenance({ id: provId2 }), type: ProvenanceType.CLUSTERING, chain_depth: 2 });
+      db.insertProvenance({
+        ...createTestProvenance({ id: provId1 }),
+        type: ProvenanceType.CLUSTERING,
+        chain_depth: 2,
+      });
+      db.insertProvenance({
+        ...createTestProvenance({ id: provId2 }),
+        type: ProvenanceType.CLUSTERING,
+        chain_depth: 2,
+      });
 
       const clusterId1 = uuidv4();
       const clusterId2 = uuidv4();
 
       insertCluster(conn, {
-        id: clusterId1, run_id: runId, cluster_index: 0, label: 'target-cluster',
-        description: null, classification_tag: null, document_count: 1,
-        centroid_json: null, top_terms_json: null, coherence_score: 0.8,
-        algorithm: 'kmeans', algorithm_params_json: '{}', silhouette_score: 0.7,
-        content_hash: computeHash('c1'), provenance_id: provId1,
-        created_at: new Date().toISOString(), processing_duration_ms: 100,
+        id: clusterId1,
+        run_id: runId,
+        cluster_index: 0,
+        label: 'target-cluster',
+        description: null,
+        classification_tag: null,
+        document_count: 1,
+        centroid_json: null,
+        top_terms_json: null,
+        coherence_score: 0.8,
+        algorithm: 'kmeans',
+        algorithm_params_json: '{}',
+        silhouette_score: 0.7,
+        content_hash: computeHash('c1'),
+        provenance_id: provId1,
+        created_at: new Date().toISOString(),
+        processing_duration_ms: 100,
       });
 
       insertCluster(conn, {
-        id: clusterId2, run_id: runId, cluster_index: 1, label: 'source-cluster',
-        description: null, classification_tag: null, document_count: 2,
-        centroid_json: null, top_terms_json: null, coherence_score: 0.7,
-        algorithm: 'kmeans', algorithm_params_json: '{}', silhouette_score: 0.6,
-        content_hash: computeHash('c2'), provenance_id: provId2,
-        created_at: new Date().toISOString(), processing_duration_ms: 100,
+        id: clusterId2,
+        run_id: runId,
+        cluster_index: 1,
+        label: 'source-cluster',
+        description: null,
+        classification_tag: null,
+        document_count: 2,
+        centroid_json: null,
+        top_terms_json: null,
+        coherence_score: 0.7,
+        algorithm: 'kmeans',
+        algorithm_params_json: '{}',
+        silhouette_score: 0.6,
+        content_hash: computeHash('c2'),
+        provenance_id: provId2,
+        created_at: new Date().toISOString(),
+        processing_duration_ms: 100,
       });
 
       // Assign docs to clusters
       insertDocumentCluster(conn, {
-        id: uuidv4(), document_id: doc1.docId, cluster_id: clusterId1,
-        run_id: runId, similarity_to_centroid: 0.9, membership_probability: 1.0,
-        is_noise: false, assigned_at: new Date().toISOString(),
+        id: uuidv4(),
+        document_id: doc1.docId,
+        cluster_id: clusterId1,
+        run_id: runId,
+        similarity_to_centroid: 0.9,
+        membership_probability: 1.0,
+        is_noise: false,
+        assigned_at: new Date().toISOString(),
       });
       insertDocumentCluster(conn, {
-        id: uuidv4(), document_id: doc2.docId, cluster_id: clusterId2,
-        run_id: runId, similarity_to_centroid: 0.8, membership_probability: 1.0,
-        is_noise: false, assigned_at: new Date().toISOString(),
+        id: uuidv4(),
+        document_id: doc2.docId,
+        cluster_id: clusterId2,
+        run_id: runId,
+        similarity_to_centroid: 0.8,
+        membership_probability: 1.0,
+        is_noise: false,
+        assigned_at: new Date().toISOString(),
       });
       insertDocumentCluster(conn, {
-        id: uuidv4(), document_id: doc3.docId, cluster_id: clusterId2,
-        run_id: runId, similarity_to_centroid: 0.7, membership_probability: 1.0,
-        is_noise: false, assigned_at: new Date().toISOString(),
+        id: uuidv4(),
+        document_id: doc3.docId,
+        cluster_id: clusterId2,
+        run_id: runId,
+        similarity_to_centroid: 0.7,
+        membership_probability: 1.0,
+        is_noise: false,
+        assigned_at: new Date().toISOString(),
       });
 
       const result = mergeClusters(conn, clusterId1, clusterId2);
@@ -437,11 +499,15 @@ describe('Forensic V3 Manual Verification', () => {
       expect(sourceCluster).toBeUndefined();
 
       // Verify: target cluster has updated count
-      const targetCluster = conn.prepare('SELECT document_count FROM clusters WHERE id = ?').get(clusterId1) as { document_count: number };
+      const targetCluster = conn
+        .prepare('SELECT document_count FROM clusters WHERE id = ?')
+        .get(clusterId1) as { document_count: number };
       expect(targetCluster.document_count).toBe(3); // 1 + 2 moved
 
       // Verify: all docs are in target cluster
-      const docsInTarget = conn.prepare('SELECT COUNT(*) as cnt FROM document_clusters WHERE cluster_id = ?').get(clusterId1) as { cnt: number };
+      const docsInTarget = conn
+        .prepare('SELECT COUNT(*) as cnt FROM document_clusters WHERE cluster_id = ?')
+        .get(clusterId1) as { cnt: number };
       expect(docsInTarget.cnt).toBe(3);
     });
   });
@@ -456,7 +522,7 @@ describe('Forensic V3 Manual Verification', () => {
       const searchModule = await import('../../src/tools/search.js');
       // The function is not exported, so we test via the tool behavior
       // Create docs with extreme quality scores to trigger clamping
-      const doc = createDocumentWithChunk('Metadata boost test document about legal contracts.');
+      const _doc = createDocumentWithChunk('Metadata boost test document about legal contracts.');
 
       // The boost clamping is internal, so we verify the search results
       // don't have wildly inflated/deflated scores
@@ -479,9 +545,10 @@ describe('Forensic V3 Manual Verification', () => {
       const minScore = Math.min(...scores);
 
       // When max === min (single result or all equal), normalize to 1.0
-      const normalized = maxScore === minScore
-        ? 1.0  // NEW behavior (fix)
-        : (scores[0] - minScore) / (maxScore - minScore);
+      const normalized =
+        maxScore === minScore
+          ? 1.0 // NEW behavior (fix)
+          : (scores[0] - minScore) / (maxScore - minScore);
       expect(normalized).toBe(1.0);
 
       // Old behavior would have been 0.5:
@@ -507,7 +574,10 @@ describe('Forensic V3 Manual Verification', () => {
       const health = parsed.data as Record<string, unknown>;
       expect(health.gaps).toBeDefined();
       if (health.gaps) {
-        const gaps = health.gaps as Record<string, { fix_tool: string | null; fix_hint: string | null }>;
+        const gaps = health.gaps as Record<
+          string,
+          { fix_tool: string | null; fix_hint: string | null }
+        >;
         for (const [_key, gap] of Object.entries(gaps)) {
           // fix_tool should be a clean tool name (no embedded description)
           if (gap.fix_tool) {
@@ -639,13 +709,23 @@ describe('Forensic V3 Manual Verification', () => {
       // Valid DocumentStatus
       expect(() => {
         rowToDocument({
-          id: 'test-id', file_path: '/tmp/test.pdf', file_name: 'test.pdf',
-          file_hash: 'abc', file_size: 1000, file_type: 'pdf',
+          id: 'test-id',
+          file_path: '/tmp/test.pdf',
+          file_name: 'test.pdf',
+          file_hash: 'abc',
+          file_size: 1000,
+          file_type: 'pdf',
           status: 'complete', // valid
-          page_count: 1, provenance_id: 'prov-1',
-          created_at: new Date().toISOString(), modified_at: new Date().toISOString(),
-          ocr_completed_at: null, error_message: null,
-          doc_title: null, doc_author: null, doc_subject: null, datalab_file_id: null,
+          page_count: 1,
+          provenance_id: 'prov-1',
+          created_at: new Date().toISOString(),
+          modified_at: new Date().toISOString(),
+          ocr_completed_at: null,
+          error_message: null,
+          doc_title: null,
+          doc_author: null,
+          doc_subject: null,
+          datalab_file_id: null,
         });
       }).not.toThrow();
     });
@@ -686,7 +766,8 @@ describe('Forensic V3 Manual Verification', () => {
       // Build a query that would produce many expansion terms
       // "injury accident pain treatment fracture surgery diagnosis medication chronic"
       // Each has 3-4 synonyms, totaling 30+ terms
-      const megaQuery = 'injury accident pain treatment fracture surgery diagnosis medication chronic negligence';
+      const megaQuery =
+        'injury accident pain treatment fracture surgery diagnosis medication chronic negligence';
       const expanded = expandQuery(megaQuery);
 
       // Count OR-separated terms
@@ -744,22 +825,28 @@ describe('Forensic V3 Manual Verification', () => {
       const doc = createDocumentWithChunk('Stale processing recovery test.');
 
       // Manually set it to 'processing' with old modified_at
-      conn.prepare(
-        "UPDATE documents SET status = 'processing', modified_at = datetime('now', '-45 minutes') WHERE id = ?"
-      ).run(doc.docId);
+      conn
+        .prepare(
+          "UPDATE documents SET status = 'processing', modified_at = datetime('now', '-45 minutes') WHERE id = ?"
+        )
+        .run(doc.docId);
 
       // Verify it's stuck
-      const before = conn.prepare('SELECT status FROM documents WHERE id = ?').get(doc.docId) as { status: string };
+      const before = conn.prepare('SELECT status FROM documents WHERE id = ?').get(doc.docId) as {
+        status: string;
+      };
       expect(before.status).toBe('processing');
 
       // Run the recovery (which is called at start of processPending)
       // We can't easily call processPending without API keys, so verify the SQL directly
-      const staleRows = conn.prepare(
-        "SELECT id FROM documents WHERE status = 'processing' AND modified_at < datetime('now', '-30 minutes')"
-      ).all() as Array<{ id: string }>;
+      const staleRows = conn
+        .prepare(
+          "SELECT id FROM documents WHERE status = 'processing' AND modified_at < datetime('now', '-30 minutes')"
+        )
+        .all() as Array<{ id: string }>;
 
       expect(staleRows.length).toBeGreaterThanOrEqual(1);
-      expect(staleRows.some(r => r.id === doc.docId)).toBe(true);
+      expect(staleRows.some((r) => r.id === doc.docId)).toBe(true);
 
       // Simulate recovery
       for (const row of staleRows) {
@@ -767,7 +854,9 @@ describe('Forensic V3 Manual Verification', () => {
       }
 
       // Verify recovery
-      const after = conn.prepare('SELECT status FROM documents WHERE id = ?').get(doc.docId) as { status: string };
+      const after = conn.prepare('SELECT status FROM documents WHERE id = ?').get(doc.docId) as {
+        status: string;
+      };
       expect(after.status).toBe('pending');
     });
   });
@@ -816,11 +905,15 @@ describe('Forensic V3 Manual Verification', () => {
       const conn = db.getConnection();
 
       // Verify no orphaned provenance records (parent_id references non-existent record)
-      const orphans = conn.prepare(`
+      const orphans = conn
+        .prepare(
+          `
         SELECT p.id, p.parent_id FROM provenance p
         WHERE p.parent_id IS NOT NULL
         AND p.parent_id NOT IN (SELECT id FROM provenance)
-      `).all() as Array<{ id: string; parent_id: string }>;
+      `
+        )
+        .all() as Array<{ id: string; parent_id: string }>;
 
       expect(orphans.length).toBe(0);
     });
@@ -830,11 +923,15 @@ describe('Forensic V3 Manual Verification', () => {
       const conn = db.getConnection();
 
       // Every embedding with chunk_id should reference a valid chunk
-      const orphanedEmbeddings = conn.prepare(`
+      const orphanedEmbeddings = conn
+        .prepare(
+          `
         SELECT e.id FROM embeddings e
         WHERE e.chunk_id IS NOT NULL
         AND e.chunk_id NOT IN (SELECT id FROM chunks)
-      `).all();
+      `
+        )
+        .all();
 
       expect(orphanedEmbeddings.length).toBe(0);
     });
@@ -844,10 +941,14 @@ describe('Forensic V3 Manual Verification', () => {
       const conn = db.getConnection();
 
       // Every OCR result should reference a valid document
-      const orphanedOCR = conn.prepare(`
+      const orphanedOCR = conn
+        .prepare(
+          `
         SELECT o.id FROM ocr_results o
         WHERE o.document_id NOT IN (SELECT id FROM documents)
-      `).all();
+      `
+        )
+        .all();
 
       expect(orphanedOCR.length).toBe(0);
     });

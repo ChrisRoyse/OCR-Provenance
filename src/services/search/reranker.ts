@@ -55,34 +55,28 @@ export async function rerankResults(
     // Local model not available - return results as-is in original order
     console.error(
       '[reranker] Local cross-encoder unavailable. Returning results without reranking. ' +
-      'Install sentence-transformers for local reranking: pip install sentence-transformers'
+        'Install sentence-transformers for local reranking: pip install sentence-transformers'
     );
-    return toRerank
-      .slice(0, maxResults)
-      .map((_, i) => ({
-        original_index: i,
-        relevance_score: 0,
-        reasoning: 'local cross-encoder unavailable, original order preserved',
-      }));
+    return toRerank.slice(0, maxResults).map((_, i) => ({
+      original_index: i,
+      relevance_score: 0,
+      reasoning: 'local cross-encoder unavailable, original order preserved',
+    }));
   }
 
   // Filter to valid indices only
-  const validResults = localResults.filter(
-    (r) => r.index >= 0 && r.index < toRerank.length
-  );
+  const validResults = localResults.filter((r) => r.index >= 0 && r.index < toRerank.length);
 
   if (validResults.length === 0 && toRerank.length > 0) {
     console.error(
       `[reranker] Cross-encoder returned 0 valid results from ${toRerank.length} inputs. ` +
-      'Returning results without reranking.'
+        'Returning results without reranking.'
     );
-    return toRerank
-      .slice(0, maxResults)
-      .map((_, i) => ({
-        original_index: i,
-        relevance_score: 0,
-        reasoning: 'cross-encoder returned no valid results, original order preserved',
-      }));
+    return toRerank.slice(0, maxResults).map((_, i) => ({
+      original_index: i,
+      relevance_score: 0,
+      reasoning: 'cross-encoder returned no valid results, original order preserved',
+    }));
   }
 
   // Sort by relevance score descending, take maxResults
@@ -103,13 +97,8 @@ export async function rerankResults(
  * @param excerpts - Array of text excerpts
  * @returns Formatted prompt string
  */
-export function buildRerankPrompt(
-  query: string,
-  excerpts: string[]
-): string {
-  const formattedExcerpts = excerpts
-    .map((text, i) => `[${i}] ${text.slice(0, 500)}`)
-    .join('\n\n');
+export function buildRerankPrompt(query: string, excerpts: string[]): string {
+  const formattedExcerpts = excerpts.map((text, i) => `[${i}] ${text.slice(0, 500)}`).join('\n\n');
 
   return `You are a legal document search relevance expert. Given a search query and a list of document excerpts, score each excerpt's relevance to the query on a scale of 0-10.
 

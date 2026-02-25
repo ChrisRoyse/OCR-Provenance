@@ -105,7 +105,8 @@ describe('normalizeForEmbedding - edge cases', () => {
   });
 
   it('multi-line mixed content preserves non-line-number lines', () => {
-    const input = '10       Line with number.\nJust a regular line.\n5       Another numbered line.';
+    const input =
+      '10       Line with number.\nJust a regular line.\n5       Another numbered line.';
     const result = normalizeForEmbedding(input);
     expect(result).toBe('Line with number.\nJust a regular line.\nAnother numbered line.');
   });

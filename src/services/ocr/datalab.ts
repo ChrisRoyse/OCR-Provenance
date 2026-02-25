@@ -181,7 +181,12 @@ export class DatalabClient {
           // Settle the promise if close event hasn't fired yet (zombie prevention)
           if (!settled) {
             settled = true;
-            reject(new OCRError(`OCR timeout after ${this.timeout}ms (SIGKILL after 5s grace)`, 'OCR_TIMEOUT'));
+            reject(
+              new OCRError(
+                `OCR timeout after ${this.timeout}ms (SIGKILL after 5s grace)`,
+                'OCR_TIMEOUT'
+              )
+            );
           }
         }, 5000);
       }, this.timeout);
@@ -416,7 +421,12 @@ export class DatalabClient {
           }
           if (!settled) {
             settled = true;
-            reject(new OCRError(`OCR timeout after ${this.timeout}ms (SIGKILL after 5s grace)`, 'OCR_TIMEOUT'));
+            reject(
+              new OCRError(
+                `OCR timeout after ${this.timeout}ms (SIGKILL after 5s grace)`,
+                'OCR_TIMEOUT'
+              )
+            );
           }
         }, 5000);
       }, this.timeout);

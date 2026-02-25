@@ -45,36 +45,38 @@ async function main() {
   const version = db.prepare('SELECT version FROM schema_version').get() as { version: number };
   assert(version.version === 31, 'Schema version is 31', `Got: ${version.version}`);
 
-  const indexes = db.prepare(
-    "SELECT name FROM sqlite_master WHERE type='index' AND name LIKE 'idx_documents_doc_%'"
-  ).all() as Array<{ name: string }>;
+  const indexes = db
+    .prepare(
+      "SELECT name FROM sqlite_master WHERE type='index' AND name LIKE 'idx_documents_doc_%'"
+    )
+    .all() as Array<{ name: string }>;
   const indexNames = indexes.map((i) => i.name);
   assert(indexNames.includes('idx_documents_doc_author'), 'idx_documents_doc_author exists');
   assert(indexNames.includes('idx_documents_doc_subject'), 'idx_documents_doc_subject exists');
   assert(indexNames.includes('idx_documents_doc_title'), 'idx_documents_doc_title exists');
 
   // Verify indexes actually work with EXPLAIN QUERY PLAN
-  const planAuthor = db.prepare(
-    "EXPLAIN QUERY PLAN SELECT id FROM documents WHERE doc_author = 'test'"
-  ).all() as Array<{ detail: string }>;
+  const planAuthor = db
+    .prepare("EXPLAIN QUERY PLAN SELECT id FROM documents WHERE doc_author = 'test'")
+    .all() as Array<{ detail: string }>;
   assert(
     planAuthor.some((p) => p.detail.includes('idx_documents_doc_author')),
     'doc_author query uses index',
     `Plan: ${planAuthor.map((p) => p.detail).join('; ')}`
   );
 
-  const planSubject = db.prepare(
-    "EXPLAIN QUERY PLAN SELECT id FROM documents WHERE doc_subject = 'test'"
-  ).all() as Array<{ detail: string }>;
+  const planSubject = db
+    .prepare("EXPLAIN QUERY PLAN SELECT id FROM documents WHERE doc_subject = 'test'")
+    .all() as Array<{ detail: string }>;
   assert(
     planSubject.some((p) => p.detail.includes('idx_documents_doc_subject')),
     'doc_subject query uses index',
     `Plan: ${planSubject.map((p) => p.detail).join('; ')}`
   );
 
-  const planTitle = db.prepare(
-    "EXPLAIN QUERY PLAN SELECT id FROM documents WHERE doc_title = 'test'"
-  ).all() as Array<{ detail: string }>;
+  const planTitle = db
+    .prepare("EXPLAIN QUERY PLAN SELECT id FROM documents WHERE doc_title = 'test'")
+    .all() as Array<{ detail: string }>;
   assert(
     planTitle.some((p) => p.detail.includes('idx_documents_doc_title')),
     'doc_title query uses index',
@@ -82,7 +84,7 @@ async function main() {
   );
 
   // Verify v31 migration columns exist on documents table
-  const docColumns = db.prepare("PRAGMA table_info(documents)").all() as Array<{ name: string }>;
+  const docColumns = db.prepare('PRAGMA table_info(documents)').all() as Array<{ name: string }>;
   const docColNames = docColumns.map((c) => c.name);
   assert(docColNames.includes('doc_author'), 'documents table has doc_author column');
   assert(docColNames.includes('doc_subject'), 'documents table has doc_subject column');
@@ -103,15 +105,15 @@ async function main() {
   assert(Math.abs(multNull - 0.9) < 0.001, 'Null quality multiplier = 0.9', `Got: ${multNull}`);
 
   // Verify quality scores can be queried in chunks
-  const qualityChunks = db.prepare(
-    'SELECT COUNT(*) as count FROM chunks WHERE ocr_quality_score IS NOT NULL'
-  ).get() as { count: number };
+  const qualityChunks = db
+    .prepare('SELECT COUNT(*) as count FROM chunks WHERE ocr_quality_score IS NOT NULL')
+    .get() as { count: number };
   console.log(`  Chunks with quality scores: ${qualityChunks.count} / 459`);
   // Quality scores may or may not be populated depending on ingestion
   assert(true, 'Quality-weighted ranking formula verified (code-level)');
 
   // Check that the quality_score column exists in chunks
-  const chunkColumns = db.prepare("PRAGMA table_info(chunks)").all() as Array<{ name: string }>;
+  const chunkColumns = db.prepare('PRAGMA table_info(chunks)').all() as Array<{ name: string }>;
   const chunkColNames = chunkColumns.map((c) => c.name);
   assert(chunkColNames.includes('ocr_quality_score'), 'chunks table has ocr_quality_score column');
 
@@ -128,9 +130,11 @@ async function main() {
   assert(!!testDoc, 'Have at least one document for testing');
 
   // Check that ocr_results have extras_json or json_blocks
-  const ocrResults = db.prepare(
-    'SELECT document_id, extras_json IS NOT NULL as has_extras, json_blocks IS NOT NULL as has_blocks FROM ocr_results'
-  ).all() as Array<{ document_id: string; has_extras: number; has_blocks: number }>;
+  const ocrResults = db
+    .prepare(
+      'SELECT document_id, extras_json IS NOT NULL as has_extras, json_blocks IS NOT NULL as has_blocks FROM ocr_results'
+    )
+    .all() as Array<{ document_id: string; has_extras: number; has_blocks: number }>;
   assert(ocrResults.length > 0, `Have ${ocrResults.length} OCR results`);
 
   const ocrResultsWithData = ocrResults.filter((r) => r.has_extras || r.has_blocks);
@@ -138,9 +142,9 @@ async function main() {
   assert(ocrResultsWithData.length > 0, 'At least one OCR result has block data');
 
   // Verify we can parse the json_blocks (may be object with children or an array)
-  const sampleOcr = db.prepare(
-    'SELECT json_blocks FROM ocr_results WHERE json_blocks IS NOT NULL LIMIT 1'
-  ).get() as { json_blocks: string } | undefined;
+  const sampleOcr = db
+    .prepare('SELECT json_blocks FROM ocr_results WHERE json_blocks IS NOT NULL LIMIT 1')
+    .get() as { json_blocks: string } | undefined;
   if (sampleOcr) {
     try {
       const parsed = JSON.parse(sampleOcr.json_blocks);
@@ -177,11 +181,14 @@ async function main() {
   // The chunks table uses content_types (plural, JSON array) not content_type
   assert(chunkColNames.includes('content_types'), 'chunks table has content_types column');
 
-  const tableChunks = db.prepare(
-    "SELECT COUNT(*) as count FROM chunks WHERE content_types LIKE '%table%'"
-  ).get() as { count: number };
+  const tableChunks = db
+    .prepare("SELECT COUNT(*) as count FROM chunks WHERE content_types LIKE '%table%'")
+    .get() as { count: number };
   console.log(`  Table-type chunks (content_types contains 'table'): ${tableChunks.count}`);
-  assert(true, 'Table column headers filter available (code-level, uses content_types + text matching)');
+  assert(
+    true,
+    'Table column headers filter available (code-level, uses content_types + text matching)'
+  );
 
   // =====================================================================
   // T2.7: Enhanced Database Overview
@@ -189,47 +196,55 @@ async function main() {
   console.log('\n=== T2.7: Enhanced DB Overview ===');
 
   // File type distribution
-  const fileTypeDist = db.prepare(
-    'SELECT file_type, COUNT(*) as count FROM documents GROUP BY file_type ORDER BY count DESC'
-  ).all() as Array<{ file_type: string; count: number }>;
+  const fileTypeDist = db
+    .prepare(
+      'SELECT file_type, COUNT(*) as count FROM documents GROUP BY file_type ORDER BY count DESC'
+    )
+    .all() as Array<{ file_type: string; count: number }>;
   assert(fileTypeDist.length > 0, `File type distribution has ${fileTypeDist.length} entries`);
   for (const ft of fileTypeDist) {
     console.log(`  ${ft.file_type}: ${ft.count} documents`);
   }
 
   // Date range
-  const dateRange = db.prepare(
-    'SELECT MIN(created_at) as earliest, MAX(created_at) as latest FROM documents'
-  ).get() as { earliest: string | null; latest: string | null };
+  const dateRange = db
+    .prepare('SELECT MIN(created_at) as earliest, MAX(created_at) as latest FROM documents')
+    .get() as { earliest: string | null; latest: string | null };
   assert(!!dateRange.earliest, `Date range earliest: ${dateRange.earliest}`);
   assert(!!dateRange.latest, `Date range latest: ${dateRange.latest}`);
 
   // Status distribution
-  const statusDist = db.prepare(
-    'SELECT status, COUNT(*) as count FROM documents GROUP BY status'
-  ).all() as Array<{ status: string; count: number }>;
+  const statusDist = db
+    .prepare('SELECT status, COUNT(*) as count FROM documents GROUP BY status')
+    .all() as Array<{ status: string; count: number }>;
   assert(statusDist.length > 0, `Status distribution has ${statusDist.length} entries`);
   for (const s of statusDist) {
     console.log(`  ${s.status}: ${s.count} documents`);
   }
 
   // Count totals
-  const totalDocs = db.prepare('SELECT COUNT(*) as count FROM documents').get() as { count: number };
+  const totalDocs = db.prepare('SELECT COUNT(*) as count FROM documents').get() as {
+    count: number;
+  };
   assert(totalDocs.count === 5, `Total documents is 5`, `Got: ${totalDocs.count}`);
 
   const totalChunks = db.prepare('SELECT COUNT(*) as count FROM chunks').get() as { count: number };
   assert(totalChunks.count === 459, `Total chunks is 459`, `Got: ${totalChunks.count}`);
 
-  const totalEmbeddings = db.prepare('SELECT COUNT(*) as count FROM embeddings').get() as { count: number };
+  const totalEmbeddings = db.prepare('SELECT COUNT(*) as count FROM embeddings').get() as {
+    count: number;
+  };
   assert(totalEmbeddings.count === 462, `Total embeddings is 462`, `Got: ${totalEmbeddings.count}`);
 
   const totalImages = db.prepare('SELECT COUNT(*) as count FROM images').get() as { count: number };
   console.log(`  Images: ${totalImages.count}`);
 
   // Average chunks per document
-  const avgChunks = db.prepare(
-    'SELECT AVG(chunk_count) as avg_chunks FROM (SELECT document_id, COUNT(*) as chunk_count FROM chunks GROUP BY document_id)'
-  ).get() as { avg_chunks: number };
+  const avgChunks = db
+    .prepare(
+      'SELECT AVG(chunk_count) as avg_chunks FROM (SELECT document_id, COUNT(*) as chunk_count FROM chunks GROUP BY document_id)'
+    )
+    .get() as { avg_chunks: number };
   console.log(`  Average chunks/doc: ${avgChunks.avg_chunks.toFixed(1)}`);
   assert(avgChunks.avg_chunks > 0, 'Average chunks per document > 0');
 
@@ -238,17 +253,23 @@ async function main() {
   // =====================================================================
   console.log('\n=== T2.13: Page Navigation ===');
 
-  const pageChunks = db.prepare(
-    'SELECT page_number, COUNT(*) as chunk_count FROM chunks WHERE document_id = ? AND page_number IS NOT NULL GROUP BY page_number ORDER BY page_number LIMIT 10'
-  ).all(testDoc.id) as Array<{ page_number: number; chunk_count: number }>;
-  console.log(`  Document "${testDoc.file_name}" has chunks on ${pageChunks.length} distinct pages`);
+  const pageChunks = db
+    .prepare(
+      'SELECT page_number, COUNT(*) as chunk_count FROM chunks WHERE document_id = ? AND page_number IS NOT NULL GROUP BY page_number ORDER BY page_number LIMIT 10'
+    )
+    .all(testDoc.id) as Array<{ page_number: number; chunk_count: number }>;
+  console.log(
+    `  Document "${testDoc.file_name}" has chunks on ${pageChunks.length} distinct pages`
+  );
   assert(pageChunks.length > 0, `Document has chunks with page numbers`);
 
   if (pageChunks.length > 0) {
     const firstPage = pageChunks[0].page_number;
-    const chunksOnPage = db.prepare(
-      'SELECT id, chunk_index, heading_context, content_types FROM chunks WHERE document_id = ? AND page_number = ? ORDER BY chunk_index'
-    ).all(testDoc.id, firstPage) as Array<{
+    const chunksOnPage = db
+      .prepare(
+        'SELECT id, chunk_index, heading_context, content_types FROM chunks WHERE document_id = ? AND page_number = ? ORDER BY chunk_index'
+      )
+      .all(testDoc.id, firstPage) as Array<{
       id: string;
       chunk_index: number;
       heading_context: string | null;
@@ -267,9 +288,11 @@ async function main() {
   assert(chunkColNames.includes('page_number'), 'chunks table has page_number column');
 
   // Verify multi-page document page range
-  const pageRange = db.prepare(
-    'SELECT MIN(page_number) as min_page, MAX(page_number) as max_page FROM chunks WHERE document_id = ? AND page_number IS NOT NULL'
-  ).get(testDoc.id) as { min_page: number | null; max_page: number | null };
+  const pageRange = db
+    .prepare(
+      'SELECT MIN(page_number) as min_page, MAX(page_number) as max_page FROM chunks WHERE document_id = ? AND page_number IS NOT NULL'
+    )
+    .get(testDoc.id) as { min_page: number | null; max_page: number | null };
   if (pageRange.min_page !== null) {
     console.log(`  Page range: ${pageRange.min_page} - ${pageRange.max_page}`);
     assert(true, `Page range available: ${pageRange.min_page}-${pageRange.max_page}`);
@@ -281,37 +304,45 @@ async function main() {
   console.log('\n=== T2.8: Header/Footer Tags ===');
 
   // Verify tags table exists and is queryable
-  const tagsTableExists = db.prepare(
-    "SELECT name FROM sqlite_master WHERE type='table' AND name='tags'"
-  ).get();
+  const tagsTableExists = db
+    .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='tags'")
+    .get();
   assert(!!tagsTableExists, 'tags table exists');
 
   // Verify entity_tags table exists and is queryable
-  const entityTagsTableExists = db.prepare(
-    "SELECT name FROM sqlite_master WHERE type='table' AND name='entity_tags'"
-  ).get();
+  const entityTagsTableExists = db
+    .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='entity_tags'")
+    .get();
   assert(!!entityTagsTableExists, 'entity_tags table exists');
 
-  const entityTagCount = db.prepare('SELECT COUNT(*) as count FROM entity_tags').get() as { count: number };
+  const entityTagCount = db.prepare('SELECT COUNT(*) as count FROM entity_tags').get() as {
+    count: number;
+  };
   console.log(`  entity_tags entries: ${entityTagCount.count}`);
 
   // Check if system:repeated_header_footer tag exists
-  const headerFooterTag = db.prepare(
-    "SELECT id, name FROM tags WHERE name = 'system:repeated_header_footer'"
-  ).get() as { id: string; name: string } | undefined;
+  const headerFooterTag = db
+    .prepare("SELECT id, name FROM tags WHERE name = 'system:repeated_header_footer'")
+    .get() as { id: string; name: string } | undefined;
   if (headerFooterTag) {
     assert(true, 'system:repeated_header_footer tag exists');
-    const taggedChunks = db.prepare(
-      "SELECT COUNT(*) as count FROM entity_tags WHERE tag_id = ? AND entity_type = 'chunk'"
-    ).get(headerFooterTag.id) as { count: number };
+    const taggedChunks = db
+      .prepare(
+        "SELECT COUNT(*) as count FROM entity_tags WHERE tag_id = ? AND entity_type = 'chunk'"
+      )
+      .get(headerFooterTag.id) as { count: number };
     console.log(`  Chunks tagged as header/footer: ${taggedChunks.count}`);
   } else {
-    console.log('  system:repeated_header_footer tag: not yet created (created during new ingestions)');
+    console.log(
+      '  system:repeated_header_footer tag: not yet created (created during new ingestions)'
+    );
     assert(true, 'Header/footer tagging system available (tag created during ingestion)');
   }
 
   // List existing tags
-  const allTags = db.prepare('SELECT name FROM tags ORDER BY name').all() as Array<{ name: string }>;
+  const allTags = db.prepare('SELECT name FROM tags ORDER BY name').all() as Array<{
+    name: string;
+  }>;
   console.log(`  Existing tags: ${allTags.map((t) => t.name).join(', ')}`);
 
   // =====================================================================
@@ -319,9 +350,11 @@ async function main() {
   // =====================================================================
   console.log('\n=== T2.9: TOC Enhancement ===');
 
-  const sections = db.prepare(
-    'SELECT section_path, heading_level, MIN(chunk_index) as first_ci, MAX(chunk_index) as last_ci FROM chunks WHERE document_id = ? AND section_path IS NOT NULL GROUP BY section_path ORDER BY first_ci'
-  ).all(testDoc.id) as Array<{
+  const sections = db
+    .prepare(
+      'SELECT section_path, heading_level, MIN(chunk_index) as first_ci, MAX(chunk_index) as last_ci FROM chunks WHERE document_id = ? AND section_path IS NOT NULL GROUP BY section_path ORDER BY first_ci'
+    )
+    .all(testDoc.id) as Array<{
     section_path: string;
     heading_level: number | null;
     first_ci: number;
@@ -344,7 +377,10 @@ async function main() {
 
   // Verify hierarchical nesting (sections with > separator)
   const nestedSections = sections.filter((s) => s.section_path.includes('>'));
-  assert(nestedSections.length > 0, `Found ${nestedSections.length} nested (hierarchical) sections`);
+  assert(
+    nestedSections.length > 0,
+    `Found ${nestedSections.length} nested (hierarchical) sections`
+  );
 
   // =====================================================================
   // T2.10: VLM Text in FTS
@@ -352,21 +388,23 @@ async function main() {
   console.log('\n=== T2.10: VLM Text in FTS ===');
 
   // Check if vlm_fts table exists
-  const vlmFtsExists = db.prepare(
-    "SELECT name FROM sqlite_master WHERE type='table' AND name='vlm_fts'"
-  ).get();
+  const vlmFtsExists = db
+    .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='vlm_fts'")
+    .get();
   assert(!!vlmFtsExists, 'vlm_fts table exists');
 
   try {
-    const vlmFtsCount = db.prepare('SELECT COUNT(*) as count FROM vlm_fts').get() as { count: number };
+    const vlmFtsCount = db.prepare('SELECT COUNT(*) as count FROM vlm_fts').get() as {
+      count: number;
+    };
     console.log(`  vlm_fts entries: ${vlmFtsCount.count}`);
     assert(vlmFtsCount.count > 0, `vlm_fts has ${vlmFtsCount.count} entries`);
 
     // Test a search against vlm_fts
     if (vlmFtsCount.count > 0) {
-      const vlmSearchResult = db.prepare(
-        "SELECT COUNT(*) as count FROM vlm_fts WHERE vlm_fts MATCH 'report OR document'"
-      ).get() as { count: number };
+      const vlmSearchResult = db
+        .prepare("SELECT COUNT(*) as count FROM vlm_fts WHERE vlm_fts MATCH 'report OR document'")
+        .get() as { count: number };
       console.log(`  vlm_fts match 'report OR document': ${vlmSearchResult.count} results`);
       assert(true, 'vlm_fts is searchable via FTS5 MATCH');
     }
@@ -383,21 +421,26 @@ async function main() {
   assert(totalDocs.count >= 2, `Have ${totalDocs.count} documents for grouping`);
 
   // Simulate group-by-document aggregation
-  const groupedByDoc = db.prepare(
-    `SELECT d.id, d.file_name, COUNT(c.id) as chunk_count,
+  const groupedByDoc = db
+    .prepare(
+      `SELECT d.id, d.file_name, COUNT(c.id) as chunk_count,
      MIN(c.chunk_index) as min_chunk, MAX(c.chunk_index) as max_chunk
      FROM documents d
      LEFT JOIN chunks c ON c.document_id = d.id
      GROUP BY d.id
      ORDER BY chunk_count DESC`
-  ).all() as Array<{
+    )
+    .all() as Array<{
     id: string;
     file_name: string;
     chunk_count: number;
     min_chunk: number;
     max_chunk: number;
   }>;
-  assert(groupedByDoc.length === totalDocs.count, `Grouped query returns ${groupedByDoc.length} document groups`);
+  assert(
+    groupedByDoc.length === totalDocs.count,
+    `Grouped query returns ${groupedByDoc.length} document groups`
+  );
 
   for (const g of groupedByDoc) {
     console.log(`  ${g.file_name}: ${g.chunk_count} chunks (index ${g.min_chunk}-${g.max_chunk})`);
@@ -408,31 +451,37 @@ async function main() {
   // =====================================================================
   console.log('\n=== T2.12: Cross-Document Context ===');
 
-  const clusterCount = db.prepare('SELECT COUNT(*) as count FROM clusters').get() as { count: number };
-  const compCount = db.prepare('SELECT COUNT(*) as count FROM comparisons').get() as { count: number };
+  const clusterCount = db.prepare('SELECT COUNT(*) as count FROM clusters').get() as {
+    count: number;
+  };
+  const compCount = db.prepare('SELECT COUNT(*) as count FROM comparisons').get() as {
+    count: number;
+  };
   console.log(`  Clusters: ${clusterCount.count}, Comparisons: ${compCount.count}`);
 
   // Verify cluster tables exist and are queryable
-  const clusterTableExists = db.prepare(
-    "SELECT name FROM sqlite_master WHERE type='table' AND name='clusters'"
-  ).get();
+  const clusterTableExists = db
+    .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='clusters'")
+    .get();
   assert(!!clusterTableExists, 'clusters table exists');
 
-  const docClustersTableExists = db.prepare(
-    "SELECT name FROM sqlite_master WHERE type='table' AND name='document_clusters'"
-  ).get();
+  const docClustersTableExists = db
+    .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='document_clusters'")
+    .get();
   assert(!!docClustersTableExists, 'document_clusters table exists');
 
-  const comparisonsTableExists = db.prepare(
-    "SELECT name FROM sqlite_master WHERE type='table' AND name='comparisons'"
-  ).get();
+  const comparisonsTableExists = db
+    .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='comparisons'")
+    .get();
   assert(!!comparisonsTableExists, 'comparisons table exists');
 
   // If clusters exist, verify the JOIN query works
   if (clusterCount.count > 0) {
-    const clusterJoin = db.prepare(
-      'SELECT c.id, c.label, dc.similarity_to_centroid FROM document_clusters dc JOIN clusters c ON c.id = dc.cluster_id LIMIT 3'
-    ).all();
+    const clusterJoin = db
+      .prepare(
+        'SELECT c.id, c.label, dc.similarity_to_centroid FROM document_clusters dc JOIN clusters c ON c.id = dc.cluster_id LIMIT 3'
+      )
+      .all();
     assert(clusterJoin.length > 0, `Cluster membership JOIN returns ${clusterJoin.length} rows`);
   } else {
     console.log('  No clusters yet (run clustering to populate)');
@@ -444,9 +493,11 @@ async function main() {
   // =====================================================================
   console.log('\n=== T1.1: VLM Structured Data ===');
 
-  const vlmImages = db.prepare(
-    'SELECT id, vlm_structured_data FROM images WHERE vlm_structured_data IS NOT NULL LIMIT 5'
-  ).all() as Array<{ id: string; vlm_structured_data: string }>;
+  const vlmImages = db
+    .prepare(
+      'SELECT id, vlm_structured_data FROM images WHERE vlm_structured_data IS NOT NULL LIMIT 5'
+    )
+    .all() as Array<{ id: string; vlm_structured_data: string }>;
   console.log(`  Images with vlm_structured_data: ${vlmImages.length} / ${totalImages.count}`);
 
   for (const img of vlmImages) {
@@ -472,9 +523,12 @@ async function main() {
   }
 
   // Verify vlm_structured_data column exists on images table
-  const imageColumns = db.prepare("PRAGMA table_info(images)").all() as Array<{ name: string }>;
+  const imageColumns = db.prepare('PRAGMA table_info(images)').all() as Array<{ name: string }>;
   const imageColNames = imageColumns.map((c) => c.name);
-  assert(imageColNames.includes('vlm_structured_data'), 'images table has vlm_structured_data column');
+  assert(
+    imageColNames.includes('vlm_structured_data'),
+    'images table has vlm_structured_data column'
+  );
   assert(imageColNames.includes('vlm_description'), 'images table has vlm_description column');
   assert(imageColNames.includes('vlm_embedding_id'), 'images table has vlm_embedding_id column');
 
@@ -493,19 +547,29 @@ async function main() {
   console.log('\n=== FTS Index Integrity ===');
 
   // Verify chunks_fts has entries matching chunks
-  const chunksFtsCount = db.prepare('SELECT COUNT(*) as count FROM chunks_fts').get() as { count: number };
+  const chunksFtsCount = db.prepare('SELECT COUNT(*) as count FROM chunks_fts').get() as {
+    count: number;
+  };
   console.log(`  chunks_fts entries: ${chunksFtsCount.count}`);
   assert(chunksFtsCount.count > 0, `chunks_fts has ${chunksFtsCount.count} entries`);
 
   // Test a basic FTS search
-  const ftsSearchResult = db.prepare(
-    "SELECT COUNT(*) as count FROM chunks_fts WHERE chunks_fts MATCH 'the'"
-  ).get() as { count: number };
-  assert(ftsSearchResult.count > 0, `FTS search for 'the' returns ${ftsSearchResult.count} results`);
+  const ftsSearchResult = db
+    .prepare("SELECT COUNT(*) as count FROM chunks_fts WHERE chunks_fts MATCH 'the'")
+    .get() as { count: number };
+  assert(
+    ftsSearchResult.count > 0,
+    `FTS search for 'the' returns ${ftsSearchResult.count} results`
+  );
 
   // Verify documents_fts has entries
-  const docsFtsCount = db.prepare('SELECT COUNT(*) as count FROM documents_fts').get() as { count: number };
-  assert(docsFtsCount.count === totalDocs.count, `documents_fts has ${docsFtsCount.count} entries (matches ${totalDocs.count} docs)`);
+  const docsFtsCount = db.prepare('SELECT COUNT(*) as count FROM documents_fts').get() as {
+    count: number;
+  };
+  assert(
+    docsFtsCount.count === totalDocs.count,
+    `documents_fts has ${docsFtsCount.count} entries (matches ${totalDocs.count} docs)`
+  );
 
   // =====================================================================
   // Database Integrity
@@ -513,36 +577,52 @@ async function main() {
   console.log('\n=== Database Integrity ===');
 
   // Check that all chunks reference valid documents
-  const orphanChunks = db.prepare(
-    'SELECT COUNT(*) as count FROM chunks WHERE document_id NOT IN (SELECT id FROM documents)'
-  ).get() as { count: number };
+  const orphanChunks = db
+    .prepare(
+      'SELECT COUNT(*) as count FROM chunks WHERE document_id NOT IN (SELECT id FROM documents)'
+    )
+    .get() as { count: number };
   assert(orphanChunks.count === 0, `No orphan chunks (${orphanChunks.count} found)`);
 
   // Check that all embeddings reference valid chunks or images
-  const orphanEmbeddings = db.prepare(
-    `SELECT COUNT(*) as count FROM embeddings
+  const orphanEmbeddings = db
+    .prepare(
+      `SELECT COUNT(*) as count FROM embeddings
      WHERE chunk_id IS NOT NULL AND chunk_id NOT IN (SELECT id FROM chunks)`
-  ).get() as { count: number };
-  assert(orphanEmbeddings.count === 0, `No orphan chunk embeddings (${orphanEmbeddings.count} found)`);
+    )
+    .get() as { count: number };
+  assert(
+    orphanEmbeddings.count === 0,
+    `No orphan chunk embeddings (${orphanEmbeddings.count} found)`
+  );
 
   // Check that all images reference valid documents
-  const orphanImages = db.prepare(
-    'SELECT COUNT(*) as count FROM images WHERE document_id NOT IN (SELECT id FROM documents)'
-  ).get() as { count: number };
+  const orphanImages = db
+    .prepare(
+      'SELECT COUNT(*) as count FROM images WHERE document_id NOT IN (SELECT id FROM documents)'
+    )
+    .get() as { count: number };
   assert(orphanImages.count === 0, `No orphan images (${orphanImages.count} found)`);
 
   // Check vec_embeddings has entries (requires sqlite-vec extension, may not be available in plain better-sqlite3)
   try {
-    const vecEmbedCount = db.prepare('SELECT COUNT(*) as count FROM vec_embeddings').get() as { count: number };
+    const vecEmbedCount = db.prepare('SELECT COUNT(*) as count FROM vec_embeddings').get() as {
+      count: number;
+    };
     console.log(`  vec_embeddings entries: ${vecEmbedCount.count}`);
     assert(vecEmbedCount.count > 0, `vec_embeddings has ${vecEmbedCount.count} entries`);
   } catch {
     // vec0 module not loaded in plain better-sqlite3 - verify the table exists in schema instead
-    const vecTableExists = db.prepare(
-      "SELECT name FROM sqlite_master WHERE type='table' AND name='vec_embeddings'"
-    ).get();
-    assert(!!vecTableExists, 'vec_embeddings table exists in schema (vec0 extension not loaded for direct query)');
-    console.log('  vec_embeddings: table exists but vec0 extension not loaded (expected in plain better-sqlite3)');
+    const vecTableExists = db
+      .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='vec_embeddings'")
+      .get();
+    assert(
+      !!vecTableExists,
+      'vec_embeddings table exists in schema (vec0 extension not loaded for direct query)'
+    );
+    console.log(
+      '  vec_embeddings: table exists but vec0 extension not loaded (expected in plain better-sqlite3)'
+    );
   }
 
   // =====================================================================
@@ -550,13 +630,15 @@ async function main() {
   // =====================================================================
   console.log('\n=== Provenance Chain ===');
 
-  const provCount = db.prepare('SELECT COUNT(*) as count FROM provenance').get() as { count: number };
+  const provCount = db.prepare('SELECT COUNT(*) as count FROM provenance').get() as {
+    count: number;
+  };
   console.log(`  Provenance entries: ${provCount.count}`);
   assert(provCount.count > 0, `Provenance table has ${provCount.count} entries`);
 
-  const provTypes = db.prepare(
-    'SELECT type, COUNT(*) as count FROM provenance GROUP BY type ORDER BY count DESC'
-  ).all() as Array<{ type: string; count: number }>;
+  const provTypes = db
+    .prepare('SELECT type, COUNT(*) as count FROM provenance GROUP BY type ORDER BY count DESC')
+    .all() as Array<{ type: string; count: number }>;
   for (const pt of provTypes) {
     console.log(`    ${pt.type}: ${pt.count}`);
   }
@@ -567,9 +649,11 @@ async function main() {
   console.log('\n=== Document Summary ===');
 
   for (const doc of docs) {
-    const docDetail = db.prepare(
-      'SELECT file_name, file_type, status, doc_author, doc_subject, doc_title, created_at FROM documents WHERE id = ?'
-    ).get(doc.id) as {
+    const docDetail = db
+      .prepare(
+        'SELECT file_name, file_type, status, doc_author, doc_subject, doc_title, created_at FROM documents WHERE id = ?'
+      )
+      .get(doc.id) as {
       file_name: string;
       file_type: string;
       status: string;
@@ -578,15 +662,15 @@ async function main() {
       doc_title: string | null;
       created_at: string;
     };
-    const docChunks = db.prepare(
-      'SELECT COUNT(*) as count FROM chunks WHERE document_id = ?'
-    ).get(doc.id) as { count: number };
-    const docEmbeds = db.prepare(
-      'SELECT COUNT(*) as count FROM embeddings WHERE document_id = ?'
-    ).get(doc.id) as { count: number };
-    const docImages = db.prepare(
-      'SELECT COUNT(*) as count FROM images WHERE document_id = ?'
-    ).get(doc.id) as { count: number };
+    const docChunks = db
+      .prepare('SELECT COUNT(*) as count FROM chunks WHERE document_id = ?')
+      .get(doc.id) as { count: number };
+    const docEmbeds = db
+      .prepare('SELECT COUNT(*) as count FROM embeddings WHERE document_id = ?')
+      .get(doc.id) as { count: number };
+    const docImages = db
+      .prepare('SELECT COUNT(*) as count FROM images WHERE document_id = ?')
+      .get(doc.id) as { count: number };
 
     console.log(`  ${docDetail.file_name}`);
     console.log(
@@ -594,7 +678,8 @@ async function main() {
     );
     if (docDetail.doc_author) console.log(`    author: ${docDetail.doc_author}`);
     if (docDetail.doc_title) console.log(`    title: ${docDetail.doc_title}`);
-    if (docDetail.doc_subject) console.log(`    subject: ${String(docDetail.doc_subject).substring(0, 80)}`);
+    if (docDetail.doc_subject)
+      console.log(`    subject: ${String(docDetail.doc_subject).substring(0, 80)}`);
   }
 
   // =====================================================================

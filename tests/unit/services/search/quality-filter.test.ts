@@ -274,7 +274,11 @@ describe('QW-2: Quality-Filtered Search', () => {
       const bm25 = new BM25SearchService(db.getConnection());
       bm25.rebuildIndex();
 
-      const response = await handleSearch({ query: 'bananas', limit: 10, filters: { min_quality_score: 3.0 } });
+      const response = await handleSearch({
+        query: 'bananas',
+        limit: 10,
+        filters: { min_quality_score: 3.0 },
+      });
       const parsed = parseResponse(response);
       expect(parsed.success).toBe(true);
       expect(parsed.data!.total).toBe(1);
@@ -296,7 +300,11 @@ describe('QW-2: Quality-Filtered Search', () => {
       const bm25 = new BM25SearchService(db.getConnection());
       bm25.rebuildIndex();
 
-      const response = await handleSearch({ query: 'oranges', limit: 10, filters: { min_quality_score: 4.0 } });
+      const response = await handleSearch({
+        query: 'oranges',
+        limit: 10,
+        filters: { min_quality_score: 4.0 },
+      });
       const parsed = parseResponse(response);
       expect(parsed.success).toBe(true);
       expect(parsed.data!.total).toBe(0);
@@ -318,7 +326,11 @@ describe('QW-2: Quality-Filtered Search', () => {
     const bm25 = new BM25SearchService(db.getConnection());
     bm25.rebuildIndex();
 
-    const response = await handleSearch({ query: 'grapes', limit: 10, filters: { min_quality_score: 3.0 } });
+    const response = await handleSearch({
+      query: 'grapes',
+      limit: 10,
+      filters: { min_quality_score: 3.0 },
+    });
     const parsed = parseResponse(response);
     expect(parsed.success).toBe(true);
     expect(parsed.data!.total).toBe(1);
@@ -341,7 +353,11 @@ describe('QW-2: Quality-Filtered Search', () => {
 
       // min_quality_score=0 is now rejected by Zod (minimum 0.01) to avoid
       // ambiguity between "no filter" and "quality >= 0" (M-4 fix)
-      const response = await handleSearch({ query: 'pears', limit: 10, filters: { min_quality_score: 0 } });
+      const response = await handleSearch({
+        query: 'pears',
+        limit: 10,
+        filters: { min_quality_score: 0 },
+      });
       const parsed = parseResponse(response);
       expect(parsed.success).toBe(false);
     }
@@ -389,7 +405,11 @@ describe('QW-2: Quality-Filtered Search', () => {
       const bm25 = new BM25SearchService(db.getConnection());
       bm25.rebuildIndex();
 
-      const response = await handleSearch({ query: 'mangos', limit: 10, filters: { min_quality_score: 1.0 } });
+      const response = await handleSearch({
+        query: 'mangos',
+        limit: 10,
+        filters: { min_quality_score: 1.0 },
+      });
       const parsed = parseResponse(response);
       expect(parsed.success).toBe(true);
       // NULL quality score excluded by WHERE >= ? (NULL comparisons return false)

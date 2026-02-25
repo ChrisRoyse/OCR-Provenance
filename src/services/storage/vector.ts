@@ -365,7 +365,13 @@ export class VectorService {
     const queryBuffer = Buffer.from(queryVector.buffer);
 
     if (options.documentFilter?.length) {
-      return this.searchWithFilter(queryBuffer, options.documentFilter, maxDistance, limit, options);
+      return this.searchWithFilter(
+        queryBuffer,
+        options.documentFilter,
+        maxDistance,
+        limit,
+        options
+      );
     }
     return this.searchAll(queryBuffer, maxDistance, limit, options);
   }

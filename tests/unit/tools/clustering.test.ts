@@ -750,4 +750,3 @@ describe.skipIf(!sqliteVecAvailable)('handleClusterDelete', () => {
     expect(result.error?.category).toBe('DOCUMENT_NOT_FOUND');
   });
 });
-

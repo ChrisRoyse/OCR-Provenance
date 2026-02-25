@@ -210,7 +210,9 @@ async function handleExtractStructured(params: Record<string, unknown>) {
       console.error(
         `[WARN] Extraction embedding generation failed for extraction ${extractionId}: ${errMsg}`
       );
-      warnings.push(`Embedding generation failed: ${errMsg}. Extraction stored but not semantically searchable.`);
+      warnings.push(
+        `Embedding generation failed: ${errMsg}. Extraction stored but not semantically searchable.`
+      );
       embeddingId = null;
       embeddingProvId = null;
     }
@@ -237,9 +239,13 @@ async function handleExtractStructured(params: Record<string, unknown>) {
         provenance_id: extractionProvId,
         embedding_id: embeddingId,
         embedding_provenance_id: embeddingProvId,
-        cost_note: 'This call triggered a full re-OCR at standard Datalab cost. To avoid repeated costs, pass page_schema during ocr_process_pending instead.',
+        cost_note:
+          'This call triggered a full re-OCR at standard Datalab cost. To avoid repeated costs, pass page_schema during ocr_process_pending instead.',
         ...(warnings.length > 0 ? { warnings } : {}),
-        next_steps: [{ tool: 'ocr_extraction_list', description: 'List all extractions for the document' }, { tool: 'ocr_extraction_get', description: 'View the extraction results in detail' }],
+        next_steps: [
+          { tool: 'ocr_extraction_list', description: 'List all extractions for the document' },
+          { tool: 'ocr_extraction_get', description: 'View the extraction results in detail' },
+        ],
       })
     );
   } catch (error) {
@@ -266,7 +272,9 @@ async function handleExtractionList(params: Record<string, unknown>) {
         try {
           parsedExtractionJson = JSON.parse(ext.extraction_json);
         } catch (error) {
-          console.error(`[extraction-structured] Failed to parse extraction_json for extraction ${ext.id}: ${error instanceof Error ? error.message : String(error)}`);
+          console.error(
+            `[extraction-structured] Failed to parse extraction_json for extraction ${ext.id}: ${error instanceof Error ? error.message : String(error)}`
+          );
           parsedExtractionJson = ext.extraction_json;
         }
 
@@ -274,7 +282,9 @@ async function handleExtractionList(params: Record<string, unknown>) {
         try {
           parsedSchemaJson = JSON.parse(ext.schema_json);
         } catch (error) {
-          console.error(`[extraction-structured] Failed to parse schema_json for extraction ${ext.id}: ${error instanceof Error ? error.message : String(error)}`);
+          console.error(
+            `[extraction-structured] Failed to parse schema_json for extraction ${ext.id}: ${error instanceof Error ? error.message : String(error)}`
+          );
           parsedSchemaJson = ext.schema_json;
         }
 
@@ -304,14 +314,21 @@ async function handleExtractionList(params: Record<string, unknown>) {
           results: enrichedResults,
           next_steps: [
             { tool: 'ocr_extraction_get', description: 'View a specific matched extraction' },
-            { tool: 'ocr_extract_structured', description: 'Run a new extraction with different schema' },
+            {
+              tool: 'ocr_extract_structured',
+              description: 'Run a new extraction with different schema',
+            },
           ],
         })
       );
     } else {
       // ── List mode: list extractions for a document ──
       if (!input.document_id) {
-        throw new MCPError('VALIDATION_ERROR', 'Provide document_id for listing or query for searching', {});
+        throw new MCPError(
+          'VALIDATION_ERROR',
+          'Provide document_id for listing or query for searching',
+          {}
+        );
       }
 
       const extractions = db.getExtractionsByDocument(input.document_id);
@@ -330,7 +347,9 @@ async function handleExtractionList(params: Record<string, unknown>) {
             try {
               parsedExtractionJson = JSON.parse(ext.extraction_json);
             } catch (error) {
-              console.error(`[extraction-structured] Failed to parse extraction_json for extraction ${ext.id}: ${error instanceof Error ? error.message : String(error)}`);
+              console.error(
+                `[extraction-structured] Failed to parse extraction_json for extraction ${ext.id}: ${error instanceof Error ? error.message : String(error)}`
+              );
               parsedExtractionJson = ext.extraction_json;
             }
 
@@ -338,7 +357,9 @@ async function handleExtractionList(params: Record<string, unknown>) {
             try {
               parsedSchemaJson = JSON.parse(ext.schema_json);
             } catch (error) {
-              console.error(`[extraction-structured] Failed to parse schema_json for extraction ${ext.id}: ${error instanceof Error ? error.message : String(error)}`);
+              console.error(
+                `[extraction-structured] Failed to parse schema_json for extraction ${ext.id}: ${error instanceof Error ? error.message : String(error)}`
+              );
               parsedSchemaJson = ext.schema_json;
             }
 
@@ -386,7 +407,9 @@ async function handleExtractionGet(params: Record<string, unknown>): Promise<Too
     try {
       parsedExtractionJson = JSON.parse(extraction.extraction_json);
     } catch (error) {
-      console.error(`[extraction-structured] Failed to parse extraction_json for extraction ${extraction.id}: ${error instanceof Error ? error.message : String(error)}`);
+      console.error(
+        `[extraction-structured] Failed to parse extraction_json for extraction ${extraction.id}: ${error instanceof Error ? error.message : String(error)}`
+      );
       parsedExtractionJson = extraction.extraction_json;
     }
 
@@ -395,7 +418,9 @@ async function handleExtractionGet(params: Record<string, unknown>): Promise<Too
     try {
       parsedSchemaJson = JSON.parse(extraction.schema_json);
     } catch (error) {
-      console.error(`[extraction-structured] Failed to parse schema_json for extraction ${extraction.id}: ${error instanceof Error ? error.message : String(error)}`);
+      console.error(
+        `[extraction-structured] Failed to parse schema_json for extraction ${extraction.id}: ${error instanceof Error ? error.message : String(error)}`
+      );
       parsedSchemaJson = extraction.schema_json;
     }
 
@@ -419,7 +444,13 @@ async function handleExtractionGet(params: Record<string, unknown>): Promise<Too
         has_embedding: hasEmbedding,
         embedding_id: embedding?.id ?? null,
         provenance_chain: provenanceChain,
-        next_steps: [{ tool: 'ocr_extraction_list', description: 'Search across all extractions (pass query param)' }, { tool: 'ocr_document_get', description: 'View the source document' }],
+        next_steps: [
+          {
+            tool: 'ocr_extraction_list',
+            description: 'Search across all extractions (pass query param)',
+          },
+          { tool: 'ocr_document_get', description: 'View the source document' },
+        ],
       })
     );
   } catch (error) {

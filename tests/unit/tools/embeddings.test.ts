@@ -120,13 +120,17 @@ describe('handleEmbeddingList', () => {
     // Image + image embedding
     const conn = db.getConnection();
     const imgId = uuidv4();
-    conn.prepare(`
+    conn
+      .prepare(
+        `
       INSERT INTO images (id, document_id, ocr_result_id, page_number,
         bbox_x, bbox_y, bbox_width, bbox_height, image_index, format,
         width, height, vlm_status, extracted_path, created_at, block_type)
       VALUES (?, ?, ?, 1, 0, 0, 100, 100, 0, 'png', 200, 300, 'complete',
         '/test/image.png', datetime('now'), 'Figure')
-    `).run(imgId, doc.id, ocr.id);
+    `
+      )
+      .run(imgId, doc.id, ocr.id);
 
     const imgEmbProv = createTestProvenance({
       id: uuidv4(),
@@ -398,13 +402,17 @@ describe('handleEmbeddingGet', () => {
     // Image + image embedding
     const conn = db.getConnection();
     const imgId = uuidv4();
-    conn.prepare(`
+    conn
+      .prepare(
+        `
       INSERT INTO images (id, document_id, ocr_result_id, page_number,
         bbox_x, bbox_y, bbox_width, bbox_height, image_index, format,
         width, height, vlm_status, extracted_path, vlm_confidence, created_at, block_type)
       VALUES (?, ?, ?, 2, 10, 20, 200, 300, 0, 'png', 200, 300, 'complete',
         '/test/img.png', 0.95, datetime('now'), 'Figure')
-    `).run(imgId, doc.id, ocr.id);
+    `
+      )
+      .run(imgId, doc.id, ocr.id);
 
     const imgEmbProv = createTestProvenance({
       id: uuidv4(),
@@ -581,12 +589,16 @@ describe('handleEmbeddingRebuild', () => {
 
     const conn = db.getConnection();
     const imgId = uuidv4();
-    conn.prepare(`
+    conn
+      .prepare(
+        `
       INSERT INTO images (id, document_id, ocr_result_id, page_number,
         bbox_x, bbox_y, bbox_width, bbox_height, image_index, format,
         width, height, vlm_status, created_at)
       VALUES (?, ?, ?, 1, 0, 0, 100, 100, 0, 'png', 100, 100, 'pending', datetime('now'))
-    `).run(imgId, doc.id, ocr.id);
+    `
+      )
+      .run(imgId, doc.id, ocr.id);
 
     const result = await handleEmbeddingRebuild({ image_id: imgId });
     const parsed = parseResponse(result);

@@ -387,8 +387,18 @@ describe('provenance-query operations', () => {
 
     it('should handle pagination with limit and offset', () => {
       const { db } = requireDatabase();
-      const page1 = db.queryProvenance({ limit: 3, offset: 0, order_by: 'created_at', order_dir: 'asc' });
-      const page2 = db.queryProvenance({ limit: 3, offset: 3, order_by: 'created_at', order_dir: 'asc' });
+      const page1 = db.queryProvenance({
+        limit: 3,
+        offset: 0,
+        order_by: 'created_at',
+        order_dir: 'asc',
+      });
+      const page2 = db.queryProvenance({
+        limit: 3,
+        offset: 3,
+        order_by: 'created_at',
+        order_dir: 'asc',
+      });
 
       expect(page1.total).toBe(12);
       expect(page2.total).toBe(12);

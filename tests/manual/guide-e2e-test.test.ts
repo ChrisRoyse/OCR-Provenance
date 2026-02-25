@@ -49,20 +49,21 @@ import { embeddingTools } from '../../src/tools/embeddings.js';
 import { tagTools } from '../../src/tools/tags.js';
 import { healthTools } from '../../src/tools/health.js';
 
-import {
-  databaseNotSelectedError,
-  documentNotFoundError,
-} from '../../src/server/errors.js';
+import { databaseNotSelectedError, documentNotFoundError } from '../../src/server/errors.js';
 
 // ===============================================================================
 // HELPERS
 // ===============================================================================
 
-type ToolModule = Record<string, { description: string; handler: (p: Record<string, unknown>) => Promise<unknown> }>;
+type ToolModule = Record<
+  string,
+  { description: string; handler: (p: Record<string, unknown>) => Promise<unknown> }
+>;
 
 async function callTool(tools: ToolModule, name: string, params: Record<string, unknown> = {}) {
   const tool = tools[name];
-  if (!tool) throw new Error(`Tool not found: ${name}. Available: ${Object.keys(tools).join(', ')}`);
+  if (!tool)
+    throw new Error(`Tool not found: ${name}. Available: ${Object.keys(tools).join(', ')}`);
   const raw = (await tool.handler(params)) as { content: Array<{ type: string; text: string }> };
   return JSON.parse(raw.content[0].text) as {
     success: boolean;
@@ -71,7 +72,11 @@ async function callTool(tools: ToolModule, name: string, params: Record<string, 
   };
 }
 
-function ok(result: { success: boolean; data?: Record<string, unknown>; error?: Record<string, unknown> }): Record<string, unknown> {
+function ok(result: {
+  success: boolean;
+  data?: Record<string, unknown>;
+  error?: Record<string, unknown>;
+}): Record<string, unknown> {
   if (!result.success) {
     console.error('[FAIL]', JSON.stringify(result.error, null, 2));
   }
@@ -103,12 +108,17 @@ describe('Test 1: ocr_guide with no database selected', () => {
     expect(data.next_steps).toBeDefined();
     expect(Array.isArray(data.next_steps)).toBe(true);
 
-    const nextSteps = data.next_steps as Array<{ tool: string; description: string; priority: string }>;
+    const nextSteps = data.next_steps as Array<{
+      tool: string;
+      description: string;
+      priority: string;
+    }>;
     expect(nextSteps.length).toBeGreaterThan(0);
 
     // Should suggest a tool (either ocr_db_select or ocr_db_create)
-    const suggestedTools = nextSteps.map(s => s.tool);
-    const hasValidSuggestion = suggestedTools.includes('ocr_db_select') || suggestedTools.includes('ocr_db_create');
+    const suggestedTools = nextSteps.map((s) => s.tool);
+    const hasValidSuggestion =
+      suggestedTools.includes('ocr_db_select') || suggestedTools.includes('ocr_db_create');
     expect(hasValidSuggestion).toBe(true);
 
     // Each step should have tool, description, priority
@@ -145,7 +155,10 @@ describe('Test 2: ocr_guide with database selected (chunking-diversity-test)', (
     const data = ok(result);
 
     console.log('[Test 2] Response status:', data.status);
-    console.log('[Test 2] context.database_stats:', JSON.stringify((data.context as Record<string, unknown>)?.database_stats, null, 2));
+    console.log(
+      '[Test 2] context.database_stats:',
+      JSON.stringify((data.context as Record<string, unknown>)?.database_stats, null, 2)
+    );
 
     // Status should be 'ready' when a database is selected
     expect(data.status).toBe('ready');
@@ -157,7 +170,7 @@ describe('Test 2: ocr_guide with database selected (chunking-diversity-test)', (
 
     const stats = context.database_stats as Record<string, unknown>;
     expect(typeof stats.total_documents).toBe('number');
-    expect((stats.total_documents as number)).toBeGreaterThan(0);
+    expect(stats.total_documents as number).toBeGreaterThan(0);
     expect(typeof stats.chunks).toBe('number');
     expect(typeof stats.embeddings).toBe('number');
 
@@ -169,7 +182,7 @@ describe('Test 2: ocr_guide with database selected (chunking-diversity-test)', (
 
     // Message should include database name
     expect(typeof data.message).toBe('string');
-    expect((data.message as string)).toContain('chunking-diversity-test');
+    expect(data.message as string).toContain('chunking-diversity-test');
 
     console.log('[Test 2] State AFTER: currentDatabaseName =', state.currentDatabaseName);
     console.log('[Test 2] PASSED');
@@ -192,13 +205,15 @@ describe('Test 3: ocr_guide with intent=search', () => {
   it('should suggest ocr_search in next_steps', async () => {
     console.log('[Test 3] State BEFORE: currentDatabaseName =', state.currentDatabaseName);
 
-    const result = await callTool(intelligenceTools as ToolModule, 'ocr_guide', { intent: 'search' });
+    const result = await callTool(intelligenceTools as ToolModule, 'ocr_guide', {
+      intent: 'search',
+    });
     const data = ok(result);
 
     console.log('[Test 3] next_steps:', JSON.stringify(data.next_steps, null, 2));
 
     const nextSteps = data.next_steps as Array<{ tool: string }>;
-    const suggestedTools = nextSteps.map(s => s.tool);
+    const suggestedTools = nextSteps.map((s) => s.tool);
     expect(suggestedTools).toContain('ocr_search');
 
     console.log('[Test 3] PASSED');
@@ -221,13 +236,15 @@ describe('Test 4: ocr_guide with intent=status', () => {
   it('should suggest ocr_health_check in next_steps', async () => {
     console.log('[Test 4] State BEFORE: currentDatabaseName =', state.currentDatabaseName);
 
-    const result = await callTool(intelligenceTools as ToolModule, 'ocr_guide', { intent: 'status' });
+    const result = await callTool(intelligenceTools as ToolModule, 'ocr_guide', {
+      intent: 'status',
+    });
     const data = ok(result);
 
     console.log('[Test 4] next_steps:', JSON.stringify(data.next_steps, null, 2));
 
     const nextSteps = data.next_steps as Array<{ tool: string }>;
-    const suggestedTools = nextSteps.map(s => s.tool);
+    const suggestedTools = nextSteps.map((s) => s.tool);
     expect(suggestedTools).toContain('ocr_health_check');
 
     console.log('[Test 4] PASSED');
@@ -398,7 +415,7 @@ describe('Test 8: Tool description tier tags', () => {
 
         totalTools++;
         const desc = toolDef.description;
-        const matchedTag = validTierTags.find(tag => desc.startsWith(tag));
+        const matchedTag = validTierTags.find((tag) => desc.startsWith(tag));
 
         if (matchedTag) {
           if (!toolsByTier[matchedTag]) toolsByTier[matchedTag] = [];
@@ -442,8 +459,16 @@ describe('Test 9: ocr_guide with empty database', () => {
   });
 
   afterAll(() => {
-    try { clearDatabase(); } catch { /* cleanup */ }
-    try { deleteDatabase(tempDbName); } catch { /* cleanup */ }
+    try {
+      clearDatabase();
+    } catch {
+      /* cleanup */
+    }
+    try {
+      deleteDatabase(tempDbName);
+    } catch {
+      /* cleanup */
+    }
   });
 
   it('should recommend ingestion when database has 0 documents', async () => {
@@ -465,8 +490,12 @@ describe('Test 9: ocr_guide with empty database', () => {
     expect(stats.total_documents).toBe(0);
 
     // next_steps should recommend ingestion tools
-    const nextSteps = data.next_steps as Array<{ tool: string; description: string; priority: string }>;
-    const suggestedTools = nextSteps.map(s => s.tool);
+    const nextSteps = data.next_steps as Array<{
+      tool: string;
+      description: string;
+      priority: string;
+    }>;
+    const suggestedTools = nextSteps.map((s) => s.tool);
 
     // When docCount === 0 and no intent, should suggest ingestion
     const hasIngestionSuggestion =

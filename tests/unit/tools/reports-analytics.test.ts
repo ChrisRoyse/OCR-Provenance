@@ -321,91 +321,82 @@ describe('Pipeline Analytics (ocr_report_performance section=pipeline) with DB',
     }
   );
 
-  it.skipIf(!sqliteVecAvailable)(
-    'should return correct OCR stats with documents',
-    async () => {
-      const db = DatabaseService.create(dbName, undefined, tempDir);
-      state.currentDatabase = db;
-      state.currentDatabaseName = dbName;
+  it.skipIf(!sqliteVecAvailable)('should return correct OCR stats with documents', async () => {
+    const db = DatabaseService.create(dbName, undefined, tempDir);
+    state.currentDatabase = db;
+    state.currentDatabaseName = dbName;
 
-      insertDocWithOCR(db, { durationMs: 1000, pageCount: 10, quality: 4.5, mode: 'accurate' });
-      insertDocWithOCR(db, { durationMs: 500, pageCount: 5, quality: 3.5, mode: 'fast' });
+    insertDocWithOCR(db, { durationMs: 1000, pageCount: 10, quality: 4.5, mode: 'accurate' });
+    insertDocWithOCR(db, { durationMs: 500, pageCount: 5, quality: 3.5, mode: 'fast' });
 
-      const response = await handleReportPerformance({ section: 'pipeline' });
-      const parsed = parseResponse(response);
-      expect(parsed.success).toBe(true);
+    const response = await handleReportPerformance({ section: 'pipeline' });
+    const parsed = parseResponse(response);
+    expect(parsed.success).toBe(true);
 
-      const pipeline = parsed.data!.pipeline as Record<string, unknown>;
-      const ocr = pipeline.ocr as Record<string, unknown>;
-      expect(ocr.total_docs).toBe(2);
-      expect(ocr.total_pages).toBe(15);
-      expect(ocr.avg_duration_ms).toBe(750);
-      expect(ocr.min_duration_ms).toBe(500);
-      expect(ocr.max_duration_ms).toBe(1000);
-      expect(ocr.total_duration_ms).toBe(1500);
-      // avg_ms_per_page = 1500 / 15 = 100
-      expect(ocr.avg_ms_per_page).toBe(100);
-      expect(ocr.avg_quality).toBe(4.0);
-    }
-  );
+    const pipeline = parsed.data!.pipeline as Record<string, unknown>;
+    const ocr = pipeline.ocr as Record<string, unknown>;
+    expect(ocr.total_docs).toBe(2);
+    expect(ocr.total_pages).toBe(15);
+    expect(ocr.avg_duration_ms).toBe(750);
+    expect(ocr.min_duration_ms).toBe(500);
+    expect(ocr.max_duration_ms).toBe(1000);
+    expect(ocr.total_duration_ms).toBe(1500);
+    // avg_ms_per_page = 1500 / 15 = 100
+    expect(ocr.avg_ms_per_page).toBe(100);
+    expect(ocr.avg_quality).toBe(4.0);
+  });
 
-  it.skipIf(!sqliteVecAvailable)(
-    'should return group_by=mode breakdown',
-    async () => {
-      const db = DatabaseService.create(dbName, undefined, tempDir);
-      state.currentDatabase = db;
-      state.currentDatabaseName = dbName;
+  it.skipIf(!sqliteVecAvailable)('should return group_by=mode breakdown', async () => {
+    const db = DatabaseService.create(dbName, undefined, tempDir);
+    state.currentDatabase = db;
+    state.currentDatabaseName = dbName;
 
-      insertDocWithOCR(db, { mode: 'accurate', costCents: 100 });
-      insertDocWithOCR(db, { mode: 'accurate', costCents: 200 });
-      insertDocWithOCR(db, { mode: 'fast', costCents: 20 });
+    insertDocWithOCR(db, { mode: 'accurate', costCents: 100 });
+    insertDocWithOCR(db, { mode: 'accurate', costCents: 200 });
+    insertDocWithOCR(db, { mode: 'fast', costCents: 20 });
 
-      const response = await handleReportPerformance({ section: 'pipeline', group_by: 'mode' });
-      const parsed = parseResponse(response);
-      expect(parsed.success).toBe(true);
+    const response = await handleReportPerformance({ section: 'pipeline', group_by: 'mode' });
+    const parsed = parseResponse(response);
+    expect(parsed.success).toBe(true);
 
-      const pipeline = parsed.data!.pipeline as Record<string, unknown>;
-      const byMode = pipeline.by_mode as Array<Record<string, unknown>>;
-      expect(byMode).toBeDefined();
-      expect(byMode.length).toBe(2);
+    const pipeline = parsed.data!.pipeline as Record<string, unknown>;
+    const byMode = pipeline.by_mode as Array<Record<string, unknown>>;
+    expect(byMode).toBeDefined();
+    expect(byMode.length).toBe(2);
 
-      const accurateRow = byMode.find((r) => r.mode === 'accurate');
-      expect(accurateRow).toBeDefined();
-      expect(accurateRow!.count).toBe(2);
+    const accurateRow = byMode.find((r) => r.mode === 'accurate');
+    expect(accurateRow).toBeDefined();
+    expect(accurateRow!.count).toBe(2);
 
-      const fastRow = byMode.find((r) => r.mode === 'fast');
-      expect(fastRow).toBeDefined();
-      expect(fastRow!.count).toBe(1);
-    }
-  );
+    const fastRow = byMode.find((r) => r.mode === 'fast');
+    expect(fastRow).toBeDefined();
+    expect(fastRow!.count).toBe(1);
+  });
 
-  it.skipIf(!sqliteVecAvailable)(
-    'should return group_by=file_type breakdown',
-    async () => {
-      const db = DatabaseService.create(dbName, undefined, tempDir);
-      state.currentDatabase = db;
-      state.currentDatabaseName = dbName;
+  it.skipIf(!sqliteVecAvailable)('should return group_by=file_type breakdown', async () => {
+    const db = DatabaseService.create(dbName, undefined, tempDir);
+    state.currentDatabase = db;
+    state.currentDatabaseName = dbName;
 
-      insertDocWithOCR(db, { fileType: 'pdf' });
-      insertDocWithOCR(db, { fileType: 'pdf' });
-      insertDocWithOCR(db, { fileType: 'docx' });
+    insertDocWithOCR(db, { fileType: 'pdf' });
+    insertDocWithOCR(db, { fileType: 'pdf' });
+    insertDocWithOCR(db, { fileType: 'docx' });
 
-      const response = await handleReportPerformance({ section: 'pipeline', group_by: 'file_type' });
-      const parsed = parseResponse(response);
-      expect(parsed.success).toBe(true);
+    const response = await handleReportPerformance({ section: 'pipeline', group_by: 'file_type' });
+    const parsed = parseResponse(response);
+    expect(parsed.success).toBe(true);
 
-      const pipeline = parsed.data!.pipeline as Record<string, unknown>;
-      const byFileType = pipeline.by_file_type as Array<Record<string, unknown>>;
-      expect(byFileType).toBeDefined();
-      expect(byFileType.length).toBe(2);
+    const pipeline = parsed.data!.pipeline as Record<string, unknown>;
+    const byFileType = pipeline.by_file_type as Array<Record<string, unknown>>;
+    expect(byFileType).toBeDefined();
+    expect(byFileType.length).toBe(2);
 
-      const pdfRow = byFileType.find((r) => r.file_type === 'pdf');
-      expect(pdfRow!.count).toBe(2);
+    const pdfRow = byFileType.find((r) => r.file_type === 'pdf');
+    expect(pdfRow!.count).toBe(2);
 
-      const docxRow = byFileType.find((r) => r.file_type === 'docx');
-      expect(docxRow!.count).toBe(1);
-    }
-  );
+    const docxRow = byFileType.find((r) => r.file_type === 'docx');
+    expect(docxRow!.count).toBe(1);
+  });
 
   it.skipIf(!sqliteVecAvailable)(
     'should return group_by=document breakdown with chunk/image counts',
@@ -423,7 +414,11 @@ describe('Pipeline Analytics (ocr_report_performance section=pipeline) with DB',
 
       insertDocWithOCR(db, { durationMs: 100, fileName: 'small.pdf' });
 
-      const response = await handleReportPerformance({ section: 'pipeline', group_by: 'document', limit: 10 });
+      const response = await handleReportPerformance({
+        section: 'pipeline',
+        group_by: 'document',
+        limit: 10,
+      });
       const parsed = parseResponse(response);
       expect(parsed.success).toBe(true);
 
@@ -440,25 +435,22 @@ describe('Pipeline Analytics (ocr_report_performance section=pipeline) with DB',
     }
   );
 
-  it.skipIf(!sqliteVecAvailable)(
-    'should calculate throughput correctly',
-    async () => {
-      const db = DatabaseService.create(dbName, undefined, tempDir);
-      state.currentDatabase = db;
-      state.currentDatabaseName = dbName;
+  it.skipIf(!sqliteVecAvailable)('should calculate throughput correctly', async () => {
+    const db = DatabaseService.create(dbName, undefined, tempDir);
+    state.currentDatabase = db;
+    state.currentDatabaseName = dbName;
 
-      // 10 pages in 1000ms = 600 pages/min
-      insertDocWithOCR(db, { durationMs: 1000, pageCount: 10 });
+    // 10 pages in 1000ms = 600 pages/min
+    insertDocWithOCR(db, { durationMs: 1000, pageCount: 10 });
 
-      const response = await handleReportPerformance({ section: 'pipeline' });
-      const parsed = parseResponse(response);
-      expect(parsed.success).toBe(true);
+    const response = await handleReportPerformance({ section: 'pipeline' });
+    const parsed = parseResponse(response);
+    expect(parsed.success).toBe(true);
 
-      const pipeline = parsed.data!.pipeline as Record<string, unknown>;
-      const throughput = pipeline.throughput as Record<string, unknown>;
-      expect(throughput.pages_per_minute).toBe(600);
-    }
-  );
+    const pipeline = parsed.data!.pipeline as Record<string, unknown>;
+    const throughput = pipeline.throughput as Record<string, unknown>;
+    expect(throughput.pages_per_minute).toBe(600);
+  });
 });
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -482,80 +474,71 @@ describe('Corpus Profile (ocr_report_overview section=corpus) with DB', () => {
     resetState();
   });
 
-  it.skipIf(!sqliteVecAvailable)(
-    'should return zeros for empty database',
-    async () => {
-      const db = DatabaseService.create(dbName, undefined, tempDir);
-      state.currentDatabase = db;
-      state.currentDatabaseName = dbName;
+  it.skipIf(!sqliteVecAvailable)('should return zeros for empty database', async () => {
+    const db = DatabaseService.create(dbName, undefined, tempDir);
+    state.currentDatabase = db;
+    state.currentDatabaseName = dbName;
 
-      const response = await handleReportOverview({ section: 'corpus' });
-      const parsed = parseResponse(response);
-      expect(parsed.success).toBe(true);
+    const response = await handleReportOverview({ section: 'corpus' });
+    const parsed = parseResponse(response);
+    expect(parsed.success).toBe(true);
 
-      const corpus = parsed.data!.corpus as Record<string, unknown>;
-      const docs = corpus.documents as Record<string, unknown>;
-      expect(docs.total_complete).toBe(0);
+    const corpus = parsed.data!.corpus as Record<string, unknown>;
+    const docs = corpus.documents as Record<string, unknown>;
+    expect(docs.total_complete).toBe(0);
 
-      const chunks = corpus.chunks as Record<string, unknown>;
-      expect(chunks.total_chunks).toBe(0);
+    const chunks = corpus.chunks as Record<string, unknown>;
+    expect(chunks.total_chunks).toBe(0);
 
-      const fileTypes = corpus.file_types as Array<unknown>;
-      expect(fileTypes).toEqual([]);
-    }
-  );
+    const fileTypes = corpus.file_types as Array<unknown>;
+    expect(fileTypes).toEqual([]);
+  });
 
-  it.skipIf(!sqliteVecAvailable)(
-    'should return correct document size distribution',
-    async () => {
-      const db = DatabaseService.create(dbName, undefined, tempDir);
-      state.currentDatabase = db;
-      state.currentDatabaseName = dbName;
+  it.skipIf(!sqliteVecAvailable)('should return correct document size distribution', async () => {
+    const db = DatabaseService.create(dbName, undefined, tempDir);
+    state.currentDatabase = db;
+    state.currentDatabaseName = dbName;
 
-      insertDocWithOCR(db, { pageCount: 10, fileType: 'pdf' });
-      insertDocWithOCR(db, { pageCount: 20, fileType: 'pdf' });
-      insertDocWithOCR(db, { pageCount: 5, fileType: 'docx' });
-      // Pending doc should NOT be counted in complete docs
-      insertDocWithOCR(db, { pageCount: 100, fileType: 'pdf', status: 'pending' });
+    insertDocWithOCR(db, { pageCount: 10, fileType: 'pdf' });
+    insertDocWithOCR(db, { pageCount: 20, fileType: 'pdf' });
+    insertDocWithOCR(db, { pageCount: 5, fileType: 'docx' });
+    // Pending doc should NOT be counted in complete docs
+    insertDocWithOCR(db, { pageCount: 100, fileType: 'pdf', status: 'pending' });
 
-      const response = await handleReportOverview({ section: 'corpus' });
-      const parsed = parseResponse(response);
-      expect(parsed.success).toBe(true);
+    const response = await handleReportOverview({ section: 'corpus' });
+    const parsed = parseResponse(response);
+    expect(parsed.success).toBe(true);
 
-      const corpus = parsed.data!.corpus as Record<string, unknown>;
-      const docs = corpus.documents as Record<string, unknown>;
-      // Only 3 complete docs
-      expect(docs.total_complete).toBe(3);
-      // avg(10,20,5) ≈ 11.67
-      expect(docs.min_page_count).toBe(5);
-      expect(docs.max_page_count).toBe(20);
-    }
-  );
+    const corpus = parsed.data!.corpus as Record<string, unknown>;
+    const docs = corpus.documents as Record<string, unknown>;
+    // Only 3 complete docs
+    expect(docs.total_complete).toBe(3);
+    // avg(10,20,5) ≈ 11.67
+    expect(docs.min_page_count).toBe(5);
+    expect(docs.max_page_count).toBe(20);
+  });
 
-  it.skipIf(!sqliteVecAvailable)(
-    'should return file type distribution',
-    async () => {
-      const db = DatabaseService.create(dbName, undefined, tempDir);
-      state.currentDatabase = db;
-      state.currentDatabaseName = dbName;
+  it.skipIf(!sqliteVecAvailable)('should return file type distribution', async () => {
+    const db = DatabaseService.create(dbName, undefined, tempDir);
+    state.currentDatabase = db;
+    state.currentDatabaseName = dbName;
 
-      insertDocWithOCR(db, { fileType: 'pdf' });
-      insertDocWithOCR(db, { fileType: 'pdf' });
-      insertDocWithOCR(db, { fileType: 'docx' });
+    insertDocWithOCR(db, { fileType: 'pdf' });
+    insertDocWithOCR(db, { fileType: 'pdf' });
+    insertDocWithOCR(db, { fileType: 'docx' });
 
-      const response = await handleReportOverview({ section: 'corpus' });
-      const parsed = parseResponse(response);
-      expect(parsed.success).toBe(true);
+    const response = await handleReportOverview({ section: 'corpus' });
+    const parsed = parseResponse(response);
+    expect(parsed.success).toBe(true);
 
-      const corpus = parsed.data!.corpus as Record<string, unknown>;
-      const fileTypes = corpus.file_types as Array<Record<string, unknown>>;
-      expect(fileTypes.length).toBe(2);
-      expect(fileTypes[0].file_type).toBe('pdf');
-      expect(fileTypes[0].count).toBe(2);
-      expect(fileTypes[1].file_type).toBe('docx');
-      expect(fileTypes[1].count).toBe(1);
-    }
-  );
+    const corpus = parsed.data!.corpus as Record<string, unknown>;
+    const fileTypes = corpus.file_types as Array<Record<string, unknown>>;
+    expect(fileTypes.length).toBe(2);
+    expect(fileTypes[0].file_type).toBe('pdf');
+    expect(fileTypes[0].count).toBe(2);
+    expect(fileTypes[1].file_type).toBe('docx');
+    expect(fileTypes[1].count).toBe(1);
+  });
 
   it.skipIf(!sqliteVecAvailable)(
     'should return chunk statistics with headings and atomic chunks',
@@ -594,66 +577,66 @@ describe('Corpus Profile (ocr_report_overview section=corpus) with DB', () => {
     }
   );
 
-  it.skipIf(!sqliteVecAvailable)(
-    'should return section frequency when enabled',
-    async () => {
-      const db = DatabaseService.create(dbName, undefined, tempDir);
-      state.currentDatabase = db;
-      state.currentDatabaseName = dbName;
+  it.skipIf(!sqliteVecAvailable)('should return section frequency when enabled', async () => {
+    const db = DatabaseService.create(dbName, undefined, tempDir);
+    state.currentDatabase = db;
+    state.currentDatabaseName = dbName;
 
-      const doc1 = insertDocWithOCR(db);
-      const doc2 = insertDocWithOCR(db);
-      // "Introduction" in both docs
-      insertChunk(db, doc1.docId, doc1.ocrResultId, doc1.docProvId, {
-        headingContext: 'Introduction',
-        chunkIndex: 0,
-      });
-      insertChunk(db, doc2.docId, doc2.ocrResultId, doc2.docProvId, {
-        headingContext: 'Introduction',
-        chunkIndex: 0,
-      });
-      // "Methods" only in doc1
-      insertChunk(db, doc1.docId, doc1.ocrResultId, doc1.docProvId, {
-        headingContext: 'Methods',
-        chunkIndex: 1,
-      });
+    const doc1 = insertDocWithOCR(db);
+    const doc2 = insertDocWithOCR(db);
+    // "Introduction" in both docs
+    insertChunk(db, doc1.docId, doc1.ocrResultId, doc1.docProvId, {
+      headingContext: 'Introduction',
+      chunkIndex: 0,
+    });
+    insertChunk(db, doc2.docId, doc2.ocrResultId, doc2.docProvId, {
+      headingContext: 'Introduction',
+      chunkIndex: 0,
+    });
+    // "Methods" only in doc1
+    insertChunk(db, doc1.docId, doc1.ocrResultId, doc1.docProvId, {
+      headingContext: 'Methods',
+      chunkIndex: 1,
+    });
 
-      const response = await handleReportOverview({ section: 'corpus', include_section_frequency: true });
-      const parsed = parseResponse(response);
-      expect(parsed.success).toBe(true);
+    const response = await handleReportOverview({
+      section: 'corpus',
+      include_section_frequency: true,
+    });
+    const parsed = parseResponse(response);
+    expect(parsed.success).toBe(true);
 
-      const corpus = parsed.data!.corpus as Record<string, unknown>;
-      const sections = corpus.section_frequency as Array<Record<string, unknown>>;
-      expect(sections).toBeDefined();
-      expect(sections.length).toBe(2);
-      // Introduction: 2 occurrences across 2 docs
-      const intro = sections.find((s) => s.heading_context === 'Introduction');
-      expect(intro!.occurrence_count).toBe(2);
-      expect(intro!.document_count).toBe(2);
-      // Methods: 1 occurrence across 1 doc
-      const methods = sections.find((s) => s.heading_context === 'Methods');
-      expect(methods!.occurrence_count).toBe(1);
-      expect(methods!.document_count).toBe(1);
-    }
-  );
+    const corpus = parsed.data!.corpus as Record<string, unknown>;
+    const sections = corpus.section_frequency as Array<Record<string, unknown>>;
+    expect(sections).toBeDefined();
+    expect(sections.length).toBe(2);
+    // Introduction: 2 occurrences across 2 docs
+    const intro = sections.find((s) => s.heading_context === 'Introduction');
+    expect(intro!.occurrence_count).toBe(2);
+    expect(intro!.document_count).toBe(2);
+    // Methods: 1 occurrence across 1 doc
+    const methods = sections.find((s) => s.heading_context === 'Methods');
+    expect(methods!.occurrence_count).toBe(1);
+    expect(methods!.document_count).toBe(1);
+  });
 
-  it.skipIf(!sqliteVecAvailable)(
-    'should omit section frequency when disabled',
-    async () => {
-      const db = DatabaseService.create(dbName, undefined, tempDir);
-      state.currentDatabase = db;
-      state.currentDatabaseName = dbName;
+  it.skipIf(!sqliteVecAvailable)('should omit section frequency when disabled', async () => {
+    const db = DatabaseService.create(dbName, undefined, tempDir);
+    state.currentDatabase = db;
+    state.currentDatabaseName = dbName;
 
-      insertDocWithOCR(db);
+    insertDocWithOCR(db);
 
-      const response = await handleReportOverview({ section: 'corpus', include_section_frequency: false });
-      const parsed = parseResponse(response);
-      expect(parsed.success).toBe(true);
+    const response = await handleReportOverview({
+      section: 'corpus',
+      include_section_frequency: false,
+    });
+    const parsed = parseResponse(response);
+    expect(parsed.success).toBe(true);
 
-      const corpus = parsed.data!.corpus as Record<string, unknown>;
-      expect(corpus.section_frequency).toBeUndefined();
-    }
-  );
+    const corpus = parsed.data!.corpus as Record<string, unknown>;
+    expect(corpus.section_frequency).toBeUndefined();
+  });
 
   it.skipIf(!sqliteVecAvailable)(
     'should return content type distribution when enabled',
@@ -676,7 +659,10 @@ describe('Corpus Profile (ocr_report_overview section=corpus) with DB', () => {
         chunkIndex: 2,
       });
 
-      const response = await handleReportOverview({ section: 'corpus', include_content_type_distribution: true });
+      const response = await handleReportOverview({
+        section: 'corpus',
+        include_content_type_distribution: true,
+      });
       const parsed = parseResponse(response);
       expect(parsed.success).toBe(true);
 
@@ -702,7 +688,10 @@ describe('Corpus Profile (ocr_report_overview section=corpus) with DB', () => {
 
       insertDocWithOCR(db);
 
-      const response = await handleReportOverview({ section: 'corpus', include_content_type_distribution: false });
+      const response = await handleReportOverview({
+        section: 'corpus',
+        include_content_type_distribution: false,
+      });
       const parsed = parseResponse(response);
       expect(parsed.success).toBe(true);
 
@@ -762,181 +751,160 @@ describe('Error Analytics (ocr_error_analytics) with DB', () => {
     resetState();
   });
 
-  it.skipIf(!sqliteVecAvailable)(
-    'should return zeros for empty database',
-    async () => {
-      const db = DatabaseService.create(dbName, undefined, tempDir);
-      state.currentDatabase = db;
-      state.currentDatabaseName = dbName;
+  it.skipIf(!sqliteVecAvailable)('should return zeros for empty database', async () => {
+    const db = DatabaseService.create(dbName, undefined, tempDir);
+    state.currentDatabase = db;
+    state.currentDatabaseName = dbName;
 
-      const response = await handleErrorAnalytics({});
-      const parsed = parseResponse(response);
-      expect(parsed.success).toBe(true);
+    const response = await handleErrorAnalytics({});
+    const parsed = parseResponse(response);
+    expect(parsed.success).toBe(true);
 
-      const docs = parsed.data!.documents as Record<string, unknown>;
-      expect(docs.total).toBe(0);
-      expect(docs.failed).toBe(0);
-      expect(docs.failure_rate_pct).toBe(0);
+    const docs = parsed.data!.documents as Record<string, unknown>;
+    expect(docs.total).toBe(0);
+    expect(docs.failed).toBe(0);
+    expect(docs.failure_rate_pct).toBe(0);
 
-      const vlm = parsed.data!.vlm as Record<string, unknown>;
-      expect(vlm.total_images).toBe(0);
-      expect(vlm.failure_rate_pct).toBe(0);
+    const vlm = parsed.data!.vlm as Record<string, unknown>;
+    expect(vlm.total_images).toBe(0);
+    expect(vlm.failure_rate_pct).toBe(0);
 
-      const embeddings = parsed.data!.embeddings as Record<string, unknown>;
-      expect(embeddings.total_chunks).toBe(0);
+    const embeddings = parsed.data!.embeddings as Record<string, unknown>;
+    expect(embeddings.total_chunks).toBe(0);
+  });
+
+  it.skipIf(!sqliteVecAvailable)('should calculate document failure rates correctly', async () => {
+    const db = DatabaseService.create(dbName, undefined, tempDir);
+    state.currentDatabase = db;
+    state.currentDatabaseName = dbName;
+
+    insertDocWithOCR(db, { status: 'complete' });
+    insertDocWithOCR(db, { status: 'complete' });
+    insertDocWithOCR(db, {
+      status: 'failed',
+      errorMessage: 'OCR timeout',
+    });
+    insertDocWithOCR(db, {
+      status: 'failed',
+      errorMessage: 'OCR timeout',
+    });
+    insertDocWithOCR(db, { status: 'pending' });
+
+    const response = await handleErrorAnalytics({});
+    const parsed = parseResponse(response);
+    expect(parsed.success).toBe(true);
+
+    const docs = parsed.data!.documents as Record<string, unknown>;
+    expect(docs.total).toBe(5);
+    expect(docs.failed).toBe(2);
+    expect(docs.complete).toBe(2);
+    expect(docs.pending).toBe(1);
+    // failure_rate = 2/5 * 100 = 40
+    expect(docs.failure_rate_pct).toBe(40);
+  });
+
+  it.skipIf(!sqliteVecAvailable)('should return failure by file type', async () => {
+    const db = DatabaseService.create(dbName, undefined, tempDir);
+    state.currentDatabase = db;
+    state.currentDatabaseName = dbName;
+
+    insertDocWithOCR(db, { fileType: 'pdf', status: 'complete' });
+    insertDocWithOCR(db, { fileType: 'pdf', status: 'failed', errorMessage: 'bad pdf' });
+    insertDocWithOCR(db, { fileType: 'docx', status: 'complete' });
+
+    const response = await handleErrorAnalytics({});
+    const parsed = parseResponse(response);
+    expect(parsed.success).toBe(true);
+
+    const byFileType = parsed.data!.failure_by_file_type as Array<Record<string, unknown>>;
+    expect(byFileType).toBeDefined();
+    expect(byFileType.length).toBe(2);
+
+    const pdfRow = byFileType.find((r) => r.file_type === 'pdf');
+    expect(pdfRow!.total).toBe(2);
+    expect(pdfRow!.failed).toBe(1);
+    expect(pdfRow!.failure_rate_pct).toBe(50);
+
+    const docxRow = byFileType.find((r) => r.file_type === 'docx');
+    expect(docxRow!.total).toBe(1);
+    expect(docxRow!.failed).toBe(0);
+    expect(docxRow!.failure_rate_pct).toBe(0);
+  });
+
+  it.skipIf(!sqliteVecAvailable)('should return common error messages when enabled', async () => {
+    const db = DatabaseService.create(dbName, undefined, tempDir);
+    state.currentDatabase = db;
+    state.currentDatabaseName = dbName;
+
+    insertDocWithOCR(db, { status: 'failed', errorMessage: 'OCR timeout' });
+    insertDocWithOCR(db, { status: 'failed', errorMessage: 'OCR timeout' });
+    insertDocWithOCR(db, { status: 'failed', errorMessage: 'Invalid format' });
+
+    const response = await handleErrorAnalytics({ include_error_messages: true });
+    const parsed = parseResponse(response);
+    expect(parsed.success).toBe(true);
+
+    const commonErrors = parsed.data!.common_document_errors as Array<Record<string, unknown>>;
+    expect(commonErrors).toBeDefined();
+    expect(commonErrors.length).toBe(2);
+    // Ordered by count DESC
+    expect(commonErrors[0].error_message).toBe('OCR timeout');
+    expect(commonErrors[0].count).toBe(2);
+    expect(commonErrors[1].error_message).toBe('Invalid format');
+    expect(commonErrors[1].count).toBe(1);
+  });
+
+  it.skipIf(!sqliteVecAvailable)('should omit error messages when disabled', async () => {
+    const db = DatabaseService.create(dbName, undefined, tempDir);
+    state.currentDatabase = db;
+    state.currentDatabaseName = dbName;
+
+    insertDocWithOCR(db, { status: 'failed', errorMessage: 'OCR timeout' });
+
+    const response = await handleErrorAnalytics({ include_error_messages: false });
+    const parsed = parseResponse(response);
+    expect(parsed.success).toBe(true);
+
+    expect(parsed.data!.common_document_errors).toBeUndefined();
+    expect(parsed.data!.common_vlm_errors).toBeUndefined();
+  });
+
+  it.skipIf(!sqliteVecAvailable)('should return embedding failure stats from chunks', async () => {
+    const db = DatabaseService.create(dbName, undefined, tempDir);
+    state.currentDatabase = db;
+    state.currentDatabaseName = dbName;
+
+    const { docId, ocrResultId, docProvId } = insertDocWithOCR(db);
+    insertChunk(db, docId, ocrResultId, docProvId, { chunkIndex: 0 });
+    insertChunk(db, docId, ocrResultId, docProvId, { chunkIndex: 1 });
+    insertChunk(db, docId, ocrResultId, docProvId, { chunkIndex: 2 });
+
+    const response = await handleErrorAnalytics({});
+    const parsed = parseResponse(response);
+    expect(parsed.success).toBe(true);
+
+    const embeddings = parsed.data!.embeddings as Record<string, unknown>;
+    expect(embeddings.total_chunks).toBe(3);
+    // All chunks start as 'pending' status
+    expect(embeddings.pending).toBe(3);
+    expect(embeddings.failed).toBe(0);
+    expect(embeddings.complete).toBe(0);
+  });
+
+  it.skipIf(!sqliteVecAvailable)('should respect limit parameter for error messages', async () => {
+    const db = DatabaseService.create(dbName, undefined, tempDir);
+    state.currentDatabase = db;
+    state.currentDatabaseName = dbName;
+
+    for (let i = 0; i < 5; i++) {
+      insertDocWithOCR(db, { status: 'failed', errorMessage: `Error type ${i}` });
     }
-  );
 
-  it.skipIf(!sqliteVecAvailable)(
-    'should calculate document failure rates correctly',
-    async () => {
-      const db = DatabaseService.create(dbName, undefined, tempDir);
-      state.currentDatabase = db;
-      state.currentDatabaseName = dbName;
+    const response = await handleErrorAnalytics({ include_error_messages: true, limit: 3 });
+    const parsed = parseResponse(response);
+    expect(parsed.success).toBe(true);
 
-      insertDocWithOCR(db, { status: 'complete' });
-      insertDocWithOCR(db, { status: 'complete' });
-      insertDocWithOCR(db, {
-        status: 'failed',
-        errorMessage: 'OCR timeout',
-      });
-      insertDocWithOCR(db, {
-        status: 'failed',
-        errorMessage: 'OCR timeout',
-      });
-      insertDocWithOCR(db, { status: 'pending' });
-
-      const response = await handleErrorAnalytics({});
-      const parsed = parseResponse(response);
-      expect(parsed.success).toBe(true);
-
-      const docs = parsed.data!.documents as Record<string, unknown>;
-      expect(docs.total).toBe(5);
-      expect(docs.failed).toBe(2);
-      expect(docs.complete).toBe(2);
-      expect(docs.pending).toBe(1);
-      // failure_rate = 2/5 * 100 = 40
-      expect(docs.failure_rate_pct).toBe(40);
-    }
-  );
-
-  it.skipIf(!sqliteVecAvailable)(
-    'should return failure by file type',
-    async () => {
-      const db = DatabaseService.create(dbName, undefined, tempDir);
-      state.currentDatabase = db;
-      state.currentDatabaseName = dbName;
-
-      insertDocWithOCR(db, { fileType: 'pdf', status: 'complete' });
-      insertDocWithOCR(db, { fileType: 'pdf', status: 'failed', errorMessage: 'bad pdf' });
-      insertDocWithOCR(db, { fileType: 'docx', status: 'complete' });
-
-      const response = await handleErrorAnalytics({});
-      const parsed = parseResponse(response);
-      expect(parsed.success).toBe(true);
-
-      const byFileType = parsed.data!.failure_by_file_type as Array<Record<string, unknown>>;
-      expect(byFileType).toBeDefined();
-      expect(byFileType.length).toBe(2);
-
-      const pdfRow = byFileType.find((r) => r.file_type === 'pdf');
-      expect(pdfRow!.total).toBe(2);
-      expect(pdfRow!.failed).toBe(1);
-      expect(pdfRow!.failure_rate_pct).toBe(50);
-
-      const docxRow = byFileType.find((r) => r.file_type === 'docx');
-      expect(docxRow!.total).toBe(1);
-      expect(docxRow!.failed).toBe(0);
-      expect(docxRow!.failure_rate_pct).toBe(0);
-    }
-  );
-
-  it.skipIf(!sqliteVecAvailable)(
-    'should return common error messages when enabled',
-    async () => {
-      const db = DatabaseService.create(dbName, undefined, tempDir);
-      state.currentDatabase = db;
-      state.currentDatabaseName = dbName;
-
-      insertDocWithOCR(db, { status: 'failed', errorMessage: 'OCR timeout' });
-      insertDocWithOCR(db, { status: 'failed', errorMessage: 'OCR timeout' });
-      insertDocWithOCR(db, { status: 'failed', errorMessage: 'Invalid format' });
-
-      const response = await handleErrorAnalytics({ include_error_messages: true });
-      const parsed = parseResponse(response);
-      expect(parsed.success).toBe(true);
-
-      const commonErrors = parsed.data!.common_document_errors as Array<Record<string, unknown>>;
-      expect(commonErrors).toBeDefined();
-      expect(commonErrors.length).toBe(2);
-      // Ordered by count DESC
-      expect(commonErrors[0].error_message).toBe('OCR timeout');
-      expect(commonErrors[0].count).toBe(2);
-      expect(commonErrors[1].error_message).toBe('Invalid format');
-      expect(commonErrors[1].count).toBe(1);
-    }
-  );
-
-  it.skipIf(!sqliteVecAvailable)(
-    'should omit error messages when disabled',
-    async () => {
-      const db = DatabaseService.create(dbName, undefined, tempDir);
-      state.currentDatabase = db;
-      state.currentDatabaseName = dbName;
-
-      insertDocWithOCR(db, { status: 'failed', errorMessage: 'OCR timeout' });
-
-      const response = await handleErrorAnalytics({ include_error_messages: false });
-      const parsed = parseResponse(response);
-      expect(parsed.success).toBe(true);
-
-      expect(parsed.data!.common_document_errors).toBeUndefined();
-      expect(parsed.data!.common_vlm_errors).toBeUndefined();
-    }
-  );
-
-  it.skipIf(!sqliteVecAvailable)(
-    'should return embedding failure stats from chunks',
-    async () => {
-      const db = DatabaseService.create(dbName, undefined, tempDir);
-      state.currentDatabase = db;
-      state.currentDatabaseName = dbName;
-
-      const { docId, ocrResultId, docProvId } = insertDocWithOCR(db);
-      insertChunk(db, docId, ocrResultId, docProvId, { chunkIndex: 0 });
-      insertChunk(db, docId, ocrResultId, docProvId, { chunkIndex: 1 });
-      insertChunk(db, docId, ocrResultId, docProvId, { chunkIndex: 2 });
-
-      const response = await handleErrorAnalytics({});
-      const parsed = parseResponse(response);
-      expect(parsed.success).toBe(true);
-
-      const embeddings = parsed.data!.embeddings as Record<string, unknown>;
-      expect(embeddings.total_chunks).toBe(3);
-      // All chunks start as 'pending' status
-      expect(embeddings.pending).toBe(3);
-      expect(embeddings.failed).toBe(0);
-      expect(embeddings.complete).toBe(0);
-    }
-  );
-
-  it.skipIf(!sqliteVecAvailable)(
-    'should respect limit parameter for error messages',
-    async () => {
-      const db = DatabaseService.create(dbName, undefined, tempDir);
-      state.currentDatabase = db;
-      state.currentDatabaseName = dbName;
-
-      for (let i = 0; i < 5; i++) {
-        insertDocWithOCR(db, { status: 'failed', errorMessage: `Error type ${i}` });
-      }
-
-      const response = await handleErrorAnalytics({ include_error_messages: true, limit: 3 });
-      const parsed = parseResponse(response);
-      expect(parsed.success).toBe(true);
-
-      const commonErrors = parsed.data!.common_document_errors as Array<Record<string, unknown>>;
-      expect(commonErrors.length).toBe(3);
-    }
-  );
+    const commonErrors = parsed.data!.common_document_errors as Array<Record<string, unknown>>;
+    expect(commonErrors.length).toBe(3);
+  });
 });

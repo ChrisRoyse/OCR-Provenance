@@ -454,13 +454,10 @@ export class VLMPipeline {
         if (!this.config.skipEmbeddings && vlmResult.description) {
           let textForEmbedding = vlmResult.description;
           if (vlmResult.analysis?.extractedText?.length > 0) {
-            textForEmbedding += '\n\nExtracted text: ' + vlmResult.analysis.extractedText.join(', ');
+            textForEmbedding +=
+              '\n\nExtracted text: ' + vlmResult.analysis.extractedText.join(', ');
           }
-          embeddingId = await this.generateAndStoreEmbedding(
-            textForEmbedding,
-            image,
-            vlmProvId
-          );
+          embeddingId = await this.generateAndStoreEmbedding(textForEmbedding, image, vlmProvId);
         }
 
         // Build VLM result for database

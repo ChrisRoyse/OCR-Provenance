@@ -15,12 +15,7 @@ import * as fs from 'fs';
 import { requireDatabase, withDatabaseOperation } from '../server/state.js';
 import { successResult } from '../server/types.js';
 import { MCPError } from '../server/errors.js';
-import {
-  formatResponse,
-  handleError,
-  type ToolResponse,
-  type ToolDefinition,
-} from './shared.js';
+import { formatResponse, handleError, type ToolResponse, type ToolDefinition } from './shared.js';
 import { validateInput, sanitizePath } from '../utils/validation.js';
 import { getVLMService } from '../services/vlm/service.js';
 import { VLMPipeline } from '../services/vlm/pipeline.js';
@@ -75,219 +70,257 @@ export async function handleVLMDescribe(params: Record<string, unknown>): Promis
     }
 
     return await withDatabaseOperation(async () => {
-    const vlm = getVLMService();
+      const vlm = getVLMService();
 
-    // Enrich context with table metadata for database-tracked images
-    let enrichedContext = contextText;
-    try {
-      const { db } = requireDatabase();
-      const conn = db.getConnection();
-      // Look up image by path to get page number
-      const imgRow = conn.prepare(
-        'SELECT document_id, page_number FROM images WHERE extracted_path = ?'
-      ).get(imagePath) as { document_id: string; page_number: number | null } | undefined;
+      // Enrich context with table metadata for database-tracked images
+      let enrichedContext = contextText;
+      try {
+        const { db } = requireDatabase();
+        const conn = db.getConnection();
+        // Look up image by path to get page number
+        const imgRow = conn
+          .prepare('SELECT document_id, page_number FROM images WHERE extracted_path = ?')
+          .get(imagePath) as { document_id: string; page_number: number | null } | undefined;
 
-      if (imgRow != null && imgRow.page_number != null) {
-        // Find table provenance for this document
-        const tableRows = conn.prepare(
-          "SELECT processing_params FROM provenance WHERE root_document_id IN (SELECT provenance_id FROM documents WHERE id = ?) AND processing_params LIKE '%table_columns%' AND json_extract(processing_params, '$.character_start') IS NOT NULL"
-        ).all(imgRow.document_id) as Array<{ processing_params: string }>;
+        if (imgRow != null && imgRow.page_number != null) {
+          // Find table provenance for this document
+          const tableRows = conn
+            .prepare(
+              "SELECT processing_params FROM provenance WHERE root_document_id IN (SELECT provenance_id FROM documents WHERE id = ?) AND processing_params LIKE '%table_columns%' AND json_extract(processing_params, '$.character_start') IS NOT NULL"
+            )
+            .all(imgRow.document_id) as Array<{ processing_params: string }>;
 
-        const tableContextParts: string[] = [];
-        for (const row of tableRows) {
-          try {
-            const params = JSON.parse(row.processing_params) as Record<string, unknown>;
-            const cols = params.table_columns as string[] | undefined;
-            const summary = params.table_summary as string | undefined;
-            if (cols && cols.length > 0) {
-              const part = summary ?? `Table with columns: ${cols.join(', ')}`;
-              tableContextParts.push(part);
+          const tableContextParts: string[] = [];
+          for (const row of tableRows) {
+            try {
+              const params = JSON.parse(row.processing_params) as Record<string, unknown>;
+              const cols = params.table_columns as string[] | undefined;
+              const summary = params.table_summary as string | undefined;
+              if (cols && cols.length > 0) {
+                const part = summary ?? `Table with columns: ${cols.join(', ')}`;
+                tableContextParts.push(part);
+              }
+            } catch (error) {
+              console.error(
+                `[vlm] Failed to parse table processing_params for row: ${error instanceof Error ? error.message : String(error)}`
+              );
             }
-          } catch (error) { console.error(`[vlm] Failed to parse table processing_params for row: ${error instanceof Error ? error.message : String(error)}`); }
-        }
+          }
 
-        if (tableContextParts.length > 0) {
-          const tableContext = `This page contains structured table data. ${tableContextParts.join('. ')}`;
-          enrichedContext = enrichedContext
-            ? `${enrichedContext}\n\n${tableContext}`
-            : tableContext;
-        }
-      }
-    } catch (error) {
-      console.error(`[vlm] Failed to enrich VLM context from database for image ${imagePath}: ${error instanceof Error ? error.message : String(error)}`);
-    }
-
-    let result;
-    if (useThinking) {
-      // Use deep analysis with extended reasoning
-      result = await vlm.analyzeDeep(imagePath);
-    } else {
-      result = await vlm.describeImage(imagePath, {
-        contextText: enrichedContext,
-        highResolution: true,
-      });
-    }
-
-    // Try to generate embedding for database-tracked images
-    const warnings: string[] = [];
-    let embeddingId: string | null = null;
-    let embeddingGenerated = false;
-    try {
-      const { db, vector } = requireDatabase();
-      const conn = db.getConnection();
-
-      // Look up image by extracted_path
-      const dbImage = conn.prepare(
-        'SELECT id, document_id, page_number, image_index, extracted_path, provenance_id FROM images WHERE extracted_path = ?'
-      ).get(imagePath) as { id: string; document_id: string; page_number: number; image_index: number; extracted_path: string | null; provenance_id: string | null } | undefined;
-
-      if (dbImage && dbImage.provenance_id && result.description) {
-        const { getEmbeddingClient, MODEL_NAME: EMBEDDING_MODEL } = await import('../services/embedding/nomic.js');
-        const { v4: uuidv4 } = await import('uuid');
-        const { computeHash } = await import('../utils/hash.js');
-        const { ProvenanceType } = await import('../models/provenance.js');
-
-        const embeddingClient = getEmbeddingClient();
-        const vectors = await embeddingClient.embedChunks([result.description], 1);
-
-        if (vectors.length > 0) {
-          const embId = uuidv4();
-          const now = new Date().toISOString();
-          const descriptionHash = computeHash(result.description);
-
-          // Get IMAGE provenance to build chain
-          const imageProv = db.getProvenance(dbImage.provenance_id);
-          if (imageProv) {
-            // Create VLM_DESCRIPTION provenance (depth 3)
-            const vlmDescProvId = uuidv4();
-            const imageParentIds = JSON.parse(imageProv.parent_ids) as string[];
-            const vlmParentIds = [...imageParentIds, dbImage.provenance_id];
-
-            db.insertProvenance({
-              id: vlmDescProvId,
-              type: ProvenanceType.VLM_DESCRIPTION,
-              created_at: now,
-              processed_at: now,
-              source_file_created_at: null,
-              source_file_modified_at: null,
-              source_type: 'VLM',
-              source_path: dbImage.extracted_path,
-              source_id: dbImage.provenance_id,
-              root_document_id: imageProv.root_document_id,
-              location: {
-                page_number: dbImage.page_number,
-                chunk_index: dbImage.image_index,
-              },
-              content_hash: descriptionHash,
-              input_hash: imageProv.content_hash,
-              file_hash: imageProv.file_hash,
-              processor: 'gemini-vlm:describe',
-              processor_version: '3.0',
-              processing_params: { type: 'vlm_describe', use_thinking: useThinking },
-              processing_duration_ms: result.processingTimeMs ?? null,
-              processing_quality_score: null,
-              parent_id: dbImage.provenance_id,
-              parent_ids: JSON.stringify(vlmParentIds),
-              chain_depth: 3,
-              chain_path: JSON.stringify(['DOCUMENT', 'OCR_RESULT', 'IMAGE', 'VLM_DESCRIPTION']),
-            });
-
-            // Create EMBEDDING provenance (depth 4)
-            const embProvId = uuidv4();
-            const embParentIds = [...vlmParentIds, vlmDescProvId];
-
-            db.insertProvenance({
-              id: embProvId,
-              type: ProvenanceType.EMBEDDING,
-              created_at: now,
-              processed_at: now,
-              source_file_created_at: null,
-              source_file_modified_at: null,
-              source_type: 'EMBEDDING',
-              source_path: null,
-              source_id: vlmDescProvId,
-              root_document_id: imageProv.root_document_id,
-              location: {
-                page_number: dbImage.page_number,
-                chunk_index: dbImage.image_index,
-              },
-              content_hash: descriptionHash,
-              input_hash: descriptionHash,
-              file_hash: imageProv.file_hash,
-              processor: EMBEDDING_MODEL,
-              processor_version: '1.5.0',
-              processing_params: { task_type: 'search_document', dimensions: 768 },
-              processing_duration_ms: null,
-              processing_quality_score: null,
-              parent_id: vlmDescProvId,
-              parent_ids: JSON.stringify(embParentIds),
-              chain_depth: 4,
-              chain_path: JSON.stringify(['DOCUMENT', 'OCR_RESULT', 'IMAGE', 'VLM_DESCRIPTION', 'EMBEDDING']),
-            });
-
-            // Insert embedding record
-            db.insertEmbedding({
-              id: embId,
-              chunk_id: null,
-              image_id: dbImage.id,
-              extraction_id: null,
-              document_id: dbImage.document_id,
-              original_text: result.description,
-              original_text_length: result.description.length,
-              source_file_path: dbImage.extracted_path ?? 'unknown',
-              source_file_name: dbImage.extracted_path?.split('/').pop() ?? 'vlm_description',
-              source_file_hash: 'vlm_generated',
-              page_number: dbImage.page_number,
-              page_range: null,
-              character_start: 0,
-              character_end: result.description.length,
-              chunk_index: dbImage.image_index,
-              total_chunks: 1,
-              model_name: EMBEDDING_MODEL,
-              model_version: '1.5.0',
-              task_type: 'search_document',
-              inference_mode: 'local',
-              gpu_device: 'cuda:0',
-              provenance_id: embProvId,
-              content_hash: descriptionHash,
-              generation_duration_ms: null,
-            });
-
-            // Store vector
-            vector.storeVector(embId, vectors[0]);
-
-            // Update image.vlm_embedding_id
-            conn.prepare('UPDATE images SET vlm_embedding_id = ? WHERE id = ?').run(embId, dbImage.id);
-
-            embeddingId = embId;
-            embeddingGenerated = true;
-            console.error(`[INFO] VLM describe embedding generated for image ${dbImage.id}: ${embId}`);
+          if (tableContextParts.length > 0) {
+            const tableContext = `This page contains structured table data. ${tableContextParts.join('. ')}`;
+            enrichedContext = enrichedContext
+              ? `${enrichedContext}\n\n${tableContext}`
+              : tableContext;
           }
         }
+      } catch (error) {
+        console.error(
+          `[vlm] Failed to enrich VLM context from database for image ${imagePath}: ${error instanceof Error ? error.message : String(error)}`
+        );
       }
-    } catch (embError) {
-      const errMsg = embError instanceof Error ? embError.message : String(embError);
-      console.error(`[WARN] VLM describe embedding generation failed: ${errMsg}`);
-      warnings.push(`Embedding generation failed: ${errMsg}. Description stored but not semantically searchable.`);
-    }
 
-    return formatResponse(
-      successResult({
-        description: result.description,
-        analysis: result.analysis,
-        model: result.model,
-        processing_time_ms: result.processingTimeMs,
-        tokens_used: result.tokensUsed,
-        confidence: result.analysis.confidence,
-        embedding_id: embeddingId,
-        embedding_generated: embeddingGenerated,
-        ...(warnings.length > 0 ? { warnings } : {}),
-        next_steps: [
-          { tool: 'ocr_image_get', description: 'View image details including the new description' },
-          { tool: 'ocr_image_search', description: 'Search for similar images (mode=semantic for meaning-based)' },
-        ],
-      })
-    );
+      let result;
+      if (useThinking) {
+        // Use deep analysis with extended reasoning
+        result = await vlm.analyzeDeep(imagePath);
+      } else {
+        result = await vlm.describeImage(imagePath, {
+          contextText: enrichedContext,
+          highResolution: true,
+        });
+      }
+
+      // Try to generate embedding for database-tracked images
+      const warnings: string[] = [];
+      let embeddingId: string | null = null;
+      let embeddingGenerated = false;
+      try {
+        const { db, vector } = requireDatabase();
+        const conn = db.getConnection();
+
+        // Look up image by extracted_path
+        const dbImage = conn
+          .prepare(
+            'SELECT id, document_id, page_number, image_index, extracted_path, provenance_id FROM images WHERE extracted_path = ?'
+          )
+          .get(imagePath) as
+          | {
+              id: string;
+              document_id: string;
+              page_number: number;
+              image_index: number;
+              extracted_path: string | null;
+              provenance_id: string | null;
+            }
+          | undefined;
+
+        if (dbImage && dbImage.provenance_id && result.description) {
+          const { getEmbeddingClient, MODEL_NAME: EMBEDDING_MODEL } =
+            await import('../services/embedding/nomic.js');
+          const { v4: uuidv4 } = await import('uuid');
+          const { computeHash } = await import('../utils/hash.js');
+          const { ProvenanceType } = await import('../models/provenance.js');
+
+          const embeddingClient = getEmbeddingClient();
+          const vectors = await embeddingClient.embedChunks([result.description], 1);
+
+          if (vectors.length > 0) {
+            const embId = uuidv4();
+            const now = new Date().toISOString();
+            const descriptionHash = computeHash(result.description);
+
+            // Get IMAGE provenance to build chain
+            const imageProv = db.getProvenance(dbImage.provenance_id);
+            if (imageProv) {
+              // Create VLM_DESCRIPTION provenance (depth 3)
+              const vlmDescProvId = uuidv4();
+              const imageParentIds = JSON.parse(imageProv.parent_ids) as string[];
+              const vlmParentIds = [...imageParentIds, dbImage.provenance_id];
+
+              db.insertProvenance({
+                id: vlmDescProvId,
+                type: ProvenanceType.VLM_DESCRIPTION,
+                created_at: now,
+                processed_at: now,
+                source_file_created_at: null,
+                source_file_modified_at: null,
+                source_type: 'VLM',
+                source_path: dbImage.extracted_path,
+                source_id: dbImage.provenance_id,
+                root_document_id: imageProv.root_document_id,
+                location: {
+                  page_number: dbImage.page_number,
+                  chunk_index: dbImage.image_index,
+                },
+                content_hash: descriptionHash,
+                input_hash: imageProv.content_hash,
+                file_hash: imageProv.file_hash,
+                processor: 'gemini-vlm:describe',
+                processor_version: '3.0',
+                processing_params: { type: 'vlm_describe', use_thinking: useThinking },
+                processing_duration_ms: result.processingTimeMs ?? null,
+                processing_quality_score: null,
+                parent_id: dbImage.provenance_id,
+                parent_ids: JSON.stringify(vlmParentIds),
+                chain_depth: 3,
+                chain_path: JSON.stringify(['DOCUMENT', 'OCR_RESULT', 'IMAGE', 'VLM_DESCRIPTION']),
+              });
+
+              // Create EMBEDDING provenance (depth 4)
+              const embProvId = uuidv4();
+              const embParentIds = [...vlmParentIds, vlmDescProvId];
+
+              db.insertProvenance({
+                id: embProvId,
+                type: ProvenanceType.EMBEDDING,
+                created_at: now,
+                processed_at: now,
+                source_file_created_at: null,
+                source_file_modified_at: null,
+                source_type: 'EMBEDDING',
+                source_path: null,
+                source_id: vlmDescProvId,
+                root_document_id: imageProv.root_document_id,
+                location: {
+                  page_number: dbImage.page_number,
+                  chunk_index: dbImage.image_index,
+                },
+                content_hash: descriptionHash,
+                input_hash: descriptionHash,
+                file_hash: imageProv.file_hash,
+                processor: EMBEDDING_MODEL,
+                processor_version: '1.5.0',
+                processing_params: { task_type: 'search_document', dimensions: 768 },
+                processing_duration_ms: null,
+                processing_quality_score: null,
+                parent_id: vlmDescProvId,
+                parent_ids: JSON.stringify(embParentIds),
+                chain_depth: 4,
+                chain_path: JSON.stringify([
+                  'DOCUMENT',
+                  'OCR_RESULT',
+                  'IMAGE',
+                  'VLM_DESCRIPTION',
+                  'EMBEDDING',
+                ]),
+              });
+
+              // Insert embedding record
+              db.insertEmbedding({
+                id: embId,
+                chunk_id: null,
+                image_id: dbImage.id,
+                extraction_id: null,
+                document_id: dbImage.document_id,
+                original_text: result.description,
+                original_text_length: result.description.length,
+                source_file_path: dbImage.extracted_path ?? 'unknown',
+                source_file_name: dbImage.extracted_path?.split('/').pop() ?? 'vlm_description',
+                source_file_hash: 'vlm_generated',
+                page_number: dbImage.page_number,
+                page_range: null,
+                character_start: 0,
+                character_end: result.description.length,
+                chunk_index: dbImage.image_index,
+                total_chunks: 1,
+                model_name: EMBEDDING_MODEL,
+                model_version: '1.5.0',
+                task_type: 'search_document',
+                inference_mode: 'local',
+                gpu_device: 'cuda:0',
+                provenance_id: embProvId,
+                content_hash: descriptionHash,
+                generation_duration_ms: null,
+              });
+
+              // Store vector
+              vector.storeVector(embId, vectors[0]);
+
+              // Update image.vlm_embedding_id
+              conn
+                .prepare('UPDATE images SET vlm_embedding_id = ? WHERE id = ?')
+                .run(embId, dbImage.id);
+
+              embeddingId = embId;
+              embeddingGenerated = true;
+              console.error(
+                `[INFO] VLM describe embedding generated for image ${dbImage.id}: ${embId}`
+              );
+            }
+          }
+        }
+      } catch (embError) {
+        const errMsg = embError instanceof Error ? embError.message : String(embError);
+        console.error(`[WARN] VLM describe embedding generation failed: ${errMsg}`);
+        warnings.push(
+          `Embedding generation failed: ${errMsg}. Description stored but not semantically searchable.`
+        );
+      }
+
+      return formatResponse(
+        successResult({
+          description: result.description,
+          analysis: result.analysis,
+          model: result.model,
+          processing_time_ms: result.processingTimeMs,
+          tokens_used: result.tokensUsed,
+          confidence: result.analysis.confidence,
+          embedding_id: embeddingId,
+          embedding_generated: embeddingGenerated,
+          ...(warnings.length > 0 ? { warnings } : {}),
+          next_steps: [
+            {
+              tool: 'ocr_image_get',
+              description: 'View image details including the new description',
+            },
+            {
+              tool: 'ocr_image_search',
+              description: 'Search for similar images (mode=semantic for meaning-based)',
+            },
+          ],
+        })
+      );
     }); // end withDatabaseOperation
   } catch (error) {
     return handleError(error);
@@ -300,9 +333,7 @@ export async function handleVLMDescribe(params: Record<string, unknown>): Promis
  * If document_id is provided, processes all images in that document.
  * If document_id is omitted, processes all pending images across all documents.
  */
-export async function handleVLMProcess(
-  params: Record<string, unknown>
-): Promise<ToolResponse> {
+export async function handleVLMProcess(params: Record<string, unknown>): Promise<ToolResponse> {
   try {
     const input = validateInput(VLMProcessInput, params);
     const documentId = input.document_id;
@@ -310,85 +341,85 @@ export async function handleVLMProcess(
     const limit = input.limit ?? 50;
 
     return await withDatabaseOperation(async () => {
-    const { db, vector } = requireDatabase();
-    const conn = db.getConnection();
+      const { db, vector } = requireDatabase();
+      const conn = db.getConnection();
 
-    if (documentId) {
-      // Single document mode
-      const doc = db.getDocument(documentId);
-      if (!doc) {
-        throw new MCPError('DOCUMENT_NOT_FOUND', `Document not found: ${documentId}`, {
-          document_id: documentId,
+      if (documentId) {
+        // Single document mode
+        const doc = db.getDocument(documentId);
+        if (!doc) {
+          throw new MCPError('DOCUMENT_NOT_FOUND', `Document not found: ${documentId}`, {
+            document_id: documentId,
+          });
+        }
+
+        const pipeline = new VLMPipeline(conn, {
+          config: {
+            batchSize,
+            concurrency: 5,
+            minConfidence: 0.5,
+            skipEmbeddings: false,
+            skipProvenance: false,
+          },
+          dbService: db,
+          vectorService: vector,
         });
+
+        const result = await pipeline.processDocument(documentId);
+
+        const responseData: Record<string, unknown> = {
+          mode: 'document',
+          document_id: documentId,
+          total: result.total,
+          successful: result.successful,
+          failed: result.failed,
+          total_tokens: result.totalTokens,
+          processing_time_ms: result.totalTimeMs,
+          results: result.results.map((r) => ({
+            image_id: r.imageId,
+            success: r.success,
+            confidence: r.confidence,
+            tokens_used: r.tokensUsed,
+            error: r.error,
+          })),
+          next_steps: [
+            { tool: 'ocr_image_list', description: 'Browse all images for this document' },
+            { tool: 'ocr_vlm_status', description: 'Check VLM service health' },
+          ],
+        };
+
+        return formatResponse(successResult(responseData));
+      } else {
+        // All pending mode
+        const pipeline = new VLMPipeline(conn, {
+          config: {
+            batchSize,
+            concurrency: 5,
+            minConfidence: 0.5,
+            skipEmbeddings: false,
+            skipProvenance: false,
+          },
+          dbService: db,
+          vectorService: vector,
+        });
+
+        const result = await pipeline.processPending(limit);
+
+        const responseData: Record<string, unknown> = {
+          mode: 'pending',
+          processed: result.total,
+          successful: result.successful,
+          failed: result.failed,
+          total_tokens: result.totalTokens,
+          processing_time_ms: result.totalTimeMs,
+          next_steps: [
+            { tool: 'ocr_document_list', description: 'Browse all documents in the database' },
+            { tool: 'ocr_vlm_status', description: 'Check VLM service health' },
+          ],
+        };
+
+        return formatResponse(successResult(responseData));
       }
-
-      const pipeline = new VLMPipeline(conn, {
-        config: {
-          batchSize,
-          concurrency: 5,
-          minConfidence: 0.5,
-          skipEmbeddings: false,
-          skipProvenance: false,
-        },
-        dbService: db,
-        vectorService: vector,
-      });
-
-      const result = await pipeline.processDocument(documentId);
-
-      const responseData: Record<string, unknown> = {
-        mode: 'document',
-        document_id: documentId,
-        total: result.total,
-        successful: result.successful,
-        failed: result.failed,
-        total_tokens: result.totalTokens,
-        processing_time_ms: result.totalTimeMs,
-        results: result.results.map((r) => ({
-          image_id: r.imageId,
-          success: r.success,
-          confidence: r.confidence,
-          tokens_used: r.tokensUsed,
-          error: r.error,
-        })),
-        next_steps: [
-          { tool: 'ocr_image_list', description: 'Browse all images for this document' },
-          { tool: 'ocr_vlm_status', description: 'Check VLM service health' },
-        ],
-      };
-
-      return formatResponse(successResult(responseData));
-    } else {
-      // All pending mode
-      const pipeline = new VLMPipeline(conn, {
-        config: {
-          batchSize,
-          concurrency: 5,
-          minConfidence: 0.5,
-          skipEmbeddings: false,
-          skipProvenance: false,
-        },
-        dbService: db,
-        vectorService: vector,
-      });
-
-      const result = await pipeline.processPending(limit);
-
-      const responseData: Record<string, unknown> = {
-        mode: 'pending',
-        processed: result.total,
-        successful: result.successful,
-        failed: result.failed,
-        total_tokens: result.totalTokens,
-        processing_time_ms: result.totalTimeMs,
-        next_steps: [
-          { tool: 'ocr_document_list', description: 'Browse all documents in the database' },
-          { tool: 'ocr_vlm_status', description: 'Check VLM service health' },
-        ],
-      };
-
-      return formatResponse(successResult(responseData));
-    }
     }); // end withDatabaseOperation
   } catch (error) {
     return handleError(error);
@@ -442,7 +473,10 @@ Return as JSON with fields: documentType, summary, keyDates, keyNames, findings`
         input_tokens: response.usage.inputTokens,
         output_tokens: response.usage.outputTokens,
         next_steps: [
-          { tool: 'ocr_ingest_files', description: 'Ingest the PDF for full OCR pipeline processing' },
+          {
+            tool: 'ocr_ingest_files',
+            description: 'Ingest the PDF for full OCR pipeline processing',
+          },
         ],
       })
     );
@@ -461,7 +495,7 @@ export async function handleVLMStatus(params: Record<string, unknown>): Promise<
     const status = vlm.getStatus();
 
     // Check if GEMINI_API_KEY is configured
-    const apiKeyConfigured = !!(process.env.GEMINI_API_KEY?.trim());
+    const apiKeyConfigured = !!process.env.GEMINI_API_KEY?.trim();
 
     return formatResponse(
       successResult({
@@ -498,7 +532,8 @@ export async function handleVLMStatus(params: Record<string, unknown>): Promise<
  */
 export const vlmTools: Record<string, ToolDefinition> = {
   ocr_vlm_describe: {
-    description: '[PROCESSING] Use to generate a detailed AI description of a single image file. Returns multi-paragraph description with optional embedding. Requires GEMINI_API_KEY.',
+    description:
+      '[PROCESSING] Use to generate a detailed AI description of a single image file. Returns multi-paragraph description with optional embedding. Requires GEMINI_API_KEY.',
     inputSchema: {
       image_path: z.string().min(1).describe('Path to image file (PNG, JPG, JPEG, GIF, WEBP)'),
       context_text: z.string().optional().describe('Surrounding text context from document'),
@@ -516,13 +551,20 @@ export const vlmTools: Record<string, ToolDefinition> = {
     inputSchema: {
       document_id: z.string().optional().describe('Document ID (omit to process all pending)'),
       batch_size: z.number().int().min(1).max(20).default(5).describe('Images per batch'),
-      limit: z.number().int().min(1).max(500).default(50).describe('Maximum images to process (pending mode only)'),
+      limit: z
+        .number()
+        .int()
+        .min(1)
+        .max(500)
+        .default(50)
+        .describe('Maximum images to process (pending mode only)'),
     },
     handler: handleVLMProcess,
   },
 
   ocr_vlm_analyze_pdf: {
-    description: '[PROCESSING] Use to analyze a PDF directly with Gemini 3 multimodal AI (max 20MB). Returns AI analysis with optional custom prompt. No database needed.',
+    description:
+      '[PROCESSING] Use to analyze a PDF directly with Gemini 3 multimodal AI (max 20MB). Returns AI analysis with optional custom prompt. No database needed.',
     inputSchema: {
       pdf_path: z.string().min(1).describe('Path to PDF file'),
       prompt: z

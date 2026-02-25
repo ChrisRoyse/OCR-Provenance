@@ -23,8 +23,12 @@ import { formatResponse, handleError, type ToolResponse, type ToolDefinition } f
 // ═══════════════════════════════════════════════════════════════════════════════
 
 const HealthCheckInput = z.object({
-  fix: z.boolean().default(false)
-    .describe('If true, trigger processing for fixable gaps (chunks without embeddings). Other gaps are reported but need manual intervention via specific tools.'),
+  fix: z
+    .boolean()
+    .default(false)
+    .describe(
+      'If true, trigger processing for fixable gaps (chunks without embeddings). Other gaps are reported but need manual intervention via specific tools.'
+    ),
 });
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -67,41 +71,50 @@ async function handleHealthCheck(params: Record<string, unknown>): Promise<ToolR
     // ──────────────────────────────────────────────────────────────
     // Environment Variable Verification
     // ──────────────────────────────────────────────────────────────
-    const envStatus = (globalThis as Record<string, unknown>).__OCR_ENV_STATUS as {
-      datalab_api_key: boolean;
-      gemini_api_key: boolean;
-      checked_at: string;
-    } | undefined;
+    const envStatus = (globalThis as Record<string, unknown>).__OCR_ENV_STATUS as
+      | {
+          datalab_api_key: boolean;
+          gemini_api_key: boolean;
+          checked_at: string;
+        }
+      | undefined;
 
     const environment: Record<string, unknown> = {
       datalab_api_key: !!process.env.DATALAB_API_KEY,
       gemini_api_key: !!process.env.GEMINI_API_KEY,
       embedding_model_path: process.env.EMBEDDING_MODEL_PATH ?? null,
       embedding_device: process.env.EMBEDDING_DEVICE ?? 'auto',
-      is_docker: !!process.env.OCR_PROVENANCE_DATABASES_PATH || !!process.env.OCR_PROVENANCE_ALLOWED_DIRS,
+      is_docker:
+        !!process.env.OCR_PROVENANCE_DATABASES_PATH || !!process.env.OCR_PROVENANCE_ALLOWED_DIRS,
       startup_check: envStatus ?? null,
     };
 
     const envWarnings: string[] = [];
     if (!process.env.DATALAB_API_KEY) {
-      envWarnings.push('DATALAB_API_KEY is not set — OCR processing (ocr_process_pending, ocr_convert_raw, ocr_reprocess, ocr_form_fill) will fail');
+      envWarnings.push(
+        'DATALAB_API_KEY is not set — OCR processing (ocr_process_pending, ocr_convert_raw, ocr_reprocess, ocr_form_fill) will fail'
+      );
     }
     if (!process.env.GEMINI_API_KEY) {
-      envWarnings.push('GEMINI_API_KEY is not set — VLM processing (ocr_vlm_describe, ocr_vlm_process, ocr_vlm_analyze_pdf, ocr_evaluate) will fail');
+      envWarnings.push(
+        'GEMINI_API_KEY is not set — VLM processing (ocr_vlm_describe, ocr_vlm_process, ocr_vlm_analyze_pdf, ocr_evaluate) will fail'
+      );
     }
 
     // ──────────────────────────────────────────────────────────────
     // Gap 1: Chunks without embeddings
     // ──────────────────────────────────────────────────────────────
-    const chunksWithoutEmbeddings = conn.prepare(
-      `SELECT c.id FROM chunks c
+    const chunksWithoutEmbeddings = conn
+      .prepare(
+        `SELECT c.id FROM chunks c
        LEFT JOIN embeddings e ON e.chunk_id = c.id
        WHERE e.id IS NULL AND c.embedding_status != 'complete'`
-    ).all() as Array<{ id: string }>;
+      )
+      .all() as Array<{ id: string }>;
 
     gaps.chunks_without_embeddings = {
       count: chunksWithoutEmbeddings.length,
-      sample_ids: chunksWithoutEmbeddings.slice(0, SAMPLE_LIMIT).map(r => r.id),
+      sample_ids: chunksWithoutEmbeddings.slice(0, SAMPLE_LIMIT).map((r) => r.id),
       fixable: true,
       fix_tool: 'ocr_process_pending',
       fix_hint: 'Set fix=true to trigger embedding generation',
@@ -132,36 +145,41 @@ async function handleHealthCheck(params: Record<string, unknown>): Promise<ToolR
           for (const [docId, docChunks] of chunksByDoc.entries()) {
             const doc = db.getDocument(docId);
             if (!doc) {
-              console.error(`[HealthCheck] Document ${docId} not found, skipping ${docChunks.length} chunks`);
+              console.error(
+                `[HealthCheck] Document ${docId} not found, skipping ${docChunks.length} chunks`
+              );
               continue;
             }
 
             try {
-              const result = await embeddingService.embedDocumentChunks(
-                db,
-                vector,
-                docChunks,
-                {
-                  documentId: doc.id,
-                  filePath: doc.file_path,
-                  fileName: doc.file_name,
-                  fileHash: doc.file_hash,
-                  documentProvenanceId: doc.provenance_id,
-                }
-              );
+              const result = await embeddingService.embedDocumentChunks(db, vector, docChunks, {
+                documentId: doc.id,
+                filePath: doc.file_path,
+                fileName: doc.file_name,
+                fileHash: doc.file_hash,
+                documentProvenanceId: doc.provenance_id,
+              });
               totalEmbedded += result.totalChunks;
             } catch (embedError) {
-              console.error(`[HealthCheck] Failed to embed chunks for ${docId}: ${String(embedError)}`);
-              fixes.push(`FAILED: Embedding generation for document ${docId}: ${String(embedError)}`);
+              console.error(
+                `[HealthCheck] Failed to embed chunks for ${docId}: ${String(embedError)}`
+              );
+              fixes.push(
+                `FAILED: Embedding generation for document ${docId}: ${String(embedError)}`
+              );
             }
           }
 
           if (totalEmbedded > 0) {
-            fixes.push(`Generated embeddings for ${totalEmbedded} chunks across ${chunksByDoc.size} documents`);
+            fixes.push(
+              `Generated embeddings for ${totalEmbedded} chunks across ${chunksByDoc.size} documents`
+            );
           }
         }
       } catch (serviceError) {
-        console.error(`[HealthCheck] Embedding service initialization failed: ${String(serviceError)}`);
+        console.error(
+          `[HealthCheck] Embedding service initialization failed: ${String(serviceError)}`
+        );
         fixes.push(`FAILED: Could not initialize embedding service: ${String(serviceError)}`);
       }
     }
@@ -169,31 +187,36 @@ async function handleHealthCheck(params: Record<string, unknown>): Promise<ToolR
     // ──────────────────────────────────────────────────────────────
     // Gap 2: Documents without OCR results (non-pending)
     // ──────────────────────────────────────────────────────────────
-    const docsWithoutOCR = conn.prepare(
-      `SELECT d.id FROM documents d
+    const docsWithoutOCR = conn
+      .prepare(
+        `SELECT d.id FROM documents d
        LEFT JOIN ocr_results o ON o.document_id = d.id
        WHERE o.id IS NULL AND d.status NOT IN ('pending', 'processing')`
-    ).all() as Array<{ id: string }>;
+      )
+      .all() as Array<{ id: string }>;
 
     gaps.documents_without_ocr = {
       count: docsWithoutOCR.length,
-      sample_ids: docsWithoutOCR.slice(0, SAMPLE_LIMIT).map(r => r.id),
+      sample_ids: docsWithoutOCR.slice(0, SAMPLE_LIMIT).map((r) => r.id),
       fixable: false,
       fix_tool: 'ocr_retry_failed',
-      fix_hint: 'Use ocr_process_pending to process pending docs, or ocr_retry_failed for failed ones',
+      fix_hint:
+        'Use ocr_process_pending to process pending docs, or ocr_retry_failed for failed ones',
     };
 
     // ──────────────────────────────────────────────────────────────
     // Gap 3: Images without VLM descriptions
     // ──────────────────────────────────────────────────────────────
-    const imagesWithoutVLM = conn.prepare(
-      `SELECT id FROM images
+    const imagesWithoutVLM = conn
+      .prepare(
+        `SELECT id FROM images
        WHERE vlm_status IN ('pending', 'failed') OR vlm_status IS NULL`
-    ).all() as Array<{ id: string }>;
+      )
+      .all() as Array<{ id: string }>;
 
     gaps.images_without_vlm = {
       count: imagesWithoutVLM.length,
-      sample_ids: imagesWithoutVLM.slice(0, SAMPLE_LIMIT).map(r => r.id),
+      sample_ids: imagesWithoutVLM.slice(0, SAMPLE_LIMIT).map((r) => r.id),
       fixable: false,
       fix_tool: 'ocr_vlm_process',
       fix_hint: null,
@@ -202,15 +225,17 @@ async function handleHealthCheck(params: Record<string, unknown>): Promise<ToolR
     // ──────────────────────────────────────────────────────────────
     // Gap 4: Embeddings without vectors in vec_embeddings
     // ──────────────────────────────────────────────────────────────
-    const embeddingsWithoutVectors = conn.prepare(
-      `SELECT e.id FROM embeddings e
+    const embeddingsWithoutVectors = conn
+      .prepare(
+        `SELECT e.id FROM embeddings e
        LEFT JOIN vec_embeddings v ON v.embedding_id = e.id
        WHERE v.embedding_id IS NULL`
-    ).all() as Array<{ id: string }>;
+      )
+      .all() as Array<{ id: string }>;
 
     gaps.embeddings_without_vectors = {
       count: embeddingsWithoutVectors.length,
-      sample_ids: embeddingsWithoutVectors.slice(0, SAMPLE_LIMIT).map(r => r.id),
+      sample_ids: embeddingsWithoutVectors.slice(0, SAMPLE_LIMIT).map((r) => r.id),
       fixable: false,
       fix_tool: 'ocr_embedding_rebuild',
       fix_hint: 'Use include_vlm=true for VLM embeddings',
@@ -220,8 +245,9 @@ async function handleHealthCheck(params: Record<string, unknown>): Promise<ToolR
     // Gap 5: Orphaned provenance records
     // Provenance records not referenced by any entity's provenance_id
     // ──────────────────────────────────────────────────────────────
-    const orphanedProvenance = conn.prepare(
-      `SELECT p.id FROM provenance p
+    const orphanedProvenance = conn
+      .prepare(
+        `SELECT p.id FROM provenance p
        WHERE p.type = 'DOCUMENT' AND p.id NOT IN (SELECT provenance_id FROM documents WHERE provenance_id IS NOT NULL)
        UNION ALL
        SELECT p.id FROM provenance p
@@ -236,11 +262,12 @@ async function handleHealthCheck(params: Record<string, unknown>): Promise<ToolR
        SELECT p.id FROM provenance p
        WHERE p.type = 'IMAGE' AND p.id NOT IN (SELECT provenance_id FROM images WHERE provenance_id IS NOT NULL)
        LIMIT 100`
-    ).all() as Array<{ id: string }>;
+      )
+      .all() as Array<{ id: string }>;
 
     gaps.orphaned_provenance = {
       count: orphanedProvenance.length,
-      sample_ids: orphanedProvenance.slice(0, SAMPLE_LIMIT).map(r => r.id),
+      sample_ids: orphanedProvenance.slice(0, SAMPLE_LIMIT).map((r) => r.id),
       fixable: false,
       fix_tool: null,
       fix_hint: null,
@@ -249,15 +276,15 @@ async function handleHealthCheck(params: Record<string, unknown>): Promise<ToolR
     // ──────────────────────────────────────────────────────────────
     // Gap 6: Pending documents that cannot process (missing API key)
     // ──────────────────────────────────────────────────────────────
-    const pendingDocs = conn.prepare(
-      `SELECT id FROM documents WHERE status = 'pending'`
-    ).all() as Array<{ id: string }>;
+    const pendingDocs = conn
+      .prepare(`SELECT id FROM documents WHERE status = 'pending'`)
+      .all() as Array<{ id: string }>;
 
     const pendingBlocked = !process.env.DATALAB_API_KEY && pendingDocs.length > 0;
 
     gaps.pending_documents_blocked = {
       count: pendingBlocked ? pendingDocs.length : 0,
-      sample_ids: pendingBlocked ? pendingDocs.slice(0, SAMPLE_LIMIT).map(r => r.id) : [],
+      sample_ids: pendingBlocked ? pendingDocs.slice(0, SAMPLE_LIMIT).map((r) => r.id) : [],
       fixable: false,
       fix_tool: null,
       fix_hint: pendingBlocked
@@ -268,10 +295,18 @@ async function handleHealthCheck(params: Record<string, unknown>): Promise<ToolR
     // ──────────────────────────────────────────────────────────────
     // Summary statistics
     // ──────────────────────────────────────────────────────────────
-    const totalDocuments = (conn.prepare('SELECT COUNT(*) as count FROM documents').get() as { count: number }).count;
-    const totalChunks = (conn.prepare('SELECT COUNT(*) as count FROM chunks').get() as { count: number }).count;
-    const totalEmbeddings = (conn.prepare('SELECT COUNT(*) as count FROM embeddings').get() as { count: number }).count;
-    const totalImages = (conn.prepare('SELECT COUNT(*) as count FROM images').get() as { count: number }).count;
+    const totalDocuments = (
+      conn.prepare('SELECT COUNT(*) as count FROM documents').get() as { count: number }
+    ).count;
+    const totalChunks = (
+      conn.prepare('SELECT COUNT(*) as count FROM chunks').get() as { count: number }
+    ).count;
+    const totalEmbeddings = (
+      conn.prepare('SELECT COUNT(*) as count FROM embeddings').get() as { count: number }
+    ).count;
+    const totalImages = (
+      conn.prepare('SELECT COUNT(*) as count FROM images').get() as { count: number }
+    ).count;
 
     const totalGaps = Object.values(gaps).reduce((sum, g) => sum + g.count, 0);
     const healthy = totalGaps === 0 && envWarnings.length === 0;
@@ -279,36 +314,47 @@ async function handleHealthCheck(params: Record<string, unknown>): Promise<ToolR
     // Build dynamic next_steps based on gaps found
     const nextSteps: Array<{ tool: string; description: string }> = [];
     if (gaps.chunks_without_embeddings?.count > 0 || gaps.documents_without_ocr?.count > 0) {
-      nextSteps.push({ tool: 'ocr_process_pending', description: 'Process pending documents through the OCR pipeline' });
+      nextSteps.push({
+        tool: 'ocr_process_pending',
+        description: 'Process pending documents through the OCR pipeline',
+      });
     }
     if (gaps.documents_without_ocr?.count > 0) {
       nextSteps.push({ tool: 'ocr_retry_failed', description: 'Retry failed documents' });
     }
     if (gaps.images_without_vlm?.count > 0) {
-      nextSteps.push({ tool: 'ocr_vlm_process', description: 'Generate VLM descriptions for images without them' });
+      nextSteps.push({
+        tool: 'ocr_vlm_process',
+        description: 'Generate VLM descriptions for images without them',
+      });
     }
     if (envWarnings.length > 0) {
-      nextSteps.push({ tool: 'ocr_guide', description: 'View setup instructions for configuring API keys' });
+      nextSteps.push({
+        tool: 'ocr_guide',
+        description: 'View setup instructions for configuring API keys',
+      });
     }
     if (nextSteps.length === 0 && healthy) {
       nextSteps.push({ tool: 'ocr_search', description: 'Search across all documents' });
     }
 
-    return formatResponse(successResult({
-      healthy,
-      environment_status: environment,
-      env_warnings: envWarnings.length > 0 ? envWarnings : undefined,
-      total_gaps: totalGaps,
-      gaps,
-      fixes_applied: fixes.length > 0 ? fixes : undefined,
-      summary: {
-        total_documents: totalDocuments,
-        total_chunks: totalChunks,
-        total_embeddings: totalEmbeddings,
-        total_images: totalImages,
-      },
-      next_steps: nextSteps,
-    }));
+    return formatResponse(
+      successResult({
+        healthy,
+        environment_status: environment,
+        env_warnings: envWarnings.length > 0 ? envWarnings : undefined,
+        total_gaps: totalGaps,
+        gaps,
+        fixes_applied: fixes.length > 0 ? fixes : undefined,
+        summary: {
+          total_documents: totalDocuments,
+          total_chunks: totalChunks,
+          total_embeddings: totalEmbeddings,
+          total_images: totalImages,
+        },
+        next_steps: nextSteps,
+      })
+    );
   } catch (error) {
     return handleError(error);
   }

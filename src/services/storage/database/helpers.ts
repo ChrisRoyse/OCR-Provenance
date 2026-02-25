@@ -13,7 +13,8 @@ import { DatabaseError, DatabaseErrorCode } from './types.js';
 /**
  * Default storage path for databases
  */
-export const DEFAULT_STORAGE_PATH = process.env.OCR_PROVENANCE_DATABASES_PATH ?? join(homedir(), '.ocr-provenance', 'databases');
+export const DEFAULT_STORAGE_PATH =
+  process.env.OCR_PROVENANCE_DATABASES_PATH ?? join(homedir(), '.ocr-provenance', 'databases');
 
 /**
  * Valid database name pattern: alphanumeric, underscores, hyphens

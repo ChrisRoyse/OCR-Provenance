@@ -61,11 +61,7 @@ function parseResult(response: { content: Array<{ type: string; text: string }> 
 /**
  * Create a test cluster with provenance and return its ID.
  */
-function createTestCluster(
-  runId: string,
-  clusterIndex: number,
-  documentCount: number = 0
-): string {
+function createTestCluster(runId: string, clusterIndex: number, documentCount: number = 0): string {
   const { db } = requireDatabase();
   const conn = db.getConnection();
 
@@ -349,7 +345,7 @@ describe.skipIf(!sqliteVecAvailable)('ocr_cluster_merge', () => {
 
     // Verify all documents are now in cluster1
     const docs = getClusterDocuments(conn, cluster1Id);
-    const docIds = docs.map(d => d.document_id);
+    const docIds = docs.map((d) => d.document_id);
     expect(docIds).toContain(doc1);
     expect(docIds).toContain(doc2);
     expect(docIds).toContain(doc3);

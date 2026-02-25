@@ -61,24 +61,34 @@ export function acquireLock(conn: Database.Database, params: AcquireLockParams):
   conn.prepare(`DELETE FROM document_locks WHERE expires_at < datetime('now')`).run();
 
   // Check for existing lock
-  const existing = conn.prepare(
-    'SELECT * FROM document_locks WHERE document_id = ?'
-  ).get(params.document_id) as LockRow | undefined;
+  const existing = conn
+    .prepare('SELECT * FROM document_locks WHERE document_id = ?')
+    .get(params.document_id) as LockRow | undefined;
 
   if (existing) {
     // Same user can re-acquire their own lock
     if (existing.user_id === params.user_id) {
       // Update existing lock
       const ttlMinutes = params.ttl_minutes ?? 30;
-      conn.prepare(`
+      conn
+        .prepare(
+          `
         UPDATE document_locks
         SET session_id = ?, lock_type = ?, reason = ?, acquired_at = datetime('now'), expires_at = datetime('now', '+' || ? || ' minutes')
         WHERE document_id = ?
-      `).run(params.session_id, params.lock_type, params.reason ?? null, ttlMinutes, params.document_id);
+      `
+        )
+        .run(
+          params.session_id,
+          params.lock_type,
+          params.reason ?? null,
+          ttlMinutes,
+          params.document_id
+        );
 
-      return conn.prepare(
-        'SELECT * FROM document_locks WHERE document_id = ?'
-      ).get(params.document_id) as LockRow;
+      return conn
+        .prepare('SELECT * FROM document_locks WHERE document_id = ?')
+        .get(params.document_id) as LockRow;
     }
 
     if (existing.lock_type === 'exclusive') {
@@ -94,21 +104,25 @@ export function acquireLock(conn: Database.Database, params: AcquireLockParams):
   }
 
   const ttlMinutes = params.ttl_minutes ?? 30;
-  conn.prepare(`
+  conn
+    .prepare(
+      `
     INSERT OR REPLACE INTO document_locks (document_id, user_id, session_id, lock_type, reason, acquired_at, expires_at)
     VALUES (?, ?, ?, ?, ?, datetime('now'), datetime('now', '+' || ? || ' minutes'))
-  `).run(
-    params.document_id,
-    params.user_id,
-    params.session_id,
-    params.lock_type,
-    params.reason ?? null,
-    ttlMinutes
-  );
+  `
+    )
+    .run(
+      params.document_id,
+      params.user_id,
+      params.session_id,
+      params.lock_type,
+      params.reason ?? null,
+      ttlMinutes
+    );
 
-  return conn.prepare(
-    'SELECT * FROM document_locks WHERE document_id = ?'
-  ).get(params.document_id) as LockRow;
+  return conn
+    .prepare('SELECT * FROM document_locks WHERE document_id = ?')
+    .get(params.document_id) as LockRow;
 }
 
 /**
@@ -119,9 +133,9 @@ export function acquireLock(conn: Database.Database, params: AcquireLockParams):
  * @throws Error if no lock found
  */
 export function releaseLock(conn: Database.Database, documentId: string): void {
-  const existing = conn.prepare(
-    'SELECT * FROM document_locks WHERE document_id = ?'
-  ).get(documentId);
+  const existing = conn
+    .prepare('SELECT * FROM document_locks WHERE document_id = ?')
+    .get(documentId);
   if (!existing) {
     throw new Error(`No lock found for document: ${documentId}`);
   }
@@ -140,7 +154,9 @@ export function getLockStatus(conn: Database.Database, documentId: string): Lock
   // Clean expired locks first
   conn.prepare(`DELETE FROM document_locks WHERE expires_at < datetime('now')`).run();
 
-  return (conn.prepare(
-    'SELECT * FROM document_locks WHERE document_id = ?'
-  ).get(documentId) as LockRow) ?? null;
+  return (
+    (conn
+      .prepare('SELECT * FROM document_locks WHERE document_id = ?')
+      .get(documentId) as LockRow) ?? null
+  );
 }

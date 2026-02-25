@@ -147,7 +147,9 @@ describe('parseMarkdownBlocks', () => {
       expect(headings).toHaveLength(6);
       for (let i = 0; i < 6; i++) {
         expect(headings[i].headingLevel).toBe(i + 1);
-        expect(headings[i].headingText).toBe(`Level ${['One', 'Two', 'Three', 'Four', 'Five', 'Six'][i]}`);
+        expect(headings[i].headingText).toBe(
+          `Level ${['One', 'Two', 'Three', 'Four', 'Five', 'Six'][i]}`
+        );
       }
     });
 
@@ -283,7 +285,8 @@ describe('parseMarkdownBlocks', () => {
     });
 
     it('parses multiple paragraphs separated by double newlines', () => {
-      const text = 'First paragraph content.\n\nSecond paragraph content.\n\nThird paragraph content.';
+      const text =
+        'First paragraph content.\n\nSecond paragraph content.\n\nThird paragraph content.';
       const blocks = parseMarkdownBlocks(text, []);
 
       const paragraphs = blocks.filter((b) => b.type === 'paragraph');
@@ -450,7 +453,8 @@ describe('buildSectionHierarchy', () => {
   });
 
   it('lower-level heading (H2) clears higher-level entries (H3-H6)', () => {
-    const text = '# Top\n\n## Sub A\n\n### Detail\n\nContent under detail.\n\n## Sub B\n\nContent under Sub B.';
+    const text =
+      '# Top\n\n## Sub A\n\n### Detail\n\nContent under detail.\n\n## Sub B\n\nContent under Sub B.';
     const blocks = parseMarkdownBlocks(text, []);
     const hierarchy = buildSectionHierarchy(blocks);
 
@@ -474,7 +478,9 @@ describe('buildSectionHierarchy', () => {
     // Find the "#### Methodology Details" block
     const methIdx = blocks.findIndex((b) => b.headingText === 'Methodology Details');
     expect(methIdx).toBeGreaterThan(0);
-    expect(hierarchy.get(methIdx)!.path).toBe('Introduction > Background > Previous Work > Methodology Details');
+    expect(hierarchy.get(methIdx)!.path).toBe(
+      'Introduction > Background > Previous Work > Methodology Details'
+    );
 
     // After "### Current Gaps", H4 is cleared
     const gapsIdx = blocks.findIndex((b) => b.headingText === 'Current Gaps');
@@ -543,7 +549,8 @@ describe('getPageNumberForOffset', () => {
 
 describe('extractPageOffsetsFromText', () => {
   it('extracts page boundaries from Datalab page markers in text', () => {
-    const text = 'Content of page one.\n\n---\n<!-- Page 2 -->\n\nContent of page two.\n\n---\n<!-- Page 3 -->\n\nContent of page three.';
+    const text =
+      'Content of page one.\n\n---\n<!-- Page 2 -->\n\nContent of page two.\n\n---\n<!-- Page 3 -->\n\nContent of page three.';
     const offsets = extractPageOffsetsFromText(text);
 
     expect(offsets.length).toBe(2);
@@ -559,7 +566,8 @@ describe('extractPageOffsetsFromText', () => {
   });
 
   it('returns correct charStart and charEnd for each page', () => {
-    const text = 'Page one content.\n\n---\n<!-- Page 2 -->\n\nPage two content.\n\n---\n<!-- Page 3 -->\n\nPage three content.';
+    const text =
+      'Page one content.\n\n---\n<!-- Page 2 -->\n\nPage two content.\n\n---\n<!-- Page 3 -->\n\nPage three content.';
     const offsets = extractPageOffsetsFromText(text);
 
     // First marker starts from 0 (content before first marker)
@@ -576,7 +584,8 @@ describe('extractPageOffsetsFromText', () => {
   });
 
   it('handles multiple consecutive pages', () => {
-    const text = '---\n<!-- Page 1 -->\n\nA.\n\n---\n<!-- Page 2 -->\n\nB.\n\n---\n<!-- Page 3 -->\n\nC.\n\n---\n<!-- Page 4 -->\n\nD.';
+    const text =
+      '---\n<!-- Page 1 -->\n\nA.\n\n---\n<!-- Page 2 -->\n\nB.\n\n---\n<!-- Page 3 -->\n\nC.\n\n---\n<!-- Page 4 -->\n\nD.';
     const offsets = extractPageOffsetsFromText(text);
 
     expect(offsets).toHaveLength(4);
@@ -639,7 +648,8 @@ describe('parseMarkdownBlocks edge cases', () => {
   });
 
   it('single paragraph with no double newline returns 1 paragraph block', () => {
-    const text = 'The patient was admitted to the emergency department at 3:42 AM on February 14, 2026 with acute abdominal pain. Vitals were stable on arrival.';
+    const text =
+      'The patient was admitted to the emergency department at 3:42 AM on February 14, 2026 with acute abdominal pain. Vitals were stable on arrival.';
     const blocks = parseMarkdownBlocks(text, []);
 
     expect(blocks).toHaveLength(1);
@@ -680,7 +690,8 @@ describe('parseMarkdownBlocks edge cases', () => {
 
   it('multiple blank lines between paragraphs produce empty blocks', () => {
     // \n\n\n\n splits into segments: "First", "", "Second"
-    const text = 'First paragraph about renal function.\n\n\n\nSecond paragraph about hepatic markers.';
+    const text =
+      'First paragraph about renal function.\n\n\n\nSecond paragraph about hepatic markers.';
     const blocks = parseMarkdownBlocks(text, []);
 
     const paragraphs = blocks.filter((b) => b.type === 'paragraph');
@@ -693,7 +704,8 @@ describe('parseMarkdownBlocks edge cases', () => {
   });
 
   it('code fence unclosed at EOF merges with all following segments', () => {
-    const text = '```sql\nSELECT patient_id, diagnosis_code\nFROM encounters\n\nWHERE admission_date > 2026-01-01\nORDER BY patient_id';
+    const text =
+      '```sql\nSELECT patient_id, diagnosis_code\nFROM encounters\n\nWHERE admission_date > 2026-01-01\nORDER BY patient_id';
     const blocks = parseMarkdownBlocks(text, []);
 
     // The code fence opens but never closes. The parser should merge segments.
@@ -723,7 +735,8 @@ describe('parseMarkdownBlocks edge cases', () => {
 
   it('table without separator row is classified as paragraph', () => {
     // This has pipe-delimited content but no |---|---| separator row
-    const text = '| Name | Age | Diagnosis |\n| John Doe | 45 | Hypertension |\n| Jane Smith | 38 | Type 2 Diabetes |';
+    const text =
+      '| Name | Age | Diagnosis |\n| John Doe | 45 | Hypertension |\n| Jane Smith | 38 | Type 2 Diabetes |';
     const blocks = parseMarkdownBlocks(text, []);
 
     expect(blocks).toHaveLength(1);
@@ -742,7 +755,8 @@ describe('parseMarkdownBlocks edge cases', () => {
   });
 
   it('unicode and emoji content is preserved in block text', () => {
-    const text = 'Patient notes: Temperature 37.5\u00B0C. Blood type: A\u207A. \u2764\uFE0F Normal sinus rhythm observed on ECG.\n\nDiagnosis: Acute pharyngitis (\u6025\u6027\u54BD\u5934\u708E). \u00C9valuation compl\u00E8te.';
+    const text =
+      'Patient notes: Temperature 37.5\u00B0C. Blood type: A\u207A. \u2764\uFE0F Normal sinus rhythm observed on ECG.\n\nDiagnosis: Acute pharyngitis (\u6025\u6027\u54BD\u5934\u708E). \u00C9valuation compl\u00E8te.';
     const blocks = parseMarkdownBlocks(text, []);
 
     expect(blocks).toHaveLength(2);
@@ -755,7 +769,8 @@ describe('parseMarkdownBlocks edge cases', () => {
   });
 
   it('Datalab {N}--- format is classified as page_marker', () => {
-    const text = 'Content before page break.\n\n{2}------------------------------------------------\n\nContent after page break.';
+    const text =
+      'Content before page break.\n\n{2}------------------------------------------------\n\nContent after page break.';
     const blocks = parseMarkdownBlocks(text, []);
 
     const markers = blocks.filter((b) => b.type === 'page_marker');
@@ -783,7 +798,8 @@ describe('parseMarkdownBlocks edge cases', () => {
 
 describe('buildSectionHierarchy edge cases', () => {
   it('no heading blocks returns empty map', () => {
-    const text = 'This document has no headings at all.\n\nJust plain paragraphs discussing clinical outcomes.\n\nAnd a third paragraph about medication adherence.';
+    const text =
+      'This document has no headings at all.\n\nJust plain paragraphs discussing clinical outcomes.\n\nAnd a third paragraph about medication adherence.';
     const blocks = parseMarkdownBlocks(text, []);
     const hierarchy = buildSectionHierarchy(blocks);
 
@@ -803,7 +819,8 @@ describe('buildSectionHierarchy edge cases', () => {
   });
 
   it('H1 followed by H4 (skipping H2, H3) gives H4 inheriting H1 context', () => {
-    const text = '# Clinical Summary\n\n#### Specific Lab Finding\n\nThe creatinine level was elevated at 1.8 mg/dL.';
+    const text =
+      '# Clinical Summary\n\n#### Specific Lab Finding\n\nThe creatinine level was elevated at 1.8 mg/dL.';
     const blocks = parseMarkdownBlocks(text, []);
     const hierarchy = buildSectionHierarchy(blocks);
 
@@ -818,7 +835,8 @@ describe('buildSectionHierarchy edge cases', () => {
   });
 
   it('all blocks are non-heading returns empty map', () => {
-    const text = 'Paragraph one about the procedure.\n\n- Item in a list\n- Another item\n\n| Col | Val |\n|-----|-----|\n| A   | 1   |';
+    const text =
+      'Paragraph one about the procedure.\n\n- Item in a list\n- Another item\n\n| Col | Val |\n|-----|-----|\n| A   | 1   |';
     const blocks = parseMarkdownBlocks(text, []);
     const hierarchy = buildSectionHierarchy(blocks);
 
@@ -850,7 +868,8 @@ describe('buildSectionHierarchy edge cases', () => {
   });
 
   it('H1 then H2 then new H1 resets the entire hierarchy', () => {
-    const text = '# Part One\n\n## Chapter A\n\n### Detail\n\nSome content.\n\n# Part Two\n\nNew content with fresh hierarchy.';
+    const text =
+      '# Part One\n\n## Chapter A\n\n### Detail\n\nSome content.\n\n# Part Two\n\nNew content with fresh hierarchy.';
     const blocks = parseMarkdownBlocks(text, []);
     const hierarchy = buildSectionHierarchy(blocks);
 
@@ -878,9 +897,7 @@ describe('getPageNumberForOffset edge cases', () => {
   });
 
   it('single page offset covering all text returns that page for any offset', () => {
-    const offsets: PageOffset[] = [
-      { page: 5, charStart: 0, charEnd: 10000 },
-    ];
+    const offsets: PageOffset[] = [{ page: 5, charStart: 0, charEnd: 10000 }];
 
     expect(getPageNumberForOffset(0, offsets)).toBe(5);
     expect(getPageNumberForOffset(5000, offsets)).toBe(5);
@@ -921,7 +938,8 @@ describe('getPageNumberForOffset edge cases', () => {
 
 describe('extractPageOffsetsFromText edge cases', () => {
   it('Datalab {N}--- markers produce correct 1-based page numbers', () => {
-    const text = '{0}------------------------------------------------\nPage one content.\n\n{1}------------------------------------------------\nPage two content.\n\n{2}------------------------------------------------\nPage three content.';
+    const text =
+      '{0}------------------------------------------------\nPage one content.\n\n{1}------------------------------------------------\nPage two content.\n\n{2}------------------------------------------------\nPage three content.';
     const offsets = extractPageOffsetsFromText(text);
 
     expect(offsets).toHaveLength(3);
@@ -933,7 +951,8 @@ describe('extractPageOffsetsFromText edge cases', () => {
 
   it('both HTML and Datalab markers in same text are deduplicated', () => {
     // Place an HTML marker and a Datalab marker far apart so they don't collide
-    const text = '---\n<!-- Page 2 -->\n\nPage two text.\n\n{2}------------------------------------------------\nMore page three text.';
+    const text =
+      '---\n<!-- Page 2 -->\n\nPage two text.\n\n{2}------------------------------------------------\nMore page three text.';
     const offsets = extractPageOffsetsFromText(text);
 
     // HTML marker gives page=2, Datalab {2} gives page=3 (0-based->1-based)
@@ -944,7 +963,8 @@ describe('extractPageOffsetsFromText edge cases', () => {
   });
 
   it('content before first marker is assigned to the first marker page (charStart=0)', () => {
-    const text = 'Preamble content before any page marker appears here.\n\n---\n<!-- Page 3 -->\n\nActual page three content.';
+    const text =
+      'Preamble content before any page marker appears here.\n\n---\n<!-- Page 3 -->\n\nActual page three content.';
     const offsets = extractPageOffsetsFromText(text);
 
     // The first marker found is Page 3. Its charStart should be 0 (content before it included).
@@ -956,7 +976,8 @@ describe('extractPageOffsetsFromText edge cases', () => {
 
   it('non-sequential page numbers are sorted by position then by page', () => {
     // Markers out of numeric order but in text-position order
-    const text = '---\n<!-- Page 5 -->\n\nSection five.\n\n---\n<!-- Page 2 -->\n\nSection two.\n\n---\n<!-- Page 8 -->\n\nSection eight.';
+    const text =
+      '---\n<!-- Page 5 -->\n\nSection five.\n\n---\n<!-- Page 2 -->\n\nSection two.\n\n---\n<!-- Page 8 -->\n\nSection eight.';
     const offsets = extractPageOffsetsFromText(text);
 
     expect(offsets).toHaveLength(3);
@@ -989,7 +1010,8 @@ describe('extractPageOffsetsFromText edge cases', () => {
   });
 
   it('Datalab markers with varying dash counts (10+) are recognized', () => {
-    const text = '{0}----------\nShort dashes.\n\n{1}--------------------------------------------------\nLong dashes.';
+    const text =
+      '{0}----------\nShort dashes.\n\n{1}--------------------------------------------------\nLong dashes.';
     const offsets = extractPageOffsetsFromText(text);
 
     expect(offsets).toHaveLength(2);
@@ -998,7 +1020,8 @@ describe('extractPageOffsetsFromText edge cases', () => {
   });
 
   it('text with no markers of either format returns empty array', () => {
-    const text = 'This is a lengthy clinical note about the patient presenting with chronic lower back pain. The MRI findings were reviewed and discussed with the orthopedic surgeon.';
+    const text =
+      'This is a lengthy clinical note about the patient presenting with chronic lower back pain. The MRI findings were reviewed and discussed with the orthopedic surgeon.';
     const offsets = extractPageOffsetsFromText(text);
 
     expect(offsets).toEqual([]);
@@ -1048,7 +1071,7 @@ describe('parseMarkdownBlocks - edge cases', () => {
     const text = 'Before.\n\n```python\nline_one()\n\nline_two()\n\nline_three()';
     const blocks = parseMarkdownBlocks(text, []);
     // Should have a paragraph block then one code block (merged segments)
-    const codeBlocks = blocks.filter(b => b.type === 'code');
+    const codeBlocks = blocks.filter((b) => b.type === 'code');
     expect(codeBlocks).toHaveLength(1);
     expect(codeBlocks[0].text).toContain('line_one()');
     expect(codeBlocks[0].text).toContain('line_two()');
@@ -1065,7 +1088,7 @@ describe('parseMarkdownBlocks - edge cases', () => {
   it('multiple consecutive code blocks are separate blocks', () => {
     const text = '```\nblock1\n```\n\n```\nblock2\n```';
     const blocks = parseMarkdownBlocks(text, []);
-    const codeBlocks = blocks.filter(b => b.type === 'code');
+    const codeBlocks = blocks.filter((b) => b.type === 'code');
     expect(codeBlocks).toHaveLength(2);
     expect(codeBlocks[0].text).toContain('block1');
     expect(codeBlocks[1].text).toContain('block2');
@@ -1117,12 +1140,13 @@ describe('parseMarkdownBlocks - edge cases', () => {
   });
 
   it('unicode and emoji content is preserved in block text', () => {
-    const text = '# Résumé des 日本語 📋\n\nLes données avec des émojis 🎉 et accents: café, naïve.';
+    const text =
+      '# Résumé des 日本語 📋\n\nLes données avec des émojis 🎉 et accents: café, naïve.';
     const blocks = parseMarkdownBlocks(text, []);
     expect(blocks[0].type).toBe('heading');
     expect(blocks[0].headingText).toContain('Résumé');
     expect(blocks[0].headingText).toContain('📋');
-    const para = blocks.find(b => b.type === 'paragraph');
+    const para = blocks.find((b) => b.type === 'paragraph');
     expect(para).toBeDefined();
     expect(para!.text).toContain('🎉');
     expect(para!.text).toContain('café');
@@ -1131,7 +1155,7 @@ describe('parseMarkdownBlocks - edge cases', () => {
   it('Datalab {N}--- page separator is classified as page_marker', () => {
     const text = 'Content.\n\n{0}------------------------------------------------\n\nMore content.';
     const blocks = parseMarkdownBlocks(text, []);
-    const markers = blocks.filter(b => b.type === 'page_marker');
+    const markers = blocks.filter((b) => b.type === 'page_marker');
     expect(markers).toHaveLength(1);
   });
 
@@ -1148,7 +1172,7 @@ describe('parseMarkdownBlocks - edge cases', () => {
     // Split by \n\n gives: "Para 1.", "", "Para 2."
     // The empty segment becomes an empty block
     expect(blocks.length).toBe(3);
-    const emptyBlocks = blocks.filter(b => b.type === 'empty');
+    const emptyBlocks = blocks.filter((b) => b.type === 'empty');
     expect(emptyBlocks.length).toBe(1);
   });
 
@@ -1173,7 +1197,7 @@ describe('buildSectionHierarchy - edge cases', () => {
     const blocks = parseMarkdownBlocks(text, []);
     const hierarchy = buildSectionHierarchy(blocks);
 
-    const secondIdx = blocks.findIndex(b => b.headingText === 'Second');
+    const secondIdx = blocks.findIndex((b) => b.headingText === 'Second');
     expect(hierarchy.get(secondIdx)!.path).toBe('Second');
   });
 
@@ -1182,7 +1206,7 @@ describe('buildSectionHierarchy - edge cases', () => {
     const blocks = parseMarkdownBlocks(text, []);
     const hierarchy = buildSectionHierarchy(blocks);
 
-    const deepIdx = blocks.findIndex(b => b.headingText === 'Deep');
+    const deepIdx = blocks.findIndex((b) => b.headingText === 'Deep');
     expect(hierarchy.get(deepIdx)!.path).toBe('Top > Deep');
     expect(hierarchy.get(deepIdx)!.level).toBe(4);
   });
@@ -1192,10 +1216,10 @@ describe('buildSectionHierarchy - edge cases', () => {
     const blocks = parseMarkdownBlocks(text, []);
     const hierarchy = buildSectionHierarchy(blocks);
 
-    const topIdx = blocks.findIndex(b => b.headingText === 'Top Level');
+    const topIdx = blocks.findIndex((b) => b.headingText === 'Top Level');
     expect(hierarchy.get(topIdx)!.path).toBe('Top Level');
     // Content after should inherit Top Level
-    const contentIdx = blocks.findIndex(b => b.text.includes('Content after'));
+    const contentIdx = blocks.findIndex((b) => b.text.includes('Content after'));
     expect(hierarchy.get(contentIdx)!.path).toBe('Top Level');
   });
 
@@ -1228,16 +1252,12 @@ describe('getPageNumberForOffset - edge cases', () => {
   });
 
   it('returns first page for offset before first charStart', () => {
-    const offsets: PageOffset[] = [
-      { page: 5, charStart: 100, charEnd: 200 },
-    ];
+    const offsets: PageOffset[] = [{ page: 5, charStart: 100, charEnd: 200 }];
     expect(getPageNumberForOffset(50, offsets)).toBe(5);
   });
 
   it('returns last page for offset equal to last charEnd', () => {
-    const offsets: PageOffset[] = [
-      { page: 1, charStart: 0, charEnd: 100 },
-    ];
+    const offsets: PageOffset[] = [{ page: 1, charStart: 0, charEnd: 100 }];
     expect(getPageNumberForOffset(100, offsets)).toBe(1);
   });
 
@@ -1263,14 +1283,16 @@ describe('getPageNumberForOffset - edge cases', () => {
 
 describe('extractPageOffsetsFromText - edge cases', () => {
   it('handles Datalab {N}--- markers only', () => {
-    const text = 'Page 1 content.\n\n{1}------------------------------------------------\n\nPage 2 content.';
+    const text =
+      'Page 1 content.\n\n{1}------------------------------------------------\n\nPage 2 content.';
     const offsets = extractPageOffsetsFromText(text);
     expect(offsets).toHaveLength(1);
     expect(offsets[0].page).toBe(2); // {1} is 0-based → 1-based = 2
   });
 
   it('handles both HTML and Datalab formats in same text (deduplicated)', () => {
-    const text = 'Start.\n\n---\n<!-- Page 2 -->\n\n{1}------------------------------------------------\n\nEnd.';
+    const text =
+      'Start.\n\n---\n<!-- Page 2 -->\n\n{1}------------------------------------------------\n\nEnd.';
     const offsets = extractPageOffsetsFromText(text);
     // Both markers are close together and should be deduplicated
     // The HTML marker appears first, Datalab marker is within 10 chars
@@ -1310,7 +1332,8 @@ describe('extractPageOffsetsFromText - edge cases', () => {
   });
 
   it('Datalab format with 0-based page numbering converts correctly', () => {
-    const text = '{0}------------------------------------------------\n\nPage 1.\n\n{1}------------------------------------------------\n\nPage 2.\n\n{2}------------------------------------------------\n\nPage 3.';
+    const text =
+      '{0}------------------------------------------------\n\nPage 1.\n\n{1}------------------------------------------------\n\nPage 2.\n\n{2}------------------------------------------------\n\nPage 3.';
     const offsets = extractPageOffsetsFromText(text);
     expect(offsets).toHaveLength(3);
     expect(offsets[0].page).toBe(1); // {0} → 1

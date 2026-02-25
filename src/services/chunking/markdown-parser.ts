@@ -10,7 +10,14 @@
 import { PageOffset } from '../../models/document.js';
 
 /** Classification of a markdown text block */
-export type MarkdownBlockType = 'heading' | 'table' | 'code' | 'list' | 'paragraph' | 'page_marker' | 'empty';
+export type MarkdownBlockType =
+  | 'heading'
+  | 'table'
+  | 'code'
+  | 'list'
+  | 'paragraph'
+  | 'page_marker'
+  | 'empty';
 
 /** A single structural block parsed from markdown */
 export interface MarkdownBlock {
@@ -201,7 +208,10 @@ export function buildSectionHierarchy(blocks: MarkdownBlock[]): Map<number, Sect
  * @param pageOffsets - Sorted array of page offset ranges
  * @returns The 1-indexed page number, or null if pageOffsets is empty
  */
-export function getPageNumberForOffset(charOffset: number, pageOffsets: PageOffset[]): number | null {
+export function getPageNumberForOffset(
+  charOffset: number,
+  pageOffsets: PageOffset[]
+): number | null {
   if (pageOffsets.length === 0) {
     return null;
   }
@@ -462,7 +472,7 @@ export function extractPageOffsetsFromText(text: string): PageOffset[] {
   while ((match = datalabMarkerRegex.exec(text)) !== null) {
     const pageNum = parseInt(match[1], 10);
     // Only add if this position wasn't already captured by the HTML format
-    const alreadyCaptured = markers.some(m => Math.abs(m.markerStart - match!.index) < 10);
+    const alreadyCaptured = markers.some((m) => Math.abs(m.markerStart - match!.index) < 10);
     if (!alreadyCaptured) {
       markers.push({
         page: pageNum + 1, // Convert 0-based to 1-based

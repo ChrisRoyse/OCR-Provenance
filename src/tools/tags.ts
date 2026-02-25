@@ -74,16 +74,17 @@ async function handleTagList(params: Record<string, unknown>): Promise<ToolRespo
       successResult({
         tags,
         total: tags.length,
-        next_steps: tags.length === 0
-          ? [
-              { tool: 'ocr_tag_create', description: 'Create a tag to organize documents' },
-              { tool: 'ocr_document_list', description: 'Browse documents to tag' },
-            ]
-          : [
-              { tool: 'ocr_tag_apply', description: 'Apply a tag to an entity' },
-              { tool: 'ocr_tag_search', description: 'Find entities by tag' },
-              { tool: 'ocr_tag_create', description: 'Create a new tag' },
-            ],
+        next_steps:
+          tags.length === 0
+            ? [
+                { tool: 'ocr_tag_create', description: 'Create a tag to organize documents' },
+                { tool: 'ocr_document_list', description: 'Browse documents to tag' },
+              ]
+            : [
+                { tool: 'ocr_tag_apply', description: 'Apply a tag to an entity' },
+                { tool: 'ocr_tag_search', description: 'Find entities by tag' },
+                { tool: 'ocr_tag_create', description: 'Create a new tag' },
+              ],
       })
     );
   } catch (error) {
@@ -127,9 +128,7 @@ async function handleTagApply(params: Record<string, unknown>): Promise<ToolResp
         tag_name: tag.name,
         entity_id: input.entity_id,
         entity_type: input.entity_type,
-        next_steps: [
-          { tool: 'ocr_tag_search', description: 'Find all entities with this tag' },
-        ],
+        next_steps: [{ tool: 'ocr_tag_search', description: 'Find all entities with this tag' }],
       })
     );
   } catch (error) {
@@ -173,7 +172,10 @@ async function handleTagRemove(params: Record<string, unknown>): Promise<ToolRes
         tag_name: input.tag_name,
         entity_id: input.entity_id,
         entity_type: input.entity_type,
-        next_steps: [{ tool: 'ocr_tag_list', description: 'View remaining tags and their usage' }, { tool: 'ocr_tag_search', description: 'Find other entities with this tag' }],
+        next_steps: [
+          { tool: 'ocr_tag_list', description: 'View remaining tags and their usage' },
+          { tool: 'ocr_tag_search', description: 'Find other entities with this tag' },
+        ],
       })
     );
   } catch (error) {
@@ -209,7 +211,10 @@ async function handleTagSearch(params: Record<string, unknown>): Promise<ToolRes
           entity_type: input.entity_type ?? null,
           match_all: input.match_all,
         },
-        next_steps: [{ tool: 'ocr_document_get', description: 'Get details for a tagged document' }, { tool: 'ocr_tag_apply', description: 'Apply another tag to results' }],
+        next_steps: [
+          { tool: 'ocr_document_get', description: 'Get details for a tagged document' },
+          { tool: 'ocr_tag_apply', description: 'Apply another tag to results' },
+        ],
       })
     );
   } catch (error) {
@@ -280,7 +285,9 @@ function verifyEntityExists(
 
   const tableName = tableMap[entityType];
   if (!tableName) {
-    throw new Error(`Invalid entity type: ${entityType}. Valid types: ${VALID_ENTITY_TYPES.join(', ')}`);
+    throw new Error(
+      `Invalid entity type: ${entityType}. Valid types: ${VALID_ENTITY_TYPES.join(', ')}`
+    );
   }
 
   // Table name from hardcoded whitelist (tableMap) - safe from injection
@@ -307,7 +314,8 @@ export const tagTools: Record<string, ToolDefinition> = {
   },
 
   ocr_tag_list: {
-    description: '[ANALYSIS] Use to see all available tags and how many entities each is applied to. Returns tag names, descriptions, colors, and usage counts.',
+    description:
+      '[ANALYSIS] Use to see all available tags and how many entities each is applied to. Returns tag names, descriptions, colors, and usage counts.',
     inputSchema: {},
     handler: handleTagList,
   },
@@ -326,7 +334,8 @@ export const tagTools: Record<string, ToolDefinition> = {
   },
 
   ocr_tag_remove: {
-    description: '[MANAGE] Use to detach a tag from an entity. Returns confirmation. Does not delete the tag itself.',
+    description:
+      '[MANAGE] Use to detach a tag from an entity. Returns confirmation. Does not delete the tag itself.',
     inputSchema: {
       tag_name: z.string().min(1).describe('Name of the tag to remove'),
       entity_id: z.string().min(1).describe('ID of the entity to untag'),
@@ -341,10 +350,7 @@ export const tagTools: Record<string, ToolDefinition> = {
     description:
       '[ANALYSIS] Use to find entities by tag. Returns matching documents, chunks, images, extractions, or clusters. Set match_all=true to require ALL tags, or false for ANY tag.',
     inputSchema: {
-      tags: z
-        .array(z.string().min(1))
-        .min(1)
-        .describe('Tag names to search for'),
+      tags: z.array(z.string().min(1)).min(1).describe('Tag names to search for'),
       entity_type: entityTypeSchema
         .optional()
         .describe('Filter by entity type: document, chunk, image, extraction, or cluster'),

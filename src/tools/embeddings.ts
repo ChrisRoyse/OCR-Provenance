@@ -12,7 +12,13 @@
 
 import { z } from 'zod';
 import { v4 as uuidv4 } from 'uuid';
-import { formatResponse, handleError, fetchProvenanceChain, type ToolResponse, type ToolDefinition } from './shared.js';
+import {
+  formatResponse,
+  handleError,
+  fetchProvenanceChain,
+  type ToolResponse,
+  type ToolDefinition,
+} from './shared.js';
 import { successResult } from '../server/types.js';
 import { requireDatabase } from '../server/state.js';
 import { validateInput } from '../utils/validation.js';
@@ -21,7 +27,12 @@ import { getEmbeddingService, EmbeddingService } from '../services/embedding/emb
 import { getEmbeddingClient } from '../services/embedding/nomic.js';
 import { computeHash } from '../utils/hash.js';
 import { ProvenanceType as ProvType } from '../models/provenance.js';
-import type { ProvenanceRecord, ProvenanceType, SourceType, ProvenanceLocation } from '../models/provenance.js';
+import type {
+  ProvenanceRecord,
+  ProvenanceType,
+  SourceType,
+  ProvenanceLocation,
+} from '../models/provenance.js';
 import { EMBEDDING_MODEL } from '../models/embedding.js';
 import { documentNotFoundError } from '../server/errors.js';
 
@@ -113,18 +124,23 @@ async function handleEmbeddingList(params: Record<string, unknown>): Promise<Too
       return entry;
     });
 
-    return formatResponse(successResult({
-      embeddings: enriched,
-      total: result.total,
-      limit: input.limit,
-      offset: input.offset,
-      filters_applied: {
-        document_id: input.document_id ?? null,
-        source_type: input.source_type ?? null,
-        model_name: input.model_name ?? null,
-      },
-      next_steps: [{ tool: 'ocr_embedding_get', description: 'Inspect a specific embedding' }, { tool: 'ocr_embedding_stats', description: 'Check overall embedding coverage' }],
-    }));
+    return formatResponse(
+      successResult({
+        embeddings: enriched,
+        total: result.total,
+        limit: input.limit,
+        offset: input.offset,
+        filters_applied: {
+          document_id: input.document_id ?? null,
+          source_type: input.source_type ?? null,
+          model_name: input.model_name ?? null,
+        },
+        next_steps: [
+          { tool: 'ocr_embedding_get', description: 'Inspect a specific embedding' },
+          { tool: 'ocr_embedding_stats', description: 'Check overall embedding coverage' },
+        ],
+      })
+    );
   } catch (error) {
     return handleError(error);
   }
@@ -145,19 +161,28 @@ async function handleEmbeddingStats(params: Record<string, unknown>): Promise<To
 
     const stats = db.getEmbeddingStats(input.document_id);
 
-    return formatResponse(successResult({
-      document_id: input.document_id ?? null,
-      ...stats,
-      next_steps: stats.total_embeddings === 0
-        ? [
-            { tool: 'ocr_process_pending', description: 'Run processing to generate embeddings' },
-            { tool: 'ocr_document_list', description: 'Check if documents exist to process' },
-          ]
-        : [
-            { tool: 'ocr_embedding_rebuild', description: 'Rebuild embeddings for items with gaps' },
-            { tool: 'ocr_embedding_list', description: 'Browse individual embeddings' },
-          ],
-    }));
+    return formatResponse(
+      successResult({
+        document_id: input.document_id ?? null,
+        ...stats,
+        next_steps:
+          stats.total_embeddings === 0
+            ? [
+                {
+                  tool: 'ocr_process_pending',
+                  description: 'Run processing to generate embeddings',
+                },
+                { tool: 'ocr_document_list', description: 'Check if documents exist to process' },
+              ]
+            : [
+                {
+                  tool: 'ocr_embedding_rebuild',
+                  description: 'Rebuild embeddings for items with gaps',
+                },
+                { tool: 'ocr_embedding_list', description: 'Browse individual embeddings' },
+              ],
+      })
+    );
   } catch (error) {
     return handleError(error);
   }
@@ -182,7 +207,11 @@ async function handleEmbeddingGet(params: Record<string, unknown>): Promise<Tool
       throw new Error(`Embedding not found: ${input.embedding_id}`);
     }
 
-    const sourceType = determineSourceType(embedding.chunk_id, embedding.image_id, embedding.extraction_id);
+    const sourceType = determineSourceType(
+      embedding.chunk_id,
+      embedding.image_id,
+      embedding.extraction_id
+    );
 
     const result: Record<string, unknown> = {
       id: embedding.id,
@@ -267,10 +296,17 @@ async function handleEmbeddingGet(params: Record<string, unknown>): Promise<Tool
 
     // Provenance chain
     if (input.include_provenance) {
-      result.provenance_chain = fetchProvenanceChain(db, embedding.provenance_id, '[embedding_get]');
+      result.provenance_chain = fetchProvenanceChain(
+        db,
+        embedding.provenance_id,
+        '[embedding_get]'
+      );
     }
 
-    result.next_steps = [{ tool: 'ocr_chunk_context', description: 'View the source chunk with surrounding text' }, { tool: 'ocr_embedding_rebuild', description: 'Regenerate this embedding' }];
+    result.next_steps = [
+      { tool: 'ocr_chunk_context', description: 'View the source chunk with surrounding text' },
+      { tool: 'ocr_embedding_rebuild', description: 'Regenerate this embedding' },
+    ];
 
     return formatResponse(successResult(result));
   } catch (error) {
@@ -300,7 +336,9 @@ async function handleEmbeddingRebuild(params: Record<string, unknown>): Promise<
       throw new Error('Exactly one of document_id, chunk_id, or image_id must be provided');
     }
     if (targets.length > 1) {
-      throw new Error('Exactly one of document_id, chunk_id, or image_id must be provided, got multiple');
+      throw new Error(
+        'Exactly one of document_id, chunk_id, or image_id must be provided, got multiple'
+      );
     }
 
     const embeddingService = getEmbeddingService();
@@ -330,20 +368,16 @@ async function handleEmbeddingRebuild(params: Record<string, unknown>): Promise<
       db.updateChunkEmbeddingStatus(input.chunk_id, 'pending');
 
       // Regenerate embedding
-      const result = await embeddingService.embedDocumentChunks(
-        db, vector, [chunk],
-        {
-          documentId: chunk.document_id,
-          filePath: doc.file_path,
-          fileName: doc.file_name,
-          fileHash: doc.file_hash,
-          documentProvenanceId: doc.provenance_id,
-        }
-      );
+      const result = await embeddingService.embedDocumentChunks(db, vector, [chunk], {
+        documentId: chunk.document_id,
+        filePath: doc.file_path,
+        fileName: doc.file_name,
+        fileHash: doc.file_hash,
+        documentProvenanceId: doc.provenance_id,
+      });
 
       rebuiltIds.push(...result.embeddingIds);
       provenanceIds.push(...result.provenanceIds);
-
     } else if (input.image_id) {
       // Rebuild VLM embedding for a single image
       const conn = db.getConnection();
@@ -406,7 +440,13 @@ async function handleEmbeddingRebuild(params: Record<string, unknown>): Promise<
         parent_id: img.provenance_id ?? null,
         parent_ids: img.provenance_id ? JSON.stringify([img.provenance_id]) : '[]',
         chain_depth: 4,
-        chain_path: JSON.stringify(['DOCUMENT', 'OCR_RESULT', 'IMAGE', 'VLM_DESCRIPTION', 'EMBEDDING']),
+        chain_path: JSON.stringify([
+          'DOCUMENT',
+          'OCR_RESULT',
+          'IMAGE',
+          'VLM_DESCRIPTION',
+          'EMBEDDING',
+        ]),
       };
       db.insertProvenance(provRecord);
       provenanceIds.push(provenanceId);
@@ -447,10 +487,11 @@ async function handleEmbeddingRebuild(params: Record<string, unknown>): Promise<
       vector.storeVector(embeddingId, embVector);
 
       // Update image record
-      conn.prepare('UPDATE images SET vlm_embedding_id = ? WHERE id = ?').run(embeddingId, input.image_id);
+      conn
+        .prepare('UPDATE images SET vlm_embedding_id = ? WHERE id = ?')
+        .run(embeddingId, input.image_id);
 
       rebuiltIds.push(embeddingId);
-
     } else if (input.document_id) {
       // Rebuild all chunk embeddings for a document
       const doc = db.getDocument(input.document_id);
@@ -467,16 +508,20 @@ async function handleEmbeddingRebuild(params: Record<string, unknown>): Promise<
       if (chunks.length > 0) {
         const oldEmbeddings = db.getEmbeddingsByDocumentId(input.document_id);
         // Only delete chunk-based embeddings, not image/extraction ones
-        const chunkEmbeddings = oldEmbeddings.filter(e => e.chunk_id && !e.image_id && !e.extraction_id);
+        const chunkEmbeddings = oldEmbeddings.filter(
+          (e) => e.chunk_id && !e.image_id && !e.extraction_id
+        );
         for (const emb of chunkEmbeddings) {
           vector.deleteVector(emb.id);
         }
 
         // Delete chunk embeddings from embeddings table
         const conn = db.getConnection();
-        conn.prepare(
-          'DELETE FROM embeddings WHERE document_id = ? AND chunk_id IS NOT NULL AND image_id IS NULL AND extraction_id IS NULL'
-        ).run(input.document_id);
+        conn
+          .prepare(
+            'DELETE FROM embeddings WHERE document_id = ? AND chunk_id IS NOT NULL AND image_id IS NULL AND extraction_id IS NULL'
+          )
+          .run(input.document_id);
 
         // Reset all chunk embedding statuses
         for (const chunk of chunks) {
@@ -484,16 +529,13 @@ async function handleEmbeddingRebuild(params: Record<string, unknown>): Promise<
         }
 
         // Regenerate embeddings
-        const result = await embeddingService.embedDocumentChunks(
-          db, vector, chunks,
-          {
-            documentId: input.document_id,
-            filePath: doc.file_path,
-            fileName: doc.file_name,
-            fileHash: doc.file_hash,
-            documentProvenanceId: doc.provenance_id,
-          }
-        );
+        const result = await embeddingService.embedDocumentChunks(db, vector, chunks, {
+          documentId: input.document_id,
+          filePath: doc.file_path,
+          fileName: doc.file_name,
+          fileHash: doc.file_hash,
+          documentProvenanceId: doc.provenance_id,
+        });
 
         rebuiltIds.push(...result.embeddingIds);
         provenanceIds.push(...result.provenanceIds);
@@ -526,19 +568,13 @@ async function handleEmbeddingRebuild(params: Record<string, unknown>): Promise<
             // Delete old VLM embedding if exists
             if (img.vlm_embedding_id) {
               vector.deleteVector(img.vlm_embedding_id);
-              conn
-                .prepare('DELETE FROM embeddings WHERE id = ?')
-                .run(img.vlm_embedding_id);
+              conn.prepare('DELETE FROM embeddings WHERE id = ?').run(img.vlm_embedding_id);
               // Null out the reference on the image
-              conn
-                .prepare('UPDATE images SET vlm_embedding_id = NULL WHERE id = ?')
-                .run(img.id);
+              conn.prepare('UPDATE images SET vlm_embedding_id = NULL WHERE id = ?').run(img.id);
             }
 
             // Generate new embedding for VLM description
-            const vlmEmbedResult = await vlmEmbeddingService.embedSearchQuery(
-              img.vlm_description
-            );
+            const vlmEmbedResult = await vlmEmbeddingService.embedSearchQuery(img.vlm_description);
 
             // Create EMBEDDING provenance (depth 4, parent = VLM_DESCRIPTION provenance)
             const embProvId = uuidv4();
@@ -557,11 +593,11 @@ async function handleEmbeddingRebuild(params: Record<string, unknown>): Promise<
               parent_ids: string;
             }>;
 
-            const vlmProvId =
-              vlmProvRecords.length > 0 ? vlmProvRecords[0].id : img.provenance_id;
-            const existingParents = vlmProvRecords.length > 0
-              ? (JSON.parse(vlmProvRecords[0].parent_ids) as string[])
-              : [];
+            const vlmProvId = vlmProvRecords.length > 0 ? vlmProvRecords[0].id : img.provenance_id;
+            const existingParents =
+              vlmProvRecords.length > 0
+                ? (JSON.parse(vlmProvRecords[0].parent_ids) as string[])
+                : [];
             const parentIds = [...existingParents, vlmProvId];
 
             db.insertProvenance({
@@ -633,9 +669,7 @@ async function handleEmbeddingRebuild(params: Record<string, unknown>): Promise<
             vector.storeVector(embId, vlmEmbedResult);
 
             // Update image with new VLM embedding ID
-            conn
-              .prepare('UPDATE images SET vlm_embedding_id = ? WHERE id = ?')
-              .run(embId, img.id);
+            conn.prepare('UPDATE images SET vlm_embedding_id = ? WHERE id = ?').run(embId, img.id);
 
             rebuiltIds.push(embId);
             provenanceIds.push(embProvId);
@@ -658,13 +692,18 @@ async function handleEmbeddingRebuild(params: Record<string, unknown>): Promise<
       target = { type: 'image', id: input.image_id };
     }
 
-    return formatResponse(successResult({
-      rebuilt_count: rebuiltIds.length,
-      new_embedding_ids: rebuiltIds,
-      provenance_ids: provenanceIds,
-      target,
-      next_steps: [{ tool: 'ocr_embedding_stats', description: 'Verify embedding coverage after rebuild' }, { tool: 'ocr_search', description: 'Search using the rebuilt embeddings' }],
-    }));
+    return formatResponse(
+      successResult({
+        rebuilt_count: rebuiltIds.length,
+        new_embedding_ids: rebuiltIds,
+        provenance_ids: provenanceIds,
+        target,
+        next_steps: [
+          { tool: 'ocr_embedding_stats', description: 'Verify embedding coverage after rebuild' },
+          { tool: 'ocr_search', description: 'Search using the rebuilt embeddings' },
+        ],
+      })
+    );
   } catch (error) {
     return handleError(error);
   }
@@ -676,10 +715,14 @@ async function handleEmbeddingRebuild(params: Record<string, unknown>): Promise<
 
 export const embeddingTools: Record<string, ToolDefinition> = {
   ocr_embedding_list: {
-    description: '[STATUS] Use to browse embeddings with filtering by document, source type (chunk/image/extraction), and model. Returns embedding metadata with source context.',
+    description:
+      '[STATUS] Use to browse embeddings with filtering by document, source type (chunk/image/extraction), and model. Returns embedding metadata with source context.',
     inputSchema: {
       document_id: z.string().min(1).optional().describe('Filter by document ID'),
-      source_type: z.enum(['chunk', 'image', 'extraction']).optional().describe('Filter by source type'),
+      source_type: z
+        .enum(['chunk', 'image', 'extraction'])
+        .optional()
+        .describe('Filter by source type'),
       model_name: z.string().min(1).optional().describe('Filter by model name'),
       limit: z.number().int().min(1).max(100).default(50).describe('Max results (default: 50)'),
       offset: z.number().int().min(0).default(0).describe('Pagination offset'),
@@ -688,7 +731,8 @@ export const embeddingTools: Record<string, ToolDefinition> = {
   },
 
   ocr_embedding_stats: {
-    description: '[STATUS] Use to check embedding coverage and performance. Returns total count, breakdown by source type, device stats, and counts of unembedded chunks/images.',
+    description:
+      '[STATUS] Use to check embedding coverage and performance. Returns total count, breakdown by source type, device stats, and counts of unembedded chunks/images.',
     inputSchema: {
       document_id: z.string().min(1).optional().describe('Scope stats to a specific document'),
     },
@@ -696,7 +740,8 @@ export const embeddingTools: Record<string, ToolDefinition> = {
   },
 
   ocr_embedding_get: {
-    description: '[STATUS] Use to inspect a specific embedding by ID. Returns source context (chunk, image, or extraction), document context, model info, and optional provenance chain.',
+    description:
+      '[STATUS] Use to inspect a specific embedding by ID. Returns source context (chunk, image, or extraction), document context, model info, and optional provenance chain.',
     inputSchema: {
       embedding_id: z.string().min(1).describe('Embedding ID to retrieve'),
       include_provenance: z.boolean().default(false).describe('Include full provenance chain'),
@@ -705,12 +750,27 @@ export const embeddingTools: Record<string, ToolDefinition> = {
   },
 
   ocr_embedding_rebuild: {
-    description: '[SETUP] Rebuild embeddings for a document, chunk, or image. Use after config changes or VLM re-analysis. include_vlm=true for VLM image embeddings.',
+    description:
+      '[SETUP] Rebuild embeddings for a document, chunk, or image. Use after config changes or VLM re-analysis. include_vlm=true for VLM image embeddings.',
     inputSchema: {
-      document_id: z.string().min(1).optional().describe('Rebuild all chunk embeddings for this document (add include_vlm=true for VLM image embeddings too)'),
+      document_id: z
+        .string()
+        .min(1)
+        .optional()
+        .describe(
+          'Rebuild all chunk embeddings for this document (add include_vlm=true for VLM image embeddings too)'
+        ),
       chunk_id: z.string().min(1).optional().describe('Rebuild embedding for this specific chunk'),
-      image_id: z.string().min(1).optional().describe('Rebuild VLM embedding for this specific image'),
-      include_vlm: z.boolean().default(false).optional().describe('When true with document_id, also rebuild VLM embeddings for images'),
+      image_id: z
+        .string()
+        .min(1)
+        .optional()
+        .describe('Rebuild VLM embedding for this specific image'),
+      include_vlm: z
+        .boolean()
+        .default(false)
+        .optional()
+        .describe('When true with document_id, also rebuild VLM embeddings for images'),
     },
     handler: handleEmbeddingRebuild,
   },

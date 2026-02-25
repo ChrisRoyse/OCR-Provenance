@@ -120,99 +120,103 @@ describe('handleVLMDescribe', () => {
       resetState();
     });
 
-  it('returns VALIDATION_ERROR when image_path is missing', async () => {
-    const response = await handleVLMDescribe({});
-    const result = parseResponse(response);
+    it('returns VALIDATION_ERROR when image_path is missing', async () => {
+      const response = await handleVLMDescribe({});
+      const result = parseResponse(response);
 
-    expect(result.success).toBe(false);
-    expect(result.error?.category).toBe('VALIDATION_ERROR');
-  });
-
-  it('returns VALIDATION_ERROR when image_path is empty string', async () => {
-    const response = await handleVLMDescribe({ image_path: '' });
-    const result = parseResponse(response);
-
-    expect(result.success).toBe(false);
-    expect(result.error?.category).toBe('VALIDATION_ERROR');
-  });
-
-  it('returns VALIDATION_ERROR when image_path is non-string type', async () => {
-    const response = await handleVLMDescribe({ image_path: 123 });
-    const result = parseResponse(response);
-
-    expect(result.success).toBe(false);
-    expect(result.error?.category).toBe('VALIDATION_ERROR');
-  });
-
-  it('returns PATH_NOT_FOUND when image file does not exist within allowed dir', async () => {
-    // Use /tmp path which is in the allowed base directories
-    const response = await handleVLMDescribe({ image_path: '/tmp/nonexistent-vlm-test-image.png' });
-    const result = parseResponse(response);
-
-    expect(result.success).toBe(false);
-    expect(result.error?.category).toBe('PATH_NOT_FOUND');
-    expect(result.error?.message).toContain('Image file not found');
-    expect(result.error?.details).toBeDefined();
-  });
-
-  it('returns PATH_NOT_FOUND with recovery hint', async () => {
-    const response = await handleVLMDescribe({ image_path: '/tmp/nonexistent-vlm-test-image.png' });
-    const result = parseResponse(response);
-
-    expect(result.success).toBe(false);
-    expect(result.error?.category).toBe('PATH_NOT_FOUND');
-    // Error recovery hints (from forensic audit fix) should be present
-    expect(result.error?.recovery).toBeDefined();
-    expect(result.error?.recovery?.tool).toBeDefined();
-    expect(result.error?.recovery?.hint).toBeDefined();
-  });
-
-  it('returns VALIDATION_ERROR for paths outside allowed directories', async () => {
-    // sanitizePath rejects paths outside home, /tmp, cwd, storage path
-    const response = await handleVLMDescribe({ image_path: '/nonexistent/image.png' });
-    const result = parseResponse(response);
-
-    expect(result.success).toBe(false);
-    expect(result.error?.category).toBe('VALIDATION_ERROR');
-    expect(result.error?.message).toContain('outside allowed directories');
-  });
-
-  it('validates use_thinking boolean parameter', async () => {
-    // Non-boolean use_thinking should still work (Zod coerces or defaults)
-    const response = await handleVLMDescribe({
-      image_path: '/tmp/nonexistent-vlm-test-image.png',
-      use_thinking: 'yes',
+      expect(result.success).toBe(false);
+      expect(result.error?.category).toBe('VALIDATION_ERROR');
     });
-    const result = parseResponse(response);
 
-    // Should fail on path, not validation - Zod strips unknown strings for boolean
-    expect(result.success).toBe(false);
-  });
+    it('returns VALIDATION_ERROR when image_path is empty string', async () => {
+      const response = await handleVLMDescribe({ image_path: '' });
+      const result = parseResponse(response);
 
-  it('accepts optional context_text parameter without validation error', async () => {
-    const response = await handleVLMDescribe({
-      image_path: '/tmp/nonexistent-vlm-test-image.png',
-      context_text: 'This is surrounding document context',
+      expect(result.success).toBe(false);
+      expect(result.error?.category).toBe('VALIDATION_ERROR');
     });
-    const result = parseResponse(response);
 
-    // Should fail on path (within allowed dir), not validation
-    expect(result.success).toBe(false);
-    expect(result.error?.category).toBe('PATH_NOT_FOUND');
-  });
+    it('returns VALIDATION_ERROR when image_path is non-string type', async () => {
+      const response = await handleVLMDescribe({ image_path: 123 });
+      const result = parseResponse(response);
 
-  it('strips unknown parameters and proceeds', async () => {
-    const response = await handleVLMDescribe({
-      image_path: '/tmp/nonexistent-vlm-test-image.png',
-      unknown_param: 'should be stripped',
-      another_extra: 42,
+      expect(result.success).toBe(false);
+      expect(result.error?.category).toBe('VALIDATION_ERROR');
     });
-    const result = parseResponse(response);
 
-    // Should fail on path, not validation
-    expect(result.success).toBe(false);
-    expect(result.error?.category).toBe('PATH_NOT_FOUND');
-  });
+    it('returns PATH_NOT_FOUND when image file does not exist within allowed dir', async () => {
+      // Use /tmp path which is in the allowed base directories
+      const response = await handleVLMDescribe({
+        image_path: '/tmp/nonexistent-vlm-test-image.png',
+      });
+      const result = parseResponse(response);
+
+      expect(result.success).toBe(false);
+      expect(result.error?.category).toBe('PATH_NOT_FOUND');
+      expect(result.error?.message).toContain('Image file not found');
+      expect(result.error?.details).toBeDefined();
+    });
+
+    it('returns PATH_NOT_FOUND with recovery hint', async () => {
+      const response = await handleVLMDescribe({
+        image_path: '/tmp/nonexistent-vlm-test-image.png',
+      });
+      const result = parseResponse(response);
+
+      expect(result.success).toBe(false);
+      expect(result.error?.category).toBe('PATH_NOT_FOUND');
+      // Error recovery hints (from forensic audit fix) should be present
+      expect(result.error?.recovery).toBeDefined();
+      expect(result.error?.recovery?.tool).toBeDefined();
+      expect(result.error?.recovery?.hint).toBeDefined();
+    });
+
+    it('returns VALIDATION_ERROR for paths outside allowed directories', async () => {
+      // sanitizePath rejects paths outside home, /tmp, cwd, storage path
+      const response = await handleVLMDescribe({ image_path: '/nonexistent/image.png' });
+      const result = parseResponse(response);
+
+      expect(result.success).toBe(false);
+      expect(result.error?.category).toBe('VALIDATION_ERROR');
+      expect(result.error?.message).toContain('outside allowed directories');
+    });
+
+    it('validates use_thinking boolean parameter', async () => {
+      // Non-boolean use_thinking should still work (Zod coerces or defaults)
+      const response = await handleVLMDescribe({
+        image_path: '/tmp/nonexistent-vlm-test-image.png',
+        use_thinking: 'yes',
+      });
+      const result = parseResponse(response);
+
+      // Should fail on path, not validation - Zod strips unknown strings for boolean
+      expect(result.success).toBe(false);
+    });
+
+    it('accepts optional context_text parameter without validation error', async () => {
+      const response = await handleVLMDescribe({
+        image_path: '/tmp/nonexistent-vlm-test-image.png',
+        context_text: 'This is surrounding document context',
+      });
+      const result = parseResponse(response);
+
+      // Should fail on path (within allowed dir), not validation
+      expect(result.success).toBe(false);
+      expect(result.error?.category).toBe('PATH_NOT_FOUND');
+    });
+
+    it('strips unknown parameters and proceeds', async () => {
+      const response = await handleVLMDescribe({
+        image_path: '/tmp/nonexistent-vlm-test-image.png',
+        unknown_param: 'should be stripped',
+        another_extra: 42,
+      });
+      const result = parseResponse(response);
+
+      // Should fail on path, not validation
+      expect(result.success).toBe(false);
+      expect(result.error?.category).toBe('PATH_NOT_FOUND');
+    });
   }); // end describe('without database')
 
   describe('with real database and image file', () => {
@@ -285,145 +289,145 @@ describe('handleVLMProcess', () => {
       resetState();
     });
 
-  it('returns DATABASE_NOT_SELECTED when no database', async () => {
-    const response = await handleVLMProcess({});
-    const result = parseResponse(response);
+    it('returns DATABASE_NOT_SELECTED when no database', async () => {
+      const response = await handleVLMProcess({});
+      const result = parseResponse(response);
 
-    expect(result.success).toBe(false);
-    expect(result.error?.category).toBe('DATABASE_NOT_SELECTED');
-  });
-
-  it('returns DATABASE_NOT_SELECTED when no database with document_id', async () => {
-    const response = await handleVLMProcess({ document_id: 'doc-123' });
-    const result = parseResponse(response);
-
-    expect(result.success).toBe(false);
-    expect(result.error?.category).toBe('DATABASE_NOT_SELECTED');
-  });
-
-  it('returns DATABASE_NOT_SELECTED with recovery hint', async () => {
-    const response = await handleVLMProcess({});
-    const result = parseResponse(response);
-
-    expect(result.success).toBe(false);
-    expect(result.error?.category).toBe('DATABASE_NOT_SELECTED');
-    expect(result.error?.recovery).toBeDefined();
-    expect(result.error?.recovery?.tool).toBeDefined();
-  });
-
-  it('accepts optional batch_size parameter', async () => {
-    const response = await handleVLMProcess({ batch_size: 10 });
-    const result = parseResponse(response);
-
-    expect(result.success).toBe(false);
-    expect(result.error?.category).toBe('DATABASE_NOT_SELECTED');
-  });
-
-  it('returns VALIDATION_ERROR when batch_size exceeds max', async () => {
-    const response = await handleVLMProcess({ batch_size: 21 });
-    const result = parseResponse(response);
-
-    expect(result.success).toBe(false);
-    expect(result.error?.category).toBe('VALIDATION_ERROR');
-  });
-
-  it('returns VALIDATION_ERROR when batch_size is zero', async () => {
-    const response = await handleVLMProcess({ batch_size: 0 });
-    const result = parseResponse(response);
-
-    expect(result.success).toBe(false);
-    expect(result.error?.category).toBe('VALIDATION_ERROR');
-  });
-
-  it('returns VALIDATION_ERROR when batch_size is negative', async () => {
-    const response = await handleVLMProcess({ batch_size: -1 });
-    const result = parseResponse(response);
-
-    expect(result.success).toBe(false);
-    expect(result.error?.category).toBe('VALIDATION_ERROR');
-  });
-
-  it('accepts optional limit parameter', async () => {
-    const response = await handleVLMProcess({ limit: 100 });
-    const result = parseResponse(response);
-
-    expect(result.success).toBe(false);
-    expect(result.error?.category).toBe('DATABASE_NOT_SELECTED');
-  });
-
-  it('returns VALIDATION_ERROR when limit exceeds max (500)', async () => {
-    const response = await handleVLMProcess({ limit: 501 });
-    const result = parseResponse(response);
-
-    expect(result.success).toBe(false);
-    expect(result.error?.category).toBe('VALIDATION_ERROR');
-  });
-
-  it('returns VALIDATION_ERROR when limit is zero', async () => {
-    const response = await handleVLMProcess({ limit: 0 });
-    const result = parseResponse(response);
-
-    expect(result.success).toBe(false);
-    expect(result.error?.category).toBe('VALIDATION_ERROR');
-  });
-
-  it('accepts boundary batch_size value 1', async () => {
-    const response = await handleVLMProcess({ batch_size: 1 });
-    const result = parseResponse(response);
-
-    expect(result.success).toBe(false);
-    expect(result.error?.category).toBe('DATABASE_NOT_SELECTED');
-  });
-
-  it('accepts boundary batch_size value 20', async () => {
-    const response = await handleVLMProcess({ batch_size: 20 });
-    const result = parseResponse(response);
-
-    expect(result.success).toBe(false);
-    expect(result.error?.category).toBe('DATABASE_NOT_SELECTED');
-  });
-
-  it('accepts boundary limit value 1', async () => {
-    const response = await handleVLMProcess({ limit: 1 });
-    const result = parseResponse(response);
-
-    expect(result.success).toBe(false);
-    expect(result.error?.category).toBe('DATABASE_NOT_SELECTED');
-  });
-
-  it('accepts boundary limit value 500', async () => {
-    const response = await handleVLMProcess({ limit: 500 });
-    const result = parseResponse(response);
-
-    expect(result.success).toBe(false);
-    expect(result.error?.category).toBe('DATABASE_NOT_SELECTED');
-  });
-
-  it('returns VALIDATION_ERROR when batch_size is not an integer', async () => {
-    const response = await handleVLMProcess({ batch_size: 5.5 });
-    const result = parseResponse(response);
-
-    expect(result.success).toBe(false);
-    expect(result.error?.category).toBe('VALIDATION_ERROR');
-  });
-
-  it('returns VALIDATION_ERROR when limit is not an integer', async () => {
-    const response = await handleVLMProcess({ limit: 50.5 });
-    const result = parseResponse(response);
-
-    expect(result.success).toBe(false);
-    expect(result.error?.category).toBe('VALIDATION_ERROR');
-  });
-
-  it('strips unknown parameters and proceeds', async () => {
-    const response = await handleVLMProcess({
-      unknown_param: 'should be stripped',
+      expect(result.success).toBe(false);
+      expect(result.error?.category).toBe('DATABASE_NOT_SELECTED');
     });
-    const result = parseResponse(response);
 
-    expect(result.success).toBe(false);
-    expect(result.error?.category).toBe('DATABASE_NOT_SELECTED');
-  });
+    it('returns DATABASE_NOT_SELECTED when no database with document_id', async () => {
+      const response = await handleVLMProcess({ document_id: 'doc-123' });
+      const result = parseResponse(response);
+
+      expect(result.success).toBe(false);
+      expect(result.error?.category).toBe('DATABASE_NOT_SELECTED');
+    });
+
+    it('returns DATABASE_NOT_SELECTED with recovery hint', async () => {
+      const response = await handleVLMProcess({});
+      const result = parseResponse(response);
+
+      expect(result.success).toBe(false);
+      expect(result.error?.category).toBe('DATABASE_NOT_SELECTED');
+      expect(result.error?.recovery).toBeDefined();
+      expect(result.error?.recovery?.tool).toBeDefined();
+    });
+
+    it('accepts optional batch_size parameter', async () => {
+      const response = await handleVLMProcess({ batch_size: 10 });
+      const result = parseResponse(response);
+
+      expect(result.success).toBe(false);
+      expect(result.error?.category).toBe('DATABASE_NOT_SELECTED');
+    });
+
+    it('returns VALIDATION_ERROR when batch_size exceeds max', async () => {
+      const response = await handleVLMProcess({ batch_size: 21 });
+      const result = parseResponse(response);
+
+      expect(result.success).toBe(false);
+      expect(result.error?.category).toBe('VALIDATION_ERROR');
+    });
+
+    it('returns VALIDATION_ERROR when batch_size is zero', async () => {
+      const response = await handleVLMProcess({ batch_size: 0 });
+      const result = parseResponse(response);
+
+      expect(result.success).toBe(false);
+      expect(result.error?.category).toBe('VALIDATION_ERROR');
+    });
+
+    it('returns VALIDATION_ERROR when batch_size is negative', async () => {
+      const response = await handleVLMProcess({ batch_size: -1 });
+      const result = parseResponse(response);
+
+      expect(result.success).toBe(false);
+      expect(result.error?.category).toBe('VALIDATION_ERROR');
+    });
+
+    it('accepts optional limit parameter', async () => {
+      const response = await handleVLMProcess({ limit: 100 });
+      const result = parseResponse(response);
+
+      expect(result.success).toBe(false);
+      expect(result.error?.category).toBe('DATABASE_NOT_SELECTED');
+    });
+
+    it('returns VALIDATION_ERROR when limit exceeds max (500)', async () => {
+      const response = await handleVLMProcess({ limit: 501 });
+      const result = parseResponse(response);
+
+      expect(result.success).toBe(false);
+      expect(result.error?.category).toBe('VALIDATION_ERROR');
+    });
+
+    it('returns VALIDATION_ERROR when limit is zero', async () => {
+      const response = await handleVLMProcess({ limit: 0 });
+      const result = parseResponse(response);
+
+      expect(result.success).toBe(false);
+      expect(result.error?.category).toBe('VALIDATION_ERROR');
+    });
+
+    it('accepts boundary batch_size value 1', async () => {
+      const response = await handleVLMProcess({ batch_size: 1 });
+      const result = parseResponse(response);
+
+      expect(result.success).toBe(false);
+      expect(result.error?.category).toBe('DATABASE_NOT_SELECTED');
+    });
+
+    it('accepts boundary batch_size value 20', async () => {
+      const response = await handleVLMProcess({ batch_size: 20 });
+      const result = parseResponse(response);
+
+      expect(result.success).toBe(false);
+      expect(result.error?.category).toBe('DATABASE_NOT_SELECTED');
+    });
+
+    it('accepts boundary limit value 1', async () => {
+      const response = await handleVLMProcess({ limit: 1 });
+      const result = parseResponse(response);
+
+      expect(result.success).toBe(false);
+      expect(result.error?.category).toBe('DATABASE_NOT_SELECTED');
+    });
+
+    it('accepts boundary limit value 500', async () => {
+      const response = await handleVLMProcess({ limit: 500 });
+      const result = parseResponse(response);
+
+      expect(result.success).toBe(false);
+      expect(result.error?.category).toBe('DATABASE_NOT_SELECTED');
+    });
+
+    it('returns VALIDATION_ERROR when batch_size is not an integer', async () => {
+      const response = await handleVLMProcess({ batch_size: 5.5 });
+      const result = parseResponse(response);
+
+      expect(result.success).toBe(false);
+      expect(result.error?.category).toBe('VALIDATION_ERROR');
+    });
+
+    it('returns VALIDATION_ERROR when limit is not an integer', async () => {
+      const response = await handleVLMProcess({ limit: 50.5 });
+      const result = parseResponse(response);
+
+      expect(result.success).toBe(false);
+      expect(result.error?.category).toBe('VALIDATION_ERROR');
+    });
+
+    it('strips unknown parameters and proceeds', async () => {
+      const response = await handleVLMProcess({
+        unknown_param: 'should be stripped',
+      });
+      const result = parseResponse(response);
+
+      expect(result.success).toBe(false);
+      expect(result.error?.category).toBe('DATABASE_NOT_SELECTED');
+    });
   }); // end describe('without database')
 
   describe('with database selected', () => {
@@ -891,19 +895,25 @@ describe('VLM handlers database interaction', () => {
       );
 
       const imgId = uuidv4();
-      conn.prepare(`
+      conn
+        .prepare(
+          `
         INSERT INTO images (id, document_id, ocr_result_id, page_number, bbox_x, bbox_y,
           bbox_width, bbox_height, image_index, format, width, height,
           extracted_path, vlm_status, provenance_id, created_at)
         VALUES (?, ?, ?, 1, 0.0, 0.0, 100.0, 100.0, 0, 'png', 200, 200,
           '/tmp/test-vlm-img.png', 'pending', ?, datetime('now'))
-      `).run(imgId, docId, ocrId, imgProvId);
+      `
+        )
+        .run(imgId, docId, ocrId, imgProvId);
 
       // Verify image was inserted
-      const imgRow = conn.prepare('SELECT id, vlm_status FROM images WHERE id = ?').get(imgId) as {
-        id: string;
-        vlm_status: string;
-      } | undefined;
+      const imgRow = conn.prepare('SELECT id, vlm_status FROM images WHERE id = ?').get(imgId) as
+        | {
+            id: string;
+            vlm_status: string;
+          }
+        | undefined;
       expect(imgRow).toBeDefined();
       expect(imgRow?.vlm_status).toBe('pending');
 
@@ -1050,7 +1060,9 @@ describe('withDatabaseOperation wrapper behavior', () => {
     resetState();
 
     // Use /tmp path which is in the allowed base directories
-    const response = await handleVLMAnalyzePDF({ pdf_path: '/tmp/nonexistent-vlm-wrapper-test.pdf' });
+    const response = await handleVLMAnalyzePDF({
+      pdf_path: '/tmp/nonexistent-vlm-wrapper-test.pdf',
+    });
     const result = parseResponse(response);
 
     // Should fail on PATH_NOT_FOUND, not DATABASE_NOT_SELECTED

@@ -163,41 +163,57 @@ function buildStatsResponse(db: DatabaseService, vector: VectorService): Record<
   const conn = db.getConnection();
 
   // Additional overview queries
-  const fileTypeDist = conn.prepare(
-    "SELECT file_type, COUNT(*) as count FROM documents GROUP BY file_type ORDER BY count DESC"
-  ).all();
+  const fileTypeDist = conn
+    .prepare(
+      'SELECT file_type, COUNT(*) as count FROM documents GROUP BY file_type ORDER BY count DESC'
+    )
+    .all();
 
-  const dateRange = conn.prepare(
-    "SELECT MIN(created_at) as earliest, MAX(created_at) as latest FROM documents"
-  ).get() as { earliest: string | null; latest: string | null } | undefined;
+  const dateRange = conn
+    .prepare('SELECT MIN(created_at) as earliest, MAX(created_at) as latest FROM documents')
+    .get() as { earliest: string | null; latest: string | null } | undefined;
 
-  const statusDist = conn.prepare(
-    "SELECT status, COUNT(*) as count FROM documents GROUP BY status"
-  ).all();
+  const statusDist = conn
+    .prepare('SELECT status, COUNT(*) as count FROM documents GROUP BY status')
+    .all();
 
-  const qualityStats = conn.prepare(
-    `SELECT AVG(parse_quality_score) as avg_quality,
+  const qualityStats = conn
+    .prepare(
+      `SELECT AVG(parse_quality_score) as avg_quality,
             MIN(parse_quality_score) as min_quality,
             MAX(parse_quality_score) as max_quality
      FROM ocr_results WHERE parse_quality_score IS NOT NULL`
-  ).get() as { avg_quality: number | null; min_quality: number | null; max_quality: number | null } | undefined;
+    )
+    .get() as
+    | { avg_quality: number | null; min_quality: number | null; max_quality: number | null }
+    | undefined;
 
-  const clusterSummary = conn.prepare(
-    `SELECT c.id, c.label, c.document_count, c.classification_tag
+  const clusterSummary = conn
+    .prepare(
+      `SELECT c.id, c.label, c.document_count, c.classification_tag
      FROM clusters c ORDER BY c.document_count DESC LIMIT 5`
-  ).all();
+    )
+    .all();
 
-  const recentDocs = conn.prepare(
-    "SELECT file_name, file_type, status, page_count, created_at FROM documents ORDER BY created_at DESC LIMIT 5"
-  ).all();
+  const recentDocs = conn
+    .prepare(
+      'SELECT file_name, file_type, status, page_count, created_at FROM documents ORDER BY created_at DESC LIMIT 5'
+    )
+    .all();
 
-  const totalChunks = conn.prepare("SELECT COUNT(*) as count FROM chunks").get() as { count: number };
-  const totalEmbeddings = conn.prepare("SELECT COUNT(*) as count FROM embeddings").get() as { count: number };
-  const totalImages = conn.prepare("SELECT COUNT(*) as count FROM images").get() as { count: number };
+  const totalChunks = conn.prepare('SELECT COUNT(*) as count FROM chunks').get() as {
+    count: number;
+  };
+  const totalEmbeddings = conn.prepare('SELECT COUNT(*) as count FROM embeddings').get() as {
+    count: number;
+  };
+  const totalImages = conn.prepare('SELECT COUNT(*) as count FROM images').get() as {
+    count: number;
+  };
 
-  const ftsStatus = conn.prepare(
-    "SELECT COUNT(*) as count FROM fts_index_metadata"
-  ).get() as { count: number };
+  const ftsStatus = conn.prepare('SELECT COUNT(*) as count FROM fts_index_metadata').get() as {
+    count: number;
+  };
 
   return {
     name: db.getName(),
@@ -288,9 +304,7 @@ export async function handleDatabaseDelete(
       successResult({
         name: input.database_name,
         deleted: true,
-        next_steps: [
-          { tool: 'ocr_db_list', description: 'List remaining databases' },
-        ],
+        next_steps: [{ tool: 'ocr_db_list', description: 'List remaining databases' }],
       })
     );
   } catch (error) {
@@ -307,7 +321,8 @@ export async function handleDatabaseDelete(
  */
 export const databaseTools: Record<string, ToolDefinition> = {
   ocr_db_create: {
-    description: '[SETUP] Use to create a new database before ingesting documents. Returns database name and path. Follow with ocr_db_select, then ocr_ingest_files or ocr_ingest_directory.',
+    description:
+      '[SETUP] Use to create a new database before ingesting documents. Returns database name and path. Follow with ocr_db_select, then ocr_ingest_files or ocr_ingest_directory.',
     inputSchema: {
       name: z
         .string()
@@ -321,14 +336,16 @@ export const databaseTools: Record<string, ToolDefinition> = {
     handler: handleDatabaseCreate,
   },
   ocr_db_list: {
-    description: '[ESSENTIAL] Use first to discover available databases. Returns names, sizes, and document counts. Follow with ocr_db_select to choose one.',
+    description:
+      '[ESSENTIAL] Use first to discover available databases. Returns names, sizes, and document counts. Follow with ocr_db_select to choose one.',
     inputSchema: {
       include_stats: z.boolean().default(false).describe('Include document/chunk/embedding counts'),
     },
     handler: handleDatabaseList,
   },
   ocr_db_select: {
-    description: '[ESSENTIAL] Use to switch active database. All subsequent tools operate on the selected database. Returns basic stats. Prerequisite for most tools.',
+    description:
+      '[ESSENTIAL] Use to switch active database. All subsequent tools operate on the selected database. Returns basic stats. Prerequisite for most tools.',
     inputSchema: {
       database_name: z.string().min(1).describe('Name of the database to select'),
     },
@@ -346,7 +363,8 @@ export const databaseTools: Record<string, ToolDefinition> = {
     handler: handleDatabaseStats,
   },
   ocr_db_delete: {
-    description: '[DESTRUCTIVE] Use to permanently delete a database and all its data. Returns confirmation. Requires confirm=true.',
+    description:
+      '[DESTRUCTIVE] Use to permanently delete a database and all its data. Returns confirmation. Requires confirm=true.',
     inputSchema: {
       database_name: z.string().min(1).describe('Name of the database to delete'),
       confirm: z.literal(true).describe('Must be true to confirm deletion'),

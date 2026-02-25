@@ -251,9 +251,7 @@ export function reassignDocument(
 
   // Find existing assignment for this document in this run
   const existing = db
-    .prepare(
-      'SELECT id, cluster_id FROM document_clusters WHERE document_id = ? AND run_id = ?'
-    )
+    .prepare('SELECT id, cluster_id FROM document_clusters WHERE document_id = ? AND run_id = ?')
     .get(documentId, runId) as { id: string; cluster_id: string | null } | undefined;
 
   const oldClusterId = existing?.cluster_id ?? null;
@@ -278,16 +276,18 @@ export function reassignDocument(
   // Insert new assignment
   const now = new Date().toISOString();
   const dcId = uuidv4();
-  db.prepare(`
+  db.prepare(
+    `
     INSERT INTO document_clusters (id, document_id, cluster_id, run_id,
       similarity_to_centroid, membership_probability, is_noise, assigned_at)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-  `).run(dcId, documentId, targetClusterId, runId, 0, 1.0, 0, now);
+  `
+  ).run(dcId, documentId, targetClusterId, runId, 0, 1.0, 0, now);
 
   // Increment target cluster's document_count
-  db.prepare(
-    'UPDATE clusters SET document_count = document_count + 1 WHERE id = ?'
-  ).run(targetClusterId);
+  db.prepare('UPDATE clusters SET document_count = document_count + 1 WHERE id = ?').run(
+    targetClusterId
+  );
 
   return { old_cluster_id: oldClusterId, run_id: runId };
 }
@@ -336,9 +336,10 @@ export function mergeClusters(
     const documentsMoved = moveResult.changes;
 
     // Update cluster1's document_count
-    db.prepare(
-      'UPDATE clusters SET document_count = document_count + ? WHERE id = ?'
-    ).run(documentsMoved, clusterId1);
+    db.prepare('UPDATE clusters SET document_count = document_count + ? WHERE id = ?').run(
+      documentsMoved,
+      clusterId1
+    );
 
     // Delete cluster2 record
     db.prepare('DELETE FROM clusters WHERE id = ?').run(clusterId2);
@@ -382,4 +383,3 @@ export function getClusteringStats(db: Database.Database): {
 
   return row;
 }
-

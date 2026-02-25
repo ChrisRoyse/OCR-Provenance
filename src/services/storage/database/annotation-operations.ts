@@ -63,7 +63,10 @@ export interface ListAnnotationsOptions {
  * @returns The created annotation row
  * @throws Error if document, chunk, or parent annotation not found
  */
-export function createAnnotation(conn: Database.Database, params: CreateAnnotationParams): AnnotationRow {
+export function createAnnotation(
+  conn: Database.Database,
+  params: CreateAnnotationParams
+): AnnotationRow {
   const id = uuidv4();
   const now = new Date().toISOString();
 
@@ -89,21 +92,25 @@ export function createAnnotation(conn: Database.Database, params: CreateAnnotati
     }
   }
 
-  conn.prepare(`
+  conn
+    .prepare(
+      `
     INSERT INTO annotations (id, document_id, user_id, chunk_id, page_number, annotation_type, content, status, parent_id, created_at, updated_at)
     VALUES (?, ?, ?, ?, ?, ?, ?, 'open', ?, ?, ?)
-  `).run(
-    id,
-    params.document_id,
-    params.user_id ?? null,
-    params.chunk_id ?? null,
-    params.page_number ?? null,
-    params.annotation_type,
-    params.content,
-    params.parent_id ?? null,
-    now,
-    now
-  );
+  `
+    )
+    .run(
+      id,
+      params.document_id,
+      params.user_id ?? null,
+      params.chunk_id ?? null,
+      params.page_number ?? null,
+      params.annotation_type,
+      params.content,
+      params.parent_id ?? null,
+      now,
+      now
+    );
 
   return conn.prepare('SELECT * FROM annotations WHERE id = ?').get(id) as AnnotationRow;
 }
@@ -133,9 +140,9 @@ export function getAnnotationWithThread(
   const annotation = getAnnotation(conn, id);
   if (!annotation) return null;
 
-  const replies = conn.prepare(
-    'SELECT * FROM annotations WHERE parent_id = ? ORDER BY created_at ASC'
-  ).all(id) as AnnotationRow[];
+  const replies = conn
+    .prepare('SELECT * FROM annotations WHERE parent_id = ? ORDER BY created_at ASC')
+    .all(id) as AnnotationRow[];
 
   return { annotation, replies };
 }
@@ -173,16 +180,16 @@ export function listAnnotations(
 
   const where = conditions.join(' AND ');
 
-  const totalRow = conn.prepare(
-    `SELECT COUNT(*) as c FROM annotations WHERE ${where}`
-  ).get(...params) as { c: number };
+  const totalRow = conn
+    .prepare(`SELECT COUNT(*) as c FROM annotations WHERE ${where}`)
+    .get(...params) as { c: number };
 
   const limit = Math.min(opts.limit ?? 50, 200);
   const offset = opts.offset ?? 0;
 
-  const annotations = conn.prepare(
-    `SELECT * FROM annotations WHERE ${where} ORDER BY created_at DESC LIMIT ? OFFSET ?`
-  ).all(...params, limit, offset) as AnnotationRow[];
+  const annotations = conn
+    .prepare(`SELECT * FROM annotations WHERE ${where} ORDER BY created_at DESC LIMIT ? OFFSET ?`)
+    .all(...params, limit, offset) as AnnotationRow[];
 
   return { annotations, total: totalRow.c };
 }
@@ -251,23 +258,27 @@ export function getAnnotationSummary(
   conn: Database.Database,
   documentId: string
 ): Record<string, unknown> {
-  const byType = conn.prepare(`
+  const byType = conn
+    .prepare(
+      `
     SELECT annotation_type, status, COUNT(*) as count
     FROM annotations WHERE document_id = ?
     GROUP BY annotation_type, status
-  `).all(documentId) as { annotation_type: string; status: string; count: number }[];
+  `
+    )
+    .all(documentId) as { annotation_type: string; status: string; count: number }[];
 
-  const totalOpen = conn.prepare(
-    `SELECT COUNT(*) as c FROM annotations WHERE document_id = ? AND status = 'open'`
-  ).get(documentId) as { c: number };
+  const totalOpen = conn
+    .prepare(`SELECT COUNT(*) as c FROM annotations WHERE document_id = ? AND status = 'open'`)
+    .get(documentId) as { c: number };
 
-  const totalResolved = conn.prepare(
-    `SELECT COUNT(*) as c FROM annotations WHERE document_id = ? AND status = 'resolved'`
-  ).get(documentId) as { c: number };
+  const totalResolved = conn
+    .prepare(`SELECT COUNT(*) as c FROM annotations WHERE document_id = ? AND status = 'resolved'`)
+    .get(documentId) as { c: number };
 
-  const totalDismissed = conn.prepare(
-    `SELECT COUNT(*) as c FROM annotations WHERE document_id = ? AND status = 'dismissed'`
-  ).get(documentId) as { c: number };
+  const totalDismissed = conn
+    .prepare(`SELECT COUNT(*) as c FROM annotations WHERE document_id = ? AND status = 'dismissed'`)
+    .get(documentId) as { c: number };
 
   return {
     document_id: documentId,

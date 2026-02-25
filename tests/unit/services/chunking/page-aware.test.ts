@@ -8,7 +8,10 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { chunkHybridSectionAware, DEFAULT_CHUNKING_CONFIG } from '../../../../src/services/chunking/chunker.js';
+import {
+  chunkHybridSectionAware,
+  DEFAULT_CHUNKING_CONFIG,
+} from '../../../../src/services/chunking/chunker.js';
 import type { PageOffset } from '../../../../src/models/document.js';
 
 describe('Hybrid Section-Aware Chunking - Page Tracking', () => {
@@ -119,7 +122,8 @@ describe('Hybrid Section-Aware Chunking - Page Tracking', () => {
     });
 
     it('chunks have valid startOffset and endOffset', () => {
-      const text = 'First paragraph of text.\n\nSecond paragraph of text.\n\nThird paragraph of text.';
+      const text =
+        'First paragraph of text.\n\nSecond paragraph of text.\n\nThird paragraph of text.';
       const chunks = chunkHybridSectionAware(text, [], null, DEFAULT_CHUNKING_CONFIG);
 
       for (const chunk of chunks) {
@@ -133,7 +137,11 @@ describe('Hybrid Section-Aware Chunking - Page Tracking', () => {
   describe('overlap behavior', () => {
     it('first chunk has zero overlapWithPrevious', () => {
       const text = 'A '.repeat(2000); // Generate enough text for multiple chunks
-      const chunks = chunkHybridSectionAware(text, [], null, { chunkSize: 500, overlapPercent: 10, maxChunkSize: 2000 });
+      const chunks = chunkHybridSectionAware(text, [], null, {
+        chunkSize: 500,
+        overlapPercent: 10,
+        maxChunkSize: 2000,
+      });
 
       if (chunks.length > 0) {
         expect(chunks[0].overlapWithPrevious).toBe(0);
@@ -142,7 +150,11 @@ describe('Hybrid Section-Aware Chunking - Page Tracking', () => {
 
     it('last chunk has zero overlapWithNext', () => {
       const text = 'A '.repeat(2000);
-      const chunks = chunkHybridSectionAware(text, [], null, { chunkSize: 500, overlapPercent: 10, maxChunkSize: 2000 });
+      const chunks = chunkHybridSectionAware(text, [], null, {
+        chunkSize: 500,
+        overlapPercent: 10,
+        maxChunkSize: 2000,
+      });
 
       if (chunks.length > 0) {
         expect(chunks[chunks.length - 1].overlapWithNext).toBe(0);
@@ -153,7 +165,7 @@ describe('Hybrid Section-Aware Chunking - Page Tracking', () => {
       const text = 'Before table.\n\n| A | B |\n|---|---|\n| 1 | 2 |\n\nAfter table.';
       const chunks = chunkHybridSectionAware(text, [], null, DEFAULT_CHUNKING_CONFIG);
 
-      const atomicChunks = chunks.filter(c => c.isAtomic);
+      const atomicChunks = chunks.filter((c) => c.isAtomic);
       for (const chunk of atomicChunks) {
         expect(chunk.overlapWithPrevious).toBe(0);
         expect(chunk.overlapWithNext).toBe(0);

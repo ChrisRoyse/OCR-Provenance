@@ -71,17 +71,19 @@ export function createPlaybook(
   const now = new Date().toISOString();
   const clausesJson = JSON.stringify(params.clauses);
 
-  db.prepare(`
+  db.prepare(
+    `
     INSERT INTO playbooks (id, name, description, clauses_json, created_at, updated_at, created_by)
     VALUES (?, ?, ?, ?, ?, ?, ?)
-  `).run(
+  `
+  ).run(
     id,
     params.name,
     params.description ?? null,
     clausesJson,
     now,
     now,
-    params.created_by ?? null,
+    params.created_by ?? null
   );
 
   return {
@@ -135,9 +137,9 @@ export function getPlaybook(db: Database.Database, id: string): PlaybookWithClau
  * List all playbooks
  */
 export function listPlaybooks(db: Database.Database): PlaybookWithClauses[] {
-  const rows = db.prepare(
-    'SELECT * FROM playbooks ORDER BY updated_at DESC LIMIT 1000'
-  ).all() as Playbook[];
+  const rows = db
+    .prepare('SELECT * FROM playbooks ORDER BY updated_at DESC LIMIT 1000')
+    .all() as Playbook[];
 
   return rows.map((row) => {
     let clauses: ContractClause[] = [];
@@ -175,7 +177,9 @@ export function compareWithPlaybook(
   playbookId: string
 ): PlaybookComparisonResult {
   // Verify document exists
-  const doc = db.prepare('SELECT id FROM documents WHERE id = ?').get(documentId) as { id: string } | undefined;
+  const doc = db.prepare('SELECT id FROM documents WHERE id = ?').get(documentId) as
+    | { id: string }
+    | undefined;
   if (!doc) {
     throw new Error(`Document not found: ${documentId}`);
   }
@@ -184,13 +188,17 @@ export function compareWithPlaybook(
   const playbook = getPlaybook(db, playbookId);
 
   // Get all chunks for the document
-  const chunks = db.prepare(`
+  const chunks = db
+    .prepare(
+      `
     SELECT c.id, c.text, c.page_number
     FROM chunks c
     INNER JOIN ocr_results o ON o.id = c.ocr_result_id
     WHERE o.document_id = ?
     ORDER BY c.chunk_index ASC
-  `).all(documentId) as Array<{ id: string; text: string; page_number: number | null }>;
+  `
+    )
+    .all(documentId) as Array<{ id: string; text: string; page_number: number | null }>;
 
   const clauseResults: ClauseComparisonResult[] = [];
   let matches = 0;
@@ -219,9 +227,10 @@ export function compareWithPlaybook(
   }
 
   const totalClauses = playbook.clauses.length;
-  const complianceScore = totalClauses > 0
-    ? Math.round(((matches + alternativeMatches) / totalClauses) * 100) / 100
-    : 1.0;
+  const complianceScore =
+    totalClauses > 0
+      ? Math.round(((matches + alternativeMatches) / totalClauses) * 100) / 100
+      : 1.0;
 
   return {
     playbook_id: playbook.id,

@@ -398,8 +398,12 @@ export class ImageExtractor {
         }
       };
 
-      proc.stdout.on('data', (d) => { if (stdout.length < 65536) stdout += d; });
-      proc.stderr.on('data', (d) => { if (stderr.length < 10240) stderr += d; });
+      proc.stdout.on('data', (d) => {
+        if (stdout.length < 65536) stdout += d;
+      });
+      proc.stderr.on('data', (d) => {
+        if (stderr.length < 10240) stderr += d;
+      });
 
       proc.on('error', (err) => {
         cleanup();
@@ -443,9 +447,7 @@ export class ImageExtractor {
           }
           if (!settled) {
             settled = true;
-            reject(
-              new Error(`Process killed by SIGKILL after timeout (${timeout}ms + 5s grace)`)
-            );
+            reject(new Error(`Process killed by SIGKILL after timeout (${timeout}ms + 5s grace)`));
           }
         }, timeout + 5000);
       }

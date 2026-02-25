@@ -51,9 +51,7 @@ describe('Chunk Filtering DB Methods', () => {
     );
 
     docId = uuidv4();
-    db.insertDocument(
-      createTestDocument(docProvId, { id: docId })
-    );
+    db.insertDocument(createTestDocument(docProvId, { id: docId }));
 
     const ocrProvId = uuidv4();
     db.insertProvenance(
@@ -67,18 +65,70 @@ describe('Chunk Filtering DB Methods', () => {
     );
 
     ocrId = uuidv4();
-    db.insertOCRResult(
-      createTestOCRResult(docId, ocrProvId, { id: ocrId })
-    );
+    db.insertOCRResult(createTestOCRResult(docId, ocrProvId, { id: ocrId }));
 
     // Create 8 chunks with varied properties
     const chunkSpecs = [
-      { idx: 0, sp: 'Ch1 > S1', hc: 'Section 1', hl: 2, ct: '["heading","paragraph"]', qs: 4.5, pg: 1, atom: 0 },
-      { idx: 1, sp: 'Ch1 > S1', hc: 'Section 1', hl: 2, ct: '["paragraph"]', qs: 4.0, pg: 1, atom: 0 },
-      { idx: 2, sp: 'Ch1 > S2', hc: 'Section 2', hl: 2, ct: '["paragraph","table"]', qs: 3.5, pg: 2, atom: 1 },
-      { idx: 3, sp: 'Ch2 > S3', hc: 'Section 3', hl: 2, ct: '["paragraph"]', qs: 2.0, pg: 2, atom: 0 },
-      { idx: 4, sp: 'Ch2 > S3', hc: 'Section 3', hl: 2, ct: '["paragraph","code"]', qs: 4.8, pg: 3, atom: 0 },
-      { idx: 5, sp: 'Ch2 > S4', hc: 'Section 4', hl: 2, ct: '["heading","list"]', qs: 3.0, pg: 3, atom: 0 },
+      {
+        idx: 0,
+        sp: 'Ch1 > S1',
+        hc: 'Section 1',
+        hl: 2,
+        ct: '["heading","paragraph"]',
+        qs: 4.5,
+        pg: 1,
+        atom: 0,
+      },
+      {
+        idx: 1,
+        sp: 'Ch1 > S1',
+        hc: 'Section 1',
+        hl: 2,
+        ct: '["paragraph"]',
+        qs: 4.0,
+        pg: 1,
+        atom: 0,
+      },
+      {
+        idx: 2,
+        sp: 'Ch1 > S2',
+        hc: 'Section 2',
+        hl: 2,
+        ct: '["paragraph","table"]',
+        qs: 3.5,
+        pg: 2,
+        atom: 1,
+      },
+      {
+        idx: 3,
+        sp: 'Ch2 > S3',
+        hc: 'Section 3',
+        hl: 2,
+        ct: '["paragraph"]',
+        qs: 2.0,
+        pg: 2,
+        atom: 0,
+      },
+      {
+        idx: 4,
+        sp: 'Ch2 > S3',
+        hc: 'Section 3',
+        hl: 2,
+        ct: '["paragraph","code"]',
+        qs: 4.8,
+        pg: 3,
+        atom: 0,
+      },
+      {
+        idx: 5,
+        sp: 'Ch2 > S4',
+        hc: 'Section 4',
+        hl: 2,
+        ct: '["heading","list"]',
+        qs: 3.0,
+        pg: 3,
+        atom: 0,
+      },
       { idx: 6, sp: null, hc: null, hl: null, ct: null, qs: null, pg: 4, atom: 0 },
       { idx: 7, sp: 'Ch3', hc: 'Chapter 3', hl: 1, ct: '["paragraph"]', qs: 4.2, pg: 5, atom: 1 },
     ];

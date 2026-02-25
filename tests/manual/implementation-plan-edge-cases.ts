@@ -75,7 +75,10 @@ async function main() {
     }
 
     assert(base.image_type === undefined, 'Null vlm_structured_data: image_type not added');
-    assert(base.vlm_extracted_text === undefined, 'Null vlm_structured_data: vlm_extracted_text not added');
+    assert(
+      base.vlm_extracted_text === undefined,
+      'Null vlm_structured_data: vlm_extracted_text not added'
+    );
     assert(base.vlm_structured_data === null, 'Null vlm_structured_data: field is null');
   }
 
@@ -110,7 +113,10 @@ async function main() {
       Array.isArray(base.vlm_dates) && (base.vlm_dates as unknown[]).length === 0,
       'Empty JSON vlm_structured_data: vlm_dates is empty array'
     );
-    assert(base.vlm_primary_subject === null, 'Empty JSON vlm_structured_data: vlm_primary_subject is null');
+    assert(
+      base.vlm_primary_subject === null,
+      'Empty JSON vlm_structured_data: vlm_primary_subject is null'
+    );
   }
 
   // T1.1 Edge Case 3: Image with malformed JSON
@@ -159,8 +165,14 @@ async function main() {
       }
     }
 
-    assert(base.image_type === 'chart', 'Partial vlm_structured_data: imageType correctly extracted');
-    assert(base.vlm_primary_subject === 'Revenue Graph', 'Partial vlm_structured_data: primarySubject correct');
+    assert(
+      base.image_type === 'chart',
+      'Partial vlm_structured_data: imageType correctly extracted'
+    );
+    assert(
+      base.vlm_primary_subject === 'Revenue Graph',
+      'Partial vlm_structured_data: primarySubject correct'
+    );
     assert(
       Array.isArray(base.vlm_extracted_text) && (base.vlm_extracted_text as unknown[]).length === 0,
       'Partial vlm_structured_data: missing extractedText defaults to empty array'
@@ -228,9 +240,7 @@ async function main() {
   // Edge Case 5: Null quality score (neutral treatment)
   {
     const qs: number | null = null;
-    const multiplier = qs !== null && qs !== undefined
-      ? 0.8 + 0.04 * qs
-      : 0.9;
+    const multiplier = qs !== null && qs !== undefined ? 0.8 + 0.04 * qs : 0.9;
     assert(
       Math.abs(multiplier - 0.9) < 1e-10,
       'Quality null: multiplier defaults to 0.9',
@@ -312,32 +322,44 @@ async function main() {
     `);
 
     // Query with NULL doc_author
-    const nullResults = memDb.prepare(
-      "SELECT id FROM documents WHERE doc_author IS NULL"
-    ).all() as Array<{ id: string }>;
-    assert(nullResults.length === 2, 'Index on NULL doc_author: returns 2 rows with NULL', `Got: ${nullResults.length}`);
+    const nullResults = memDb
+      .prepare('SELECT id FROM documents WHERE doc_author IS NULL')
+      .all() as Array<{ id: string }>;
+    assert(
+      nullResults.length === 2,
+      'Index on NULL doc_author: returns 2 rows with NULL',
+      `Got: ${nullResults.length}`
+    );
 
     // Query with specific doc_author
-    const authorResults = memDb.prepare(
-      "SELECT id FROM documents WHERE doc_author = 'Author A'"
-    ).all() as Array<{ id: string }>;
-    assert(authorResults.length === 1, 'Index on doc_author = "Author A": returns 1 row', `Got: ${authorResults.length}`);
+    const authorResults = memDb
+      .prepare("SELECT id FROM documents WHERE doc_author = 'Author A'")
+      .all() as Array<{ id: string }>;
+    assert(
+      authorResults.length === 1,
+      'Index on doc_author = "Author A": returns 1 row',
+      `Got: ${authorResults.length}`
+    );
 
     // LIKE query on doc_author with NULL values (used in metadata_filter)
-    const likeResults = memDb.prepare(
-      "SELECT id FROM documents WHERE doc_author LIKE '%Author%'"
-    ).all() as Array<{ id: string }>;
-    assert(likeResults.length === 1, 'LIKE query on doc_author: NULL values correctly excluded', `Got: ${likeResults.length}`);
+    const likeResults = memDb
+      .prepare("SELECT id FROM documents WHERE doc_author LIKE '%Author%'")
+      .all() as Array<{ id: string }>;
+    assert(
+      likeResults.length === 1,
+      'LIKE query on doc_author: NULL values correctly excluded',
+      `Got: ${likeResults.length}`
+    );
   }
 
   // Edge Case 3: Verify actual database indexes
   {
-    const plan = db.prepare(
-      "EXPLAIN QUERY PLAN SELECT id FROM documents WHERE doc_author IS NULL"
-    ).all() as Array<{ detail: string }>;
-    const _usesIndex = plan.some(p => p.detail.includes('idx_documents_doc_author'));
+    const plan = db
+      .prepare('EXPLAIN QUERY PLAN SELECT id FROM documents WHERE doc_author IS NULL')
+      .all() as Array<{ detail: string }>;
+    const _usesIndex = plan.some((p) => p.detail.includes('idx_documents_doc_author'));
     // SQLite may or may not use an index for IS NULL - depends on optimizer
-    console.log(`  INFO: doc_author IS NULL query plan: ${plan.map(p => p.detail).join('; ')}`);
+    console.log(`  INFO: doc_author IS NULL query plan: ${plan.map((p) => p.detail).join('; ')}`);
     assert(true, 'doc_author IS NULL query executes without error');
   }
 
@@ -348,10 +370,14 @@ async function main() {
 
   // Edge Case 1: Empty clusters table -> clusterSummary should return empty array
   {
-    const clusterCount = db.prepare('SELECT COUNT(*) as count FROM clusters').get() as { count: number };
-    const clusterSummary = db.prepare(
-      'SELECT c.id, c.label, c.document_count, c.classification_tag FROM clusters c ORDER BY c.document_count DESC LIMIT 5'
-    ).all();
+    const clusterCount = db.prepare('SELECT COUNT(*) as count FROM clusters').get() as {
+      count: number;
+    };
+    const clusterSummary = db
+      .prepare(
+        'SELECT c.id, c.label, c.document_count, c.classification_tag FROM clusters c ORDER BY c.document_count DESC LIMIT 5'
+      )
+      .all();
 
     if (clusterCount.count === 0) {
       assert(
@@ -374,9 +400,11 @@ async function main() {
         classification_tag TEXT
       );
     `);
-    const emptyClusterSummary = memDb.prepare(
-      'SELECT id, label, document_count, classification_tag FROM clusters ORDER BY document_count DESC LIMIT 5'
-    ).all();
+    const emptyClusterSummary = memDb
+      .prepare(
+        'SELECT id, label, document_count, classification_tag FROM clusters ORDER BY document_count DESC LIMIT 5'
+      )
+      .all();
     assert(
       Array.isArray(emptyClusterSummary) && emptyClusterSummary.length === 0,
       'Empty clusters table (in-memory): returns empty array'
@@ -385,14 +413,16 @@ async function main() {
 
   // Edge Case 2: All documents same status -> status distribution has 1 entry
   {
-    const statusDist = db.prepare(
-      'SELECT status, COUNT(*) as count FROM documents GROUP BY status'
-    ).all() as Array<{ status: string; count: number }>;
+    const statusDist = db
+      .prepare('SELECT status, COUNT(*) as count FROM documents GROUP BY status')
+      .all() as Array<{ status: string; count: number }>;
 
     if (statusDist.length === 1) {
       assert(true, `All docs have same status "${statusDist[0].status}": 1 distribution entry`);
     } else {
-      console.log(`  INFO: Multiple statuses found: ${statusDist.map(s => `${s.status}=${s.count}`).join(', ')}`);
+      console.log(
+        `  INFO: Multiple statuses found: ${statusDist.map((s) => `${s.status}=${s.count}`).join(', ')}`
+      );
       assert(statusDist.length >= 1, `Status distribution has ${statusDist.length} entries`);
     }
 
@@ -403,9 +433,9 @@ async function main() {
       INSERT INTO status_test VALUES ('complete');
       INSERT INTO status_test VALUES ('complete');
     `);
-    const uniformStatus = memDb.prepare(
-      'SELECT status, COUNT(*) as count FROM status_test GROUP BY status'
-    ).all() as Array<{ status: string; count: number }>;
+    const uniformStatus = memDb
+      .prepare('SELECT status, COUNT(*) as count FROM status_test GROUP BY status')
+      .all() as Array<{ status: string; count: number }>;
     assert(uniformStatus.length === 1, 'Uniform status: exactly 1 distribution entry');
     assert(uniformStatus[0].count === 3, 'Uniform status: count is 3');
   }
@@ -417,9 +447,9 @@ async function main() {
       INSERT INTO date_test_docs VALUES ('d1', NULL);
       INSERT INTO date_test_docs VALUES ('d2', NULL);
     `);
-    const nullDateRange = memDb.prepare(
-      'SELECT MIN(created_at) as earliest, MAX(created_at) as latest FROM date_test_docs'
-    ).get() as { earliest: string | null; latest: string | null };
+    const nullDateRange = memDb
+      .prepare('SELECT MIN(created_at) as earliest, MAX(created_at) as latest FROM date_test_docs')
+      .get() as { earliest: string | null; latest: string | null };
 
     assert(nullDateRange.earliest === null, 'All NULL dates: earliest is null');
     assert(nullDateRange.latest === null, 'All NULL dates: latest is null');
@@ -428,9 +458,9 @@ async function main() {
     memDb.exec(`
       INSERT INTO date_test_docs VALUES ('d3', '2026-01-01T00:00:00Z');
     `);
-    const mixedDateRange = memDb.prepare(
-      'SELECT MIN(created_at) as earliest, MAX(created_at) as latest FROM date_test_docs'
-    ).get() as { earliest: string | null; latest: string | null };
+    const mixedDateRange = memDb
+      .prepare('SELECT MIN(created_at) as earliest, MAX(created_at) as latest FROM date_test_docs')
+      .get() as { earliest: string | null; latest: string | null };
     assert(
       mixedDateRange.earliest === '2026-01-01T00:00:00Z',
       'Mixed NULL dates: earliest ignores NULLs',
@@ -445,14 +475,19 @@ async function main() {
         id TEXT, file_type TEXT, status TEXT, created_at TEXT
       );
     `);
-    const emptyFileTypeDist = memDb.prepare(
-      'SELECT file_type, COUNT(*) as count FROM empty_docs GROUP BY file_type ORDER BY count DESC'
-    ).all();
-    assert(emptyFileTypeDist.length === 0, 'Empty documents: file type distribution is empty array');
+    const emptyFileTypeDist = memDb
+      .prepare(
+        'SELECT file_type, COUNT(*) as count FROM empty_docs GROUP BY file_type ORDER BY count DESC'
+      )
+      .all();
+    assert(
+      emptyFileTypeDist.length === 0,
+      'Empty documents: file type distribution is empty array'
+    );
 
-    const emptyDateRange = memDb.prepare(
-      'SELECT MIN(created_at) as earliest, MAX(created_at) as latest FROM empty_docs'
-    ).get() as { earliest: string | null; latest: string | null };
+    const emptyDateRange = memDb
+      .prepare('SELECT MIN(created_at) as earliest, MAX(created_at) as latest FROM empty_docs')
+      .get() as { earliest: string | null; latest: string | null };
     assert(emptyDateRange.earliest === null, 'Empty documents: date range earliest is null');
   }
 
@@ -496,39 +531,44 @@ async function main() {
 
   // Edge Case 2: Page beyond document -> should return empty chunks
   {
-    const maxPage = db.prepare(
-      'SELECT MAX(page_number) as max_page FROM chunks WHERE document_id = ?'
-    ).get(firstDoc.id) as { max_page: number | null };
+    const maxPage = db
+      .prepare('SELECT MAX(page_number) as max_page FROM chunks WHERE document_id = ?')
+      .get(firstDoc.id) as { max_page: number | null };
 
     const beyondPage = (maxPage.max_page ?? 0) + 100;
-    const emptyChunks = db.prepare(
-      'SELECT * FROM chunks WHERE document_id = ? AND page_number = ?'
-    ).all(firstDoc.id, beyondPage);
+    const emptyChunks = db
+      .prepare('SELECT * FROM chunks WHERE document_id = ? AND page_number = ?')
+      .all(firstDoc.id, beyondPage);
     assert(emptyChunks.length === 0, `Page ${beyondPage} (beyond doc): returns 0 chunks`);
   }
 
   // Edge Case 3: Document with no page numbers in chunks
   {
     // Check if any document has all NULL page numbers
-    const allDocs = db.prepare('SELECT id, file_name FROM documents').all() as Array<{ id: string; file_name: string }>;
+    const allDocs = db.prepare('SELECT id, file_name FROM documents').all() as Array<{
+      id: string;
+      file_name: string;
+    }>;
     let foundDocWithNoPages = false;
 
     for (const doc of allDocs) {
-      const nullPageChunks = db.prepare(
-        'SELECT COUNT(*) as count FROM chunks WHERE document_id = ? AND page_number IS NULL'
-      ).get(doc.id) as { count: number };
-      const totalDocChunks = db.prepare(
-        'SELECT COUNT(*) as count FROM chunks WHERE document_id = ?'
-      ).get(doc.id) as { count: number };
+      const nullPageChunks = db
+        .prepare(
+          'SELECT COUNT(*) as count FROM chunks WHERE document_id = ? AND page_number IS NULL'
+        )
+        .get(doc.id) as { count: number };
+      const totalDocChunks = db
+        .prepare('SELECT COUNT(*) as count FROM chunks WHERE document_id = ?')
+        .get(doc.id) as { count: number };
 
       if (nullPageChunks.count === totalDocChunks.count && totalDocChunks.count > 0) {
         foundDocWithNoPages = true;
         console.log(`  INFO: Document "${doc.file_name}" has all NULL page numbers`);
 
         // Querying for page 1 should return empty
-        const result = db.prepare(
-          'SELECT * FROM chunks WHERE document_id = ? AND page_number = 1'
-        ).all(doc.id);
+        const result = db
+          .prepare('SELECT * FROM chunks WHERE document_id = ? AND page_number = 1')
+          .all(doc.id);
         assert(result.length === 0, `Document with no page numbers: page 1 query returns 0 chunks`);
         break;
       }
@@ -544,9 +584,9 @@ async function main() {
         INSERT INTO page_test_chunks VALUES ('c1', 'doc1', NULL, 0);
         INSERT INTO page_test_chunks VALUES ('c2', 'doc1', NULL, 1);
       `);
-      const result = memDb.prepare(
-        'SELECT * FROM page_test_chunks WHERE document_id = ? AND page_number = 1'
-      ).all('doc1');
+      const result = memDb
+        .prepare('SELECT * FROM page_test_chunks WHERE document_id = ? AND page_number = 1')
+        .all('doc1');
       assert(result.length === 0, 'Document with all NULL pages: page 1 returns empty');
     }
   }
@@ -596,7 +636,10 @@ async function main() {
     }
 
     assert('images' in result, 'include_images=true, no images: "images" key present');
-    assert((result.image_count as number) === 0, 'include_images=true, no images: image_count is 0');
+    assert(
+      (result.image_count as number) === 0,
+      'include_images=true, no images: image_count is 0'
+    );
   }
 
   // =====================================================================
@@ -610,14 +653,16 @@ async function main() {
     // When true, the filter is NOT applied, so all results are included.
 
     // Check if the tag exists
-    const tag = db.prepare(
-      "SELECT id FROM tags WHERE name = 'system:repeated_header_footer'"
-    ).get() as { id: string } | undefined;
+    const tag = db
+      .prepare("SELECT id FROM tags WHERE name = 'system:repeated_header_footer'")
+      .get() as { id: string } | undefined;
 
     if (tag) {
-      const taggedChunks = db.prepare(
-        "SELECT COUNT(*) as count FROM entity_tags WHERE tag_id = ? AND entity_type = 'chunk'"
-      ).get(tag.id) as { count: number };
+      const taggedChunks = db
+        .prepare(
+          "SELECT COUNT(*) as count FROM entity_tags WHERE tag_id = ? AND entity_type = 'chunk'"
+        )
+        .get(tag.id) as { count: number };
       console.log(`  INFO: ${taggedChunks.count} chunks tagged as header/footer`);
 
       // With include_headers_footers = true, these should be INCLUDED
@@ -625,32 +670,38 @@ async function main() {
     } else {
       console.log('  INFO: No system:repeated_header_footer tag exists yet');
       // When tag doesn't exist, the filter query returns 0 rows, nothing is excluded
-      const taggedChunks = db.prepare(
-        `SELECT et.entity_id FROM entity_tags et
+      const taggedChunks = db
+        .prepare(
+          `SELECT et.entity_id FROM entity_tags et
          JOIN tags t ON t.id = et.tag_id
          WHERE t.name = 'system:repeated_header_footer' AND et.entity_type = 'chunk'`
-      ).all();
+        )
+        .all();
       assert(taggedChunks.length === 0, 'No header/footer tag: filter excludes nothing');
     }
   }
 
   // Edge Case 2: Search with include_headers_footers = false (default) -> excludes tagged
   {
-    const tag = db.prepare(
-      "SELECT id FROM tags WHERE name = 'system:repeated_header_footer'"
-    ).get() as { id: string } | undefined;
+    const tag = db
+      .prepare("SELECT id FROM tags WHERE name = 'system:repeated_header_footer'")
+      .get() as { id: string } | undefined;
 
     if (tag) {
-      const taggedChunks = db.prepare(
-        `SELECT et.entity_id FROM entity_tags et
+      const taggedChunks = db
+        .prepare(
+          `SELECT et.entity_id FROM entity_tags et
          JOIN tags t ON t.id = et.tag_id
          WHERE t.name = 'system:repeated_header_footer' AND et.entity_type = 'chunk'`
-      ).all() as Array<{ entity_id: string }>;
-      const excludeSet = new Set(taggedChunks.map(r => r.entity_id));
+        )
+        .all() as Array<{ entity_id: string }>;
+      const excludeSet = new Set(taggedChunks.map((r) => r.entity_id));
 
       // Simulate filtering
-      const allChunkIds = db.prepare('SELECT id FROM chunks LIMIT 20').all() as Array<{ id: string }>;
-      const filtered = allChunkIds.filter(c => !excludeSet.has(c.id));
+      const allChunkIds = db.prepare('SELECT id FROM chunks LIMIT 20').all() as Array<{
+        id: string;
+      }>;
+      const filtered = allChunkIds.filter((c) => !excludeSet.has(c.id));
 
       assert(
         filtered.length <= allChunkIds.length,
@@ -671,11 +722,13 @@ async function main() {
       );
     `);
 
-    const taggedChunks = memDb.prepare(
-      `SELECT et.entity_id FROM ec_entity_tags et
+    const taggedChunks = memDb
+      .prepare(
+        `SELECT et.entity_id FROM ec_entity_tags et
        JOIN ec_tags t ON t.id = et.tag_id
        WHERE t.name = 'system:repeated_header_footer' AND et.entity_type = 'chunk'`
-    ).all();
+      )
+      .all();
     assert(taggedChunks.length === 0, 'Empty entity_tags: header/footer filter returns 0 rows');
   }
 
@@ -687,13 +740,18 @@ async function main() {
   // Edge Case 1: Document with no sections -> empty tree/outline
   {
     // Check if any doc has no section_path data
-    const allDocs = db.prepare('SELECT id, file_name FROM documents').all() as Array<{ id: string; file_name: string }>;
+    const allDocs = db.prepare('SELECT id, file_name FROM documents').all() as Array<{
+      id: string;
+      file_name: string;
+    }>;
     let foundDocWithNoSections = false;
 
     for (const doc of allDocs) {
-      const sectioned = db.prepare(
-        'SELECT COUNT(*) as count FROM chunks WHERE document_id = ? AND section_path IS NOT NULL'
-      ).get(doc.id) as { count: number };
+      const sectioned = db
+        .prepare(
+          'SELECT COUNT(*) as count FROM chunks WHERE document_id = ? AND section_path IS NOT NULL'
+        )
+        .get(doc.id) as { count: number };
 
       if (sectioned.count === 0) {
         foundDocWithNoSections = true;
@@ -797,12 +855,27 @@ async function main() {
     ];
 
     const outline = flattenToOutline(testTree);
-    assert(outline[0] === '1. Introduction (pages 1-2) [3 chunks]', 'Outline: top-level numbering correct');
-    assert(outline[1] === '1.1. Background (pages 1) [2 chunks]', 'Outline: nested 1.1 numbering correct');
-    assert(outline[2] === '1.2. Motivation (pages 2) [1 chunks]', 'Outline: nested 1.2 numbering correct');
+    assert(
+      outline[0] === '1. Introduction (pages 1-2) [3 chunks]',
+      'Outline: top-level numbering correct'
+    );
+    assert(
+      outline[1] === '1.1. Background (pages 1) [2 chunks]',
+      'Outline: nested 1.1 numbering correct'
+    );
+    assert(
+      outline[2] === '1.2. Motivation (pages 2) [1 chunks]',
+      'Outline: nested 1.2 numbering correct'
+    );
     assert(outline[3] === '2. Methods (pages 3-5) [5 chunks]', 'Outline: second top-level correct');
-    assert(outline[4] === '2.1. Data Collection (pages 3-4) [3 chunks]', 'Outline: nested 2.1 correct');
-    assert(outline[5] === '2.1.1. Survey Design (pages 3) [1 chunks]', 'Outline: deep nested 2.1.1 correct');
+    assert(
+      outline[4] === '2.1. Data Collection (pages 3-4) [3 chunks]',
+      'Outline: nested 2.1 correct'
+    );
+    assert(
+      outline[5] === '2.1.1. Survey Design (pages 3) [1 chunks]',
+      'Outline: deep nested 2.1.1 correct'
+    );
     assert(outline.length === 6, `Outline: total lines = 6`, `Got: ${outline.length}`);
   }
 
@@ -852,9 +925,10 @@ async function main() {
     results: Array<Record<string, unknown>>;
   }
 
-  function groupResultsByDocument(
-    results: Array<Record<string, unknown>>
-  ): { grouped: DocumentGroup[]; total_documents: number } {
+  function groupResultsByDocument(results: Array<Record<string, unknown>>): {
+    grouped: DocumentGroup[];
+    total_documents: number;
+  } {
     const groups = new Map<string, DocumentGroup>();
 
     for (const r of results) {
@@ -907,7 +981,10 @@ async function main() {
     ];
     const { grouped, total_documents } = groupResultsByDocument(unknownDocResults);
     assert(total_documents === 1, 'Unknown document results: still groups by document_id');
-    assert(grouped[0].file_name === '', 'Unknown document results: file_name defaults to empty string');
+    assert(
+      grouped[0].file_name === '',
+      'Unknown document results: file_name defaults to empty string'
+    );
     assert(grouped[0].doc_title === null, 'Unknown document results: doc_title defaults to null');
   }
 
@@ -964,11 +1041,13 @@ async function main() {
   {
     // Pick a document and check if it has cluster memberships
     const doc = firstDoc;
-    const clusterMemberships = db.prepare(
-      `SELECT c.id, c.label, dc.similarity_to_centroid
+    const clusterMemberships = db
+      .prepare(
+        `SELECT c.id, c.label, dc.similarity_to_centroid
        FROM document_clusters dc JOIN clusters c ON c.id = dc.cluster_id
        WHERE dc.document_id = ? LIMIT 3`
-    ).all(doc.id) as Array<Record<string, unknown>>;
+      )
+      .all(doc.id) as Array<Record<string, unknown>>;
 
     if (clusterMemberships.length === 0) {
       // Simulate the code path from search.ts:569
@@ -978,11 +1057,13 @@ async function main() {
       console.log(`  INFO: Document is in ${clusterMemberships.length} cluster(s)`);
 
       // Test with a fabricated non-existent document
-      const fakeResults = db.prepare(
-        `SELECT c.id, c.label, dc.similarity_to_centroid
+      const fakeResults = db
+        .prepare(
+          `SELECT c.id, c.label, dc.similarity_to_centroid
          FROM document_clusters dc JOIN clusters c ON c.id = dc.cluster_id
          WHERE dc.document_id = 'nonexistent-doc-id-12345' LIMIT 3`
-      ).all();
+        )
+        .all();
       const clusters = fakeResults.length > 0 ? fakeResults : null;
       assert(clusters === null, 'Non-existent document: clusters is null');
     }
@@ -990,15 +1071,19 @@ async function main() {
 
   // Edge Case 2: No comparisons exist -> null related_documents
   {
-    const compCount = db.prepare('SELECT COUNT(*) as count FROM comparisons').get() as { count: number };
+    const compCount = db.prepare('SELECT COUNT(*) as count FROM comparisons').get() as {
+      count: number;
+    };
 
     if (compCount.count === 0) {
-      const comparisons = db.prepare(
-        `SELECT CASE WHEN document_id_1 = ? THEN document_id_2 ELSE document_id_1 END as related_doc_id,
+      const comparisons = db
+        .prepare(
+          `SELECT CASE WHEN document_id_1 = ? THEN document_id_2 ELSE document_id_1 END as related_doc_id,
            similarity_ratio, summary
          FROM comparisons WHERE document_id_1 = ? OR document_id_2 = ?
          ORDER BY similarity_ratio DESC LIMIT 3`
-      ).all(firstDoc.id, firstDoc.id, firstDoc.id);
+        )
+        .all(firstDoc.id, firstDoc.id, firstDoc.id);
 
       const relatedDocuments = comparisons.length > 0 ? comparisons : null;
       assert(relatedDocuments === null, 'No comparisons: related_documents is null');
@@ -1006,12 +1091,14 @@ async function main() {
       console.log(`  INFO: ${compCount.count} comparison(s) exist`);
 
       // Test with non-existent document
-      const fakeComparisons = db.prepare(
-        `SELECT CASE WHEN document_id_1 = ? THEN document_id_2 ELSE document_id_1 END as related_doc_id,
+      const fakeComparisons = db
+        .prepare(
+          `SELECT CASE WHEN document_id_1 = ? THEN document_id_2 ELSE document_id_1 END as related_doc_id,
            similarity_ratio, summary
          FROM comparisons WHERE document_id_1 = ? OR document_id_2 = ?
          ORDER BY similarity_ratio DESC LIMIT 3`
-      ).all('fake-doc-xyz', 'fake-doc-xyz', 'fake-doc-xyz');
+        )
+        .all('fake-doc-xyz', 'fake-doc-xyz', 'fake-doc-xyz');
 
       const relatedDocuments = fakeComparisons.length > 0 ? fakeComparisons : null;
       assert(relatedDocuments === null, 'Non-existent document: related_documents is null');
@@ -1022,9 +1109,11 @@ async function main() {
   {
     // Simulate the function: docIds will be empty, function should return without error
     const results: Array<Record<string, unknown>> = [];
-    const docIds = [...new Set(
-      results.map(r => (r.document_id ?? r.source_document_id) as string).filter(Boolean)
-    )];
+    const docIds = [
+      ...new Set(
+        results.map((r) => (r.document_id ?? r.source_document_id) as string).filter(Boolean)
+      ),
+    ];
 
     assert(docIds.length === 0, 'Empty results: docIds is empty');
     // In the actual code, function returns early at line 546: if (docIds.length === 0) return;
@@ -1100,12 +1189,19 @@ async function main() {
 
   // Verify that the v31 migration columns exist and are queryable
   {
-    const docWithMetadata = db.prepare(
-      'SELECT id, doc_author, doc_subject, doc_title FROM documents WHERE doc_author IS NOT NULL LIMIT 1'
-    ).get() as { id: string; doc_author: string; doc_subject: string | null; doc_title: string | null } | undefined;
+    const docWithMetadata = db
+      .prepare(
+        'SELECT id, doc_author, doc_subject, doc_title FROM documents WHERE doc_author IS NOT NULL LIMIT 1'
+      )
+      .get() as
+      | { id: string; doc_author: string; doc_subject: string | null; doc_title: string | null }
+      | undefined;
 
     if (docWithMetadata) {
-      assert(typeof docWithMetadata.doc_author === 'string', `doc_author is string: "${docWithMetadata.doc_author}"`);
+      assert(
+        typeof docWithMetadata.doc_author === 'string',
+        `doc_author is string: "${docWithMetadata.doc_author}"`
+      );
     } else {
       console.log('  INFO: No documents with doc_author set');
       assert(true, 'doc_author column exists and is queryable (all NULL)');
@@ -1116,7 +1212,7 @@ async function main() {
   {
     let ftsOk = true;
     try {
-      db.prepare("SELECT COUNT(*) as count FROM chunks_fts").get();
+      db.prepare('SELECT COUNT(*) as count FROM chunks_fts').get();
     } catch {
       ftsOk = false;
     }
@@ -1124,7 +1220,7 @@ async function main() {
 
     let vlmFtsOk = true;
     try {
-      db.prepare("SELECT COUNT(*) as count FROM vlm_fts").get();
+      db.prepare('SELECT COUNT(*) as count FROM vlm_fts').get();
     } catch {
       vlmFtsOk = false;
     }

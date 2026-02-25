@@ -148,7 +148,10 @@ describe('Extraction Tools', () => {
         document_id: docId,
         ocr_result_id: ocrId,
         schema_json: '{"type":"object","properties":{"employees":{"type":"array"}}}',
-        extraction_json: JSON.stringify({ employees: ['Alice', 'Bob', 'Charlie'], department: 'Engineering' }),
+        extraction_json: JSON.stringify({
+          employees: ['Alice', 'Bob', 'Charlie'],
+          department: 'Engineering',
+        }),
         parentProvId: ocrProvId,
         rootDocId: docProvId,
       },
@@ -156,7 +159,10 @@ describe('Extraction Tools', () => {
         document_id: doc2Id,
         ocr_result_id: ocr2Id,
         schema_json: '{"type":"object","properties":{"action_items":{"type":"array"}}}',
-        extraction_json: JSON.stringify({ action_items: ['Review budget', 'Hire contractor'], priority: 'high' }),
+        extraction_json: JSON.stringify({
+          action_items: ['Review budget', 'Hire contractor'],
+          priority: 'high',
+        }),
         parentProvId: ocrProv2Id,
         rootDocId: doc2ProvId,
       },
@@ -253,7 +259,11 @@ describe('Extraction Tools', () => {
       expect(parsed.data!.document_file_path).toBe('/test/report.pdf');
       expect(parsed.data!.document_file_name).toBe('report.pdf');
       expect(parsed.data!.ocr_result_id).toBe(ocrId);
-      expect(parsed.data!.extraction_json).toEqual({ revenue: 50000, quarter: 'Q4', fiscal_year: 2025 });
+      expect(parsed.data!.extraction_json).toEqual({
+        revenue: 50000,
+        quarter: 'Q4',
+        fiscal_year: 2025,
+      });
       expect(parsed.data!.content_hash).toBeTruthy();
       expect(parsed.data!.provenance_id).toBe(extractionProvIds[0]);
       expect(parsed.data!.created_at).toBeTruthy();

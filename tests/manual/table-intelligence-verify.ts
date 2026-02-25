@@ -27,9 +27,14 @@ type ToolModule = Record<string, { handler: (p: Record<string, unknown>) => Prom
 
 async function callTool(tools: ToolModule, name: string, params: Record<string, unknown> = {}) {
   const tool = tools[name];
-  if (!tool) throw new Error(`Tool not found: ${name}. Available: ${Object.keys(tools).join(', ')}`);
+  if (!tool)
+    throw new Error(`Tool not found: ${name}. Available: ${Object.keys(tools).join(', ')}`);
   const raw = (await tool.handler(params)) as { content: Array<{ type: string; text: string }> };
-  return JSON.parse(raw.content[0].text) as { success: boolean; data?: Record<string, unknown>; error?: Record<string, unknown> };
+  return JSON.parse(raw.content[0].text) as {
+    success: boolean;
+    data?: Record<string, unknown>;
+    error?: Record<string, unknown>;
+  };
 }
 
 const DB_NAME = 'table-extraction-analysis';
@@ -108,7 +113,9 @@ async function main() {
   console.error('Step 5: SQL Verification...\n');
 
   // Query A: Count table chunks with ALL metadata fields
-  const queryA = db2.prepare(`
+  const queryA = db2
+    .prepare(
+      `
     SELECT
       COUNT(*) as total_table_chunks,
       SUM(CASE WHEN processing_params LIKE '%table_columns%' THEN 1 ELSE 0 END) as with_columns,
@@ -116,51 +123,71 @@ async function main() {
       SUM(CASE WHEN processing_params LIKE '%table_summary%' THEN 1 ELSE 0 END) as with_summary
     FROM provenance
     WHERE type = 'CHUNK' AND processing_params LIKE '%table%'
-  `).get();
+  `
+    )
+    .get();
   console.error('  A) Table chunks with metadata:', JSON.stringify(queryA));
 
   // Query B: Row count distribution
-  const queryB = db2.prepare(`
+  const queryB = db2
+    .prepare(
+      `
     SELECT json_extract(processing_params, '$.table_row_count') as row_count, COUNT(*) as cnt
     FROM provenance
     WHERE type = 'CHUNK' AND processing_params LIKE '%table_row_count%'
     GROUP BY json_extract(processing_params, '$.table_row_count')
     ORDER BY row_count
-  `).all();
+  `
+    )
+    .all();
   console.error('  B) Row count distribution:', JSON.stringify(queryB));
 
   // Query C: content_types vs table_columns coverage
-  const queryC = db2.prepare(`
+  const queryC = db2
+    .prepare(
+      `
     SELECT c.content_types, c.chunk_index,
       CASE WHEN p.processing_params LIKE '%table_columns%' THEN 'YES' ELSE 'NO' END as has_columns
     FROM chunks c
     JOIN provenance p ON c.provenance_id = p.id
     WHERE c.content_types LIKE '%table%'
     ORDER BY c.chunk_index
-  `).all();
+  `
+    )
+    .all();
   console.error('  C) content_types vs table_columns:');
   for (const row of queryC) {
-    console.error(`     chunk_index=${(row as any).chunk_index}, content_types=${(row as any).content_types}, has_columns=${(row as any).has_columns}`);
+    console.error(
+      `     chunk_index=${(row as any).chunk_index}, content_types=${(row as any).content_types}, has_columns=${(row as any).has_columns}`
+    );
   }
 
   // Query D: Sample summaries
-  const queryD = db2.prepare(`
+  const queryD = db2
+    .prepare(
+      `
     SELECT json_extract(processing_params, '$.table_summary') as summary
     FROM provenance
     WHERE type = 'CHUNK' AND processing_params LIKE '%table_summary%'
     LIMIT 5
-  `).all();
+  `
+    )
+    .all();
   console.error('  D) Sample summaries:');
   for (const row of queryD) {
     console.error(`     "${(row as any).summary}"`);
   }
 
   // Query E: table_continuation_of
-  const queryE = db2.prepare(`
+  const queryE = db2
+    .prepare(
+      `
     SELECT json_extract(processing_params, '$.table_continuation_of') as continuation
     FROM provenance
     WHERE type = 'CHUNK' AND processing_params LIKE '%table_continuation%'
-  `).all();
+  `
+    )
+    .all();
   console.error('  E) Table continuations:', JSON.stringify(queryE));
 
   db2.close();
@@ -186,7 +213,9 @@ async function main() {
     // Show brief table info
     for (let i = 0; i < Math.min(tables.length, 5); i++) {
       const t = tables[i];
-      console.error(`  Table ${i}: rows=${t.row_count}, cols=${t.column_count}, page=${t.page_number}, columns=[${(t.column_headers || []).slice(0, 3).join(', ')}...]`);
+      console.error(
+        `  Table ${i}: rows=${t.row_count}, cols=${t.column_count}, page=${t.page_number}, columns=[${(t.column_headers || []).slice(0, 3).join(', ')}...]`
+      );
     }
   }
   console.error('');
@@ -204,9 +233,13 @@ async function main() {
   if (export1.success) {
     const data = export1.data as any;
     const tables = data.tables || [];
-    console.error(`    PASS: Got ${tables.length} table(s) with ${JSON.stringify(data).length} bytes of data`);
+    console.error(
+      `    PASS: Got ${tables.length} table(s) with ${JSON.stringify(data).length} bytes of data`
+    );
     if (tables[0]) {
-      console.error(`    First table: ${(tables[0].rows || []).length} rows, format=${tables[0].format || 'json'}`);
+      console.error(
+        `    First table: ${(tables[0].rows || []).length} rows, format=${tables[0].format || 'json'}`
+      );
     }
   } else {
     console.error(`    FAIL: ${JSON.stringify(export1.error)}`);
@@ -262,7 +295,9 @@ async function main() {
     table_index: 999,
   });
   if (!edgeCase1.success) {
-    console.error(`    PASS: Got expected error: ${JSON.stringify(edgeCase1.error).substring(0, 200)}`);
+    console.error(
+      `    PASS: Got expected error: ${JSON.stringify(edgeCase1.error).substring(0, 200)}`
+    );
   } else {
     // May return success with empty tables - check
     const data = edgeCase1.data as any;
@@ -282,7 +317,9 @@ async function main() {
       table_index: 0,
     });
     if (!edgeCase2.success) {
-      console.error(`    PASS: Got expected error: ${JSON.stringify(edgeCase2.error).substring(0, 200)}`);
+      console.error(
+        `    PASS: Got expected error: ${JSON.stringify(edgeCase2.error).substring(0, 200)}`
+      );
     } else {
       console.error('    FAIL: Should have failed without document_id');
     }
@@ -316,18 +353,27 @@ async function main() {
       sample_summaries: queryD,
       table_continuations: queryE,
     },
-    document_tables: tablesResult.success ? {
-      total: ((tablesResult.data as any).tables || []).length,
-      with_page_number: ((tablesResult.data as any).tables || []).filter((t: any) => t.page_number != null).length,
-      with_row_count_gt0: ((tablesResult.data as any).tables || []).filter((t: any) => (t.row_count || 0) > 0).length,
-    } : { error: tablesResult.error },
+    document_tables: tablesResult.success
+      ? {
+          total: ((tablesResult.data as any).tables || []).length,
+          with_page_number: ((tablesResult.data as any).tables || []).filter(
+            (t: any) => t.page_number != null
+          ).length,
+          with_row_count_gt0: ((tablesResult.data as any).tables || []).filter(
+            (t: any) => (t.row_count || 0) > 0
+          ).length,
+        }
+      : { error: tablesResult.error },
     table_export: {
       json: export1.success ? 'PASS' : 'FAIL',
       csv: export2.success ? 'PASS' : 'FAIL',
       markdown: export3.success ? 'PASS' : 'FAIL',
     },
     edge_cases: {
-      invalid_index: !edgeCase1.success || ((edgeCase1.data as any)?.tables || []).length === 0 ? 'PASS' : 'FAIL',
+      invalid_index:
+        !edgeCase1.success || ((edgeCase1.data as any)?.tables || []).length === 0
+          ? 'PASS'
+          : 'FAIL',
     },
   };
 
@@ -335,7 +381,7 @@ async function main() {
   console.log(JSON.stringify(summary, null, 2));
 }
 
-main().catch(err => {
+main().catch((err) => {
   console.error('FATAL ERROR:', err);
   process.exit(1);
 });

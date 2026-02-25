@@ -47,7 +47,6 @@ import {
 import { safeMin, safeMax } from '../../src/utils/math.js';
 import { computeQualityMultiplier } from '../../src/services/search/quality.js';
 import { RRFFusion } from '../../src/services/search/fusion.js';
-import { DatabaseService } from '../../src/services/storage/database/index.js';
 
 // ============================================================================
 // HELPERS
@@ -115,111 +114,94 @@ describe('FIX-1: State Race Condition Guards (H-1, H-2, M-9)', () => {
     }
   );
 
-  it.skipIf(!sqliteVecAvailable)(
-    'H-2: selectDatabase throws when operations are in-flight',
-    () => {
-      // INPUT: Create two databases, select first, begin operation
-      createDatabase('test-h2-first');
-      createDatabase('test-h2-second', undefined, undefined, false);
+  it.skipIf(!sqliteVecAvailable)('H-2: selectDatabase throws when operations are in-flight', () => {
+    // INPUT: Create two databases, select first, begin operation
+    createDatabase('test-h2-first');
+    createDatabase('test-h2-second', undefined, undefined, false);
 
-      // Select first (createDatabase auto-selects, but second was not auto-selected)
-      // Actually createDatabase('test-h2-first') was auto-selected, then
-      // createDatabase('test-h2-second', ..., false) did NOT auto-select.
-      // So 'test-h2-first' is still selected but actually createDatabase auto-selects...
-      // Let me re-select to be explicit
-      selectDatabase('test-h2-first');
+    // Select first (createDatabase auto-selects, but second was not auto-selected)
+    // Actually createDatabase('test-h2-first') was auto-selected, then
+    // createDatabase('test-h2-second', ..., false) did NOT auto-select.
+    // So 'test-h2-first' is still selected but actually createDatabase auto-selects...
+    // Let me re-select to be explicit
+    selectDatabase('test-h2-first');
 
-      // Begin an operation
-      beginDatabaseOperation();
-      expect(getActiveOperationCount()).toBe(1);
+    // Begin an operation
+    beginDatabaseOperation();
+    expect(getActiveOperationCount()).toBe(1);
 
-      // ACT: Try to switch databases
-      // EXPECTED: Should THROW with "operation(s) are in-flight"
-      expect(() => selectDatabase('test-h2-second')).toThrow(
-        /operation\(s\) are in-flight/
-      );
+    // ACT: Try to switch databases
+    // EXPECTED: Should THROW with "operation(s) are in-flight"
+    expect(() => selectDatabase('test-h2-second')).toThrow(/operation\(s\) are in-flight/);
 
-      // ACT: End operation, then switch should succeed
-      endDatabaseOperation();
-      expect(getActiveOperationCount()).toBe(0);
+    // ACT: End operation, then switch should succeed
+    endDatabaseOperation();
+    expect(getActiveOperationCount()).toBe(0);
 
-      // EXPECTED: Switch should now succeed
-      selectDatabase('test-h2-second');
-      expect(state.currentDatabaseName).toBe('test-h2-second');
-    }
-  );
+    // EXPECTED: Switch should now succeed
+    selectDatabase('test-h2-second');
+    expect(state.currentDatabaseName).toBe('test-h2-second');
+  });
 
-  it.skipIf(!sqliteVecAvailable)(
-    'H-2: clearDatabase throws when operations are in-flight',
-    () => {
-      createDatabase('test-h2-clear');
-      beginDatabaseOperation();
+  it.skipIf(!sqliteVecAvailable)('H-2: clearDatabase throws when operations are in-flight', () => {
+    createDatabase('test-h2-clear');
+    beginDatabaseOperation();
 
-      // ACT: Try to clear database
-      // EXPECTED: Should THROW
-      expect(() => clearDatabase()).toThrow(/operation\(s\) are in-flight/);
+    // ACT: Try to clear database
+    // EXPECTED: Should THROW
+    expect(() => clearDatabase()).toThrow(/operation\(s\) are in-flight/);
 
-      // Cleanup
-      endDatabaseOperation();
-      clearDatabase();
-      expect(state.currentDatabase).toBeNull();
-    }
-  );
+    // Cleanup
+    endDatabaseOperation();
+    clearDatabase();
+    expect(state.currentDatabase).toBeNull();
+  });
 
-  it.skipIf(!sqliteVecAvailable)(
-    'endDatabaseOperation never goes below 0',
-    () => {
-      createDatabase('test-underflow');
+  it.skipIf(!sqliteVecAvailable)('endDatabaseOperation never goes below 0', () => {
+    createDatabase('test-underflow');
 
-      // ACT: Call endDatabaseOperation without begin
-      endDatabaseOperation();
-      endDatabaseOperation();
-      endDatabaseOperation();
+    // ACT: Call endDatabaseOperation without begin
+    endDatabaseOperation();
+    endDatabaseOperation();
+    endDatabaseOperation();
 
-      // EXPECTED: Counter stays at 0
-      expect(getActiveOperationCount()).toBe(0);
-    }
-  );
+    // EXPECTED: Counter stays at 0
+    expect(getActiveOperationCount()).toBe(0);
+  });
 
-  it.skipIf(!sqliteVecAvailable)(
-    'M-9: selectDatabase uses atomic swap - no null window',
-    () => {
-      // INPUT: Create two databases
-      createDatabase('test-m9-first');
-      createDatabase('test-m9-second', undefined, undefined, false);
+  it.skipIf(!sqliteVecAvailable)('M-9: selectDatabase uses atomic swap - no null window', () => {
+    // INPUT: Create two databases
+    createDatabase('test-m9-first');
+    createDatabase('test-m9-second', undefined, undefined, false);
 
-      // Select first
-      selectDatabase('test-m9-first');
-      expect(state.currentDatabase).not.toBeNull();
-      expect(state.currentDatabaseName).toBe('test-m9-first');
+    // Select first
+    selectDatabase('test-m9-first');
+    expect(state.currentDatabase).not.toBeNull();
+    expect(state.currentDatabaseName).toBe('test-m9-first');
 
-      // ACT: Switch to second database
-      // VERIFY: state.currentDatabase is NEVER null during the switch
-      // The atomic swap pattern in selectDatabase opens new DB first, then swaps,
-      // then closes old. We verify the result:
-      selectDatabase('test-m9-second');
+    // ACT: Switch to second database
+    // VERIFY: state.currentDatabase is NEVER null during the switch
+    // The atomic swap pattern in selectDatabase opens new DB first, then swaps,
+    // then closes old. We verify the result:
+    selectDatabase('test-m9-second');
 
-      // EXPECTED: State points to second database, NOT null
-      expect(state.currentDatabase).not.toBeNull();
-      expect(state.currentDatabaseName).toBe('test-m9-second');
-    }
-  );
+    // EXPECTED: State points to second database, NOT null
+    expect(state.currentDatabase).not.toBeNull();
+    expect(state.currentDatabaseName).toBe('test-m9-second');
+  });
 
-  it.skipIf(!sqliteVecAvailable)(
-    'validateGeneration detects stale references after switch',
-    () => {
-      createDatabase('test-gen-1');
-      const { generation: gen1 } = requireDatabase();
+  it.skipIf(!sqliteVecAvailable)('validateGeneration detects stale references after switch', () => {
+    createDatabase('test-gen-1');
+    const { generation: gen1 } = requireDatabase();
 
-      // Create and switch to another DB
-      createDatabase('test-gen-2', undefined, undefined, false);
-      selectDatabase('test-gen-2');
+    // Create and switch to another DB
+    createDatabase('test-gen-2', undefined, undefined, false);
+    selectDatabase('test-gen-2');
 
-      // ACT: Validate the old generation
-      // EXPECTED: Should throw - generation mismatch
-      expect(() => validateGeneration(gen1)).toThrow(/generation mismatch/i);
-    }
-  );
+    // ACT: Validate the old generation
+    // EXPECTED: Should throw - generation mismatch
+    expect(() => validateGeneration(gen1)).toThrow(/generation mismatch/i);
+  });
 
   it.skipIf(!sqliteVecAvailable)(
     'withDatabaseOperation increments/decrements properly and validates generation',
@@ -278,7 +260,9 @@ describe('FIX-2: VLM Page Range Filter (M-1) - Code Audit', () => {
     expect(vectorSource).toContain('private mapAndFilterResults(');
     expect(vectorSource).toContain('options: VectorSearchOptions');
     // Should NOT contain _options in the mapAndFilterResults signature
-    expect(vectorSource).not.toMatch(/mapAndFilterResults[\s\S]*?_options\s*:\s*VectorSearchOptions/);
+    expect(vectorSource).not.toMatch(
+      /mapAndFilterResults[\s\S]*?_options\s*:\s*VectorSearchOptions/
+    );
 
     // VERIFY: pageRangeFilter is actually checked
     expect(vectorSource).toContain('options.pageRangeFilter');
@@ -325,16 +309,12 @@ describe('FIX-3: Type Safety - parseLocation (M-7)', () => {
 
     // VERIFY: parseLocation function exists and returns null on error
     expect(convertersSource).toContain('function parseLocation');
-    expect(convertersSource).toMatch(
-      /function parseLocation[\s\S]*?catch[\s\S]*?return null;/
-    );
+    expect(convertersSource).toMatch(/function parseLocation[\s\S]*?catch[\s\S]*?return null;/);
 
     // VERIFY: It does NOT return {_parse_error: true} like parseProcessingParams does
     // parseProcessingParams returns { _parse_error: true, _raw: raw } - that's OK for params
     // But parseLocation should return null
-    const parseLocationFn = convertersSource.match(
-      /function parseLocation[\s\S]*?^}/m
-    );
+    const parseLocationFn = convertersSource.match(/function parseLocation[\s\S]*?^}/m);
     expect(parseLocationFn).not.toBeNull();
     expect(parseLocationFn![0]).not.toContain('_parse_error');
     expect(parseLocationFn![0]).toContain('return null');
@@ -347,9 +327,7 @@ describe('FIX-3: Type Safety - parseLocation (M-7)', () => {
     );
 
     // VERIFY: console.error is called with corruption message
-    const parseLocationFn = convertersSource.match(
-      /function parseLocation[\s\S]*?^}/m
-    );
+    const parseLocationFn = convertersSource.match(/function parseLocation[\s\S]*?^}/m);
     expect(parseLocationFn).not.toBeNull();
     expect(parseLocationFn![0]).toContain('console.error');
     expect(parseLocationFn![0]).toContain('Corrupt location');
@@ -362,33 +340,21 @@ describe('FIX-3: Type Safety - parseLocation (M-7)', () => {
 
 describe('FIX-4: Silent Failures -> Warnings (M-2, M-3, M-4)', () => {
   it('M-2: vlm.ts pushes embedding error to warnings array', () => {
-    const vlmSource = readFileSync(
-      join(process.cwd(), 'src/tools/vlm.ts'),
-      'utf-8'
-    );
+    const vlmSource = readFileSync(join(process.cwd(), 'src/tools/vlm.ts'), 'utf-8');
 
     // VERIFY: The catch block at the embedding generation section pushes to warnings
-    expect(vlmSource).toContain(
-      'warnings.push(`Embedding generation failed:'
-    );
+    expect(vlmSource).toContain('warnings.push(`Embedding generation failed:');
     // VERIFY: console.error is also called (not silently swallowed)
     expect(vlmSource).toContain('[WARN] VLM describe embedding generation failed');
   });
 
   it('M-3: ingestion.ts pushes header/footer tagging error to warnings', () => {
-    const ingestionSource = readFileSync(
-      join(process.cwd(), 'src/tools/ingestion.ts'),
-      'utf-8'
-    );
+    const ingestionSource = readFileSync(join(process.cwd(), 'src/tools/ingestion.ts'), 'utf-8');
 
     // VERIFY: Header/footer tagging failure pushes to warnings
-    expect(ingestionSource).toContain(
-      'warnings.push(`Header/footer auto-tagging failed:'
-    );
+    expect(ingestionSource).toContain('warnings.push(`Header/footer auto-tagging failed:');
     // Also has metadata enrichment warning
-    expect(ingestionSource).toContain(
-      'warnings.push(`Metadata enrichment failed:'
-    );
+    expect(ingestionSource).toContain('warnings.push(`Metadata enrichment failed:');
   });
 
   it('M-4: extraction-structured.ts pushes embedding error to warnings', () => {
@@ -398,13 +364,9 @@ describe('FIX-4: Silent Failures -> Warnings (M-2, M-3, M-4)', () => {
     );
 
     // VERIFY: Extraction embedding failure pushes to warnings
-    expect(extractionSource).toContain(
-      'warnings.push(`Embedding generation failed:'
-    );
+    expect(extractionSource).toContain('warnings.push(`Embedding generation failed:');
     // VERIFY: console.error is called
-    expect(extractionSource).toContain(
-      '[WARN] Extraction embedding generation failed'
-    );
+    expect(extractionSource).toContain('[WARN] Extraction embedding generation failed');
   });
 });
 
@@ -503,9 +465,7 @@ describe('FIX-6: Migration Atomicity (M-5, M-6)', () => {
     );
 
     // Find the migrateV19ToV20 function body
-    const fnMatch = opsSource.match(
-      /function migrateV19ToV20[\s\S]*?^}/m
-    );
+    const fnMatch = opsSource.match(/function migrateV19ToV20[\s\S]*?^}/m);
     expect(fnMatch).not.toBeNull();
     const fnBody = fnMatch![0];
 
@@ -525,9 +485,7 @@ describe('FIX-6: Migration Atomicity (M-5, M-6)', () => {
       'utf-8'
     );
 
-    const fnMatch = opsSource.match(
-      /function migrateV19ToV20[\s\S]*?^}/m
-    );
+    const fnMatch = opsSource.match(/function migrateV19ToV20[\s\S]*?^}/m);
     expect(fnMatch).not.toBeNull();
     const fnBody = fnMatch![0];
 
@@ -548,9 +506,7 @@ describe('FIX-6: Migration Atomicity (M-5, M-6)', () => {
       'utf-8'
     );
 
-    const fnMatch = opsSource.match(
-      /function migrateV20ToV21[\s\S]*?^}/m
-    );
+    const fnMatch = opsSource.match(/function migrateV20ToV21[\s\S]*?^}/m);
     expect(fnMatch).not.toBeNull();
     const fnBody = fnMatch![0];
 
@@ -648,10 +604,7 @@ describe('FIX-7: Search Scoring (L-1, L-2)', () => {
 
   it('L-2: Cross-DB normalization uses 0.5 when range=0 (not 1.0)', () => {
     // CODE AUDIT: Verify in search.ts
-    const searchSource = readFileSync(
-      join(process.cwd(), 'src/tools/search.ts'),
-      'utf-8'
-    );
+    const searchSource = readFileSync(join(process.cwd(), 'src/tools/search.ts'), 'utf-8');
 
     // VERIFY: When range is 0, normalized_score is set to 0.5
     expect(searchSource).toContain(': 0.5;');
@@ -664,10 +617,7 @@ describe('FIX-7: Search Scoring (L-1, L-2)', () => {
   });
 
   it('L-2: Cross-DB normalization uses safeMin/safeMax (not Math.min/Math.max spread)', () => {
-    const searchSource = readFileSync(
-      join(process.cwd(), 'src/tools/search.ts'),
-      'utf-8'
-    );
+    const searchSource = readFileSync(join(process.cwd(), 'src/tools/search.ts'), 'utf-8');
 
     // VERIFY: Uses safeMin and safeMax for cross-DB normalization
     expect(searchSource).toContain('safeMin(scores)');
@@ -681,17 +631,12 @@ describe('FIX-7: Search Scoring (L-1, L-2)', () => {
 
 describe('FIX-8: Dead Code Removed', () => {
   it('shared.ts does NOT contain parseGeminiJson', () => {
-    const sharedSource = readFileSync(
-      join(process.cwd(), 'src/tools/shared.ts'),
-      'utf-8'
-    );
+    const sharedSource = readFileSync(join(process.cwd(), 'src/tools/shared.ts'), 'utf-8');
     expect(sharedSource).not.toContain('parseGeminiJson');
   });
 
   it('chunk-deduplicator.ts does NOT exist', () => {
-    const exists = existsSync(
-      join(process.cwd(), 'src/services/chunking/chunk-deduplicator.ts')
-    );
+    const exists = existsSync(join(process.cwd(), 'src/services/chunking/chunk-deduplicator.ts'));
     expect(exists).toBe(false);
   });
 
@@ -715,9 +660,7 @@ describe('FIX-8: Dead Code Removed', () => {
 
 describe('FIX-9: VLM Behavioral Tests', () => {
   it('vlm-behavioral.test.ts exists', () => {
-    const exists = existsSync(
-      join(process.cwd(), 'tests/unit/tools/vlm-behavioral.test.ts')
-    );
+    const exists = existsSync(join(process.cwd(), 'tests/unit/tools/vlm-behavioral.test.ts'));
     expect(exists).toBe(true);
   });
 
@@ -748,10 +691,7 @@ describe('FIX-9: VLM Behavioral Tests', () => {
 
 describe('FIX-10: Coverage Thresholds in vitest.config.ts', () => {
   it('vitest.config.ts has coverage thresholds set', () => {
-    const configSource = readFileSync(
-      join(process.cwd(), 'vitest.config.ts'),
-      'utf-8'
-    );
+    const configSource = readFileSync(join(process.cwd(), 'vitest.config.ts'), 'utf-8');
 
     // VERIFY: coverage.thresholds is defined
     expect(configSource).toContain('thresholds');
@@ -764,10 +704,7 @@ describe('FIX-10: Coverage Thresholds in vitest.config.ts', () => {
   });
 
   it('vitest.config.ts thresholds are meaningful (>= 60%)', () => {
-    const configSource = readFileSync(
-      join(process.cwd(), 'vitest.config.ts'),
-      'utf-8'
-    );
+    const configSource = readFileSync(join(process.cwd(), 'vitest.config.ts'), 'utf-8');
 
     const linesMatch = configSource.match(/lines:\s*(\d+)/);
     const branchesMatch = configSource.match(/branches:\s*(\d+)/);

@@ -148,9 +148,23 @@ export class FileManagerClient {
    * @param fileId - Datalab file ID
    * @param expiresIn - URL expiry time in seconds (default: 3600, min: 60, max: 86400)
    */
-  async getDownloadUrl(fileId: string, expiresIn: number = 3600): Promise<{ downloadUrl: string; expiresIn: number; fileId: string }> {
-    const args = ['--action', 'download-url', '--file-id', fileId, '--expires-in', String(expiresIn)];
-    const response = await this.runWorker<{ download_url: string; expires_in: number; file_id: string }>(args);
+  async getDownloadUrl(
+    fileId: string,
+    expiresIn: number = 3600
+  ): Promise<{ downloadUrl: string; expiresIn: number; fileId: string }> {
+    const args = [
+      '--action',
+      'download-url',
+      '--file-id',
+      fileId,
+      '--expires-in',
+      String(expiresIn),
+    ];
+    const response = await this.runWorker<{
+      download_url: string;
+      expires_in: number;
+      file_id: string;
+    }>(args);
     return {
       downloadUrl: response.download_url,
       expiresIn: response.expires_in,
@@ -220,7 +234,12 @@ export class FileManagerClient {
           }
           if (!settled) {
             settled = true;
-            reject(new OCRError(`File manager timeout after ${this.timeout}ms (SIGKILL after 5s grace)`, 'OCR_TIMEOUT'));
+            reject(
+              new OCRError(
+                `File manager timeout after ${this.timeout}ms (SIGKILL after 5s grace)`,
+                'OCR_TIMEOUT'
+              )
+            );
           }
         }, 5000);
       }, this.timeout);
@@ -257,7 +276,9 @@ export class FileManagerClient {
           reject(
             new OCRError(
               `File manager worker killed by signal ${exitSignal}. ${signalDetail}`,
-              exitSignal === 'SIGTERM' || exitSignal === 'SIGALRM' ? 'OCR_TIMEOUT' : 'FILE_MANAGER_API_ERROR'
+              exitSignal === 'SIGTERM' || exitSignal === 'SIGALRM'
+                ? 'OCR_TIMEOUT'
+                : 'FILE_MANAGER_API_ERROR'
             )
           );
           return;

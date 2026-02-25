@@ -77,14 +77,29 @@ export type ErrorCategory =
  * Valid ErrorCategory values for runtime checking (OCRError has its own category field)
  */
 const VALID_CATEGORIES = new Set<string>([
-  'VALIDATION_ERROR', 'DATABASE_NOT_FOUND', 'DATABASE_NOT_SELECTED',
-  'DATABASE_ALREADY_EXISTS', 'DOCUMENT_NOT_FOUND', 'PROVENANCE_NOT_FOUND',
-  'PROVENANCE_CHAIN_BROKEN', 'INTEGRITY_VERIFICATION_FAILED',
-  'OCR_API_ERROR', 'OCR_RATE_LIMIT', 'OCR_TIMEOUT',
-  'GPU_NOT_AVAILABLE', 'GPU_OUT_OF_MEMORY', 'EMBEDDING_FAILED', 'EMBEDDING_MODEL_ERROR',
-  'VLM_API_ERROR', 'VLM_RATE_LIMIT',
-  'IMAGE_EXTRACTION_FAILED', 'FORM_FILL_API_ERROR', 'CLUSTERING_ERROR',
-  'PATH_NOT_FOUND', 'PATH_NOT_DIRECTORY', 'PERMISSION_DENIED',
+  'VALIDATION_ERROR',
+  'DATABASE_NOT_FOUND',
+  'DATABASE_NOT_SELECTED',
+  'DATABASE_ALREADY_EXISTS',
+  'DOCUMENT_NOT_FOUND',
+  'PROVENANCE_NOT_FOUND',
+  'PROVENANCE_CHAIN_BROKEN',
+  'INTEGRITY_VERIFICATION_FAILED',
+  'OCR_API_ERROR',
+  'OCR_RATE_LIMIT',
+  'OCR_TIMEOUT',
+  'GPU_NOT_AVAILABLE',
+  'GPU_OUT_OF_MEMORY',
+  'EMBEDDING_FAILED',
+  'EMBEDDING_MODEL_ERROR',
+  'VLM_API_ERROR',
+  'VLM_RATE_LIMIT',
+  'IMAGE_EXTRACTION_FAILED',
+  'FORM_FILL_API_ERROR',
+  'CLUSTERING_ERROR',
+  'PATH_NOT_FOUND',
+  'PATH_NOT_DIRECTORY',
+  'PERMISSION_DENIED',
   'CONFIGURATION_ERROR',
   'INTERNAL_ERROR',
 ]);
@@ -142,8 +157,12 @@ const ERROR_NAME_TO_CATEGORY: Record<string, ErrorCategory> = {
  * Used in fromUnknown() to prefer the error's category over the default mapping.
  */
 const OCR_ERROR_NAMES = new Set([
-  'OCRError', 'OCRAPIError', 'OCRRateLimitError',
-  'OCRTimeoutError', 'OCRFileError', 'OCRAuthenticationError',
+  'OCRError',
+  'OCRAPIError',
+  'OCRRateLimitError',
+  'OCRTimeoutError',
+  'OCRFileError',
+  'OCRAuthenticationError',
 ]);
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -239,28 +258,70 @@ export interface RecoveryHint {
 const RECOVERY_HINTS: Record<ErrorCategory, RecoveryHint> = {
   VALIDATION_ERROR: { tool: 'ocr_guide', hint: 'Check parameter types and required fields' },
   DATABASE_NOT_FOUND: { tool: 'ocr_db_list', hint: 'Use ocr_db_list to see available databases' },
-  DATABASE_NOT_SELECTED: { tool: 'ocr_db_select', hint: 'Use ocr_db_list to find database names, then ocr_db_select' },
+  DATABASE_NOT_SELECTED: {
+    tool: 'ocr_db_select',
+    hint: 'Use ocr_db_list to find database names, then ocr_db_select',
+  },
   DATABASE_ALREADY_EXISTS: { tool: 'ocr_db_list', hint: 'Choose a unique database name' },
-  DOCUMENT_NOT_FOUND: { tool: 'ocr_document_list', hint: 'Use ocr_document_list to browse available documents' },
-  PROVENANCE_NOT_FOUND: { tool: 'ocr_provenance_get', hint: 'Verify the item_id exists using ocr_document_get first' },
-  PROVENANCE_CHAIN_BROKEN: { tool: 'ocr_provenance_verify', hint: 'Re-ingest the document to rebuild provenance chain' },
-  INTEGRITY_VERIFICATION_FAILED: { tool: 'ocr_provenance_verify', hint: 'Compare content_hash against stored hash; re-ingest if tampered' },
-  OCR_API_ERROR: { tool: 'ocr_health_check', hint: 'Check DATALAB_API_KEY env var and Datalab API status' },
+  DOCUMENT_NOT_FOUND: {
+    tool: 'ocr_document_list',
+    hint: 'Use ocr_document_list to browse available documents',
+  },
+  PROVENANCE_NOT_FOUND: {
+    tool: 'ocr_provenance_get',
+    hint: 'Verify the item_id exists using ocr_document_get first',
+  },
+  PROVENANCE_CHAIN_BROKEN: {
+    tool: 'ocr_provenance_verify',
+    hint: 'Re-ingest the document to rebuild provenance chain',
+  },
+  INTEGRITY_VERIFICATION_FAILED: {
+    tool: 'ocr_provenance_verify',
+    hint: 'Compare content_hash against stored hash; re-ingest if tampered',
+  },
+  OCR_API_ERROR: {
+    tool: 'ocr_health_check',
+    hint: 'Check DATALAB_API_KEY env var and Datalab API status',
+  },
   OCR_RATE_LIMIT: { tool: 'ocr_process_pending', hint: 'Wait and retry with lower max_concurrent' },
   OCR_TIMEOUT: { tool: 'ocr_process_pending', hint: 'Retry with smaller documents or fewer pages' },
-  GPU_NOT_AVAILABLE: { tool: 'ocr_health_check', hint: 'Check CUDA/MPS availability; system will fall back to CPU' },
-  GPU_OUT_OF_MEMORY: { tool: 'ocr_config_set', hint: 'Reduce embedding_batch_size via ocr_config_set' },
-  EMBEDDING_FAILED: { tool: 'ocr_health_check', hint: 'Check Python embedding worker and GPU memory' },
-  EMBEDDING_MODEL_ERROR: { tool: 'ocr_health_check', hint: 'Verify nomic-embed-text model is downloaded' },
+  GPU_NOT_AVAILABLE: {
+    tool: 'ocr_health_check',
+    hint: 'Check CUDA/MPS availability; system will fall back to CPU',
+  },
+  GPU_OUT_OF_MEMORY: {
+    tool: 'ocr_config_set',
+    hint: 'Reduce embedding_batch_size via ocr_config_set',
+  },
+  EMBEDDING_FAILED: {
+    tool: 'ocr_health_check',
+    hint: 'Check Python embedding worker and GPU memory',
+  },
+  EMBEDDING_MODEL_ERROR: {
+    tool: 'ocr_health_check',
+    hint: 'Verify nomic-embed-text model is downloaded',
+  },
   VLM_API_ERROR: { tool: 'ocr_vlm_status', hint: 'Check GEMINI_API_KEY and circuit breaker state' },
-  VLM_RATE_LIMIT: { tool: 'ocr_vlm_status', hint: 'Wait for rate limit reset; check rate_limiter.reset_in_ms' },
+  VLM_RATE_LIMIT: {
+    tool: 'ocr_vlm_status',
+    hint: 'Wait for rate limit reset; check rate_limiter.reset_in_ms',
+  },
   IMAGE_EXTRACTION_FAILED: { tool: 'ocr_health_check', hint: 'Check PyMuPDF/Pillow installation' },
-  FORM_FILL_API_ERROR: { tool: 'ocr_health_check', hint: 'Check DATALAB_API_KEY and form fill endpoint' },
-  CLUSTERING_ERROR: { tool: 'ocr_health_check', hint: 'Check Python clustering worker (scikit-learn)' },
+  FORM_FILL_API_ERROR: {
+    tool: 'ocr_health_check',
+    hint: 'Check DATALAB_API_KEY and form fill endpoint',
+  },
+  CLUSTERING_ERROR: {
+    tool: 'ocr_health_check',
+    hint: 'Check Python clustering worker (scikit-learn)',
+  },
   PATH_NOT_FOUND: { tool: 'ocr_guide', hint: 'Verify the file path exists on the filesystem' },
   PATH_NOT_DIRECTORY: { tool: 'ocr_guide', hint: 'Provide a directory path, not a file path' },
   PERMISSION_DENIED: { tool: 'ocr_guide', hint: 'Check filesystem permissions on the target path' },
-  CONFIGURATION_ERROR: { tool: 'ocr_health_check', hint: 'Check environment variable configuration. Required: DATALAB_API_KEY (for OCR), GEMINI_API_KEY (for VLM). In Docker, pass via -e flags.' },
+  CONFIGURATION_ERROR: {
+    tool: 'ocr_health_check',
+    hint: 'Check environment variable configuration. Required: DATALAB_API_KEY (for OCR), GEMINI_API_KEY (for VLM). In Docker, pass via -e flags.',
+  },
   INTERNAL_ERROR: { tool: 'ocr_health_check', hint: 'Run ocr_health_check for diagnostics' },
 };
 
@@ -316,7 +377,10 @@ export function validationError(message: string, details?: Record<string, unknow
  * Create database not selected error
  */
 export function databaseNotSelectedError(): MCPError {
-  return new MCPError('DATABASE_NOT_SELECTED', 'No database selected. Use ocr_db_list to see available databases, then ocr_db_select to choose one.');
+  return new MCPError(
+    'DATABASE_NOT_SELECTED',
+    'No database selected. Use ocr_db_list to see available databases, then ocr_db_select to choose one.'
+  );
 }
 
 /**
@@ -342,9 +406,13 @@ export function databaseAlreadyExistsError(name: string): MCPError {
  * Create document not found error
  */
 export function documentNotFoundError(documentId: string): MCPError {
-  return new MCPError('DOCUMENT_NOT_FOUND', `Document not found: ${documentId}. Use ocr_document_list to browse available documents.`, {
-    documentId,
-  });
+  return new MCPError(
+    'DOCUMENT_NOT_FOUND',
+    `Document not found: ${documentId}. Use ocr_document_list to browse available documents.`,
+    {
+      documentId,
+    }
+  );
 }
 
 /**

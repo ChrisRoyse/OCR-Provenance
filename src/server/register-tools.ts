@@ -91,7 +91,12 @@ export function registerAllTools(server: McpServer): number {
         process.exit(1);
       }
       registeredToolNames.add(name);
-      server.tool(name, tool.description, tool.inputSchema as Record<string, unknown>, tool.handler);
+      server.tool(
+        name,
+        tool.description,
+        tool.inputSchema as Record<string, unknown>,
+        tool.handler
+      );
       toolCount++;
     }
   }

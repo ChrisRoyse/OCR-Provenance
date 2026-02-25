@@ -24,12 +24,25 @@ import {
 } from './types.js';
 
 /** Valid DocumentStatus values for runtime validation */
-const VALID_DOCUMENT_STATUSES: readonly DocumentStatus[] = ['pending', 'processing', 'complete', 'failed'];
+const VALID_DOCUMENT_STATUSES: readonly DocumentStatus[] = [
+  'pending',
+  'processing',
+  'complete',
+  'failed',
+];
 
 /** Valid ProvenanceType values for runtime validation */
 const VALID_PROVENANCE_TYPES: readonly string[] = [
-  'DOCUMENT', 'OCR_RESULT', 'CHUNK', 'IMAGE', 'VLM_DESCRIPTION',
-  'EXTRACTION', 'FORM_FILL', 'COMPARISON', 'CLUSTERING', 'EMBEDDING',
+  'DOCUMENT',
+  'OCR_RESULT',
+  'CHUNK',
+  'IMAGE',
+  'VLM_DESCRIPTION',
+  'EXTRACTION',
+  'FORM_FILL',
+  'COMPARISON',
+  'CLUSTERING',
+  'EMBEDDING',
 ];
 
 /** Valid VLMStatus values for runtime validation */
@@ -39,9 +52,16 @@ const VALID_VLM_STATUSES: readonly VLMStatus[] = ['pending', 'processing', 'comp
  * Validate that a string value is a member of an enum/union type at runtime.
  * Throws a descriptive error if the value is invalid, preventing silent data corruption.
  */
-function validateEnum<T extends string>(value: string, validValues: readonly T[], fieldName: string, id: string): T {
+function validateEnum<T extends string>(
+  value: string,
+  validValues: readonly T[],
+  fieldName: string,
+  id: string
+): T {
   if (!validValues.includes(value as T)) {
-    throw new Error(`Invalid ${fieldName} "${value}" in record ${id}. Valid values: ${validValues.join(', ')}`);
+    throw new Error(
+      `Invalid ${fieldName} "${value}" in record ${id}. Valid values: ${validValues.join(', ')}`
+    );
   }
   return value as T;
 }
@@ -212,7 +232,12 @@ export function rowToEmbedding(row: EmbeddingRow): Omit<Embedding, 'vector'> {
 export function rowToProvenance(row: ProvenanceRow): ProvenanceRecord {
   return {
     id: row.id,
-    type: validateEnum(row.type, VALID_PROVENANCE_TYPES, 'ProvenanceType', row.id) as ProvenanceType,
+    type: validateEnum(
+      row.type,
+      VALID_PROVENANCE_TYPES,
+      'ProvenanceType',
+      row.id
+    ) as ProvenanceType,
     created_at: row.created_at,
     processed_at: row.processed_at,
     source_file_created_at: row.source_file_created_at,

@@ -278,9 +278,10 @@ export class DatabaseService {
     return embOps.getEmbeddingsByDocumentId(this.db, documentId);
   }
 
-  getEmbeddingsFiltered(
-    filters: embOps.EmbeddingFilterOptions
-  ): { embeddings: Array<Omit<Embedding, 'vector'>>; total: number } {
+  getEmbeddingsFiltered(filters: embOps.EmbeddingFilterOptions): {
+    embeddings: Array<Omit<Embedding, 'vector'>>;
+    total: number;
+  } {
     return embOps.getEmbeddingsFiltered(this.db, filters);
   }
 
@@ -322,15 +323,18 @@ export class DatabaseService {
     return provOps.getProvenanceChildren(this.db, parentId);
   }
 
-  queryProvenance(
-    filters: provOps.ProvenanceQueryFilters
-  ): { records: ProvenanceRecord[]; total: number } {
+  queryProvenance(filters: provOps.ProvenanceQueryFilters): {
+    records: ProvenanceRecord[];
+    total: number;
+  } {
     return provOps.queryProvenance(this.db, filters);
   }
 
-  getProvenanceProcessorStats(
-    filters?: { processor?: string; created_after?: string; created_before?: string }
-  ): provOps.ProvenanceProcessorStat[] {
+  getProvenanceProcessorStats(filters?: {
+    processor?: string;
+    created_after?: string;
+    created_before?: string;
+  }): provOps.ProvenanceProcessorStat[] {
     return provOps.getProvenanceProcessorStats(this.db, filters);
   }
 
@@ -458,11 +462,7 @@ export class DatabaseService {
     return tagOps.getTagsForEntity(this.db, entityId, entityType);
   }
 
-  searchByTags(
-    tagNames: string[],
-    entityType?: string,
-    matchAll?: boolean
-  ): EntityTagResult[] {
+  searchByTags(tagNames: string[], entityType?: string, matchAll?: boolean): EntityTagResult[] {
     return tagOps.searchByTags(this.db, tagNames, entityType, matchAll);
   }
 

@@ -42,4 +42,3 @@ export {
 
 // Export converters
 export { rowToImage } from './converters.js';
-

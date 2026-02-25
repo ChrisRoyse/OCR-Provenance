@@ -26,7 +26,10 @@ import {
   computeHash,
 } from '../../integration/server/helpers.js';
 import { comparisonTools } from '../../../src/tools/comparison.js';
-import { insertCluster, insertDocumentCluster } from '../../../src/services/storage/database/cluster-operations.js';
+import {
+  insertCluster,
+  insertDocumentCluster,
+} from '../../../src/services/storage/database/cluster-operations.js';
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // SQLITE-VEC AVAILABILITY CHECK
@@ -60,10 +63,7 @@ function parseResult(response: { content: Array<{ type: string; text: string }> 
  * Create a complete document with OCR result and chunk with embedding.
  * Returns IDs for all created entities.
  */
-function createDocumentWithEmbedding(
-  extractedText: string,
-  options: { fileName?: string } = {}
-) {
+function createDocumentWithEmbedding(extractedText: string, options: { fileName?: string } = {}) {
   const { db, vector } = requireDatabase();
   const _conn = db.getConnection();
 
@@ -188,8 +188,12 @@ describe.skipIf(!sqliteVecAvailable)('ocr_comparison_discover', () => {
 
   it('should discover similar document pairs based on embedding proximity', async () => {
     // Create two documents with similar text
-    const _doc1 = createDocumentWithEmbedding('This is a legal contract about terms and conditions.');
-    const _doc2 = createDocumentWithEmbedding('This is a legal agreement about terms and provisions.');
+    const _doc1 = createDocumentWithEmbedding(
+      'This is a legal contract about terms and conditions.'
+    );
+    const _doc2 = createDocumentWithEmbedding(
+      'This is a legal agreement about terms and provisions.'
+    );
 
     const result = await comparisonTools.ocr_comparison_discover.handler({
       min_similarity: 0.0, // Very low threshold to ensure we find the pair
@@ -440,9 +444,7 @@ describe.skipIf(!sqliteVecAvailable)('ocr_comparison_batch', () => {
     const doc1 = createDocumentWithEmbedding('Error test doc for batch.');
 
     const result = await comparisonTools.ocr_comparison_batch.handler({
-      pairs: [
-        { doc1: doc1.docId, doc2: 'nonexistent-doc-id' },
-      ],
+      pairs: [{ doc1: doc1.docId, doc2: 'nonexistent-doc-id' }],
     });
 
     // M-4: When ALL comparisons fail, the handler now returns an error

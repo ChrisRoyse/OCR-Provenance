@@ -14,7 +14,13 @@
 
 import { z } from 'zod';
 import { safeMin, safeMax } from '../utils/math.js';
-import { formatResponse, handleError, fetchProvenanceChain, type ToolResponse, type ToolDefinition } from './shared.js';
+import {
+  formatResponse,
+  handleError,
+  fetchProvenanceChain,
+  type ToolResponse,
+  type ToolDefinition,
+} from './shared.js';
 import { successResult } from '../server/types.js';
 import { MCPError } from '../server/errors.js';
 import { requireDatabase } from '../server/state.js';
@@ -34,36 +40,45 @@ const ChunkGetInput = z.object({
 
 const ChunkListInput = z.object({
   document_id: z.string().min(1).describe('Document ID'),
-  section_path_filter: z.string().optional()
-    .describe('Filter by section path prefix (LIKE match)'),
-  heading_filter: z.string().optional()
-    .describe('Filter by heading context (LIKE match)'),
-  content_type_filter: z.array(z.string()).optional()
+  section_path_filter: z.string().optional().describe('Filter by section path prefix (LIKE match)'),
+  heading_filter: z.string().optional().describe('Filter by heading context (LIKE match)'),
+  content_type_filter: z
+    .array(z.string())
+    .optional()
     .describe('Filter chunks containing these content types'),
-  min_quality_score: z.number().min(0).max(5).optional()
+  min_quality_score: z
+    .number()
+    .min(0)
+    .max(5)
+    .optional()
     .describe('Minimum OCR quality score (0-5)'),
-  embedding_status: z.enum(['pending', 'complete', 'failed']).optional()
+  embedding_status: z
+    .enum(['pending', 'complete', 'failed'])
+    .optional()
     .describe('Filter by embedding status'),
-  is_atomic: z.boolean().optional()
-    .describe('Filter atomic chunks only'),
-  page_range: z.object({
-    min_page: z.number().int().min(1).optional(),
-    max_page: z.number().int().min(1).optional(),
-  }).optional().describe('Filter results to specific page range'),
-  limit: z.number().int().min(1).max(1000).default(50)
-    .describe('Maximum results'),
-  offset: z.number().int().min(0).default(0)
-    .describe('Offset for pagination'),
-  include_text: z.boolean().default(false)
-    .describe('Include full chunk text'),
+  is_atomic: z.boolean().optional().describe('Filter atomic chunks only'),
+  page_range: z
+    .object({
+      min_page: z.number().int().min(1).optional(),
+      max_page: z.number().int().min(1).optional(),
+    })
+    .optional()
+    .describe('Filter results to specific page range'),
+  limit: z.number().int().min(1).max(1000).default(50).describe('Maximum results'),
+  offset: z.number().int().min(0).default(0).describe('Offset for pagination'),
+  include_text: z.boolean().default(false).describe('Include full chunk text'),
 });
 
 const ChunkContextInput = z.object({
   chunk_id: z.string().min(1).describe('Center chunk ID'),
-  neighbors: z.number().int().min(0).max(20).default(2)
+  neighbors: z
+    .number()
+    .int()
+    .min(0)
+    .max(20)
+    .default(2)
     .describe('Number of chunks before and after'),
-  include_provenance: z.boolean().default(false)
-    .describe('Include provenance for each chunk'),
+  include_provenance: z.boolean().default(false).describe('Include provenance for each chunk'),
 });
 
 const DocumentPageInput = z.object({
@@ -214,7 +229,11 @@ async function handleChunkList(params: Record<string, unknown>): Promise<ToolRes
         total,
         limit: input.limit,
         offset: input.offset,
-        next_steps: [{ tool: 'ocr_chunk_get', description: 'Get details for a specific chunk' }, { tool: 'ocr_chunk_context', description: 'Expand a chunk with surrounding text' }, { tool: 'ocr_document_page', description: 'Read a specific page of the document' }],
+        next_steps: [
+          { tool: 'ocr_chunk_get', description: 'Get details for a specific chunk' },
+          { tool: 'ocr_chunk_context', description: 'Expand a chunk with surrounding text' },
+          { tool: 'ocr_document_page', description: 'Read a specific page of the document' },
+        ],
       })
     );
   } catch (error) {
@@ -255,9 +274,7 @@ async function handleChunkContext(params: Record<string, unknown>): Promise<Tool
     const combinedText = allChunks.map((c) => c.text).join('\n\n');
 
     // Compute combined page range
-    const allPages = allChunks
-      .map((c) => c.page_number)
-      .filter((p): p is number => p !== null);
+    const allPages = allChunks.map((c) => c.page_number).filter((p): p is number => p !== null);
     const minPage = safeMin(allPages) ?? null;
     const maxPage = safeMax(allPages) ?? null;
     const combinedPageRange =
@@ -319,8 +336,11 @@ async function handleDocumentPage(params: Record<string, unknown>): Promise<Tool
     const conn = db.getConnection();
 
     // Fetch document
-    const doc = conn.prepare('SELECT id, file_name, file_path, page_count FROM documents WHERE id = ?')
-      .get(input.document_id) as { id: string; file_name: string; file_path: string; page_count: number | null } | undefined;
+    const doc = conn
+      .prepare('SELECT id, file_name, file_path, page_count FROM documents WHERE id = ?')
+      .get(input.document_id) as
+      | { id: string; file_name: string; file_path: string; page_count: number | null }
+      | undefined;
 
     if (!doc) {
       throw new MCPError('DOCUMENT_NOT_FOUND', `Document not found: ${input.document_id}`, {
@@ -332,16 +352,22 @@ async function handleDocumentPage(params: Record<string, unknown>): Promise<Tool
 
     // Validate page number against total pages if known
     if (totalPages !== null && input.page_number > totalPages) {
-      throw new MCPError('VALIDATION_ERROR', `Page ${input.page_number} exceeds document page count (${totalPages})`, {
-        page_number: input.page_number,
-        total_pages: totalPages,
-      });
+      throw new MCPError(
+        'VALIDATION_ERROR',
+        `Page ${input.page_number} exceeds document page count (${totalPages})`,
+        {
+          page_number: input.page_number,
+          total_pages: totalPages,
+        }
+      );
     }
 
     // Fetch chunks for this page
-    const chunks = conn.prepare(
-      'SELECT * FROM chunks WHERE document_id = ? AND page_number = ? ORDER BY chunk_index'
-    ).all(input.document_id, input.page_number) as Array<Record<string, unknown>>;
+    const chunks = conn
+      .prepare(
+        'SELECT * FROM chunks WHERE document_id = ? AND page_number = ? ORDER BY chunk_index'
+      )
+      .all(input.document_id, input.page_number) as Array<Record<string, unknown>>;
 
     const chunkData = chunks.map((c) => ({
       id: c.id,
@@ -384,9 +410,7 @@ async function handleDocumentPage(params: Record<string, unknown>): Promise<Tool
     // When totalPages is known, use it. When unknown (null), only suggest more pages
     // if we actually found chunks on this page (indicating the document has content).
     // An empty page with unknown total = no evidence of more pages.
-    const hasNext = totalPages !== null
-      ? input.page_number < totalPages
-      : chunkData.length > 0;
+    const hasNext = totalPages !== null ? input.page_number < totalPages : chunkData.length > 0;
 
     const result: Record<string, unknown> = {
       document_id: input.document_id,

@@ -104,9 +104,9 @@ export function createUser(db: Database.Database, params: CreateUserParams): Use
     );
 
     // Retrieve the just-inserted user by rowid (safe under concurrent inserts)
-    const user = db
-      .prepare('SELECT * FROM users WHERE rowid = ?')
-      .get(result.lastInsertRowid) as User | undefined;
+    const user = db.prepare('SELECT * FROM users WHERE rowid = ?').get(result.lastInsertRowid) as
+      | User
+      | undefined;
 
     if (!user) {
       throw new Error('Failed to retrieve created user');
@@ -115,9 +115,7 @@ export function createUser(db: Database.Database, params: CreateUserParams): Use
     return user;
   } catch (error) {
     if (error instanceof Error && error.message.includes('UNIQUE constraint failed')) {
-      throw new Error(
-        `User with external_id "${params.external_id}" already exists`
-      );
+      throw new Error(`User with external_id "${params.external_id}" already exists`);
     }
     throw error;
   }
@@ -135,9 +133,9 @@ export function getUser(db: Database.Database, userId: string): User | null {
  * Get a user by external ID
  */
 export function getUserByExternalId(db: Database.Database, externalId: string): User | null {
-  const row = db
-    .prepare('SELECT * FROM users WHERE external_id = ?')
-    .get(externalId) as User | undefined;
+  const row = db.prepare('SELECT * FROM users WHERE external_id = ?').get(externalId) as
+    | User
+    | undefined;
   return row ?? null;
 }
 

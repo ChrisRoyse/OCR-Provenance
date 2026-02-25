@@ -25,10 +25,8 @@ import {
 import { handleExport } from '../../../src/tools/documents.js';
 
 // Wrappers that route through the unified handler (MERGE-A)
-const handleDocumentExport = (params: Record<string, unknown>) =>
-  handleExport(params);
-const handleCorpusExport = (params: Record<string, unknown>) =>
-  handleExport(params);
+const handleDocumentExport = (params: Record<string, unknown>) => handleExport(params);
+const handleCorpusExport = (params: Record<string, unknown>) => handleExport(params);
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // ocr_document_export TESTS
@@ -437,9 +435,7 @@ describe('ocr_corpus_export', () => {
     expect(docNames).toContain('doc2.pdf');
     expect(docNames).toContain('doc3.pdf');
 
-    const doc1Entry = fileContent.find(
-      (d: Record<string, unknown>) => d.file_name === 'doc1.pdf'
-    );
+    const doc1Entry = fileContent.find((d: Record<string, unknown>) => d.file_name === 'doc1.pdf');
     expect(doc1Entry.chunk_count).toBe(2);
     expect(doc1Entry.image_count).toBe(0);
   });
@@ -519,9 +515,7 @@ describe('ocr_corpus_export', () => {
       expect(Array.isArray(doc.chunks)).toBe(true);
     }
 
-    const doc1Entry = fileContent.find(
-      (d: Record<string, unknown>) => d.file_name === 'doc1.pdf'
-    );
+    const doc1Entry = fileContent.find((d: Record<string, unknown>) => d.file_name === 'doc1.pdf');
     expect(doc1Entry.chunks).toHaveLength(2);
     expect(doc1Entry.chunks[0].text).toBeDefined();
   });

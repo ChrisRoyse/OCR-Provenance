@@ -15,9 +15,7 @@ import { join } from 'path';
 import { tmpdir } from 'os';
 import { v4 as uuidv4 } from 'uuid';
 
-import {
-  handleSearchUnified,
-} from '../../../src/tools/search.js';
+import { handleSearchUnified } from '../../../src/tools/search.js';
 
 // Wrappers that route through the unified handler with mode parameter
 const handleSearch = (params: Record<string, unknown>) =>
@@ -107,7 +105,7 @@ function insertProvenance(
   type: string,
   parentId: string | null,
   rootDocId: string,
-  chainDepth: number,
+  chainDepth: number
 ): void {
   const now = new Date().toISOString();
   const hash = computeHash(`prov-${id}`);
@@ -261,9 +259,9 @@ function setupTestData(db: DatabaseService, conn: ReturnType<DatabaseService['ge
   });
 
   // Get the actual inserted image ID (insertImage generates its own UUID)
-  const insertedImage = conn.prepare(
-    'SELECT id FROM images WHERE document_id = ? AND image_index = 0'
-  ).get(docId) as { id: string };
+  const insertedImage = conn
+    .prepare('SELECT id FROM images WHERE document_id = ? AND image_index = 0')
+    .get(docId) as { id: string };
   const actualImageId = insertedImage.id;
 
   // 6. VLM embedding provenance + embedding (linked to image)
@@ -274,7 +272,8 @@ function setupTestData(db: DatabaseService, conn: ReturnType<DatabaseService['ge
     image_id: actualImageId,
     extraction_id: null,
     document_id: docId,
-    original_text: 'A unicorn signature block showing printed names and handwritten signatures of all parties.',
+    original_text:
+      'A unicorn signature block showing printed names and handwritten signatures of all parties.',
     original_text_length: 90,
     source_file_path: '/test/contract.pdf',
     source_file_name: 'contract.pdf',
@@ -330,50 +329,47 @@ describe('handleSearch - VLM image path enrichment', () => {
     resetState();
   });
 
-  it.skipIf(!sqliteVecAvailable)(
-    'enriches VLM results with image metadata',
-    async () => {
-      const db = DatabaseService.create(dbName, undefined, tempDir);
-      state.currentDatabase = db;
-      state.currentDatabaseName = dbName;
-      state.currentVector = new VectorService(db.getConnection());
-      const conn = db.getConnection();
+  it.skipIf(!sqliteVecAvailable)('enriches VLM results with image metadata', async () => {
+    const db = DatabaseService.create(dbName, undefined, tempDir);
+    state.currentDatabase = db;
+    state.currentDatabaseName = dbName;
+    state.currentVector = new VectorService(db.getConnection());
+    const conn = db.getConnection();
 
-      const testData = setupTestData(db, conn);
+    const testData = setupTestData(db, conn);
 
-      // Search for "unicorn" which appears in both chunk text and VLM description
-      const response = await handleSearch({ query: 'unicorn', limit: 10 });
-      const result = parseResponse(response);
+    // Search for "unicorn" which appears in both chunk text and VLM description
+    const response = await handleSearch({ query: 'unicorn', limit: 10 });
+    const result = parseResponse(response);
 
-      expect(result.success).toBe(true);
-      expect(result.data?.total).toBeGreaterThan(0);
+    expect(result.success).toBe(true);
+    expect(result.data?.total).toBeGreaterThan(0);
 
-      const results = result.data?.results as Array<Record<string, unknown>>;
+    const results = result.data?.results as Array<Record<string, unknown>>;
 
-      // Find the VLM result
-      const vlmResults = results.filter((r) => r.result_type === 'vlm');
-      expect(vlmResults.length).toBeGreaterThanOrEqual(1);
+    // Find the VLM result
+    const vlmResults = results.filter((r) => r.result_type === 'vlm');
+    expect(vlmResults.length).toBeGreaterThanOrEqual(1);
 
-      const vlmResult = vlmResults[0];
-      // Verify image metadata is enriched
-      expect(vlmResult.image_extracted_path).toBe('/test/images/contract_p002_i000.png');
-      expect(vlmResult.image_page_number).toBe(2);
-      expect(vlmResult.image_dimensions).toEqual({ width: 800, height: 600 });
-      expect(vlmResult.image_block_type).toBe('Figure');
-      expect(vlmResult.image_format).toBe('png');
-      expect(vlmResult.image_id).toBe(testData.actualImageId);
+    const vlmResult = vlmResults[0];
+    // Verify image metadata is enriched
+    expect(vlmResult.image_extracted_path).toBe('/test/images/contract_p002_i000.png');
+    expect(vlmResult.image_page_number).toBe(2);
+    expect(vlmResult.image_dimensions).toEqual({ width: 800, height: 600 });
+    expect(vlmResult.image_block_type).toBe('Figure');
+    expect(vlmResult.image_format).toBe('png');
+    expect(vlmResult.image_id).toBe(testData.actualImageId);
 
-      // Find chunk results - should NOT have image fields
-      const chunkResults = results.filter((r) => r.result_type === 'chunk');
-      if (chunkResults.length > 0) {
-        expect(chunkResults[0].image_extracted_path).toBeUndefined();
-        expect(chunkResults[0].image_page_number).toBeUndefined();
-        expect(chunkResults[0].image_dimensions).toBeUndefined();
-        expect(chunkResults[0].image_block_type).toBeUndefined();
-        expect(chunkResults[0].image_format).toBeUndefined();
-      }
+    // Find chunk results - should NOT have image fields
+    const chunkResults = results.filter((r) => r.result_type === 'chunk');
+    if (chunkResults.length > 0) {
+      expect(chunkResults[0].image_extracted_path).toBeUndefined();
+      expect(chunkResults[0].image_page_number).toBeUndefined();
+      expect(chunkResults[0].image_dimensions).toBeUndefined();
+      expect(chunkResults[0].image_block_type).toBeUndefined();
+      expect(chunkResults[0].image_format).toBeUndefined();
     }
-  );
+  });
 
   it.skipIf(!sqliteVecAvailable)(
     'handles VLM result with non-existent image gracefully',
@@ -448,9 +444,9 @@ describe('handleSearch - VLM image path enrichment', () => {
       });
 
       // Get the actual image ID
-      const insertedImg = conn.prepare(
-        'SELECT id FROM images WHERE document_id = ?'
-      ).get(docId) as { id: string };
+      const insertedImg = conn
+        .prepare('SELECT id FROM images WHERE document_id = ?')
+        .get(docId) as { id: string };
       const realImageId = insertedImg.id;
 
       insertProvenance(db, vlmEmbProvId, 'EMBEDDING', imageProvId, docProvId, 3);
@@ -693,98 +689,95 @@ describe('VLM enrichment edge cases', () => {
     resetState();
   });
 
-  it.skipIf(!sqliteVecAvailable)(
-    'does not add image fields to chunk-only results',
-    async () => {
-      const db = DatabaseService.create(dbName, undefined, tempDir);
-      state.currentDatabase = db;
-      state.currentDatabaseName = dbName;
-      state.currentVector = new VectorService(db.getConnection());
-      const conn = db.getConnection();
+  it.skipIf(!sqliteVecAvailable)('does not add image fields to chunk-only results', async () => {
+    const db = DatabaseService.create(dbName, undefined, tempDir);
+    state.currentDatabase = db;
+    state.currentDatabaseName = dbName;
+    state.currentVector = new VectorService(db.getConnection());
+    const conn = db.getConnection();
 
-      // Insert only chunk data (no VLM/images)
-      const docId = uuidv4();
-      const docProvId = uuidv4();
-      const ocrResultId = uuidv4();
-      const ocrProvId = uuidv4();
-      const chunkId = uuidv4();
-      const chunkProvId = uuidv4();
-      const now = new Date().toISOString();
+    // Insert only chunk data (no VLM/images)
+    const docId = uuidv4();
+    const docProvId = uuidv4();
+    const ocrResultId = uuidv4();
+    const ocrProvId = uuidv4();
+    const chunkId = uuidv4();
+    const chunkProvId = uuidv4();
+    const now = new Date().toISOString();
 
-      insertProvenance(db, docProvId, 'DOCUMENT', null, docProvId, 0);
-      db.insertDocument({
-        id: docId,
-        file_path: '/test/textonly.pdf',
-        file_name: 'textonly.pdf',
-        file_hash: computeHash('text-only-hash'),
-        file_size: 1000,
-        file_type: 'pdf',
-        status: 'complete',
-        page_count: 1,
-        provenance_id: docProvId,
-        error_message: null,
-        ocr_completed_at: now,
-      });
+    insertProvenance(db, docProvId, 'DOCUMENT', null, docProvId, 0);
+    db.insertDocument({
+      id: docId,
+      file_path: '/test/textonly.pdf',
+      file_name: 'textonly.pdf',
+      file_hash: computeHash('text-only-hash'),
+      file_size: 1000,
+      file_type: 'pdf',
+      status: 'complete',
+      page_count: 1,
+      provenance_id: docProvId,
+      error_message: null,
+      ocr_completed_at: now,
+    });
 
-      insertProvenance(db, ocrProvId, 'OCR_RESULT', docProvId, docProvId, 1);
-      db.insertOCRResult({
-        id: ocrResultId,
-        provenance_id: ocrProvId,
-        document_id: docId,
-        extracted_text: 'The giraffe protocol defines network communication standards.',
-        text_length: 60,
-        datalab_request_id: `req-${uuidv4()}`,
-        datalab_mode: 'balanced',
-        parse_quality_score: 4.0,
-        page_count: 1,
-        cost_cents: 0,
-        content_hash: computeHash('ocr-text-only'),
-        processing_started_at: now,
-        processing_completed_at: now,
-        processing_duration_ms: 100,
-      });
+    insertProvenance(db, ocrProvId, 'OCR_RESULT', docProvId, docProvId, 1);
+    db.insertOCRResult({
+      id: ocrResultId,
+      provenance_id: ocrProvId,
+      document_id: docId,
+      extracted_text: 'The giraffe protocol defines network communication standards.',
+      text_length: 60,
+      datalab_request_id: `req-${uuidv4()}`,
+      datalab_mode: 'balanced',
+      parse_quality_score: 4.0,
+      page_count: 1,
+      cost_cents: 0,
+      content_hash: computeHash('ocr-text-only'),
+      processing_started_at: now,
+      processing_completed_at: now,
+      processing_duration_ms: 100,
+    });
 
-      insertProvenance(db, chunkProvId, 'CHUNK', ocrProvId, docProvId, 2);
-      db.insertChunk({
-        id: chunkId,
-        document_id: docId,
-        ocr_result_id: ocrResultId,
-        text: 'The giraffe protocol defines network communication standards.',
-        text_hash: computeHash('chunk-text-only'),
-        chunk_index: 0,
-        character_start: 0,
-        character_end: 60,
-        page_number: 1,
-        page_range: null,
-        overlap_previous: 0,
-        overlap_next: 0,
-        provenance_id: chunkProvId,
-        embedding_status: 'complete',
-        embedded_at: now,
-      });
+    insertProvenance(db, chunkProvId, 'CHUNK', ocrProvId, docProvId, 2);
+    db.insertChunk({
+      id: chunkId,
+      document_id: docId,
+      ocr_result_id: ocrResultId,
+      text: 'The giraffe protocol defines network communication standards.',
+      text_hash: computeHash('chunk-text-only'),
+      chunk_index: 0,
+      character_start: 0,
+      character_end: 60,
+      page_number: 1,
+      page_range: null,
+      overlap_previous: 0,
+      overlap_next: 0,
+      provenance_id: chunkProvId,
+      embedding_status: 'complete',
+      embedded_at: now,
+    });
 
-      // Rebuild FTS
-      const bm25 = new BM25SearchService(conn);
-      bm25.rebuildIndex();
+    // Rebuild FTS
+    const bm25 = new BM25SearchService(conn);
+    bm25.rebuildIndex();
 
-      const response = await handleSearch({ query: 'giraffe protocol', limit: 10 });
-      const result = parseResponse(response);
+    const response = await handleSearch({ query: 'giraffe protocol', limit: 10 });
+    const result = parseResponse(response);
 
-      expect(result.success).toBe(true);
-      const results = result.data?.results as Array<Record<string, unknown>>;
-      expect(results.length).toBeGreaterThanOrEqual(1);
+    expect(result.success).toBe(true);
+    const results = result.data?.results as Array<Record<string, unknown>>;
+    expect(results.length).toBeGreaterThanOrEqual(1);
 
-      // All results should be chunks with no image enrichment
-      for (const r of results) {
-        expect(r.result_type).toBe('chunk');
-        expect(r.image_extracted_path).toBeUndefined();
-        expect(r.image_page_number).toBeUndefined();
-        expect(r.image_dimensions).toBeUndefined();
-        expect(r.image_block_type).toBeUndefined();
-        expect(r.image_format).toBeUndefined();
-      }
+    // All results should be chunks with no image enrichment
+    for (const r of results) {
+      expect(r.result_type).toBe('chunk');
+      expect(r.image_extracted_path).toBeUndefined();
+      expect(r.image_page_number).toBeUndefined();
+      expect(r.image_dimensions).toBeUndefined();
+      expect(r.image_block_type).toBeUndefined();
+      expect(r.image_format).toBeUndefined();
     }
-  );
+  });
 
   it.skipIf(!sqliteVecAvailable)(
     'enriches results with image that has null extracted_path',
@@ -857,9 +850,9 @@ describe('VLM enrichment edge cases', () => {
         content_hash: null,
       });
 
-      const insertedImage = conn.prepare(
-        'SELECT id FROM images WHERE document_id = ?'
-      ).get(docId) as { id: string };
+      const insertedImage = conn
+        .prepare('SELECT id FROM images WHERE document_id = ?')
+        .get(docId) as { id: string };
 
       insertProvenance(db, vlmEmbProvId, 'EMBEDDING', imageProvId, docProvId, 3);
       db.insertEmbedding({

@@ -86,7 +86,9 @@ async function handleWebhookCreate(params: Record<string, unknown>): Promise<Too
     // Validate all event types
     for (const evt of input.events) {
       if (evt !== '*' && !VALID_EVENT_TYPES.includes(evt as (typeof VALID_EVENT_TYPES)[number])) {
-        throw new Error(`Invalid event type: ${evt}. Valid types: ${VALID_EVENT_TYPES.join(', ')}, *`);
+        throw new Error(
+          `Invalid event type: ${evt}. Valid types: ${VALID_EVENT_TYPES.join(', ')}, *`
+        );
       }
     }
 
@@ -233,9 +235,7 @@ async function handleExportObligationsCSV(params: Record<string, unknown>): Prom
     const input = validateInput(
       z.object({
         document_id: z.string().min(1).optional(),
-        status: z
-          .enum(['active', 'fulfilled', 'overdue', 'waived', 'expired'])
-          .optional(),
+        status: z.enum(['active', 'fulfilled', 'overdue', 'waived', 'expired']).optional(),
       }),
       params
     );
@@ -520,9 +520,7 @@ export const eventTools: Record<string, ToolDefinition> = {
       events: z
         .array(EventTypeSchema)
         .min(1)
-        .describe(
-          'Event types to subscribe to. Use "*" for all events.'
-        ),
+        .describe('Event types to subscribe to. Use "*" for all events.'),
       secret: z
         .string()
         .min(1)

@@ -45,21 +45,19 @@ const UserInfoInputSchema = z.object({
 
 const AuditQueryInputSchema = z.object({
   user_id: z.string().min(1).optional().describe('Filter by user ID'),
-  action: z.string().min(1).optional().describe('Filter by action (e.g., "ingest", "delete", "search")'),
+  action: z
+    .string()
+    .min(1)
+    .optional()
+    .describe('Filter by action (e.g., "ingest", "delete", "search")'),
   entity_type: z
     .string()
     .min(1)
     .optional()
     .describe('Filter by entity type (e.g., "document", "chunk", "user")'),
   entity_id: z.string().min(1).optional().describe('Filter by entity ID'),
-  date_from: z
-    .string()
-    .optional()
-    .describe('Filter entries from this ISO 8601 datetime'),
-  date_to: z
-    .string()
-    .optional()
-    .describe('Filter entries up to this ISO 8601 datetime'),
+  date_from: z.string().optional().describe('Filter entries from this ISO 8601 datetime'),
+  date_to: z.string().optional().describe('Filter entries up to this ISO 8601 datetime'),
   limit: z.number().int().min(1).max(500).default(50).describe('Max entries to return (1-500)'),
   offset: z.number().int().min(0).default(0).describe('Offset for pagination'),
 });
@@ -85,9 +83,7 @@ async function handleUserInfo(params: Record<string, unknown>): Promise<ToolResp
       return formatResponse(
         successResult({
           user,
-          next_steps: [
-            { tool: 'ocr_audit_query', description: 'View this user\'s activity log' },
-          ],
+          next_steps: [{ tool: 'ocr_audit_query', description: "View this user's activity log" }],
         })
       );
     }
@@ -101,9 +97,7 @@ async function handleUserInfo(params: Record<string, unknown>): Promise<ToolResp
           successResult({
             user: existing,
             created: false,
-            next_steps: [
-              { tool: 'ocr_audit_query', description: 'View this user\'s activity log' },
-            ],
+            next_steps: [{ tool: 'ocr_audit_query', description: "View this user's activity log" }],
           })
         );
       }
@@ -243,11 +237,7 @@ export const userTools: Record<string, ToolDefinition> = {
       '[MANAGE] Use to get, create, or list users. If user_id is provided, returns that user. If external_id is provided, looks up or creates (when display_name is also given). If only display_name is provided, creates a new user. If no params, lists all users.',
     inputSchema: {
       user_id: z.string().min(1).optional().describe('Internal user ID to look up'),
-      external_id: z
-        .string()
-        .min(1)
-        .optional()
-        .describe('External user ID (e.g., SSO sub claim)'),
+      external_id: z.string().min(1).optional().describe('External user ID (e.g., SSO sub claim)'),
       display_name: z
         .string()
         .min(1)
@@ -255,9 +245,7 @@ export const userTools: Record<string, ToolDefinition> = {
         .optional()
         .describe('Display name for the user (required when creating a new user)'),
       email: z.string().email().optional().describe('User email address'),
-      role: UserRoleSchema.optional().describe(
-        'User role: viewer, reviewer, editor, or admin'
-      ),
+      role: UserRoleSchema.optional().describe('User role: viewer, reviewer, editor, or admin'),
     },
     handler: handleUserInfo,
   },
@@ -278,27 +266,10 @@ export const userTools: Record<string, ToolDefinition> = {
         .optional()
         .describe('Filter by entity type (e.g., "document", "chunk", "user")'),
       entity_id: z.string().min(1).optional().describe('Filter by entity ID'),
-      date_from: z
-        .string()
-        .optional()
-        .describe('Filter entries from this ISO 8601 datetime'),
-      date_to: z
-        .string()
-        .optional()
-        .describe('Filter entries up to this ISO 8601 datetime'),
-      limit: z
-        .number()
-        .int()
-        .min(1)
-        .max(500)
-        .default(50)
-        .describe('Max entries to return (1-500)'),
-      offset: z
-        .number()
-        .int()
-        .min(0)
-        .default(0)
-        .describe('Offset for pagination'),
+      date_from: z.string().optional().describe('Filter entries from this ISO 8601 datetime'),
+      date_to: z.string().optional().describe('Filter entries up to this ISO 8601 datetime'),
+      limit: z.number().int().min(1).max(500).default(50).describe('Max entries to return (1-500)'),
+      offset: z.number().int().min(0).default(0).describe('Offset for pagination'),
     },
     handler: handleAuditQuery,
   },

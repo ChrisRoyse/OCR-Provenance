@@ -47,7 +47,7 @@ const TABLE_QUERY_PATTERNS: RegExp[] = [
  * Used to trigger table-aware query expansion.
  */
 export function isTableQuery(query: string): boolean {
-  return TABLE_QUERY_PATTERNS.some(p => p.test(query));
+  return TABLE_QUERY_PATTERNS.some((p) => p.test(query));
 }
 
 /**

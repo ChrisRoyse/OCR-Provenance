@@ -24,10 +24,12 @@ import type Database from 'better-sqlite3';
 export function persistConfigValue(
   conn: Database.Database,
   key: string,
-  value: string | number | boolean,
+  value: string | number | boolean
 ): void {
   // Ensure config_json column exists (idempotent)
-  const cols = conn.prepare('PRAGMA table_info(database_metadata)').all() as Array<{ name: string }>;
+  const cols = conn.prepare('PRAGMA table_info(database_metadata)').all() as Array<{
+    name: string;
+  }>;
   if (!cols.some((c) => c.name === 'config_json')) {
     conn.exec("ALTER TABLE database_metadata ADD COLUMN config_json TEXT DEFAULT '{}'");
   }
@@ -40,9 +42,9 @@ export function persistConfigValue(
     ? (JSON.parse(row.config_json) as Record<string, unknown>)
     : {};
   existing[key] = value;
-  conn.prepare('UPDATE database_metadata SET config_json = ? WHERE id = 1').run(
-    JSON.stringify(existing),
-  );
+  conn
+    .prepare('UPDATE database_metadata SET config_json = ? WHERE id = 1')
+    .run(JSON.stringify(existing));
 }
 
 /**
@@ -54,12 +56,12 @@ export function persistConfigValue(
  * @param conn - better-sqlite3 Database connection
  * @returns Record of persisted config key-value pairs, or empty object
  */
-export function loadPersistedConfig(
-  conn: Database.Database,
-): Record<string, unknown> {
+export function loadPersistedConfig(conn: Database.Database): Record<string, unknown> {
   try {
     // Check if config_json column exists
-    const cols = conn.prepare('PRAGMA table_info(database_metadata)').all() as Array<{ name: string }>;
+    const cols = conn.prepare('PRAGMA table_info(database_metadata)').all() as Array<{
+      name: string;
+    }>;
     if (!cols.some((c) => c.name === 'config_json')) {
       return {};
     }

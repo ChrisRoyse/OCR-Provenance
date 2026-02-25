@@ -55,7 +55,7 @@ function stripHtmlForFTS(text: string): string {
  */
 function createTableMetadataFromText(chunkText: string): ChunkResult['tableMetadata'] {
   // Only attempt if text contains pipe-delimited table patterns
-  const pipeLines = chunkText.split('\n').filter(l => l.includes('|'));
+  const pipeLines = chunkText.split('\n').filter((l) => l.includes('|'));
   if (pipeLines.length < 2) {
     return null;
   }
@@ -132,12 +132,18 @@ function addBlockToAccumulator(acc: Accumulator, block: MarkdownBlock): void {
 
 function mapBlockTypeToContentType(blockType: string): string {
   switch (blockType) {
-    case 'heading': return 'heading';
-    case 'table': return 'table';
-    case 'code': return 'code';
-    case 'list': return 'list';
-    case 'paragraph': return 'text';
-    default: return 'text';
+    case 'heading':
+      return 'heading';
+    case 'table':
+      return 'table';
+    case 'code':
+      return 'code';
+    case 'list':
+      return 'list';
+    case 'paragraph':
+      return 'text';
+    default:
+      return 'text';
   }
 }
 
@@ -212,10 +218,7 @@ function determinePageInfoForSpan(
   }
 
   const startPage = getPageNumberForOffset(startOffset, pageOffsets);
-  const endPage = getPageNumberForOffset(
-    Math.max(startOffset, endOffset - 1),
-    pageOffsets
-  );
+  const endPage = getPageNumberForOffset(Math.max(startOffset, endOffset - 1), pageOffsets);
 
   if (startPage === null) {
     return { pageNumber: null, pageRange: null };
@@ -264,9 +267,7 @@ export function chunkHybridSectionAware(
 
   // 3. If blocks is empty but text is not, something is wrong
   if (blocks.length === 0) {
-    throw new Error(
-      `Markdown parser returned no blocks for non-empty text (${text.length} chars)`
-    );
+    throw new Error(`Markdown parser returned no blocks for non-empty text (${text.length} chars)`);
   }
 
   // 3.5. Normalize heading levels if configured
@@ -300,10 +301,7 @@ export function chunkHybridSectionAware(
    * Find table metadata for a chunk based on its offset range.
    * Returns metadata if the chunk overlaps with a known table structure.
    */
-  function findTableMetadata(
-    offset: number,
-    length: number,
-  ): ChunkResult['tableMetadata'] {
+  function findTableMetadata(offset: number, length: number): ChunkResult['tableMetadata'] {
     const end = offset + length;
     for (const ts of tableStructures) {
       // Check if chunk overlaps with table structure
@@ -365,7 +363,7 @@ export function chunkHybridSectionAware(
       startOffset: startOff,
       endOffset: endOff,
       overlapWithPrevious: 0, // Set in post-processing
-      overlapWithNext: 0,     // Set in post-processing
+      overlapWithNext: 0, // Set in post-processing
       pageNumber: pageInfo.pageNumber,
       pageRange: pageInfo.pageRange,
       headingContext: currentHeadingText,
@@ -386,7 +384,7 @@ export function chunkHybridSectionAware(
     if (block.text.trim().length === 0) {
       console.error(
         `[chunker] Skipping empty atomic block at offset ${block.startOffset}-${block.endOffset} ` +
-        `(type=${block.type}, raw length=${block.text.length})`
+          `(type=${block.type}, raw length=${block.text.length})`
       );
       return;
     }
@@ -413,14 +411,15 @@ export function chunkHybridSectionAware(
     if (chunkText.trim().length === 0) {
       console.error(
         `[chunker] Atomic chunk became empty after processing at offset ${startOff}-${endOff} ` +
-        `(type=${block.type}, original length=${block.text.length})`
+          `(type=${block.type}, original length=${block.text.length})`
       );
       return;
     }
 
-    const tableMetaForAtomicChunk = block.type === 'table'
-      ? (findTableMetadata(startOff, endOff - startOff) ?? createTableMetadataFromText(chunkText))
-      : null;
+    const tableMetaForAtomicChunk =
+      block.type === 'table'
+        ? (findTableMetadata(startOff, endOff - startOff) ?? createTableMetadataFromText(chunkText))
+        : null;
 
     chunks.push({
       index: chunkIndex++,
@@ -492,9 +491,11 @@ export function chunkHybridSectionAware(
         const endOff = block.startOffset + endPos;
         const pageInfo = determinePageInfoForSpan(startOff, endOff, pageOffsets);
 
-        const tableMetaForSubChunk = block.type === 'table'
-          ? (findTableMetadata(startOff, endOff - startOff) ?? createTableMetadataFromText(chunkText))
-          : null;
+        const tableMetaForSubChunk =
+          block.type === 'table'
+            ? (findTableMetadata(startOff, endOff - startOff) ??
+              createTableMetadataFromText(chunkText))
+            : null;
 
         chunks.push({
           index: chunkIndex++,
@@ -544,7 +545,6 @@ export function chunkHybridSectionAware(
       // Start new accumulator with the heading
       accumulator = createEmptyAccumulator(block.startOffset);
       addBlockToAccumulator(accumulator, block);
-
     } else if (block.type === 'table' || block.type === 'code') {
       // Size-aware atomic treatment: only emit as atomic if block is large enough
       // to produce meaningful standalone embeddings. Small tables/code blocks are
@@ -576,7 +576,6 @@ export function chunkHybridSectionAware(
           accumulator.contentTypes = savedContentTypes;
         }
       }
-
     } else {
       // Regular content (paragraph, list)
       // Check if this block overlaps an atomic region from JSON blocks
@@ -612,10 +611,7 @@ export function chunkHybridSectionAware(
 
           // If remainder still exceeds maxChunkSize, keep splitting
           while (accumulator.text.length > config.chunkSize) {
-            const innerSplitPos = findSentenceBoundary(
-              accumulator.text,
-              config.chunkSize
-            );
+            const innerSplitPos = findSentenceBoundary(accumulator.text, config.chunkSize);
             const innerFullText = accumulator.text;
             const innerStartOffset = accumulator.startOffset;
             const innerContentTypes = new Set(accumulator.contentTypes);

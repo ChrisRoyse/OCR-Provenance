@@ -67,9 +67,9 @@ export function getExtractionsByDocument(db: Database.Database, documentId: stri
  * @returns Extraction or null if not found
  */
 export function getExtraction(db: Database.Database, id: string): Extraction | null {
-  const row = db
-    .prepare('SELECT * FROM extractions WHERE id = ?')
-    .get(id) as Extraction | undefined;
+  const row = db.prepare('SELECT * FROM extractions WHERE id = ?').get(id) as
+    | Extraction
+    | undefined;
   return row ?? null;
 }
 
@@ -88,7 +88,7 @@ export function searchExtractions(
   filters?: { document_filter?: string[]; limit?: number }
 ): Extraction[] {
   const limit = filters?.limit ?? 10;
-  const conditions: string[] = ['extraction_json LIKE ? ESCAPE \'\\\''];
+  const conditions: string[] = ["extraction_json LIKE ? ESCAPE '\\'"];
   // Escape special LIKE characters in the query
   const escapedQuery = query.replace(/[%_\\]/g, (ch) => `\\${ch}`);
   const params: unknown[] = [`%${escapedQuery}%`];

@@ -86,7 +86,6 @@ describe('formFillTools exports', () => {
     expect(schema).toHaveProperty('offset');
     expect(schema).toHaveProperty('include_provenance');
   });
-
 });
 
 // =============================================================================

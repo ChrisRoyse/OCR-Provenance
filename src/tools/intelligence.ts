@@ -24,26 +24,37 @@ import { formatResponse, handleError, type ToolResponse, type ToolDefinition } f
 // ═══════════════════════════════════════════════════════════════════════════════
 
 const GuideInput = z.object({
-  intent: z.enum(['explore', 'search', 'ingest', 'analyze', 'status']).optional()
-    .describe('Optional intent hint: explore (browse data), search (find content), ingest (add documents), analyze (compare/cluster), status (check health). Omit for general guidance.'),
+  intent: z
+    .enum(['explore', 'search', 'ingest', 'analyze', 'status'])
+    .optional()
+    .describe(
+      'Optional intent hint: explore (browse data), search (find content), ingest (add documents), analyze (compare/cluster), status (check health). Omit for general guidance.'
+    ),
 });
 
 const DocumentTablesInput = z.object({
   document_id: z.string().min(1).describe('Document ID to extract tables from'),
-  table_index: z.number().int().min(0).optional()
+  table_index: z
+    .number()
+    .int()
+    .min(0)
+    .optional()
     .describe('Specific table index (0-based) to retrieve. Omit for all tables.'),
 });
 
 const DocumentRecommendInput = z.object({
   document_id: z.string().min(1).describe('Source document ID to get recommendations for'),
-  limit: z.number().int().min(1).max(50).default(10)
-    .describe('Maximum number of recommendations'),
+  limit: z.number().int().min(1).max(50).default(10).describe('Maximum number of recommendations'),
 });
 
 const DocumentExtrasInput = z.object({
   document_id: z.string().min(1).describe('Document ID to retrieve extras data for'),
-  section: z.string().optional()
-    .describe('Specific extras section to retrieve (charts, links, tracked_changes, table_row_bboxes, infographics). Omit for all.'),
+  section: z
+    .string()
+    .optional()
+    .describe(
+      'Specific extras section to retrieve (charts, links, tracked_changes, table_row_bboxes, infographics). Omit for all.'
+    ),
 });
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -256,7 +267,7 @@ type JsonBlocksResult =
  */
 function fetchJsonBlocks(
   conn: ReturnType<ReturnType<typeof requireDatabase>['db']['getConnection']>,
-  documentId: string,
+  documentId: string
 ): JsonBlocksResult {
   const ocrRow = conn
     .prepare('SELECT json_blocks FROM ocr_results WHERE document_id = ?')
@@ -271,13 +282,19 @@ function fetchJsonBlocks(
     const parsed = JSON.parse(ocrRow.json_blocks) as unknown;
     if (Array.isArray(parsed)) {
       blocks = parsed as Array<Record<string, unknown>>;
-    } else if (parsed && typeof parsed === 'object' && Array.isArray((parsed as Record<string, unknown>).children)) {
+    } else if (
+      parsed &&
+      typeof parsed === 'object' &&
+      Array.isArray((parsed as Record<string, unknown>).children)
+    ) {
       blocks = (parsed as Record<string, unknown>).children as Array<Record<string, unknown>>;
     } else {
       blocks = [];
     }
   } catch (parseErr) {
-    console.error(`[intelligence] Failed to parse json_blocks for ${documentId}: ${String(parseErr)}`);
+    console.error(
+      `[intelligence] Failed to parse json_blocks for ${documentId}: ${String(parseErr)}`
+    );
     return { ok: false, reason: 'parse_error' };
   }
 
@@ -294,7 +311,7 @@ function fetchJsonBlocks(
  */
 function filterTablesByIndex(
   allTables: ParsedTable[],
-  tableIndex: number | undefined,
+  tableIndex: number | undefined
 ): ParsedTable[] | null {
   if (tableIndex === undefined) {
     return allTables;
@@ -328,7 +345,7 @@ async function handleGuide(params: Record<string, unknown>): Promise<ToolRespons
     // Build context about current state
     const context: Record<string, unknown> = {
       databases_available: databases.length,
-      database_names: databases.map(d => d.name),
+      database_names: databases.map((d) => d.name),
       selected_database: selectedDb ?? 'none',
     };
 
@@ -349,9 +366,9 @@ async function handleGuide(params: Record<string, unknown>): Promise<ToolRespons
         const { db, vector } = requireDatabase();
         const conn = db.getConnection();
 
-        const statusRows = conn.prepare(
-          'SELECT status, COUNT(*) as count FROM documents GROUP BY status'
-        ).all() as Array<{ status: string; count: number }>;
+        const statusRows = conn
+          .prepare('SELECT status, COUNT(*) as count FROM documents GROUP BY status')
+          .all() as Array<{ status: string; count: number }>;
 
         for (const row of statusRows) {
           docCount += row.count;
@@ -361,9 +378,12 @@ async function handleGuide(params: Record<string, unknown>): Promise<ToolRespons
         }
 
         chunkCount = (conn.prepare('SELECT COUNT(*) as c FROM chunks').get() as { c: number }).c;
-        embeddingCount = (conn.prepare('SELECT COUNT(*) as c FROM embeddings').get() as { c: number }).c;
+        embeddingCount = (
+          conn.prepare('SELECT COUNT(*) as c FROM embeddings').get() as { c: number }
+        ).c;
         imageCount = (conn.prepare('SELECT COUNT(*) as c FROM images').get() as { c: number }).c;
-        clusterCount = (conn.prepare('SELECT COUNT(*) as c FROM clusters').get() as { c: number }).c;
+        clusterCount = (conn.prepare('SELECT COUNT(*) as c FROM clusters').get() as { c: number })
+          .c;
 
         context.database_stats = {
           total_documents: docCount,
@@ -379,29 +399,34 @@ async function handleGuide(params: Record<string, unknown>): Promise<ToolRespons
 
         // V7: Corpus snapshot for smarter guide
         if (docCount > 0) {
-          const fileTypeRows = conn.prepare(
-            "SELECT file_type, COUNT(*) as count FROM documents WHERE file_type IS NOT NULL GROUP BY file_type ORDER BY count DESC"
-          ).all() as Array<{ file_type: string; count: number }>;
+          const fileTypeRows = conn
+            .prepare(
+              'SELECT file_type, COUNT(*) as count FROM documents WHERE file_type IS NOT NULL GROUP BY file_type ORDER BY count DESC'
+            )
+            .all() as Array<{ file_type: string; count: number }>;
 
-          const comparisonCount = (conn.prepare('SELECT COUNT(*) as c FROM comparisons').get() as { c: number }).c;
+          const comparisonCount = (
+            conn.prepare('SELECT COUNT(*) as c FROM comparisons').get() as { c: number }
+          ).c;
 
-          embeddingCoverage = chunkCount > 0
-            ? Math.round((embeddingCount / chunkCount) * 100)
-            : 0;
+          embeddingCoverage = chunkCount > 0 ? Math.round((embeddingCount / chunkCount) * 100) : 0;
 
           // Count images with VLM descriptions vs total
-          const vlmCompleteCount = imageCount > 0
-            ? (conn.prepare("SELECT COUNT(*) as c FROM images WHERE vlm_status = 'complete'").get() as { c: number }).c
-            : 0;
-          vlmCoverage = imageCount > 0
-            ? Math.round((vlmCompleteCount / imageCount) * 100)
-            : 0;
+          const vlmCompleteCount =
+            imageCount > 0
+              ? (
+                  conn
+                    .prepare("SELECT COUNT(*) as c FROM images WHERE vlm_status = 'complete'")
+                    .get() as { c: number }
+                ).c
+              : 0;
+          vlmCoverage = imageCount > 0 ? Math.round((vlmCompleteCount / imageCount) * 100) : 0;
 
           context.corpus_snapshot = {
             document_count: docCount,
             total_chunks: chunkCount,
             total_images: imageCount,
-            file_types: fileTypeRows.map(r => r.file_type),
+            file_types: fileTypeRows.map((r) => r.file_type),
             has_clusters: clusterCount > 0,
             has_comparisons: comparisonCount > 0,
             embedding_coverage: `${embeddingCoverage}%`,
@@ -411,15 +436,25 @@ async function handleGuide(params: Record<string, unknown>): Promise<ToolRespons
       } catch (err) {
         const errMsg = err instanceof Error ? err.message : String(err);
         context.database_stats_error = errMsg;
-        return formatResponse(successResult({
-          status: 'database_error',
-          message: `Database "${selectedDb}" selected but query failed: ${errMsg}. Try ocr_health_check to diagnose.`,
-          context,
-          next_steps: [
-            { tool: 'ocr_health_check', description: 'Diagnose database integrity issues.', priority: 'required' },
-            { tool: 'ocr_db_select', description: 'Re-select the database to reset connection.', priority: 'optional' },
-          ],
-        }));
+        return formatResponse(
+          successResult({
+            status: 'database_error',
+            message: `Database "${selectedDb}" selected but query failed: ${errMsg}. Try ocr_health_check to diagnose.`,
+            context,
+            next_steps: [
+              {
+                tool: 'ocr_health_check',
+                description: 'Diagnose database integrity issues.',
+                priority: 'required',
+              },
+              {
+                tool: 'ocr_db_select',
+                description: 'Re-select the database to reset connection.',
+                priority: 'optional',
+              },
+            ],
+          })
+        );
       }
     }
 
@@ -440,14 +475,17 @@ async function handleGuide(params: Record<string, unknown>): Promise<ToolRespons
           priority: 'required',
         });
       }
-      return formatResponse(successResult({
-        status: 'no_database_selected',
-        message: databases.length === 0
-          ? 'No databases exist. Create one with ocr_db_create, then ingest documents.'
-          : `${databases.length} database(s) available. Select one with ocr_db_select to get started.`,
-        context,
-        next_steps,
-      }));
+      return formatResponse(
+        successResult({
+          status: 'no_database_selected',
+          message:
+            databases.length === 0
+              ? 'No databases exist. Create one with ocr_db_create, then ingest documents.'
+              : `${databases.length} database(s) available. Select one with ocr_db_select to get started.`,
+          context,
+          next_steps,
+        })
+      );
     }
 
     // Database is selected - provide guidance based on intent and state
@@ -590,22 +628,41 @@ async function handleGuide(params: Record<string, unknown>): Promise<ToolRespons
     // Build summary message
     const parts: string[] = [];
     parts.push(`Database "${selectedDb}" selected.`);
-    parts.push(`${docCount} documents (${completeCount} complete, ${pendingCount} pending, ${failedCount} failed).`);
+    parts.push(
+      `${docCount} documents (${completeCount} complete, ${pendingCount} pending, ${failedCount} failed).`
+    );
     if (chunkCount > 0) parts.push(`${chunkCount} chunks, ${embeddingCount} embeddings.`);
     if (imageCount > 0) parts.push(`${imageCount} images.`);
     if (clusterCount > 0) parts.push(`${clusterCount} clusters.`);
 
-    return formatResponse(successResult({
-      status: 'ready',
-      message: parts.join(' '),
-      context,
-      next_steps,
-      workflow_chains: docCount > 0 ? [
-        { name: 'find_and_read', steps: ['ocr_search -> ocr_chunk_context -> ocr_document_page'], description: 'Find content, expand context, read full page' },
-        { name: 'compare_documents', steps: ['ocr_comparison_discover -> ocr_document_compare -> ocr_comparison_get'], description: 'Find similar pairs, diff them, inspect results' },
-        { name: 'process_new', steps: ['ocr_ingest_files -> ocr_process_pending -> ocr_health_check'], description: 'Add files, run OCR pipeline, verify completeness' },
-      ] : undefined,
-    }));
+    return formatResponse(
+      successResult({
+        status: 'ready',
+        message: parts.join(' '),
+        context,
+        next_steps,
+        workflow_chains:
+          docCount > 0
+            ? [
+                {
+                  name: 'find_and_read',
+                  steps: ['ocr_search -> ocr_chunk_context -> ocr_document_page'],
+                  description: 'Find content, expand context, read full page',
+                },
+                {
+                  name: 'compare_documents',
+                  steps: ['ocr_comparison_discover -> ocr_document_compare -> ocr_comparison_get'],
+                  description: 'Find similar pairs, diff them, inspect results',
+                },
+                {
+                  name: 'process_new',
+                  steps: ['ocr_ingest_files -> ocr_process_pending -> ocr_health_check'],
+                  description: 'Add files, run OCR pipeline, verify completeness',
+                },
+              ]
+            : undefined,
+      })
+    );
   } catch (error) {
     return handleError(error);
   }
@@ -635,41 +692,50 @@ async function handleDocumentTables(params: Record<string, unknown>): Promise<To
 
     const blocksResult = fetchJsonBlocks(db.getConnection(), input.document_id);
     if (!blocksResult.ok) {
-      return formatResponse(successResult({
-        document_id: input.document_id,
-        file_name: doc.file_name,
-        tables: [],
-        total_tables: 0,
-        source: blocksResult.reason === 'no_ocr_data' ? 'no_ocr_results_or_blocks'
-          : blocksResult.reason === 'parse_error' ? 'json_blocks_parse_error'
-          : 'empty_json_blocks',
-        next_steps: nextSteps,
-      }));
+      return formatResponse(
+        successResult({
+          document_id: input.document_id,
+          file_name: doc.file_name,
+          tables: [],
+          total_tables: 0,
+          source:
+            blocksResult.reason === 'no_ocr_data'
+              ? 'no_ocr_results_or_blocks'
+              : blocksResult.reason === 'parse_error'
+                ? 'json_blocks_parse_error'
+                : 'empty_json_blocks',
+          next_steps: nextSteps,
+        })
+      );
     }
 
     const allTables = extractTablesFromBlocks(blocksResult.blocks);
 
     const tables = filterTablesByIndex(allTables, input.table_index);
     if (tables === null) {
-      return formatResponse(successResult({
-        document_id: input.document_id,
-        file_name: doc.file_name,
-        tables: [],
-        total_tables: allTables.length,
-        requested_index: input.table_index,
-        message: `Table index ${input.table_index} out of range. Document has ${allTables.length} table(s).`,
-        next_steps: nextSteps,
-      }));
+      return formatResponse(
+        successResult({
+          document_id: input.document_id,
+          file_name: doc.file_name,
+          tables: [],
+          total_tables: allTables.length,
+          requested_index: input.table_index,
+          message: `Table index ${input.table_index} out of range. Document has ${allTables.length} table(s).`,
+          next_steps: nextSteps,
+        })
+      );
     }
 
-    return formatResponse(successResult({
-      document_id: input.document_id,
-      file_name: doc.file_name,
-      tables,
-      total_tables: allTables.length,
-      source: 'json_blocks',
-      next_steps: nextSteps,
-    }));
+    return formatResponse(
+      successResult({
+        document_id: input.document_id,
+        file_name: doc.file_name,
+        tables,
+        total_tables: allTables.length,
+        source: 'json_blocks',
+        next_steps: nextSteps,
+      })
+    );
   } catch (error) {
     return handleError(error);
   }
@@ -701,25 +767,30 @@ async function handleDocumentRecommend(params: Record<string, unknown>): Promise
     const limit = input.limit ?? 10;
 
     // Map of document_id -> recommendation entry
-    const recommendations = new Map<string, {
-      cluster_match: boolean;
-      cluster_ids: string[];
-      similarity: number | null;
-    }>();
+    const recommendations = new Map<
+      string,
+      {
+        cluster_match: boolean;
+        cluster_ids: string[];
+        similarity: number | null;
+      }
+    >();
 
     // ──────────────────────────────────────────────────────────────
     // Signal 1: Cluster peers
     // ──────────────────────────────────────────────────────────────
-    const sourceClusters = conn.prepare(
-      'SELECT cluster_id FROM document_clusters WHERE document_id = ?'
-    ).all(input.document_id) as Array<{ cluster_id: string }>;
+    const sourceClusters = conn
+      .prepare('SELECT cluster_id FROM document_clusters WHERE document_id = ?')
+      .all(input.document_id) as Array<{ cluster_id: string }>;
 
     if (sourceClusters.length > 0) {
-      const clusterIds = sourceClusters.map(c => c.cluster_id);
+      const clusterIds = sourceClusters.map((c) => c.cluster_id);
       for (const clusterId of clusterIds) {
-        const peers = conn.prepare(
-          'SELECT document_id FROM document_clusters WHERE cluster_id = ? AND document_id != ?'
-        ).all(clusterId, input.document_id) as Array<{ document_id: string }>;
+        const peers = conn
+          .prepare(
+            'SELECT document_id FROM document_clusters WHERE cluster_id = ? AND document_id != ?'
+          )
+          .all(clusterId, input.document_id) as Array<{ document_id: string }>;
 
         for (const peer of peers) {
           const existing = recommendations.get(peer.document_id);
@@ -740,9 +811,9 @@ async function handleDocumentRecommend(params: Record<string, unknown>): Promise
     // ──────────────────────────────────────────────────────────────
     // Signal 2: Vector similarity (centroid approach)
     // ──────────────────────────────────────────────────────────────
-    const embeddingRows = conn.prepare(
-      'SELECT id FROM embeddings WHERE document_id = ? AND chunk_id IS NOT NULL'
-    ).all(input.document_id) as Array<{ id: string }>;
+    const embeddingRows = conn
+      .prepare('SELECT id FROM embeddings WHERE document_id = ? AND chunk_id IS NOT NULL')
+      .all(input.document_id) as Array<{ id: string }>;
 
     if (embeddingRows.length > 0) {
       const vectors: Float32Array[] = [];
@@ -833,16 +904,24 @@ async function handleDocumentRecommend(params: Record<string, unknown>): Promise
     ranked.sort((a, b) => b.score - a.score);
     const topRanked = ranked.slice(0, limit);
 
-    return formatResponse(successResult({
-      source_document_id: input.document_id,
-      source_file_name: doc.file_name,
-      source_cluster_count: sourceClusters.length,
-      source_embedding_count: embeddingRows.length,
-      recommendations: topRanked,
-      total_candidates: ranked.length,
-      returned: topRanked.length,
-      next_steps: [{ tool: 'ocr_document_get', description: 'Get details for a recommended document' }, { tool: 'ocr_document_compare', description: 'Compare the source document with a recommendation' }],
-    }));
+    return formatResponse(
+      successResult({
+        source_document_id: input.document_id,
+        source_file_name: doc.file_name,
+        source_cluster_count: sourceClusters.length,
+        source_embedding_count: embeddingRows.length,
+        recommendations: topRanked,
+        total_candidates: ranked.length,
+        returned: topRanked.length,
+        next_steps: [
+          { tool: 'ocr_document_get', description: 'Get details for a recommended document' },
+          {
+            tool: 'ocr_document_compare',
+            description: 'Compare the source document with a recommendation',
+          },
+        ],
+      })
+    );
   } catch (error) {
     return handleError(error);
   }
@@ -853,7 +932,13 @@ async function handleDocumentRecommend(params: Record<string, unknown>): Promise
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /** Known extras sections */
-const KNOWN_EXTRAS_SECTIONS = ['charts', 'links', 'tracked_changes', 'table_row_bboxes', 'infographics'] as const;
+const KNOWN_EXTRAS_SECTIONS = [
+  'charts',
+  'links',
+  'tracked_changes',
+  'table_row_bboxes',
+  'infographics',
+] as const;
 
 /**
  * Handle ocr_document_extras - Surface extras_json data from OCR results
@@ -870,52 +955,65 @@ async function handleDocumentExtras(params: Record<string, unknown>): Promise<To
     }
 
     // Get extras_json from ocr_results
-    const ocrRow = db.getConnection()
+    const ocrRow = db
+      .getConnection()
       .prepare('SELECT extras_json FROM ocr_results WHERE document_id = ?')
       .get(input.document_id) as { extras_json: string | null } | undefined;
 
     if (!ocrRow?.extras_json) {
-      return formatResponse(successResult({
-        document_id: input.document_id,
-        file_name: doc.file_name,
-        extras: {},
-        available_sections: [],
-        message: 'No extras data available for this document.',
-        next_steps: [{ tool: 'ocr_document_get', description: 'View document details' }],
-      }));
+      return formatResponse(
+        successResult({
+          document_id: input.document_id,
+          file_name: doc.file_name,
+          extras: {},
+          available_sections: [],
+          message: 'No extras data available for this document.',
+          next_steps: [{ tool: 'ocr_document_get', description: 'View document details' }],
+        })
+      );
     }
 
     let extras: Record<string, unknown>;
     try {
       extras = JSON.parse(ocrRow.extras_json) as Record<string, unknown>;
     } catch (parseErr) {
-      console.error(`[DocumentExtras] Failed to parse extras_json for ${input.document_id}: ${String(parseErr)}`);
+      console.error(
+        `[DocumentExtras] Failed to parse extras_json for ${input.document_id}: ${String(parseErr)}`
+      );
       throw new MCPError('INTERNAL_ERROR', `Failed to parse extras_json: ${String(parseErr)}`);
     }
 
     // Determine available sections
     const availableSections = Object.keys(extras).filter(
-      key => extras[key] !== null && extras[key] !== undefined
+      (key) => extras[key] !== null && extras[key] !== undefined
     );
 
     // Filter by specific section if requested
     if (input.section) {
-      if (!KNOWN_EXTRAS_SECTIONS.includes(input.section as typeof KNOWN_EXTRAS_SECTIONS[number]) &&
-          !(input.section in extras)) {
-        throw new MCPError('VALIDATION_ERROR',
+      if (
+        !KNOWN_EXTRAS_SECTIONS.includes(input.section as (typeof KNOWN_EXTRAS_SECTIONS)[number]) &&
+        !(input.section in extras)
+      ) {
+        throw new MCPError(
+          'VALIDATION_ERROR',
           `Unknown section "${input.section}". Available sections: ${availableSections.join(', ')}`
         );
       }
 
       const sectionData = extras[input.section];
-      return formatResponse(successResult({
-        document_id: input.document_id,
-        file_name: doc.file_name,
-        section: input.section,
-        data: sectionData ?? null,
-        available_sections: availableSections,
-        next_steps: [{ tool: 'ocr_document_tables', description: 'Extract table data from the document' }, { tool: 'ocr_document_get', description: 'View core document metadata' }],
-      }));
+      return formatResponse(
+        successResult({
+          document_id: input.document_id,
+          file_name: doc.file_name,
+          section: input.section,
+          data: sectionData ?? null,
+          available_sections: availableSections,
+          next_steps: [
+            { tool: 'ocr_document_tables', description: 'Extract table data from the document' },
+            { tool: 'ocr_document_get', description: 'View core document metadata' },
+          ],
+        })
+      );
     }
 
     // Return all extras organized by section
@@ -928,18 +1026,23 @@ async function handleDocumentExtras(params: Record<string, unknown>): Promise<To
 
     // Include any non-standard sections
     for (const key of Object.keys(extras)) {
-      if (!KNOWN_EXTRAS_SECTIONS.includes(key as typeof KNOWN_EXTRAS_SECTIONS[number])) {
+      if (!KNOWN_EXTRAS_SECTIONS.includes(key as (typeof KNOWN_EXTRAS_SECTIONS)[number])) {
         organized[key] = extras[key];
       }
     }
 
-    return formatResponse(successResult({
-      document_id: input.document_id,
-      file_name: doc.file_name,
-      extras: organized,
-      available_sections: availableSections,
-      next_steps: [{ tool: 'ocr_document_tables', description: 'Extract table data from the document' }, { tool: 'ocr_document_get', description: 'View core document metadata' }],
-    }));
+    return formatResponse(
+      successResult({
+        document_id: input.document_id,
+        file_name: doc.file_name,
+        extras: organized,
+        available_sections: availableSections,
+        next_steps: [
+          { tool: 'ocr_document_tables', description: 'Extract table data from the document' },
+          { tool: 'ocr_document_get', description: 'View core document metadata' },
+        ],
+      })
+    );
   } catch (error) {
     return handleError(error);
   }
@@ -966,12 +1069,10 @@ function buildTableGrid(table: ParsedTable): TableGrid {
     rowMap.get(cell.row)!.set(cell.col, cell.text);
   }
 
-  const maxRow = table.row_count > 0
-    ? table.row_count - 1
-    : Math.max(0, ...table.cells.map(c => c.row));
-  const maxCol = table.column_count > 0
-    ? table.column_count - 1
-    : Math.max(0, ...table.cells.map(c => c.col));
+  const maxRow =
+    table.row_count > 0 ? table.row_count - 1 : Math.max(0, ...table.cells.map((c) => c.row));
+  const maxCol =
+    table.column_count > 0 ? table.column_count - 1 : Math.max(0, ...table.cells.map((c) => c.col));
 
   return { rowMap, maxRow, maxCol };
 }
@@ -982,9 +1083,15 @@ function buildTableGrid(table: ParsedTable): TableGrid {
 
 const TableExportInput = z.object({
   document_id: z.string().min(1).describe('Document ID to export tables from'),
-  table_index: z.number().int().min(0).optional()
+  table_index: z
+    .number()
+    .int()
+    .min(0)
+    .optional()
     .describe('Specific table index (0-based). Omit to export all tables.'),
-  format: z.enum(['csv', 'json', 'markdown']).default('json')
+  format: z
+    .enum(['csv', 'json', 'markdown'])
+    .default('json')
     .describe('Export format: csv (RFC 4180), json (structured), or markdown (pipe-delimited)'),
 });
 
@@ -1012,32 +1119,37 @@ async function handleTableExport(params: Record<string, unknown>): Promise<ToolR
 
     const blocksResult = fetchJsonBlocks(db.getConnection(), input.document_id);
     if (!blocksResult.ok) {
-      return formatResponse(successResult({
-        document_id: input.document_id,
-        file_name: doc.file_name,
-        tables: [],
-        total_tables: 0,
-        format: input.format,
-        message: blocksResult.reason === 'parse_error'
-          ? 'Failed to parse JSON blocks.'
-          : 'No OCR results or JSON blocks available for export.',
-        next_steps: nextSteps,
-      }));
+      return formatResponse(
+        successResult({
+          document_id: input.document_id,
+          file_name: doc.file_name,
+          tables: [],
+          total_tables: 0,
+          format: input.format,
+          message:
+            blocksResult.reason === 'parse_error'
+              ? 'Failed to parse JSON blocks.'
+              : 'No OCR results or JSON blocks available for export.',
+          next_steps: nextSteps,
+        })
+      );
     }
 
     const allTables = extractTablesFromBlocks(blocksResult.blocks);
 
     const tables = filterTablesByIndex(allTables, input.table_index);
     if (tables === null) {
-      return formatResponse(successResult({
-        document_id: input.document_id,
-        file_name: doc.file_name,
-        total_tables: allTables.length,
-        requested_index: input.table_index,
-        format: input.format,
-        message: `Table index ${input.table_index} out of range. Document has ${allTables.length} table(s).`,
-        next_steps: nextSteps,
-      }));
+      return formatResponse(
+        successResult({
+          document_id: input.document_id,
+          file_name: doc.file_name,
+          total_tables: allTables.length,
+          requested_index: input.table_index,
+          format: input.format,
+          message: `Table index ${input.table_index} out of range. Document has ${allTables.length} table(s).`,
+          next_steps: nextSteps,
+        })
+      );
     }
 
     // Format output based on requested format
@@ -1061,15 +1173,17 @@ async function handleTableExport(params: Record<string, unknown>): Promise<ToolR
         csvParts.push(lines.join('\n'));
       }
 
-      return formatResponse(successResult({
-        document_id: input.document_id,
-        file_name: doc.file_name,
-        total_tables: allTables.length,
-        exported_tables: tables.length,
-        format: 'csv',
-        data: csvParts.join('\n\n'),
-        next_steps: nextSteps,
-      }));
+      return formatResponse(
+        successResult({
+          document_id: input.document_id,
+          file_name: doc.file_name,
+          total_tables: allTables.length,
+          exported_tables: tables.length,
+          format: 'csv',
+          data: csvParts.join('\n\n'),
+          next_steps: nextSteps,
+        })
+      );
     }
 
     if (input.format === 'markdown') {
@@ -1104,19 +1218,21 @@ async function handleTableExport(params: Record<string, unknown>): Promise<ToolR
         mdParts.push(lines.join('\n'));
       }
 
-      return formatResponse(successResult({
-        document_id: input.document_id,
-        file_name: doc.file_name,
-        total_tables: allTables.length,
-        exported_tables: tables.length,
-        format: 'markdown',
-        data: mdParts.join('\n\n'),
-        next_steps: nextSteps,
-      }));
+      return formatResponse(
+        successResult({
+          document_id: input.document_id,
+          file_name: doc.file_name,
+          total_tables: allTables.length,
+          exported_tables: tables.length,
+          format: 'markdown',
+          data: mdParts.join('\n\n'),
+          next_steps: nextSteps,
+        })
+      );
     }
 
     // Default: JSON format
-    const jsonTables = tables.map(t => {
+    const jsonTables = tables.map((t) => {
       const { rowMap, maxRow } = buildTableGrid(t);
 
       // Build column names from first row
@@ -1152,15 +1268,17 @@ async function handleTableExport(params: Record<string, unknown>): Promise<ToolR
       };
     });
 
-    return formatResponse(successResult({
-      document_id: input.document_id,
-      file_name: doc.file_name,
-      total_tables: allTables.length,
-      exported_tables: tables.length,
-      format: 'json',
-      tables: jsonTables,
-      next_steps: nextSteps,
-    }));
+    return formatResponse(
+      successResult({
+        document_id: input.document_id,
+        file_name: doc.file_name,
+        total_tables: allTables.length,
+        exported_tables: tables.length,
+        format: 'json',
+        tables: jsonTables,
+        next_steps: nextSteps,
+      })
+    );
   } catch (error) {
     return handleError(error);
   }

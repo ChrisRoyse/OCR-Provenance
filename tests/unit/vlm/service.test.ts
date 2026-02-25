@@ -201,9 +201,7 @@ describe('VLMService', () => {
     });
 
     it('should throw on null/undefined text response', async () => {
-      mockClient.analyzeImage.mockResolvedValue(
-        makeGeminiResponse(null as unknown as string)
-      );
+      mockClient.analyzeImage.mockResolvedValue(makeGeminiResponse(null as unknown as string));
 
       await expect(service.describeImage('/path/to/image.png')).rejects.toThrow(
         'Gemini returned an empty response'

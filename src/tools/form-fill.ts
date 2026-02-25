@@ -173,10 +173,12 @@ async function handleFormFill(params: Record<string, unknown>) {
       processing_duration_ms: result.processingDurationMs,
     };
 
-    return formatResponse(successResult({
-      ...response,
-      next_steps: [{ tool: 'ocr_form_fill_status', description: 'Check the form fill result' }],
-    }));
+    return formatResponse(
+      successResult({
+        ...response,
+        next_steps: [{ tool: 'ocr_form_fill_status', description: 'Check the form fill result' }],
+      })
+    );
   } catch (error) {
     return handleError(error);
   }
@@ -212,10 +214,15 @@ async function handleFormFillStatus(params: Record<string, unknown>) {
         );
       }
 
-      return formatResponse(successResult({
-        ...formFillResponse,
-        next_steps: [{ tool: 'ocr_form_fill', description: 'Submit another form fill operation' }, { tool: 'ocr_document_get', description: 'View the source document' }],
-      }));
+      return formatResponse(
+        successResult({
+          ...formFillResponse,
+          next_steps: [
+            { tool: 'ocr_form_fill', description: 'Submit another form fill operation' },
+            { tool: 'ocr_document_get', description: 'View the source document' },
+          ],
+        })
+      );
     }
 
     // If search_query is provided, use search instead of list
@@ -238,7 +245,10 @@ async function handleFormFillStatus(params: Record<string, unknown>) {
             created_at: ff.created_at,
             error_message: ff.error_message,
           })),
-          next_steps: [{ tool: 'ocr_form_fill', description: 'Submit another form fill operation' }, { tool: 'ocr_document_get', description: 'View the source document' }],
+          next_steps: [
+            { tool: 'ocr_form_fill', description: 'Submit another form fill operation' },
+            { tool: 'ocr_document_get', description: 'View the source document' },
+          ],
         })
       );
     }
@@ -263,7 +273,10 @@ async function handleFormFillStatus(params: Record<string, unknown>) {
           created_at: ff.created_at,
           error_message: ff.error_message,
         })),
-        next_steps: [{ tool: 'ocr_form_fill', description: 'Submit another form fill operation' }, { tool: 'ocr_document_get', description: 'View the source document' }],
+        next_steps: [
+          { tool: 'ocr_form_fill', description: 'Submit another form fill operation' },
+          { tool: 'ocr_document_get', description: 'View the source document' },
+        ],
       })
     );
   } catch (error) {

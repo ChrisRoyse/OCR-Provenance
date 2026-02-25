@@ -45,9 +45,6 @@ export function logAudit(params: {
     });
   } catch (error) {
     // Audit logging should never break the main operation
-    console.error(
-      '[Audit] Failed to log:',
-      error instanceof Error ? error.message : String(error)
-    );
+    console.error('[Audit] Failed to log:', error instanceof Error ? error.message : String(error));
   }
 }

@@ -38,7 +38,10 @@ export function encodeCursor(createdAt: string, id: string): string {
  */
 export function decodeCursor(cursor: string): { created_at: string; id: string } {
   try {
-    const decoded = JSON.parse(Buffer.from(cursor, 'base64url').toString('utf-8')) as Record<string, unknown>;
+    const decoded = JSON.parse(Buffer.from(cursor, 'base64url').toString('utf-8')) as Record<
+      string,
+      unknown
+    >;
     if (typeof decoded.created_at !== 'string' || typeof decoded.id !== 'string') {
       throw new Error('Invalid cursor format: missing created_at or id');
     }
@@ -171,7 +174,7 @@ export function listDocuments(db: Database.Database, options?: ListDocumentsOpti
  */
 export function listDocumentsWithCursor(
   db: Database.Database,
-  options?: ListDocumentsOptions,
+  options?: ListDocumentsOptions
 ): ListDocumentsResult {
   const conditions: string[] = [];
   const params: (string | number)[] = [];
@@ -380,13 +383,15 @@ function deleteDerivedRecords(db: Database.Database, documentId: string, caller:
 
   // Delete entity_tags referencing entities about to be deleted (polymorphic FK, no CASCADE)
   try {
-    db.prepare(`
+    db.prepare(
+      `
       DELETE FROM entity_tags WHERE
         (entity_type = 'document' AND entity_id = ?)
         OR (entity_type = 'chunk' AND entity_id IN (SELECT id FROM chunks WHERE document_id = ?))
         OR (entity_type = 'image' AND entity_id IN (SELECT id FROM images WHERE document_id = ?))
         OR (entity_type = 'extraction' AND entity_id IN (SELECT id FROM extractions WHERE document_id = ?))
-    `).run(documentId, documentId, documentId, documentId);
+    `
+    ).run(documentId, documentId, documentId, documentId);
   } catch (e: unknown) {
     const msg = e instanceof Error ? e.message : String(e);
     if (!msg.includes('no such table')) throw e;
@@ -441,9 +446,9 @@ function deleteDerivedRecords(db: Database.Database, documentId: string, caller:
   // Must happen before provenance cleanup (callers delete provenance after this function).
   // uploaded_files has provenance_id NOT NULL REFERENCES provenance(id).
   try {
-    const docForProv = db.prepare('SELECT provenance_id FROM documents WHERE id = ?').get(documentId) as
-      | { provenance_id: string }
-      | undefined;
+    const docForProv = db
+      .prepare('SELECT provenance_id FROM documents WHERE id = ?')
+      .get(documentId) as { provenance_id: string } | undefined;
     if (docForProv) {
       db.prepare(
         'DELETE FROM uploaded_files WHERE provenance_id IN (SELECT id FROM provenance WHERE root_document_id = ?)'

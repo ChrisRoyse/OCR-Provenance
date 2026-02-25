@@ -87,12 +87,10 @@ export class PythonPool extends EventEmitter {
     }
     this.healthCheckTimer = setInterval(
       () => this.healthCheck(),
-      this.config.healthCheckIntervalMs,
+      this.config.healthCheckIntervalMs
     );
     this.healthCheckTimer.unref();
-    console.error(
-      `[PythonPool] Started with ${this.config.poolSize} workers for ${scriptPath}`,
-    );
+    console.error(`[PythonPool] Started with ${this.config.poolSize} workers for ${scriptPath}`);
   }
 
   /**
@@ -110,11 +108,7 @@ export class PythonPool extends EventEmitter {
 
     return new Promise((resolve, reject) => {
       const timeoutId = setTimeout(() => {
-        reject(
-          new Error(
-            `Python pool task timed out after ${this.config.taskTimeoutMs}ms`,
-          ),
-        );
+        reject(new Error(`Python pool task timed out after ${this.config.taskTimeoutMs}ms`));
       }, this.config.taskTimeoutMs);
 
       const task: PoolTask = { command, resolve, reject, timeoutId };
@@ -239,10 +233,7 @@ export class PythonPool extends EventEmitter {
     return null;
   }
 
-  private dispatchTask(
-    entry: [number, PooledWorker],
-    task: PoolTask,
-  ): void {
+  private dispatchTask(entry: [number, PooledWorker], task: PoolTask): void {
     const [id, worker] = entry;
     worker.busy = true;
     worker.taskCount++;
@@ -268,11 +259,7 @@ export class PythonPool extends EventEmitter {
             task.resolve(result);
           }
         } catch {
-          task.reject(
-            new Error(
-              `Failed to parse worker response: ${line.substring(0, 200)}`,
-            ),
-          );
+          task.reject(new Error(`Failed to parse worker response: ${line.substring(0, 200)}`));
         }
 
         worker.busy = false;
@@ -281,7 +268,7 @@ export class PythonPool extends EventEmitter {
         // Restart worker if it hit max tasks
         if (worker.taskCount >= this.config.maxTasksPerWorker) {
           console.error(
-            `[PythonPool] Worker ${id} hit max tasks (${this.config.maxTasksPerWorker}), recycling`,
+            `[PythonPool] Worker ${id} hit max tasks (${this.config.maxTasksPerWorker}), recycling`
           );
           worker.process.kill('SIGTERM');
         } else {
@@ -330,13 +317,8 @@ export class PythonPool extends EventEmitter {
   private healthCheck(): void {
     const now = Date.now();
     for (const [id, worker] of this.workers) {
-      if (
-        worker.busy &&
-        now - worker.lastHeartbeat > this.config.taskTimeoutMs * 2
-      ) {
-        console.error(
-          `[PythonPool] Worker ${id} appears hung, killing`,
-        );
+      if (worker.busy && now - worker.lastHeartbeat > this.config.taskTimeoutMs * 2) {
+        console.error(`[PythonPool] Worker ${id} appears hung, killing`);
         worker.process.kill('SIGKILL');
       }
     }

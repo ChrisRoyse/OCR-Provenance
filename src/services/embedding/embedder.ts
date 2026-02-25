@@ -78,7 +78,9 @@ export function buildSectionPrefix(chunk: Chunk): string {
       if (types.includes('table')) parts.push('[Table]');
       if (types.includes('code')) parts.push('[Code]');
     } catch (error) {
-      console.error(`[embedder] Failed to parse content_types JSON for chunk ${chunk.id}: ${error instanceof Error ? error.message : String(error)}`);
+      console.error(
+        `[embedder] Failed to parse content_types JSON for chunk ${chunk.id}: ${error instanceof Error ? error.message : String(error)}`
+      );
     }
   }
 
@@ -212,7 +214,12 @@ export class EmbeddingService {
     return this.embedDocumentChunks(db, vectorService, pendingChunks, documentInfo);
   }
 
-  private createProvenance(db: DatabaseService, chunk: Chunk, documentInfo: DocumentInfo, device: string): string {
+  private createProvenance(
+    db: DatabaseService,
+    chunk: Chunk,
+    documentInfo: DocumentInfo,
+    device: string
+  ): string {
     const provenanceId = uuidv4();
     const now = new Date().toISOString();
     const chunkProv = db.getProvenance(chunk.provenance_id);

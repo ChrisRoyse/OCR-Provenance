@@ -229,7 +229,13 @@ function getBucketFormat(bucket: TimelineBucket): string {
 }
 
 /** Whitelist of valid table names for timeline stats queries */
-const VALID_TIMELINE_TABLES = new Set(['documents', 'chunks', 'embeddings', 'images', 'ocr_results']);
+const VALID_TIMELINE_TABLES = new Set([
+  'documents',
+  'chunks',
+  'embeddings',
+  'images',
+  'ocr_results',
+]);
 
 /** Whitelist of valid date column names for timeline stats queries */
 const VALID_DATE_COLUMNS = new Set(['created_at', 'processing_completed_at']);

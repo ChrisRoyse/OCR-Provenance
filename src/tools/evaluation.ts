@@ -60,7 +60,6 @@ const EvaluateInput = z.object({
  */
 async function evaluateSingleImage(imageId: string, saveToDb: boolean): Promise<ToolResponse> {
   try {
-
     const { db, vector } = requireDatabase();
 
     // Get image record
@@ -160,7 +159,10 @@ async function evaluateSingleImage(imageId: string, saveToDb: boolean): Promise<
           },
           next_steps: [
             { tool: 'ocr_image_get', description: 'View the evaluated image details' },
-            { tool: 'ocr_evaluate', description: 'Evaluate more images (pass document_id or omit for all pending)' },
+            {
+              tool: 'ocr_evaluate',
+              description: 'Evaluate more images (pass document_id or omit for all pending)',
+            },
           ],
         })
       );
@@ -179,12 +181,8 @@ async function evaluateSingleImage(imageId: string, saveToDb: boolean): Promise<
 /**
  * Internal handler for evaluating all images in a document
  */
-async function evaluateDocument(
-  documentId: string,
-  batchSize: number
-): Promise<ToolResponse> {
+async function evaluateDocument(documentId: string, batchSize: number): Promise<ToolResponse> {
   try {
-
     const { db } = requireDatabase();
 
     // Verify document exists
@@ -213,7 +211,10 @@ async function evaluateDocument(
           message: 'No pending images to evaluate',
           next_steps: [
             { tool: 'ocr_evaluation_report', description: 'Generate a full evaluation report' },
-            { tool: 'ocr_evaluate', description: 'Evaluate remaining images (omit params for all pending)' },
+            {
+              tool: 'ocr_evaluate',
+              description: 'Evaluate remaining images (omit params for all pending)',
+            },
           ],
         })
       );
@@ -299,7 +300,10 @@ async function evaluateDocument(
         results: results.slice(0, 20), // Limit results in response
         next_steps: [
           { tool: 'ocr_evaluation_report', description: 'Generate a full evaluation report' },
-          { tool: 'ocr_evaluate', description: 'Evaluate remaining images (omit params for all pending)' },
+          {
+            tool: 'ocr_evaluate',
+            description: 'Evaluate remaining images (omit params for all pending)',
+          },
         ],
       })
     );
@@ -311,12 +315,8 @@ async function evaluateDocument(
 /**
  * Internal handler for evaluating all pending images across all documents
  */
-async function evaluatePending(
-  limit: number,
-  batchSize: number
-): Promise<ToolResponse> {
+async function evaluatePending(limit: number, batchSize: number): Promise<ToolResponse> {
   try {
-
     const { db } = requireDatabase();
 
     // Get pending images
@@ -330,7 +330,10 @@ async function evaluatePending(
           stats,
           message: 'No pending images to evaluate',
           next_steps: [
-            { tool: 'ocr_evaluation_report', description: 'Generate a comprehensive evaluation report' },
+            {
+              tool: 'ocr_evaluation_report',
+              description: 'Generate a comprehensive evaluation report',
+            },
             { tool: 'ocr_image_stats', description: 'Check image processing statistics' },
           ],
         })
@@ -404,7 +407,10 @@ async function evaluatePending(
         processing_time_ms: Date.now() - startTime,
         stats,
         next_steps: [
-          { tool: 'ocr_evaluation_report', description: 'Generate a comprehensive evaluation report' },
+          {
+            tool: 'ocr_evaluation_report',
+            description: 'Generate a comprehensive evaluation report',
+          },
           { tool: 'ocr_image_stats', description: 'Check image processing statistics' },
         ],
       })
@@ -656,10 +662,28 @@ export const evaluationTools: Record<string, ToolDefinition> = {
     inputSchema: {
       image_id: z.string().optional().describe('Image ID (single image evaluation)'),
       document_id: z.string().optional().describe('Document ID (evaluate all images in document)'),
-      save_to_db: z.boolean().default(true).describe('Save results to database (single image mode)'),
-      reference_text: z.string().optional().describe('Reference text for comparison (single image mode)'),
-      batch_size: z.number().int().min(1).max(50).default(10).describe('Images per batch (document/pending mode)'),
-      limit: z.number().int().min(1).max(500).default(100).describe('Maximum images to process (pending mode)'),
+      save_to_db: z
+        .boolean()
+        .default(true)
+        .describe('Save results to database (single image mode)'),
+      reference_text: z
+        .string()
+        .optional()
+        .describe('Reference text for comparison (single image mode)'),
+      batch_size: z
+        .number()
+        .int()
+        .min(1)
+        .max(50)
+        .default(10)
+        .describe('Images per batch (document/pending mode)'),
+      limit: z
+        .number()
+        .int()
+        .min(1)
+        .max(500)
+        .default(100)
+        .describe('Maximum images to process (pending mode)'),
     },
     handler: handleEvaluate,
   },

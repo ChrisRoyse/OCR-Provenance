@@ -19,13 +19,7 @@ export interface AtomicRegion {
 }
 
 /** Block types that should be treated as atomic (unsplittable) */
-const ATOMIC_BLOCK_TYPES = new Set([
-  'Table',
-  'TableGroup',
-  'Figure',
-  'FigureGroup',
-  'Code',
-]);
+const ATOMIC_BLOCK_TYPES = new Set(['Table', 'TableGroup', 'Figure', 'FigureGroup', 'Code']);
 
 /**
  * Find atomic (unsplittable) regions in the markdown text by analyzing JSON blocks.
@@ -55,17 +49,21 @@ export function findAtomicRegions(
   const rawRegions: AtomicRegion[] = [];
 
   // Walk the JSON block tree
-  walkBlocks(jsonBlocks, (block, pageNum) => {
-    const blockType = block.block_type as string | undefined;
-    if (!blockType || !ATOMIC_BLOCK_TYPES.has(blockType)) {
-      return;
-    }
+  walkBlocks(
+    jsonBlocks,
+    (block, pageNum) => {
+      const blockType = block.block_type as string | undefined;
+      if (!blockType || !ATOMIC_BLOCK_TYPES.has(blockType)) {
+        return;
+      }
 
-    const region = locateBlockInMarkdown(block, blockType, pageNum, markdownText, pageOffsets);
-    if (region) {
-      rawRegions.push(region);
-    }
-  }, 0);
+      const region = locateBlockInMarkdown(block, blockType, pageNum, markdownText, pageOffsets);
+      if (region) {
+        rawRegions.push(region);
+      }
+    },
+    0
+  );
 
   // Sort by startOffset
   rawRegions.sort((a, b) => a.startOffset - b.startOffset);
@@ -83,7 +81,10 @@ export function findAtomicRegions(
  * @param regions - Sorted array of AtomicRegion (from findAtomicRegions)
  * @returns The containing AtomicRegion, or null if offset is not in any region
  */
-export function isOffsetInAtomicRegion(offset: number, regions: AtomicRegion[]): AtomicRegion | null {
+export function isOffsetInAtomicRegion(
+  offset: number,
+  regions: AtomicRegion[]
+): AtomicRegion | null {
   if (regions.length === 0) {
     return null;
   }
@@ -681,9 +682,7 @@ export function computeBlockTypeStats(
     page_count: counts.page,
     tables_per_page: Math.round((counts.table / pageCount) * 100) / 100,
     figures_per_page: Math.round((counts.figure / pageCount) * 100) / 100,
-    text_density: contentBlocks > 0
-      ? Math.round((counts.text / contentBlocks) * 100) / 100
-      : 0,
+    text_density: contentBlocks > 0 ? Math.round((counts.text / contentBlocks) * 100) / 100 : 0,
   };
 }
 
@@ -734,8 +733,8 @@ export function computeBlockConfidence(contentTypes: string[]): number {
 export interface HeaderFooterInfo {
   headerTexts: string[];
   footerTexts: string[];
-  repeatedHeaders: string[];   // appearing on >50% of pages (min 2 pages)
-  repeatedFooters: string[];   // appearing on >50% of pages (min 2 pages)
+  repeatedHeaders: string[]; // appearing on >50% of pages (min 2 pages)
+  repeatedFooters: string[]; // appearing on >50% of pages (min 2 pages)
 }
 
 /**
@@ -801,29 +800,33 @@ export function detectRepeatedHeadersFooters(
   let pageCount = 0;
 
   // Walk the tree collecting PageHeader and PageFooter blocks
-  walkBlocks(jsonBlocks, (block, _pageNum) => {
-    const blockType = block.block_type as string | undefined;
-    if (!blockType) return;
+  walkBlocks(
+    jsonBlocks,
+    (block, _pageNum) => {
+      const blockType = block.block_type as string | undefined;
+      if (!blockType) return;
 
-    if (blockType === 'Page') {
-      pageCount++;
-      return;
-    }
+      if (blockType === 'Page') {
+        pageCount++;
+        return;
+      }
 
-    if (blockType === 'PageHeader') {
-      const text = extractBlockText(block);
-      if (text.length > 0) {
-        result.headerTexts.push(text);
-        headerCounts.set(text, (headerCounts.get(text) ?? 0) + 1);
+      if (blockType === 'PageHeader') {
+        const text = extractBlockText(block);
+        if (text.length > 0) {
+          result.headerTexts.push(text);
+          headerCounts.set(text, (headerCounts.get(text) ?? 0) + 1);
+        }
+      } else if (blockType === 'PageFooter') {
+        const text = extractBlockText(block);
+        if (text.length > 0) {
+          result.footerTexts.push(text);
+          footerCounts.set(text, (footerCounts.get(text) ?? 0) + 1);
+        }
       }
-    } else if (blockType === 'PageFooter') {
-      const text = extractBlockText(block);
-      if (text.length > 0) {
-        result.footerTexts.push(text);
-        footerCounts.set(text, (footerCounts.get(text) ?? 0) + 1);
-      }
-    }
-  }, 0);
+    },
+    0
+  );
 
   // Ensure at least 1 page for percentage calculation
   const effectivePageCount = Math.max(pageCount, 1);
@@ -853,10 +856,7 @@ export function detectRepeatedHeadersFooters(
  * @param repeatedTexts - Array of repeated header/footer texts
  * @returns true if the chunk text matches a repeated header/footer
  */
-export function isRepeatedHeaderFooter(
-  chunkText: string,
-  repeatedTexts: string[]
-): boolean {
+export function isRepeatedHeaderFooter(chunkText: string, repeatedTexts: string[]): boolean {
   if (repeatedTexts.length === 0) return false;
 
   const normalizedChunk = chunkText.toLowerCase().replace(/\s+/g, ' ').trim();
@@ -867,11 +867,17 @@ export function isRepeatedHeaderFooter(
     // Exact match or chunk contains the repeated text
     if (normalizedChunk === normalizedRepeated) return true;
     // Check if the chunk is very short and is a substring of the repeated text
-    if (normalizedChunk.length <= normalizedRepeated.length * 1.2 &&
-        normalizedRepeated.includes(normalizedChunk)) return true;
+    if (
+      normalizedChunk.length <= normalizedRepeated.length * 1.2 &&
+      normalizedRepeated.includes(normalizedChunk)
+    )
+      return true;
     // Check if the repeated text is contained in a short chunk
-    if (normalizedChunk.length <= normalizedRepeated.length * 1.5 &&
-        normalizedChunk.includes(normalizedRepeated)) return true;
+    if (
+      normalizedChunk.length <= normalizedRepeated.length * 1.5 &&
+      normalizedChunk.includes(normalizedRepeated)
+    )
+      return true;
   }
 
   return false;
@@ -923,72 +929,76 @@ export function extractTableStructures(
   /** Track previous block for caption detection */
   let previousBlockText = '';
 
-  walkBlocks(jsonBlocks, (block, _pageNum) => {
-    const blockType = block.block_type as string | undefined;
+  walkBlocks(
+    jsonBlocks,
+    (block, _pageNum) => {
+      const blockType = block.block_type as string | undefined;
 
-    // Track non-table block text for caption detection
-    if (blockType && blockType !== 'Table' && blockType !== 'TableGroup') {
-      const text = extractBlockText(block);
-      if (text.length > 0) {
-        previousBlockText = text;
+      // Track non-table block text for caption detection
+      if (blockType && blockType !== 'Table' && blockType !== 'TableGroup') {
+        const text = extractBlockText(block);
+        if (text.length > 0) {
+          previousBlockText = text;
+        }
+        return;
       }
-      return;
-    }
 
-    if (blockType !== 'Table' && blockType !== 'TableGroup') {
-      return;
-    }
+      if (blockType !== 'Table' && blockType !== 'TableGroup') {
+        return;
+      }
 
-    // Locate the table in markdown text first (needed for markdown fallbacks)
-    const region = locateBlockInMarkdown(block, blockType, _pageNum, markdownText, pageOffsets);
-    if (!region) {
+      // Locate the table in markdown text first (needed for markdown fallbacks)
+      const region = locateBlockInMarkdown(block, blockType, _pageNum, markdownText, pageOffsets);
+      if (!region) {
+        previousBlockText = '';
+        return;
+      }
+
+      // Get the markdown text range for this table
+      const tableMarkdown = markdownText.slice(region.startOffset, region.endOffset);
+
+      // Extract column headers from the block's children, with markdown fallback
+      let columnHeaders = extractTableColumnHeaders(block);
+      if (columnHeaders.length === 0) {
+        columnHeaders = extractHeadersFromMarkdown(tableMarkdown);
+      }
+
+      // Count rows from block children, with markdown fallback
+      let { rowCount, columnCount } = countTableDimensions(block, columnHeaders.length);
+      if (rowCount === 0) {
+        const mdDims = countTableDimensionsFromMarkdown(tableMarkdown);
+        rowCount = mdDims.rowCount;
+        if (columnCount === 0) columnCount = mdDims.columnCount;
+      }
+
+      // Extract first data row values from markdown for summary
+      const firstRowValues = extractFirstDataRow(tableMarkdown);
+
+      // Detect caption from preceding block
+      let caption: string | undefined;
+      if (previousBlockText.length > 0 && /^(Table|Figure)\s+\d+[.:]/i.test(previousBlockText)) {
+        caption = previousBlockText.slice(0, 200);
+      }
+
+      // Generate summary
+      const summary = generateTableSummary(columnHeaders, rowCount, firstRowValues, caption);
+
+      structures.push({
+        startOffset: region.startOffset,
+        endOffset: region.endOffset,
+        columnHeaders,
+        rowCount,
+        columnCount,
+        pageNumber: region.pageNumber,
+        summary,
+        firstRowValues,
+        caption,
+      });
+
       previousBlockText = '';
-      return;
-    }
-
-    // Get the markdown text range for this table
-    const tableMarkdown = markdownText.slice(region.startOffset, region.endOffset);
-
-    // Extract column headers from the block's children, with markdown fallback
-    let columnHeaders = extractTableColumnHeaders(block);
-    if (columnHeaders.length === 0) {
-      columnHeaders = extractHeadersFromMarkdown(tableMarkdown);
-    }
-
-    // Count rows from block children, with markdown fallback
-    let { rowCount, columnCount } = countTableDimensions(block, columnHeaders.length);
-    if (rowCount === 0) {
-      const mdDims = countTableDimensionsFromMarkdown(tableMarkdown);
-      rowCount = mdDims.rowCount;
-      if (columnCount === 0) columnCount = mdDims.columnCount;
-    }
-
-    // Extract first data row values from markdown for summary
-    const firstRowValues = extractFirstDataRow(tableMarkdown);
-
-    // Detect caption from preceding block
-    let caption: string | undefined;
-    if (previousBlockText.length > 0 && /^(Table|Figure)\s+\d+[.:]/i.test(previousBlockText)) {
-      caption = previousBlockText.slice(0, 200);
-    }
-
-    // Generate summary
-    const summary = generateTableSummary(columnHeaders, rowCount, firstRowValues, caption);
-
-    structures.push({
-      startOffset: region.startOffset,
-      endOffset: region.endOffset,
-      columnHeaders,
-      rowCount,
-      columnCount,
-      pageNumber: region.pageNumber,
-      summary,
-      firstRowValues,
-      caption,
-    });
-
-    previousBlockText = '';
-  }, 0);
+    },
+    0
+  );
 
   // Cross-page table continuity detection
   detectTableContinuations(structures);
@@ -1001,16 +1011,17 @@ export function extractTableStructures(
  * Fallback when JSON block children don't contain TableRow elements.
  */
 export function extractHeadersFromMarkdown(tableMarkdown: string): string[] {
-  const lines = tableMarkdown.split('\n').filter(l => l.trim().length > 0);
+  const lines = tableMarkdown.split('\n').filter((l) => l.trim().length > 0);
   for (const line of lines) {
     const trimmed = line.trim();
     if (!trimmed.includes('|')) continue;
     // Skip separator rows like |---|---|
     if (/^\|?[\s-:|]+\|?$/.test(trimmed)) continue;
     // Parse pipe-delimited cells
-    const cells = trimmed.split('|')
-      .map(c => c.trim())
-      .filter(c => c.length > 0);
+    const cells = trimmed
+      .split('|')
+      .map((c) => c.trim())
+      .filter((c) => c.length > 0);
     if (cells.length > 0) return cells;
   }
   return [];
@@ -1020,8 +1031,11 @@ export function extractHeadersFromMarkdown(tableMarkdown: string): string[] {
  * Count table dimensions from markdown pipe-delimited text.
  * Counts data rows (excludes header and separator rows).
  */
-export function countTableDimensionsFromMarkdown(tableMarkdown: string): { rowCount: number; columnCount: number } {
-  const lines = tableMarkdown.split('\n').filter(l => l.trim().length > 0 && l.includes('|'));
+export function countTableDimensionsFromMarkdown(tableMarkdown: string): {
+  rowCount: number;
+  columnCount: number;
+} {
+  const lines = tableMarkdown.split('\n').filter((l) => l.trim().length > 0 && l.includes('|'));
   if (lines.length === 0) return { rowCount: 0, columnCount: 0 };
 
   let maxCols = 0;
@@ -1034,7 +1048,10 @@ export function countTableDimensionsFromMarkdown(tableMarkdown: string): { rowCo
     if (/^\|?[\s-:|]+\|?$/.test(trimmed)) {
       continue;
     }
-    const cells = trimmed.split('|').map(c => c.trim()).filter(c => c.length > 0);
+    const cells = trimmed
+      .split('|')
+      .map((c) => c.trim())
+      .filter((c) => c.length > 0);
     if (cells.length > maxCols) maxCols = cells.length;
 
     if (!headerFound) {
@@ -1051,7 +1068,7 @@ export function countTableDimensionsFromMarkdown(tableMarkdown: string): { rowCo
  * Extract values from the first data row (after header and separator) of markdown table.
  */
 export function extractFirstDataRow(tableMarkdown: string): string[] {
-  const lines = tableMarkdown.split('\n').filter(l => l.trim().length > 0 && l.includes('|'));
+  const lines = tableMarkdown.split('\n').filter((l) => l.trim().length > 0 && l.includes('|'));
   let headerSeen = false;
 
   for (const line of lines) {
@@ -1064,7 +1081,10 @@ export function extractFirstDataRow(tableMarkdown: string): string[] {
       continue;
     }
     // First non-header, non-separator row is the first data row
-    return trimmed.split('|').map(c => c.trim()).filter(c => c.length > 0);
+    return trimmed
+      .split('|')
+      .map((c) => c.trim())
+      .filter((c) => c.length > 0);
   }
   return [];
 }
@@ -1078,7 +1098,7 @@ export function generateTableSummary(
   columnHeaders: string[],
   rowCount: number,
   firstRowValues: string[],
-  caption?: string,
+  caption?: string
 ): string {
   const parts: string[] = [];
 
@@ -1138,8 +1158,8 @@ function columnHeaderOverlap(a: string[], b: string[]): number {
   if (a.length === 0 && b.length === 0) return 1;
   if (a.length === 0 || b.length === 0) return 0;
 
-  const setA = new Set(a.map(h => h.toLowerCase().trim()));
-  const setB = new Set(b.map(h => h.toLowerCase().trim()));
+  const setA = new Set(a.map((h) => h.toLowerCase().trim()));
+  const setB = new Set(b.map((h) => h.toLowerCase().trim()));
   let intersection = 0;
   for (const h of setA) {
     if (setB.has(h)) intersection++;
@@ -1200,7 +1220,7 @@ function extractHeadersFromHtml(block: Record<string, unknown>): string[] {
   // Try to find <th> elements first
   const thMatches = html.match(/<th[^>]*>(.*?)<\/th>/gi);
   if (thMatches && thMatches.length > 0) {
-    return thMatches.map(th => stripHtmlTags(th).trim()).filter(t => t.length > 0);
+    return thMatches.map((th) => stripHtmlTags(th).trim()).filter((t) => t.length > 0);
   }
 
   // Try first <tr> and extract <td> elements
@@ -1208,7 +1228,7 @@ function extractHeadersFromHtml(block: Record<string, unknown>): string[] {
   if (firstRowMatch) {
     const tdMatches = firstRowMatch[1].match(/<td[^>]*>(.*?)<\/td>/gi);
     if (tdMatches && tdMatches.length > 0) {
-      return tdMatches.map(td => stripHtmlTags(td).trim()).filter(t => t.length > 0);
+      return tdMatches.map((td) => stripHtmlTags(td).trim()).filter((t) => t.length > 0);
     }
   }
 

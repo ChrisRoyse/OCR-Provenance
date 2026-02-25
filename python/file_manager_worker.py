@@ -161,7 +161,7 @@ def _handle_sdk_exception(e: Exception, operation: str, context: str = "") -> No
     raise FileManagerAPIError(f"SDK {operation} failed: {e}", 500) from e
 
 
-def get_client() -> "DatalabClient":
+def get_client() -> "DatalabClient":  # noqa: F821
     """
     Get a DatalabClient instance.
     FAIL-FAST: Raises immediately if API key not set.

@@ -261,7 +261,9 @@ export class VLMService {
     try {
       return JSON.parse(clean) as T;
     } catch (error) {
-      console.error(`[VLMService] Failed to parse full cleaned text as JSON for ${label}: ${error instanceof Error ? error.message : String(error)}`);
+      console.error(
+        `[VLMService] Failed to parse full cleaned text as JSON for ${label}: ${error instanceof Error ? error.message : String(error)}`
+      );
     }
 
     // Step 3: Extract JSON object from mixed text (reasoning preamble + JSON)
@@ -274,7 +276,9 @@ export class VLMService {
       try {
         return JSON.parse(jsonCandidate) as T;
       } catch (error) {
-        console.error(`[VLMService] Failed to parse extracted JSON substring for ${label}: ${error instanceof Error ? error.message : String(error)}`);
+        console.error(
+          `[VLMService] Failed to parse extracted JSON substring for ${label}: ${error instanceof Error ? error.message : String(error)}`
+        );
       }
     }
 

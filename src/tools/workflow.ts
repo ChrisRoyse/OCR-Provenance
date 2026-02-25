@@ -107,7 +107,10 @@ async function handleWorkflowReview(params: Record<string, unknown>): Promise<To
     );
 
     // Reason required for reject/changes_requested
-    if ((input.decision === 'rejected' || input.decision === 'changes_requested') && !input.reason) {
+    if (
+      (input.decision === 'rejected' || input.decision === 'changes_requested') &&
+      !input.reason
+    ) {
       throw new Error(`Reason is required when decision is "${input.decision}"`);
     }
 
@@ -122,7 +125,7 @@ async function handleWorkflowReview(params: Record<string, unknown>): Promise<To
     if (current.state !== 'in_review') {
       throw new Error(
         `Cannot review document ${input.document_id}: current state is "${current.state}", ` +
-        `must be "in_review". Use ocr_workflow_status to check the current state.`
+          `must be "in_review". Use ocr_workflow_status to check the current state.`
       );
     }
 
@@ -137,17 +140,21 @@ async function handleWorkflowReview(params: Record<string, unknown>): Promise<To
     if (input.decision === 'approved') {
       nextSteps.push(
         { tool: 'ocr_workflow_status', description: 'View updated workflow status' },
-        { tool: 'ocr_approval_chain_apply', description: 'Apply an approval chain for formal sign-off' }
+        {
+          tool: 'ocr_approval_chain_apply',
+          description: 'Apply an approval chain for formal sign-off',
+        }
       );
     } else if (input.decision === 'changes_requested') {
       nextSteps.push(
         { tool: 'ocr_workflow_status', description: 'View updated workflow status' },
-        { tool: 'ocr_annotation_create', description: 'Add annotations detailing requested changes' }
+        {
+          tool: 'ocr_annotation_create',
+          description: 'Add annotations detailing requested changes',
+        }
       );
     } else {
-      nextSteps.push(
-        { tool: 'ocr_workflow_status', description: 'View updated workflow status' }
-      );
+      nextSteps.push({ tool: 'ocr_workflow_status', description: 'View updated workflow status' });
     }
 
     return formatResponse(
@@ -190,7 +197,7 @@ async function handleWorkflowAssign(params: Record<string, unknown>): Promise<To
     if (current.state !== 'submitted' && current.state !== 'in_review') {
       throw new Error(
         `Cannot assign reviewer: document ${input.document_id} is in state "${current.state}". ` +
-        `Document must be in "submitted" or "in_review" state.`
+          `Document must be in "submitted" or "in_review" state.`
       );
     }
 
@@ -210,7 +217,10 @@ async function handleWorkflowAssign(params: Record<string, unknown>): Promise<To
           assigned_to: input.user_id,
           transitioned_to: 'in_review',
           next_steps: [
-            { tool: 'ocr_workflow_review', description: 'Review this document (approve/reject/request changes)' },
+            {
+              tool: 'ocr_workflow_review',
+              description: 'Review this document (approve/reject/request changes)',
+            },
             { tool: 'ocr_workflow_status', description: 'Check workflow status' },
           ],
         })
@@ -221,14 +231,18 @@ async function handleWorkflowAssign(params: Record<string, unknown>): Promise<To
     // We create a new in_review state with the updated assignment
     // (This is valid because in_review -> in_review is not in transitions,
     //  so we update the current row directly instead)
-    conn.prepare(`
+    conn
+      .prepare(
+        `
       UPDATE workflow_states SET assigned_to = ?, assigned_by = ?
       WHERE id = ?
-    `).run(input.user_id, input.assigned_by ?? null, current.id);
+    `
+      )
+      .run(input.user_id, input.assigned_by ?? null, current.id);
 
-    const updated = conn.prepare(
-      'SELECT * FROM workflow_states WHERE id = ?'
-    ).get(current.id) as Record<string, unknown>;
+    const updated = conn
+      .prepare('SELECT * FROM workflow_states WHERE id = ?')
+      .get(current.id) as Record<string, unknown>;
 
     return formatResponse(
       successResult({
@@ -280,9 +294,9 @@ async function handleWorkflowStatus(params: Record<string, unknown>): Promise<To
     }
 
     // Check for approval chains applied to this document
-    const approvalSteps = conn.prepare(
-      'SELECT DISTINCT chain_id FROM approval_steps WHERE document_id = ?'
-    ).all(input.document_id) as { chain_id: string }[];
+    const approvalSteps = conn
+      .prepare('SELECT DISTINCT chain_id FROM approval_steps WHERE document_id = ?')
+      .all(input.document_id) as { chain_id: string }[];
 
     const nextSteps = [];
     switch (current.state) {
@@ -296,14 +310,10 @@ async function handleWorkflowStatus(params: Record<string, unknown>): Promise<To
         );
         break;
       case 'in_review':
-        nextSteps.push(
-          { tool: 'ocr_workflow_review', description: 'Make a review decision' }
-        );
+        nextSteps.push({ tool: 'ocr_workflow_review', description: 'Make a review decision' });
         break;
       case 'changes_requested':
-        nextSteps.push(
-          { tool: 'ocr_workflow_submit', description: 'Re-submit after changes' }
-        );
+        nextSteps.push({ tool: 'ocr_workflow_submit', description: 'Re-submit after changes' });
         break;
       case 'approved':
         nextSteps.push(
@@ -312,9 +322,7 @@ async function handleWorkflowStatus(params: Record<string, unknown>): Promise<To
         );
         break;
       default:
-        nextSteps.push(
-          { tool: 'ocr_workflow_queue', description: 'View review queue' }
-        );
+        nextSteps.push({ tool: 'ocr_workflow_queue', description: 'View review queue' });
     }
 
     return formatResponse(
@@ -372,7 +380,12 @@ async function handleWorkflowQueue(params: Record<string, unknown>): Promise<Too
         offset,
         has_more: hasMore,
         next_steps: hasMore
-          ? [{ tool: 'ocr_workflow_queue', description: `Get next page with offset=${offset + limit}` }]
+          ? [
+              {
+                tool: 'ocr_workflow_queue',
+                description: `Get next page with offset=${offset + limit}`,
+              },
+            ]
           : [
               { tool: 'ocr_workflow_status', description: 'Get details for a specific document' },
               { tool: 'ocr_workflow_review', description: 'Review a document from the queue' },
@@ -395,11 +408,15 @@ async function handleApprovalChainCreate(params: Record<string, unknown>): Promi
       z.object({
         name: z.string().min(1).max(200),
         description: z.string().max(1000).optional(),
-        steps: z.array(z.object({
-          role: z.string().min(1),
-          required_approvals: z.number().int().min(1).optional(),
-          auto_advance: z.boolean().optional(),
-        })).min(1),
+        steps: z
+          .array(
+            z.object({
+              role: z.string().min(1),
+              required_approvals: z.number().int().min(1).optional(),
+              auto_advance: z.boolean().optional(),
+            })
+          )
+          .min(1),
         created_by: z.string().min(1).optional(),
       }),
       params
@@ -459,7 +476,10 @@ async function handleApprovalChainApply(params: Record<string, unknown>): Promis
         current_step: currentStep,
         next_steps: [
           { tool: 'ocr_approval_step_decide', description: 'Decide on the current approval step' },
-          { tool: 'ocr_workflow_status', description: 'View full workflow status including approvals' },
+          {
+            tool: 'ocr_workflow_status',
+            description: 'View full workflow status including approvals',
+          },
         ],
       })
     );
@@ -496,9 +516,9 @@ async function handleApprovalStepDecide(params: Record<string, unknown>): Promis
     const currentStep = getCurrentApprovalStep(conn, input.document_id, input.chain_id);
     if (!currentStep) {
       // Check if chain is applied
-      const anySteps = conn.prepare(
-        'SELECT id FROM approval_steps WHERE document_id = ? AND chain_id = ? LIMIT 1'
-      ).get(input.document_id, input.chain_id);
+      const anySteps = conn
+        .prepare('SELECT id FROM approval_steps WHERE document_id = ? AND chain_id = ? LIMIT 1')
+        .get(input.document_id, input.chain_id);
 
       if (!anySteps) {
         throw new Error(
@@ -530,19 +550,16 @@ async function handleApprovalStepDecide(params: Record<string, unknown>): Promis
       });
     }
     if (progress.is_complete && !progress.is_rejected) {
-      nextSteps.push(
-        { tool: 'ocr_workflow_status', description: 'View final workflow status' }
-      );
+      nextSteps.push({ tool: 'ocr_workflow_status', description: 'View final workflow status' });
     }
     if (progress.is_rejected) {
-      nextSteps.push(
-        { tool: 'ocr_workflow_status', description: 'View workflow status after rejection' }
-      );
+      nextSteps.push({
+        tool: 'ocr_workflow_status',
+        description: 'View workflow status after rejection',
+      });
     }
     if (nextSteps.length === 0) {
-      nextSteps.push(
-        { tool: 'ocr_workflow_status', description: 'View workflow status' }
-      );
+      nextSteps.push({ tool: 'ocr_workflow_status', description: 'View workflow status' });
     }
 
     return formatResponse(
@@ -575,7 +592,10 @@ export const workflowTools: Record<string, ToolDefinition> = {
       document_id: z.string().min(1).describe('Document ID to submit for review'),
       assigned_to: z.string().min(1).optional().describe('User ID of the reviewer to assign'),
       due_date: z.string().min(1).optional().describe('Due date for review (ISO 8601 datetime)'),
-      metadata: z.record(z.unknown()).optional().describe('Optional metadata object to attach to the workflow state'),
+      metadata: z
+        .record(z.unknown())
+        .optional()
+        .describe('Optional metadata object to attach to the workflow state'),
     },
     handler: handleWorkflowSubmit,
   },
@@ -585,8 +605,14 @@ export const workflowTools: Record<string, ToolDefinition> = {
       '[MANAGE] Review a document: approve, reject, or request changes. Document must be in "in_review" state. Reason is required for reject or changes_requested decisions.',
     inputSchema: {
       document_id: z.string().min(1).describe('Document ID to review'),
-      decision: WorkflowDecisionSchema.describe('Review decision: approved, rejected, or changes_requested'),
-      reason: z.string().max(2000).optional().describe('Reason for the decision (required for reject/changes_requested)'),
+      decision: WorkflowDecisionSchema.describe(
+        'Review decision: approved, rejected, or changes_requested'
+      ),
+      reason: z
+        .string()
+        .max(2000)
+        .optional()
+        .describe('Reason for the decision (required for reject/changes_requested)'),
     },
     handler: handleWorkflowReview,
   },
@@ -597,7 +623,11 @@ export const workflowTools: Record<string, ToolDefinition> = {
     inputSchema: {
       document_id: z.string().min(1).describe('Document ID to assign reviewer to'),
       user_id: z.string().min(1).describe('User ID of the reviewer to assign'),
-      assigned_by: z.string().min(1).optional().describe('User ID of the person making the assignment'),
+      assigned_by: z
+        .string()
+        .min(1)
+        .optional()
+        .describe('User ID of the person making the assignment'),
     },
     handler: handleWorkflowAssign,
   },
@@ -616,9 +646,23 @@ export const workflowTools: Record<string, ToolDefinition> = {
       '[STATUS] List documents in the workflow queue. Filter by assigned reviewer, state, or due date. Returns paginated results sorted by due date then creation time.',
     inputSchema: {
       assigned_to: z.string().min(1).optional().describe('Filter by assigned reviewer user ID'),
-      state: z.string().min(1).optional().describe('Filter by workflow state (e.g., "submitted", "in_review")'),
-      due_before: z.string().min(1).optional().describe('Filter documents due before this ISO 8601 datetime'),
-      limit: z.number().int().min(1).max(200).default(50).describe('Max results (1-200, default 50)'),
+      state: z
+        .string()
+        .min(1)
+        .optional()
+        .describe('Filter by workflow state (e.g., "submitted", "in_review")'),
+      due_before: z
+        .string()
+        .min(1)
+        .optional()
+        .describe('Filter documents due before this ISO 8601 datetime'),
+      limit: z
+        .number()
+        .int()
+        .min(1)
+        .max(200)
+        .default(50)
+        .describe('Max results (1-200, default 50)'),
       offset: z.number().int().min(0).default(0).describe('Pagination offset'),
     },
     handler: handleWorkflowQueue,
@@ -630,11 +674,27 @@ export const workflowTools: Record<string, ToolDefinition> = {
     inputSchema: {
       name: z.string().min(1).max(200).describe('Name for the approval chain'),
       description: z.string().max(1000).optional().describe('Description of the approval chain'),
-      steps: z.array(z.object({
-        role: z.string().min(1).describe('Required role for this step (e.g., "reviewer", "legal", "manager")'),
-        required_approvals: z.number().int().min(1).optional().describe('Number of approvals needed (default 1)'),
-        auto_advance: z.boolean().optional().describe('Auto-advance to next step on approval (default true)'),
-      })).min(1).describe('Ordered list of approval steps'),
+      steps: z
+        .array(
+          z.object({
+            role: z
+              .string()
+              .min(1)
+              .describe('Required role for this step (e.g., "reviewer", "legal", "manager")'),
+            required_approvals: z
+              .number()
+              .int()
+              .min(1)
+              .optional()
+              .describe('Number of approvals needed (default 1)'),
+            auto_advance: z
+              .boolean()
+              .optional()
+              .describe('Auto-advance to next step on approval (default true)'),
+          })
+        )
+        .min(1)
+        .describe('Ordered list of approval steps'),
       created_by: z.string().min(1).optional().describe('User ID of the chain creator'),
     },
     handler: handleApprovalChainCreate,
@@ -658,7 +718,11 @@ export const workflowTools: Record<string, ToolDefinition> = {
       chain_id: z.string().min(1).describe('Approval chain ID'),
       decision: ApprovalDecisionSchema.describe('Decision: approved or rejected'),
       user_id: z.string().min(1).describe('User ID making the decision'),
-      reason: z.string().max(2000).optional().describe('Reason for the decision (required for rejection)'),
+      reason: z
+        .string()
+        .max(2000)
+        .optional()
+        .describe('Reason for the decision (required for rejection)'),
     },
     handler: handleApprovalStepDecide,
   },

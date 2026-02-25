@@ -299,15 +299,16 @@ export class GeminiClient {
         // Gemini 3 Flash known issue: returns HTTP 200 with finishReason=STOP
         // but empty content parts or malformed JSON. Retry on bad responses
         // instead of returning garbage that will cause downstream parse failures.
-        const hasJsonMode = options.responseMimeType === 'application/json' || options.responseSchema;
+        const hasJsonMode =
+          options.responseMimeType === 'application/json' || options.responseSchema;
 
         if (!text || text.trim().length === 0) {
           if (hasJsonMode && attempt < maxAttempts - 1) {
             const delay = Math.min(baseDelayMs * Math.pow(2, attempt), maxDelayMs);
             console.error(
               `[GeminiClient] Empty response from Gemini (attempt ${attempt + 1}/${maxAttempts}, ` +
-              `inputTokens=${usage.inputTokens}, outputTokens=${usage.outputTokens}). ` +
-              `Known Gemini 3 Flash issue. Retrying in ${delay}ms...`
+                `inputTokens=${usage.inputTokens}, outputTokens=${usage.outputTokens}). ` +
+                `Known Gemini 3 Flash issue. Retrying in ${delay}ms...`
             );
             await this.sleep(delay);
             continue;
@@ -315,7 +316,7 @@ export class GeminiClient {
           // Last attempt or non-JSON mode: return whatever we got
           console.error(
             `[GeminiClient] Empty response on final attempt (${attempt + 1}/${maxAttempts}). ` +
-            `inputTokens=${usage.inputTokens}, outputTokens=${usage.outputTokens}`
+              `inputTokens=${usage.inputTokens}, outputTokens=${usage.outputTokens}`
           );
         } else if (hasJsonMode && attempt < maxAttempts - 1) {
           // Validate JSON when JSON mode is active. Gemini sometimes returns
@@ -328,8 +329,8 @@ export class GeminiClient {
             const delay = Math.min(baseDelayMs * Math.pow(2, attempt), maxDelayMs);
             console.error(
               `[GeminiClient] Malformed JSON response from Gemini (attempt ${attempt + 1}/${maxAttempts}, ` +
-              `inputTokens=${usage.inputTokens}, outputTokens=${usage.outputTokens}, ` +
-              `responseLength=${text.length}, parseError=${parseError instanceof Error ? parseError.message : String(parseError)}). Retrying in ${delay}ms...`
+                `inputTokens=${usage.inputTokens}, outputTokens=${usage.outputTokens}, ` +
+                `responseLength=${text.length}, parseError=${parseError instanceof Error ? parseError.message : String(parseError)}). Retrying in ${delay}ms...`
             );
             await this.sleep(delay);
             continue;
@@ -353,9 +354,12 @@ export class GeminiClient {
 
         // Check for rate limit error (429) or server errors (500/502/503).
         // These all indicate server-side issues and get extended backoff.
-        const isServerStatus = /\b(429|500|502|503)\b/.test(errorMessage) ||
+        const isServerStatus =
+          /\b(429|500|502|503)\b/.test(errorMessage) ||
           errorMessage.toLowerCase().includes('rate limit') ||
-          /server.?(error|overloaded|unavailable)|service.?unavailable|internal.?server/i.test(errorMessage);
+          /server.?(error|overloaded|unavailable)|service.?unavailable|internal.?server/i.test(
+            errorMessage
+          );
 
         if (isServerStatus) {
           const delay = Math.min(baseDelayMs * Math.pow(2, attempt + 1), maxDelayMs);
@@ -529,7 +533,9 @@ export class GeminiClient {
       }
       if (oldestKey) {
         this._contextCache.delete(oldestKey);
-        console.error(`[GeminiClient] Cache at capacity (${MAX_CACHE_SIZE}), evicted oldest entry: ${oldestKey}`);
+        console.error(
+          `[GeminiClient] Cache at capacity (${MAX_CACHE_SIZE}), evicted oldest entry: ${oldestKey}`
+        );
       }
     }
 

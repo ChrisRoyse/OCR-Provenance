@@ -84,7 +84,8 @@ All services emit structured logs in JSON format to a centralized logging platfo
 /**
  * Short document that fits in a single chunk.
  */
-const SHORT_DOCUMENT = 'This is a brief document with minimal content that easily fits within a single chunk.';
+const SHORT_DOCUMENT =
+  'This is a brief document with minimal content that easily fits within a single chunk.';
 
 /**
  * Document with page markers for page tracking tests.
@@ -162,12 +163,7 @@ describe('chunkHybridSectionAware', () => {
     });
 
     it('single paragraph under chunk size returns one chunk', () => {
-      const chunks = chunkHybridSectionAware(
-        SHORT_DOCUMENT,
-        [],
-        null,
-        DEFAULT_CHUNKING_CONFIG
-      );
+      const chunks = chunkHybridSectionAware(SHORT_DOCUMENT, [], null, DEFAULT_CHUNKING_CONFIG);
 
       expect(chunks).toHaveLength(1);
       expect(chunks[0].text).toBe(SHORT_DOCUMENT);
@@ -177,20 +173,13 @@ describe('chunkHybridSectionAware', () => {
     });
 
     it('large text exceeding chunk size is split at sentence boundaries', () => {
-      const chunks = chunkHybridSectionAware(
-        LONG_DOCUMENT,
-        [],
-        null,
-        DEFAULT_CHUNKING_CONFIG
-      );
+      const chunks = chunkHybridSectionAware(LONG_DOCUMENT, [], null, DEFAULT_CHUNKING_CONFIG);
 
       expect(chunks.length).toBeGreaterThan(1);
 
       // Each chunk should not drastically exceed chunk size (some tolerance for block boundaries)
       for (const chunk of chunks) {
-        expect(chunk.text.length).toBeLessThanOrEqual(
-          DEFAULT_CHUNKING_CONFIG.maxChunkSize
-        );
+        expect(chunk.text.length).toBeLessThanOrEqual(DEFAULT_CHUNKING_CONFIG.maxChunkSize);
       }
 
       // Chunks should have sequential indices
@@ -219,7 +208,8 @@ describe('chunkHybridSectionAware', () => {
 
   describe('heading behavior', () => {
     it('headings create new chunks (flush before heading)', () => {
-      const text = '# Section One\n\nParagraph under section one.\n\n# Section Two\n\nParagraph under section two.';
+      const text =
+        '# Section One\n\nParagraph under section one.\n\n# Section Two\n\nParagraph under section two.';
       const chunks = chunkHybridSectionAware(text, [], null, DEFAULT_CHUNKING_CONFIG);
 
       // Should have at least 2 chunks (one per section)
@@ -261,7 +251,8 @@ describe('chunkHybridSectionAware', () => {
     });
 
     it('headingLevel tracks the level of the current heading', () => {
-      const text = '# Top Level\n\nContent.\n\n## Sub Level\n\nMore content.\n\n### Detail Level\n\nDetail content.';
+      const text =
+        '# Top Level\n\nContent.\n\n## Sub Level\n\nMore content.\n\n### Detail Level\n\nDetail content.';
       const chunks = chunkHybridSectionAware(text, [], null, DEFAULT_CHUNKING_CONFIG);
 
       // Find chunks with heading levels
@@ -277,20 +268,20 @@ describe('chunkHybridSectionAware', () => {
 
   describe('section path tracking', () => {
     it('section path is tracked through headings', () => {
-      const text = '# Part A\n\n## Chapter 1\n\nContent in chapter 1.\n\n## Chapter 2\n\nContent in chapter 2.';
+      const text =
+        '# Part A\n\n## Chapter 1\n\nContent in chapter 1.\n\n## Chapter 2\n\nContent in chapter 2.';
       const chunks = chunkHybridSectionAware(text, [], null, DEFAULT_CHUNKING_CONFIG);
 
       // Find chunk with path containing both Part A and Chapter 1
       const ch1Chunk = chunks.find(
-        (c) => c.sectionPath && c.sectionPath.includes('Part A') && c.sectionPath.includes('Chapter 1')
+        (c) =>
+          c.sectionPath && c.sectionPath.includes('Part A') && c.sectionPath.includes('Chapter 1')
       );
       expect(ch1Chunk).toBeDefined();
       expect(ch1Chunk!.sectionPath).toBe('Part A > Chapter 1');
 
       // Chapter 2 should have a different path
-      const ch2Chunk = chunks.find(
-        (c) => c.sectionPath && c.sectionPath.includes('Chapter 2')
-      );
+      const ch2Chunk = chunks.find((c) => c.sectionPath && c.sectionPath.includes('Chapter 2'));
       expect(ch2Chunk).toBeDefined();
       expect(ch2Chunk!.sectionPath).toBe('Part A > Chapter 2');
     });
@@ -328,7 +319,8 @@ describe('chunkHybridSectionAware', () => {
     });
 
     it('small code blocks below minAtomicSize are merged into surrounding content', () => {
-      const text = 'Paragraph.\n\n```javascript\nconst x = 42;\nconst y = x * 2;\n```\n\nAnother paragraph.';
+      const text =
+        'Paragraph.\n\n```javascript\nconst x = 42;\nconst y = x * 2;\n```\n\nAnother paragraph.';
       const chunks = chunkHybridSectionAware(text, [], null, DEFAULT_CHUNKING_CONFIG);
 
       // Small code block is merged, not atomic
@@ -343,9 +335,14 @@ describe('chunkHybridSectionAware', () => {
 
     it('large tables above minAtomicSize are emitted as atomic chunks', () => {
       // Generate a table larger than chunkSize/4 (500 chars)
-      const rows = ['| Column A | Column B | Column C | Column D |', '|----------|----------|----------|----------|'];
+      const rows = [
+        '| Column A | Column B | Column C | Column D |',
+        '|----------|----------|----------|----------|',
+      ];
       for (let i = 0; i < 20; i++) {
-        rows.push(`| Row ${i} value A long text | Row ${i} value B long text | Row ${i} value C long text | Row ${i} value D long text |`);
+        rows.push(
+          `| Row ${i} value A long text | Row ${i} value B long text | Row ${i} value C long text | Row ${i} value D long text |`
+        );
       }
       const largeTable = rows.join('\n');
       expect(largeTable.length).toBeGreaterThan(500); // Verify it's large enough
@@ -399,9 +396,14 @@ describe('chunkHybridSectionAware', () => {
 
     it('oversized atomic blocks (> maxChunkSize) are split at line boundaries', () => {
       // Generate a table much larger than maxChunkSize (8000 chars)
-      const rows = ['| ID | Name | Description | Category | Status |', '|----|------|-------------|----------|--------|'];
+      const rows = [
+        '| ID | Name | Description | Category | Status |',
+        '|----|------|-------------|----------|--------|',
+      ];
       for (let i = 0; i < 200; i++) {
-        rows.push(`| ${i} | Item name ${i} with extra text | A detailed description of item ${i} that adds considerable length | Category ${i % 5} | Active |`);
+        rows.push(
+          `| ${i} | Item name ${i} with extra text | A detailed description of item ${i} that adds considerable length | Category ${i % 5} | Active |`
+        );
       }
       const hugeTable = rows.join('\n');
       expect(hugeTable.length).toBeGreaterThan(8000);
@@ -410,7 +412,9 @@ describe('chunkHybridSectionAware', () => {
       const chunks = chunkHybridSectionAware(text, [], null, DEFAULT_CHUNKING_CONFIG);
 
       // The huge table should be split into multiple atomic chunks
-      const atomicTableChunks = chunks.filter((c) => c.isAtomic && c.contentTypes.includes('table'));
+      const atomicTableChunks = chunks.filter(
+        (c) => c.isAtomic && c.contentTypes.includes('table')
+      );
       expect(atomicTableChunks.length).toBeGreaterThan(1);
 
       // Each atomic sub-chunk should not exceed maxChunkSize
@@ -427,7 +431,9 @@ describe('chunkHybridSectionAware', () => {
     it('oversized atomic chunks inherit heading context', () => {
       const rows = ['| Col1 | Col2 |', '|------|------|'];
       for (let i = 0; i < 200; i++) {
-        rows.push(`| Long value ${i} with padding text here | Another long value ${i} with more padding |`);
+        rows.push(
+          `| Long value ${i} with padding text here | Another long value ${i} with more padding |`
+        );
       }
       const hugeTable = rows.join('\n');
 
@@ -443,12 +449,7 @@ describe('chunkHybridSectionAware', () => {
 
   describe('contentTypes identification', () => {
     it('contentTypes correctly identifies text content', () => {
-      const chunks = chunkHybridSectionAware(
-        SHORT_DOCUMENT,
-        [],
-        null,
-        DEFAULT_CHUNKING_CONFIG
-      );
+      const chunks = chunkHybridSectionAware(SHORT_DOCUMENT, [], null, DEFAULT_CHUNKING_CONFIG);
 
       expect(chunks[0].contentTypes).toContain('text');
     });
@@ -493,12 +494,7 @@ describe('chunkHybridSectionAware', () => {
 
   describe('overlap behavior', () => {
     it('overlapWithPrevious/Next set for non-atomic chunks', () => {
-      const chunks = chunkHybridSectionAware(
-        LONG_DOCUMENT,
-        [],
-        null,
-        DEFAULT_CHUNKING_CONFIG
-      );
+      const chunks = chunkHybridSectionAware(LONG_DOCUMENT, [], null, DEFAULT_CHUNKING_CONFIG);
 
       const overlapSize = getOverlapCharacters(DEFAULT_CHUNKING_CONFIG);
       const nonAtomicChunks = chunks.filter((c) => !c.isAtomic);
@@ -531,23 +527,13 @@ describe('chunkHybridSectionAware', () => {
     });
 
     it('first chunk has 0 overlapWithPrevious', () => {
-      const chunks = chunkHybridSectionAware(
-        LONG_DOCUMENT,
-        [],
-        null,
-        DEFAULT_CHUNKING_CONFIG
-      );
+      const chunks = chunkHybridSectionAware(LONG_DOCUMENT, [], null, DEFAULT_CHUNKING_CONFIG);
 
       expect(chunks[0].overlapWithPrevious).toBe(0);
     });
 
     it('last chunk has 0 overlapWithNext', () => {
-      const chunks = chunkHybridSectionAware(
-        LONG_DOCUMENT,
-        [],
-        null,
-        DEFAULT_CHUNKING_CONFIG
-      );
+      const chunks = chunkHybridSectionAware(LONG_DOCUMENT, [], null, DEFAULT_CHUNKING_CONFIG);
 
       expect(chunks[chunks.length - 1].overlapWithNext).toBe(0);
     });
@@ -581,12 +567,7 @@ describe('chunkHybridSectionAware', () => {
     });
 
     it('returns null pageNumber when no pageOffsets provided', () => {
-      const chunks = chunkHybridSectionAware(
-        SHORT_DOCUMENT,
-        [],
-        null,
-        DEFAULT_CHUNKING_CONFIG
-      );
+      const chunks = chunkHybridSectionAware(SHORT_DOCUMENT, [], null, DEFAULT_CHUNKING_CONFIG);
 
       expect(chunks[0].pageNumber).toBeNull();
       expect(chunks[0].pageRange).toBeNull();
@@ -642,25 +623,17 @@ describe('chunkHybridSectionAware', () => {
 
         // Nullable fields
         // headingContext: string | null
-        expect(
-          chunk.headingContext === null || typeof chunk.headingContext === 'string'
-        ).toBe(true);
+        expect(chunk.headingContext === null || typeof chunk.headingContext === 'string').toBe(
+          true
+        );
         // headingLevel: number | null
-        expect(
-          chunk.headingLevel === null || typeof chunk.headingLevel === 'number'
-        ).toBe(true);
+        expect(chunk.headingLevel === null || typeof chunk.headingLevel === 'number').toBe(true);
         // sectionPath: string | null
-        expect(
-          chunk.sectionPath === null || typeof chunk.sectionPath === 'string'
-        ).toBe(true);
+        expect(chunk.sectionPath === null || typeof chunk.sectionPath === 'string').toBe(true);
         // pageNumber: number | null
-        expect(
-          chunk.pageNumber === null || typeof chunk.pageNumber === 'number'
-        ).toBe(true);
+        expect(chunk.pageNumber === null || typeof chunk.pageNumber === 'number').toBe(true);
         // pageRange: string | null
-        expect(
-          chunk.pageRange === null || typeof chunk.pageRange === 'string'
-        ).toBe(true);
+        expect(chunk.pageRange === null || typeof chunk.pageRange === 'string').toBe(true);
       }
     });
   });
@@ -730,7 +703,9 @@ describe('createChunkProvenance', () => {
   });
 
   it('includes is_atomic in processing_params', () => {
-    const nonAtomicProv = createChunkProvenance(makeParams({ chunk: makeChunk({ isAtomic: false }) }));
+    const nonAtomicProv = createChunkProvenance(
+      makeParams({ chunk: makeChunk({ isAtomic: false }) })
+    );
     expect(nonAtomicProv.processing_params.is_atomic).toBe(false);
 
     const atomicProv = createChunkProvenance(makeParams({ chunk: makeChunk({ isAtomic: true }) }));
@@ -761,9 +736,15 @@ describe('createChunkProvenance', () => {
   it('sets correct hash values', () => {
     const prov = createChunkProvenance(makeParams());
 
-    expect(prov.content_hash).toBe('sha256:abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234');
-    expect(prov.input_hash).toBe('sha256:efgh5678efgh5678efgh5678efgh5678efgh5678efgh5678efgh5678efgh5678');
-    expect(prov.file_hash).toBe('sha256:ijkl9012ijkl9012ijkl9012ijkl9012ijkl9012ijkl9012ijkl9012ijkl9012');
+    expect(prov.content_hash).toBe(
+      'sha256:abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234'
+    );
+    expect(prov.input_hash).toBe(
+      'sha256:efgh5678efgh5678efgh5678efgh5678efgh5678efgh5678efgh5678efgh5678'
+    );
+    expect(prov.file_hash).toBe(
+      'sha256:ijkl9012ijkl9012ijkl9012ijkl9012ijkl9012ijkl9012ijkl9012ijkl9012'
+    );
   });
 
   it('sets correct location with chunk_index, character_start, character_end', () => {
@@ -875,7 +856,7 @@ describe('chunkHybridSectionAware - atomic size edge cases', () => {
     const config = { ...DEFAULT_CHUNKING_CONFIG };
     const chunks = chunkHybridSectionAware(text, [], null, config);
 
-    const atomicChunks = chunks.filter(c => c.isAtomic);
+    const atomicChunks = chunks.filter((c) => c.isAtomic);
     // If table >= 500, should be atomic
     if (table.length >= 500) {
       expect(atomicChunks.length).toBeGreaterThanOrEqual(1);
@@ -884,18 +865,19 @@ describe('chunkHybridSectionAware - atomic size edge cases', () => {
 
   it('table just below minAtomicSize is merged (not atomic)', () => {
     // Create a table smaller than 500 chars but valid
-    const table = '| Column A | Column B | Column C |\n|----------|----------|----------|\n| Value 1  | Value 2  | Value 3  |\n| Value 4  | Value 5  | Value 6  |\n| Value 7  | Value 8  | Value 9  |';
+    const table =
+      '| Column A | Column B | Column C |\n|----------|----------|----------|\n| Value 1  | Value 2  | Value 3  |\n| Value 4  | Value 5  | Value 6  |\n| Value 7  | Value 8  | Value 9  |';
     expect(table.length).toBeLessThan(500);
 
     const text = `Intro paragraph.\n\n${table}\n\nClosing paragraph.`;
     const chunks = chunkHybridSectionAware(text, [], null, DEFAULT_CHUNKING_CONFIG);
 
     // Small table should be merged, not atomic
-    const atomicTableChunks = chunks.filter(c => c.isAtomic && c.contentTypes.includes('table'));
+    const atomicTableChunks = chunks.filter((c) => c.isAtomic && c.contentTypes.includes('table'));
     expect(atomicTableChunks).toHaveLength(0);
 
     // Content should still be present
-    const withTable = chunks.find(c => c.text.includes('Column A'));
+    const withTable = chunks.find((c) => c.text.includes('Column A'));
     expect(withTable).toBeDefined();
     expect(withTable!.isAtomic).toBe(false);
   });
@@ -912,7 +894,7 @@ describe('chunkHybridSectionAware - atomic size edge cases', () => {
     const chunks = chunkHybridSectionAware(text, [], null, DEFAULT_CHUNKING_CONFIG);
 
     // The table is > minAtomicSize and > maxChunkSize, should be split
-    const atomicChunks = chunks.filter(c => c.isAtomic);
+    const atomicChunks = chunks.filter((c) => c.isAtomic);
     expect(atomicChunks.length).toBeGreaterThan(1);
 
     // Each sub-chunk should not exceed maxChunkSize
@@ -942,7 +924,9 @@ describe('chunkHybridSectionAware - atomic size edge cases', () => {
     // Generate code block > maxChunkSize (8000)
     const lines = ['```'];
     for (let i = 0; i < 400; i++) {
-      lines.push(`function handler_${i}(request, response) { return response.json({ ok: true }); }`);
+      lines.push(
+        `function handler_${i}(request, response) { return response.json({ ok: true }); }`
+      );
     }
     lines.push('```');
     const bigCode = lines.join('\n');
@@ -951,7 +935,7 @@ describe('chunkHybridSectionAware - atomic size edge cases', () => {
     const text = `## API Handlers\n\n${bigCode}\n\nDone.`;
     const chunks = chunkHybridSectionAware(text, [], null, DEFAULT_CHUNKING_CONFIG);
 
-    const atomicChunks = chunks.filter(c => c.isAtomic);
+    const atomicChunks = chunks.filter((c) => c.isAtomic);
     expect(atomicChunks.length).toBeGreaterThan(1);
     for (const chunk of atomicChunks) {
       expect(chunk.isAtomic).toBe(true);
@@ -971,7 +955,7 @@ describe('chunkHybridSectionAware - atomic size edge cases', () => {
     const text = `# Main Section\n\nThis section covers the main data analysis results and findings from the comprehensive study.\n\n## Data Tables\n\nThe following tables contain the detailed measurement data collected during the experiment.\n\n${bigTable}\n\nEnd.`;
     const chunks = chunkHybridSectionAware(text, [], null, DEFAULT_CHUNKING_CONFIG);
 
-    const atomicChunks = chunks.filter(c => c.isAtomic);
+    const atomicChunks = chunks.filter((c) => c.isAtomic);
     expect(atomicChunks.length).toBeGreaterThan(0);
     for (const chunk of atomicChunks) {
       expect(chunk.headingContext).toBe('Data Tables');
@@ -987,11 +971,11 @@ describe('chunkHybridSectionAware - atomic size edge cases', () => {
     const text = `Description.\n\n${smallCode}\n\nMore description.`;
     const chunks = chunkHybridSectionAware(text, [], null, DEFAULT_CHUNKING_CONFIG);
 
-    const atomicCode = chunks.filter(c => c.isAtomic && c.contentTypes.includes('code'));
+    const atomicCode = chunks.filter((c) => c.isAtomic && c.contentTypes.includes('code'));
     expect(atomicCode).toHaveLength(0);
 
     // Code content should be in a non-atomic chunk
-    const withCode = chunks.find(c => c.text.includes('const x = 1'));
+    const withCode = chunks.find((c) => c.text.includes('const x = 1'));
     expect(withCode).toBeDefined();
     expect(withCode!.isAtomic).toBe(false);
   });
@@ -1067,7 +1051,7 @@ describe('chunkHybridSectionAware - overlap edge cases', () => {
     const chunks = chunkHybridSectionAware(text, [], null, DEFAULT_CHUNKING_CONFIG);
 
     // Find atomic chunks
-    const atomicChunks = chunks.filter(c => c.isAtomic);
+    const atomicChunks = chunks.filter((c) => c.isAtomic);
     for (const ac of atomicChunks) {
       expect(ac.overlapWithPrevious).toBe(0);
       expect(ac.overlapWithNext).toBe(0);
@@ -1138,11 +1122,11 @@ describe('chunkHybridSectionAware - 3.3.1 size-aware atomic emission', () => {
     const chunks = chunkHybridSectionAware(text, [], null, DEFAULT_CHUNKING_CONFIG);
 
     // Table should be merged (not atomic)
-    const atomicTable = chunks.find(c => c.isAtomic && c.contentTypes.includes('table'));
+    const atomicTable = chunks.find((c) => c.isAtomic && c.contentTypes.includes('table'));
     expect(atomicTable).toBeUndefined();
 
     // Table text should appear in a non-atomic chunk
-    const merged = chunks.find(c => c.text.includes('| CPU'));
+    const merged = chunks.find((c) => c.text.includes('| CPU'));
     expect(merged).toBeDefined();
     expect(merged!.isAtomic).toBe(false);
   });
@@ -1151,7 +1135,7 @@ describe('chunkHybridSectionAware - 3.3.1 size-aware atomic emission', () => {
     // minAtomicSize = chunkSize/4 = 2000/4 = 500
     // Build a table that is exactly 500 chars
     const header = '| ID | Description | Status |';
-    const sep =    '|----|-------------|--------|';
+    const sep = '|----|-------------|--------|';
     const rows: string[] = [header, sep];
     let current = rows.join('\n');
     let rowIdx = 0;
@@ -1177,7 +1161,7 @@ describe('chunkHybridSectionAware - 3.3.1 size-aware atomic emission', () => {
 
     // Table at or above 500 should be emitted as atomic
     if (exactTable.length >= 500) {
-      const atomicChunks = chunks.filter(c => c.isAtomic);
+      const atomicChunks = chunks.filter((c) => c.isAtomic);
       expect(atomicChunks.length).toBeGreaterThanOrEqual(1);
     }
   });
@@ -1189,7 +1173,9 @@ describe('chunkHybridSectionAware - 3.3.1 size-aware atomic emission', () => {
       '|----------|-----------|--------|------------|----------|',
     ];
     for (let i = 0; i < 20; i++) {
-      rows.push(`| Employee ${i} | Engineering | $${100 + i}K | 2024-0${(i % 9) + 1}-15 | Building ${i % 3 + 1} |`);
+      rows.push(
+        `| Employee ${i} | Engineering | $${100 + i}K | 2024-0${(i % 9) + 1}-15 | Building ${(i % 3) + 1} |`
+      );
     }
     const mediumTable = rows.join('\n');
     expect(mediumTable.length).toBeGreaterThan(500);
@@ -1198,7 +1184,7 @@ describe('chunkHybridSectionAware - 3.3.1 size-aware atomic emission', () => {
     const text = `HR Report.\n\n${mediumTable}\n\nEnd of report.`;
     const chunks = chunkHybridSectionAware(text, [], null, DEFAULT_CHUNKING_CONFIG);
 
-    const atomicTableChunks = chunks.filter(c => c.isAtomic && c.contentTypes.includes('table'));
+    const atomicTableChunks = chunks.filter((c) => c.isAtomic && c.contentTypes.includes('table'));
     // Should be exactly 1 atomic chunk (fits within maxChunkSize)
     expect(atomicTableChunks).toHaveLength(1);
     expect(atomicTableChunks[0].text).toContain('Employee');
@@ -1211,7 +1197,9 @@ describe('chunkHybridSectionAware - 3.3.1 size-aware atomic emission', () => {
       '|----|------|-------------|----------|--------|----------|',
     ];
     for (let i = 0; i < 150; i++) {
-      rows.push(`| ${i} | Item ${i} name here | Detailed description for item number ${i} in the catalog | Cat-${i % 5} | Active | P${i % 3 + 1} |`);
+      rows.push(
+        `| ${i} | Item ${i} name here | Detailed description for item number ${i} in the catalog | Cat-${i % 5} | Active | P${(i % 3) + 1} |`
+      );
     }
     const hugeTable = rows.join('\n');
     expect(hugeTable.length).toBeGreaterThan(8000);
@@ -1219,7 +1207,7 @@ describe('chunkHybridSectionAware - 3.3.1 size-aware atomic emission', () => {
     const text = `# Catalog\n\nFull listing.\n\n${hugeTable}\n\nEnd.`;
     const chunks = chunkHybridSectionAware(text, [], null, DEFAULT_CHUNKING_CONFIG);
 
-    const atomicTableChunks = chunks.filter(c => c.isAtomic && c.contentTypes.includes('table'));
+    const atomicTableChunks = chunks.filter((c) => c.isAtomic && c.contentTypes.includes('table'));
     expect(atomicTableChunks.length).toBeGreaterThan(1);
 
     // Verify line boundary splitting: each sub-chunk should end at a newline
@@ -1239,10 +1227,10 @@ describe('chunkHybridSectionAware - 3.3.1 size-aware atomic emission', () => {
     const text = `Run the following command.\n\n${smallCode}\n\nThen verify the output.`;
     const chunks = chunkHybridSectionAware(text, [], null, DEFAULT_CHUNKING_CONFIG);
 
-    const atomicCode = chunks.find(c => c.isAtomic && c.contentTypes.includes('code'));
+    const atomicCode = chunks.find((c) => c.isAtomic && c.contentTypes.includes('code'));
     expect(atomicCode).toBeUndefined();
 
-    const withCode = chunks.find(c => c.text.includes('echo "Hello World"'));
+    const withCode = chunks.find((c) => c.text.includes('echo "Hello World"'));
     expect(withCode).toBeDefined();
     expect(withCode!.isAtomic).toBe(false);
   });
@@ -1251,7 +1239,9 @@ describe('chunkHybridSectionAware - 3.3.1 size-aware atomic emission', () => {
     // Generate very large code block
     const lines = ['```python'];
     for (let i = 0; i < 500; i++) {
-      lines.push(`def process_item_${i}(data): return data.transform(method='advanced', iteration=${i})`);
+      lines.push(
+        `def process_item_${i}(data): return data.transform(method='advanced', iteration=${i})`
+      );
     }
     lines.push('```');
     const hugeCode = lines.join('\n');
@@ -1260,7 +1250,7 @@ describe('chunkHybridSectionAware - 3.3.1 size-aware atomic emission', () => {
     const text = `## Processing Functions\n\n${hugeCode}\n\nDone.`;
     const chunks = chunkHybridSectionAware(text, [], null, DEFAULT_CHUNKING_CONFIG);
 
-    const atomicCodeChunks = chunks.filter(c => c.isAtomic);
+    const atomicCodeChunks = chunks.filter((c) => c.isAtomic);
     expect(atomicCodeChunks.length).toBeGreaterThan(2);
     for (const chunk of atomicCodeChunks) {
       expect(chunk.text.length).toBeLessThanOrEqual(DEFAULT_CHUNKING_CONFIG.maxChunkSize);
@@ -1276,7 +1266,7 @@ describe('chunkHybridSectionAware - 3.3.1 size-aware atomic emission', () => {
     const chunks = chunkHybridSectionAware(text, [], null, DEFAULT_CHUNKING_CONFIG);
 
     // The oversized atomic should be force-split even though there are no newlines
-    const atomicChunks = chunks.filter(c => c.isAtomic);
+    const atomicChunks = chunks.filter((c) => c.isAtomic);
     expect(atomicChunks.length).toBeGreaterThan(1);
     for (const chunk of atomicChunks) {
       expect(chunk.text.length).toBeLessThanOrEqual(DEFAULT_CHUNKING_CONFIG.maxChunkSize);
@@ -1289,7 +1279,10 @@ describe('chunkHybridSectionAware - 3.3.1 size-aware atomic emission', () => {
     // The heading and paragraph are in the same accumulator since there is no
     // intervening heading between them.
     const heading = '# Analysis Results';
-    const largeParagraph = 'Detailed analysis results show significant improvement in all measured parameters across multiple trials. '.repeat(20);
+    const largeParagraph =
+      'Detailed analysis results show significant improvement in all measured parameters across multiple trials. '.repeat(
+        20
+      );
     // Paragraph alone is ~2080 chars which exceeds chunkSize (2000).
     // The heading + paragraph together will definitely exceed, triggering a split.
     // Then we add a small table after to ensure the split still works.
@@ -1309,7 +1302,7 @@ describe('chunkHybridSectionAware - 3.3.1 size-aware atomic emission', () => {
     // The paragraph exceeds chunkSize so it must split
     expect(chunks.length).toBeGreaterThan(1);
     // The small table content should still be present somewhere in the chunks
-    const hasTable = chunks.some(c => c.text.includes('| Score'));
+    const hasTable = chunks.some((c) => c.text.includes('| Score'));
     expect(hasTable).toBe(true);
   });
 });
@@ -1369,7 +1362,8 @@ describe('chunkHybridSectionAware - 3.3.2 findSentenceBoundary edge cases', () =
       overlapPercent: 10,
       maxChunkSize: 400,
     };
-    const text = 'Short sentence here. Another one follows. Third sentence here. Fourth sentence now. Fifth is done. Sixth will go. Seventh is ok now.';
+    const text =
+      'Short sentence here. Another one follows. Third sentence here. Fourth sentence now. Fifth is done. Sixth will go. Seventh is ok now.';
     expect(text.length).toBeGreaterThan(100);
 
     const chunks = chunkHybridSectionAware(text, [], null, config);
@@ -1385,9 +1379,7 @@ describe('chunkHybridSectionAware - 3.3.2 findSentenceBoundary edge cases', () =
 describe('chunkHybridSectionAware - 3.3.3 determinePageInfoForSpan edge cases', () => {
   it('chunk fully within one page has pageRange=null', () => {
     const text = '# Title\n\nShort content on page one.';
-    const pageOffsets: PageOffset[] = [
-      { page: 1, charStart: 0, charEnd: text.length },
-    ];
+    const pageOffsets: PageOffset[] = [{ page: 1, charStart: 0, charEnd: text.length }];
     const chunks = chunkHybridSectionAware(text, pageOffsets, null, DEFAULT_CHUNKING_CONFIG);
 
     // All content is on page 1, so no pageRange needed
@@ -1410,7 +1402,7 @@ describe('chunkHybridSectionAware - 3.3.3 determinePageInfoForSpan edge cases', 
     const chunks = chunkHybridSectionAware(text, pageOffsets, null, DEFAULT_CHUNKING_CONFIG);
 
     // At least one chunk should span pages 3 and 4
-    const spanningChunk = chunks.find(c => c.pageRange !== null);
+    const spanningChunk = chunks.find((c) => c.pageRange !== null);
     if (spanningChunk) {
       expect(spanningChunk.pageRange).toBe('3-4');
       expect(spanningChunk.pageNumber).toBe(3);
@@ -1452,7 +1444,10 @@ describe('chunkHybridSectionAware - 3.3.4 overlap edge cases', () => {
     // Build: non-atomic paragraph -> large atomic table -> non-atomic paragraph
     // The non-atomic chunks adjacent to the atomic chunk should have 0 overlap
     // toward the atomic chunk's side.
-    const paragraph1 = 'The experimental results demonstrate significant improvements across all measured parameters. '.repeat(8);
+    const paragraph1 =
+      'The experimental results demonstrate significant improvements across all measured parameters. '.repeat(
+        8
+      );
     const rows = [
       '| Parameter | Baseline | Treatment | Delta |',
       '|-----------|----------|-----------|-------|',
@@ -1463,13 +1458,14 @@ describe('chunkHybridSectionAware - 3.3.4 overlap edge cases', () => {
     const atomicTable = rows.join('\n');
     expect(atomicTable.length).toBeGreaterThan(500); // Above minAtomicSize
 
-    const paragraph2 = 'These findings confirm the hypothesis that the intervention is effective. '.repeat(8);
+    const paragraph2 =
+      'These findings confirm the hypothesis that the intervention is effective. '.repeat(8);
 
     const text = `${paragraph1}\n\n${atomicTable}\n\n${paragraph2}`;
     const chunks = chunkHybridSectionAware(text, [], null, DEFAULT_CHUNKING_CONFIG);
 
     // Find the atomic chunk
-    const atomicIdx = chunks.findIndex(c => c.isAtomic);
+    const atomicIdx = chunks.findIndex((c) => c.isAtomic);
     expect(atomicIdx).toBeGreaterThanOrEqual(0);
 
     // The atomic chunk itself has 0 overlap

@@ -91,17 +91,14 @@ export function createApprovalChain(
   const now = new Date().toISOString();
   const stepsJson = JSON.stringify(params.steps);
 
-  conn.prepare(`
+  conn
+    .prepare(
+      `
     INSERT INTO approval_chains (id, name, description, steps_json, created_at, created_by)
     VALUES (?, ?, ?, ?, ?, ?)
-  `).run(
-    id,
-    params.name,
-    params.description ?? null,
-    stepsJson,
-    now,
-    params.created_by ?? null
-  );
+  `
+    )
+    .run(id, params.name, params.description ?? null, stepsJson, now, params.created_by ?? null);
 
   return conn.prepare('SELECT * FROM approval_chains WHERE id = ?').get(id) as ApprovalChainRow;
 }
@@ -117,9 +114,10 @@ export function getApprovalChain(
   conn: Database.Database,
   chainId: string
 ): ApprovalChainRow | null {
-  return (conn.prepare(
-    'SELECT * FROM approval_chains WHERE id = ?'
-  ).get(chainId) as ApprovalChainRow) ?? null;
+  return (
+    (conn.prepare('SELECT * FROM approval_chains WHERE id = ?').get(chainId) as ApprovalChainRow) ??
+    null
+  );
 }
 
 /**
@@ -129,9 +127,9 @@ export function getApprovalChain(
  * @returns Array of approval chain rows
  */
 export function listApprovalChains(conn: Database.Database): ApprovalChainRow[] {
-  return conn.prepare(
-    'SELECT * FROM approval_chains ORDER BY created_at DESC'
-  ).all() as ApprovalChainRow[];
+  return conn
+    .prepare('SELECT * FROM approval_chains ORDER BY created_at DESC')
+    .all() as ApprovalChainRow[];
 }
 
 /**
@@ -164,13 +162,11 @@ export function applyApprovalChain(
   }
 
   // Check if chain is already applied to this document
-  const existing = conn.prepare(
-    'SELECT id FROM approval_steps WHERE document_id = ? AND chain_id = ? LIMIT 1'
-  ).get(documentId, chainId);
+  const existing = conn
+    .prepare('SELECT id FROM approval_steps WHERE document_id = ? AND chain_id = ? LIMIT 1')
+    .get(documentId, chainId);
   if (existing) {
-    throw new Error(
-      `Approval chain "${chain.name}" is already applied to document ${documentId}`
-    );
+    throw new Error(`Approval chain "${chain.name}" is already applied to document ${documentId}`);
   }
 
   const steps: ApprovalChainStep[] = JSON.parse(chain.steps_json);
@@ -205,12 +201,18 @@ export function getCurrentApprovalStep(
   documentId: string,
   chainId: string
 ): ApprovalStepRow | null {
-  return (conn.prepare(`
+  return (
+    (conn
+      .prepare(
+        `
     SELECT * FROM approval_steps
     WHERE document_id = ? AND chain_id = ? AND status = 'pending'
     ORDER BY step_order ASC
     LIMIT 1
-  `).get(documentId, chainId) as ApprovalStepRow) ?? null;
+  `
+      )
+      .get(documentId, chainId) as ApprovalStepRow) ?? null
+  );
 }
 
 /**
@@ -235,18 +237,16 @@ export function decideApprovalStep(
   userId: string,
   reason?: string | null
 ): ApprovalStepRow {
-  const step = conn.prepare(
-    'SELECT * FROM approval_steps WHERE id = ?'
-  ).get(stepId) as ApprovalStepRow | undefined;
+  const step = conn.prepare('SELECT * FROM approval_steps WHERE id = ?').get(stepId) as
+    | ApprovalStepRow
+    | undefined;
 
   if (!step) {
     throw new Error(`Approval step not found: ${stepId}`);
   }
 
   if (step.status !== 'pending') {
-    throw new Error(
-      `Approval step ${stepId} is already "${step.status}" and cannot be decided`
-    );
+    throw new Error(`Approval step ${stepId} is already "${step.status}" and cannot be decided`);
   }
 
   // Ensure this is the current step (lowest pending step_order for this doc+chain)
@@ -254,7 +254,7 @@ export function decideApprovalStep(
   if (!currentStep || currentStep.id !== stepId) {
     throw new Error(
       `Step ${stepId} (order ${step.step_order}) is not the current step. ` +
-      `Steps must be decided in order.`
+        `Steps must be decided in order.`
     );
   }
 
@@ -265,23 +265,29 @@ export function decideApprovalStep(
   const now = new Date().toISOString();
 
   // Update the step
-  conn.prepare(`
+  conn
+    .prepare(
+      `
     UPDATE approval_steps SET status = ?, decided_by = ?, decided_at = ?, reason = ?
     WHERE id = ?
-  `).run(decision, userId, now, reason ?? null, stepId);
+  `
+    )
+    .run(decision, userId, now, reason ?? null, stepId);
 
   // On rejection, skip all subsequent pending steps
   if (decision === 'rejected') {
-    conn.prepare(`
+    conn
+      .prepare(
+        `
       UPDATE approval_steps
       SET status = 'skipped', decided_at = ?, reason = 'Skipped due to rejection at step ' || ?
       WHERE document_id = ? AND chain_id = ? AND step_order > ? AND status = 'pending'
-    `).run(now, step.step_order, step.document_id, step.chain_id, step.step_order);
+    `
+      )
+      .run(now, step.step_order, step.document_id, step.chain_id, step.step_order);
   }
 
-  return conn.prepare(
-    'SELECT * FROM approval_steps WHERE id = ?'
-  ).get(stepId) as ApprovalStepRow;
+  return conn.prepare('SELECT * FROM approval_steps WHERE id = ?').get(stepId) as ApprovalStepRow;
 }
 
 /**
@@ -305,11 +311,15 @@ export function getApprovalProgress(
     throw new Error(`Approval chain not found: ${chainId}`);
   }
 
-  const steps = conn.prepare(`
+  const steps = conn
+    .prepare(
+      `
     SELECT * FROM approval_steps
     WHERE document_id = ? AND chain_id = ?
     ORDER BY step_order ASC
-  `).all(documentId, chainId) as ApprovalStepRow[];
+  `
+    )
+    .all(documentId, chainId) as ApprovalStepRow[];
 
   if (steps.length === 0) {
     throw new Error(
