@@ -34,7 +34,7 @@ jobs:
         uses: docker/setup-buildx-action@v3
 
       - name: Install cosign
-        uses: sigstore/cosign-installer@v4
+        uses: sigstore/cosign-installer@v3
 
       - name: Log in to GitHub Container Registry
         if: github.event_name != 'pull_request'
@@ -72,6 +72,22 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      # -----------------------------------------------------------------------
+      # Make GHCR package public (required on first push; no-op afterwards)
+      # -----------------------------------------------------------------------
+      - name: Make container package public
+        if: github.event_name != 'pull_request'
+        continue-on-error: true
+        run: |
+          gh api \
+            --method PUT \
+            -H "Accept: application/vnd.github+json" \
+            /user/packages/container/ocr-provenance/visibility \
+            -f visibility=public \
+            || echo "::warning::Could not set package visibility (may already be public or require manual action)"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       # -----------------------------------------------------------------------
       # Image signing with cosign (keyless OIDC via GitHub Actions)
@@ -184,7 +200,7 @@ jobs:
         uses: docker/setup-buildx-action@v3
 
       - name: Install cosign
-        uses: sigstore/cosign-installer@v4
+        uses: sigstore/cosign-installer@v3
 
       - name: Log in to GitHub Container Registry
         if: github.event_name != 'pull_request'
