@@ -28,143 +28,34 @@ const envCandidates = [
 
 for (const envPath of envCandidates) {
   if (fs.existsSync(envPath)) {
-    dotenv.config({ path: envPath });
+    dotenv.config({ path: envPath, quiet: true });
     break;
   }
 }
 
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
+import { registerAllTools } from './server/register-tools.js';
+import { validateStartupDependencies } from './server/startup.js';
 
-import type { ToolDefinition } from './tools/shared.js';
-import { updateConfig } from './server/state.js';
-import { databaseTools } from './tools/database.js';
-import { ingestionTools } from './tools/ingestion.js';
-import { searchTools } from './tools/search.js';
-import { documentTools } from './tools/documents.js';
-import { provenanceTools } from './tools/provenance.js';
-import { configTools } from './tools/config.js';
-import { vlmTools } from './tools/vlm.js';
-import { imageTools } from './tools/images.js';
-import { evaluationTools } from './tools/evaluation.js';
-import { extractionTools } from './tools/extraction.js';
-import { reportTools } from './tools/reports.js';
-import { formFillTools } from './tools/form-fill.js';
-import { structuredExtractionTools } from './tools/extraction-structured.js';
-import { fileManagementTools } from './tools/file-management.js';
-import { comparisonTools } from './tools/comparison.js';
-import { clusteringTools } from './tools/clustering.js';
-import { chunkTools } from './tools/chunks.js';
-import { embeddingTools } from './tools/embeddings.js';
-import { tagTools } from './tools/tags.js';
-import { intelligenceTools } from './tools/intelligence.js';
-import { healthTools } from './tools/health.js';
-import { userTools } from './tools/users.js';
-import { collaborationTools } from './tools/collaboration.js';
-import { workflowTools } from './tools/workflow.js';
-import { eventTools } from './tools/events.js';
-import { clmTools } from './tools/clm.js';
-import { complianceTools } from './tools/compliance.js';
-
-// ═══════════════════════════════════════════════════════════════════════════════
+// =============================================================================
 // SERVER INITIALIZATION
-// ═══════════════════════════════════════════════════════════════════════════════
+// =============================================================================
 
 const server = new McpServer({
   name: 'ocr-provenance-mcp',
   version: '1.0.0',
 });
 
-// ═══════════════════════════════════════════════════════════════════════════════
+// =============================================================================
 // TOOL REGISTRATION
-// ═══════════════════════════════════════════════════════════════════════════════
+// =============================================================================
 
-// All tool modules in registration order
-const allToolModules: Record<string, ToolDefinition>[] = [
-  databaseTools,
-  ingestionTools,
-  searchTools,
-  documentTools,
-  provenanceTools,
-  configTools,
-  vlmTools,
-  imageTools,
-  evaluationTools,
-  extractionTools,
-  reportTools,
-  formFillTools,
-  structuredExtractionTools,
-  fileManagementTools,
-  comparisonTools,
-  clusteringTools,
-  chunkTools,
-  embeddingTools,
-  tagTools,
-  intelligenceTools,
-  healthTools,
-  userTools,
-  collaborationTools,
-  workflowTools,
-  eventTools,
-  clmTools,
-  complianceTools,
-];
+const toolCount = registerAllTools(server);
 
-// Register tools with duplicate detection
-const registeredToolNames = new Set<string>();
-let toolCount = 0;
-
-for (const toolModule of allToolModules) {
-  for (const [name, tool] of Object.entries(toolModule)) {
-    if (registeredToolNames.has(name)) {
-      console.error(
-        `[FATAL] Duplicate tool name detected: "${name}". Each tool must have a unique name.`
-      );
-      process.exit(1);
-    }
-    registeredToolNames.add(name);
-    server.tool(name, tool.description, tool.inputSchema as Record<string, unknown>, tool.handler);
-    toolCount++;
-  }
-}
-
-// ═══════════════════════════════════════════════════════════════════════════════
+// =============================================================================
 // SERVER STARTUP
-// ═══════════════════════════════════════════════════════════════════════════════
-
-/**
- * Validate startup dependencies before serving requests.
- * Fail-fast: if anything is missing, log a clear error and exit.
- */
-function validateStartupDependencies(): void {
-  const warnings: string[] = [];
-
-  if (!process.env.DATALAB_API_KEY) {
-    warnings.push(
-      'DATALAB_API_KEY is not set. OCR processing will fail. Get one at https://www.datalab.to'
-    );
-  }
-  if (!process.env.GEMINI_API_KEY) {
-    warnings.push(
-      'GEMINI_API_KEY is not set. VLM processing and evaluation will fail. Get one at https://aistudio.google.com/'
-    );
-  }
-
-  if (warnings.length > 0) {
-    console.error('=== STARTUP WARNINGS ===');
-    for (const w of warnings) {
-      console.error(`  - ${w}`);
-    }
-    console.error('========================');
-  }
-
-  // Apply environment-driven config overrides
-  const embeddingDevice = process.env.EMBEDDING_DEVICE;
-  if (embeddingDevice) {
-    updateConfig({ embeddingDevice });
-    console.error(`[Config] EMBEDDING_DEVICE=${embeddingDevice}`);
-  }
-}
+// =============================================================================
 
 async function main(): Promise<void> {
   validateStartupDependencies();
