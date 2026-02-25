@@ -37,6 +37,14 @@ export function validateStartupDependencies(): void {
     console.error('========================');
   }
 
+  // Store env var status for health check consumption
+  // This avoids health check needing to re-validate every call
+  (globalThis as Record<string, unknown>).__OCR_ENV_STATUS = {
+    datalab_api_key: !!process.env.DATALAB_API_KEY,
+    gemini_api_key: !!process.env.GEMINI_API_KEY,
+    checked_at: new Date().toISOString(),
+  };
+
   const embeddingDevice = process.env.EMBEDDING_DEVICE;
   if (embeddingDevice) {
     updateConfig({ embeddingDevice });

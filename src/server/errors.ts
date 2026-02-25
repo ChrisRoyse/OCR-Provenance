@@ -63,6 +63,9 @@ export type ErrorCategory =
   | 'PATH_NOT_DIRECTORY'
   | 'PERMISSION_DENIED'
 
+  // Configuration errors
+  | 'CONFIGURATION_ERROR'
+
   // Internal errors
   | 'INTERNAL_ERROR';
 
@@ -82,6 +85,7 @@ const VALID_CATEGORIES = new Set<string>([
   'VLM_API_ERROR', 'VLM_RATE_LIMIT',
   'IMAGE_EXTRACTION_FAILED', 'FORM_FILL_API_ERROR', 'CLUSTERING_ERROR',
   'PATH_NOT_FOUND', 'PATH_NOT_DIRECTORY', 'PERMISSION_DENIED',
+  'CONFIGURATION_ERROR',
   'INTERNAL_ERROR',
 ]);
 
@@ -256,6 +260,7 @@ const RECOVERY_HINTS: Record<ErrorCategory, RecoveryHint> = {
   PATH_NOT_FOUND: { tool: 'ocr_guide', hint: 'Verify the file path exists on the filesystem' },
   PATH_NOT_DIRECTORY: { tool: 'ocr_guide', hint: 'Provide a directory path, not a file path' },
   PERMISSION_DENIED: { tool: 'ocr_guide', hint: 'Check filesystem permissions on the target path' },
+  CONFIGURATION_ERROR: { tool: 'ocr_health_check', hint: 'Check environment variable configuration. Required: DATALAB_API_KEY (for OCR), GEMINI_API_KEY (for VLM). In Docker, pass via -e flags.' },
   INTERNAL_ERROR: { tool: 'ocr_health_check', hint: 'Run ocr_health_check for diagnostics' },
 };
 
@@ -349,6 +354,13 @@ export function provenanceNotFoundError(itemId: string): MCPError {
   return new MCPError('PROVENANCE_NOT_FOUND', `Provenance for "${itemId}" not found`, {
     itemId,
   });
+}
+
+/**
+ * Create configuration error for missing environment variables or setup issues
+ */
+export function configurationError(message: string, details?: Record<string, unknown>): MCPError {
+  return new MCPError('CONFIGURATION_ERROR', message, details);
 }
 
 /**

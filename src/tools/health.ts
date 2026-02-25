@@ -65,6 +65,32 @@ async function handleHealthCheck(params: Record<string, unknown>): Promise<ToolR
     const SAMPLE_LIMIT = 10;
 
     // ──────────────────────────────────────────────────────────────
+    // Environment Variable Verification
+    // ──────────────────────────────────────────────────────────────
+    const envStatus = (globalThis as Record<string, unknown>).__OCR_ENV_STATUS as {
+      datalab_api_key: boolean;
+      gemini_api_key: boolean;
+      checked_at: string;
+    } | undefined;
+
+    const environment: Record<string, unknown> = {
+      datalab_api_key: !!process.env.DATALAB_API_KEY,
+      gemini_api_key: !!process.env.GEMINI_API_KEY,
+      embedding_model_path: process.env.EMBEDDING_MODEL_PATH ?? null,
+      embedding_device: process.env.EMBEDDING_DEVICE ?? 'auto',
+      is_docker: !!process.env.OCR_PROVENANCE_DATABASES_PATH || !!process.env.OCR_PROVENANCE_ALLOWED_DIRS,
+      startup_check: envStatus ?? null,
+    };
+
+    const envWarnings: string[] = [];
+    if (!process.env.DATALAB_API_KEY) {
+      envWarnings.push('DATALAB_API_KEY is not set — OCR processing (ocr_process_pending, ocr_convert_raw, ocr_reprocess, ocr_form_fill) will fail');
+    }
+    if (!process.env.GEMINI_API_KEY) {
+      envWarnings.push('GEMINI_API_KEY is not set — VLM processing (ocr_vlm_describe, ocr_vlm_process, ocr_vlm_analyze_pdf, ocr_evaluate) will fail');
+    }
+
+    // ──────────────────────────────────────────────────────────────
     // Gap 1: Chunks without embeddings
     // ──────────────────────────────────────────────────────────────
     const chunksWithoutEmbeddings = conn.prepare(
@@ -221,6 +247,25 @@ async function handleHealthCheck(params: Record<string, unknown>): Promise<ToolR
     };
 
     // ──────────────────────────────────────────────────────────────
+    // Gap 6: Pending documents that cannot process (missing API key)
+    // ──────────────────────────────────────────────────────────────
+    const pendingDocs = conn.prepare(
+      `SELECT id FROM documents WHERE status = 'pending'`
+    ).all() as Array<{ id: string }>;
+
+    const pendingBlocked = !process.env.DATALAB_API_KEY && pendingDocs.length > 0;
+
+    gaps.pending_documents_blocked = {
+      count: pendingBlocked ? pendingDocs.length : 0,
+      sample_ids: pendingBlocked ? pendingDocs.slice(0, SAMPLE_LIMIT).map(r => r.id) : [],
+      fixable: false,
+      fix_tool: null,
+      fix_hint: pendingBlocked
+        ? 'Set DATALAB_API_KEY environment variable. In Docker, add -e DATALAB_API_KEY to docker run args.'
+        : null,
+    };
+
+    // ──────────────────────────────────────────────────────────────
     // Summary statistics
     // ──────────────────────────────────────────────────────────────
     const totalDocuments = (conn.prepare('SELECT COUNT(*) as count FROM documents').get() as { count: number }).count;
@@ -229,7 +274,7 @@ async function handleHealthCheck(params: Record<string, unknown>): Promise<ToolR
     const totalImages = (conn.prepare('SELECT COUNT(*) as count FROM images').get() as { count: number }).count;
 
     const totalGaps = Object.values(gaps).reduce((sum, g) => sum + g.count, 0);
-    const healthy = totalGaps === 0;
+    const healthy = totalGaps === 0 && envWarnings.length === 0;
 
     // Build dynamic next_steps based on gaps found
     const nextSteps: Array<{ tool: string; description: string }> = [];
@@ -242,12 +287,17 @@ async function handleHealthCheck(params: Record<string, unknown>): Promise<ToolR
     if (gaps.images_without_vlm?.count > 0) {
       nextSteps.push({ tool: 'ocr_vlm_process', description: 'Generate VLM descriptions for images without them' });
     }
+    if (envWarnings.length > 0) {
+      nextSteps.push({ tool: 'ocr_guide', description: 'View setup instructions for configuring API keys' });
+    }
     if (nextSteps.length === 0 && healthy) {
       nextSteps.push({ tool: 'ocr_search', description: 'Search across all documents' });
     }
 
     return formatResponse(successResult({
       healthy,
+      environment_status: environment,
+      env_warnings: envWarnings.length > 0 ? envWarnings : undefined,
       total_gaps: totalGaps,
       gaps,
       fixes_applied: fixes.length > 0 ? fixes : undefined,

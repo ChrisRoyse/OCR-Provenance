@@ -201,6 +201,149 @@ The setup wizard auto-detects your platform and registers the server. Supported 
 | **VS Code** | `.vscode/mcp.json` (per-project) |
 | **Windsurf** | `~/.codeium/windsurf/mcp_config.json` |
 
+### Docker Installation
+
+The setup wizard handles this automatically, but if you prefer manual configuration, add the following to your client's config file.
+
+#### Claude Code
+
+```bash
+claude mcp add ocr-provenance \
+  -s user \
+  -e DATALAB_API_KEY=your-datalab-key \
+  -e GEMINI_API_KEY=your-gemini-key \
+  -- docker run -i --rm \
+  -v $HOME:/host:ro \
+  -v ocr-data:/data \
+  ghcr.io/chrisroyse/ocr-provenance:latest
+```
+
+#### Claude Desktop
+
+Add to `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS) or `%APPDATA%\Claude\claude_desktop_config.json` (Windows):
+
+```json
+{
+  "mcpServers": {
+    "ocr-provenance": {
+      "command": "docker",
+      "args": [
+        "run", "-i", "--rm",
+        "-e", "DATALAB_API_KEY",
+        "-e", "GEMINI_API_KEY",
+        "-v", "/Users/you:/host:ro",
+        "-v", "ocr-data:/data",
+        "ghcr.io/chrisroyse/ocr-provenance:latest"
+      ],
+      "env": {
+        "DATALAB_API_KEY": "your-datalab-key",
+        "GEMINI_API_KEY": "your-gemini-key"
+      }
+    }
+  }
+}
+```
+
+> **Note:** The `-e DATALAB_API_KEY` and `-e GEMINI_API_KEY` flags in `args` are required to forward these environment variables into the Docker container. The `env` field sets them on the host side, but Docker needs explicit `-e` flags to pass them through.
+
+#### Cursor
+
+Add to `~/.cursor/mcp.json`:
+
+```json
+{
+  "mcpServers": {
+    "ocr-provenance": {
+      "command": "docker",
+      "args": [
+        "run", "-i", "--rm",
+        "-e", "DATALAB_API_KEY",
+        "-e", "GEMINI_API_KEY",
+        "-v", "/Users/you:/host:ro",
+        "-v", "ocr-data:/data",
+        "ghcr.io/chrisroyse/ocr-provenance:latest"
+      ],
+      "env": {
+        "DATALAB_API_KEY": "your-datalab-key",
+        "GEMINI_API_KEY": "your-gemini-key"
+      }
+    }
+  }
+}
+```
+
+#### VS Code
+
+Add to `.vscode/mcp.json` in your workspace:
+
+```json
+{
+  "inputs": [
+    { "id": "datalab-key", "type": "promptString", "description": "Datalab API key", "password": true },
+    { "id": "gemini-key", "type": "promptString", "description": "Gemini API key", "password": true }
+  ],
+  "servers": {
+    "ocr-provenance": {
+      "type": "stdio",
+      "command": "docker",
+      "args": [
+        "run", "-i", "--rm",
+        "-e", "DATALAB_API_KEY",
+        "-e", "GEMINI_API_KEY",
+        "-v", "/Users/you:/host:ro",
+        "-v", "ocr-data:/data",
+        "ghcr.io/chrisroyse/ocr-provenance:latest"
+      ],
+      "env": {
+        "DATALAB_API_KEY": "${input:datalab-key}",
+        "GEMINI_API_KEY": "${input:gemini-key}"
+      }
+    }
+  }
+}
+```
+
+#### Windsurf
+
+Add to `~/.codeium/windsurf/mcp_config.json`:
+
+```json
+{
+  "mcpServers": {
+    "ocr-provenance": {
+      "command": "docker",
+      "args": [
+        "run", "-i", "--rm",
+        "-e", "DATALAB_API_KEY",
+        "-e", "GEMINI_API_KEY",
+        "-v", "/Users/you:/host:ro",
+        "-v", "ocr-data:/data",
+        "ghcr.io/chrisroyse/ocr-provenance:latest"
+      ],
+      "env": {
+        "DATALAB_API_KEY": "your-datalab-key",
+        "GEMINI_API_KEY": "your-gemini-key"
+      }
+    }
+  }
+}
+```
+
+#### HTTP Mode
+
+For remote or shared deployments, run as an HTTP server:
+
+```bash
+docker run -d --name ocr-provenance \
+  -e DATALAB_API_KEY=your-datalab-key \
+  -e GEMINI_API_KEY=your-gemini-key \
+  -e MCP_TRANSPORT=http \
+  -p 3100:3100 \
+  -v $HOME:/host:ro \
+  -v ocr-data:/data \
+  ghcr.io/chrisroyse/ocr-provenance:latest
+```
+
 ---
 
 ## Backup and Restore

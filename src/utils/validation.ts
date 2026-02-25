@@ -365,8 +365,8 @@ export const SearchUnifiedInput = z.object({
     .describe('(keyword mode) Include highlighted snippets'),
 
   // ── Semantic-mode specific ──────────────────────────────────────────────
-  similarity_threshold: z.number().min(0).max(1).default(0.7)
-    .describe('(semantic mode) Minimum similarity score (0-1)'),
+  similarity_threshold: z.number().min(0).max(1).optional()
+    .describe('(semantic mode) Minimum similarity score (0-1). When omitted, uses adaptive threshold that adjusts based on result distribution. When explicitly set (e.g. 0.7), uses that exact value.'),
 
   // ── Hybrid-mode specific ────────────────────────────────────────────────
   bm25_weight: z.number().min(0).max(2).default(1.0)
@@ -559,6 +559,17 @@ function getDefaultAllowedBaseDirs(): string[] {
 export function sanitizePath(filePath: string, allowedBaseDirs?: string[]): string {
   if (filePath.includes('\0')) {
     throw new ValidationError('Path contains null bytes');
+  }
+
+  // Detect Windows-style paths on Linux (common in Docker when MCP client sends host paths)
+  // Pattern: drive letter followed by colon and backslash or forward slash (e.g., C:\, D:/)
+  if (process.platform !== 'win32' && /^[a-zA-Z]:[/\\]/.test(filePath)) {
+    throw new ValidationError(
+      `Windows-style path detected: "${filePath}". ` +
+      `In Docker, files must be accessed via container mount paths. ` +
+      `If your host directory is mounted at /host, use "/host/${filePath.slice(3).replace(/\\/g, '/')}" instead. ` +
+      `Check your Docker volume mounts with: docker inspect <container_id>`
+    );
   }
 
   const resolved = path.resolve(filePath);

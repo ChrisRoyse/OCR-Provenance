@@ -307,12 +307,16 @@ function generateJsonConfig(datalabKey: string, geminiKey: string, configKey: st
         command: 'docker',
         args: [
           'run', '-i', '--rm',
-          '-e', `DATALAB_API_KEY=${datalabKey}`,
-          '-e', `GEMINI_API_KEY=${geminiKey}`,
+          '-e', 'DATALAB_API_KEY',
+          '-e', 'GEMINI_API_KEY',
           '-v', `${homePath}:/host:ro`,
           '-v', 'ocr-data:/data',
           imageRef,
         ],
+        env: {
+          DATALAB_API_KEY: datalabKey,
+          GEMINI_API_KEY: geminiKey,
+        },
       },
     },
   };

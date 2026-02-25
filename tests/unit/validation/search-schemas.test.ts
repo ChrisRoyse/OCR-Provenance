@@ -19,7 +19,7 @@ describe('Search Schemas', () => {
       const result = SearchUnifiedInput.parse({ query: 'test' });
       expect(result.limit).toBe(10);
       expect(result.include_provenance).toBe(false);
-      expect(result.similarity_threshold).toBe(0.7);
+      expect(result.similarity_threshold).toBeUndefined();
       expect(result.phrase_search).toBe(false);
       expect(result.include_highlight).toBe(true);
       expect(result.bm25_weight).toBe(1.0);

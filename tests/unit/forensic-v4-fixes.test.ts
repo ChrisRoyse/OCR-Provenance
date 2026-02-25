@@ -126,9 +126,10 @@ describe('Forensic V4 Fix Verification', () => {
       expect(info?.effective).toBe(0.7);
     });
 
-    it('should report explicit when threshold is omitted (zod default fills 0.7)', async () => {
-      // After FIX-2: zod .default(0.7) always fills the value, so the internal
-      // handler always receives a defined threshold and uses explicit mode.
+    it('should report adaptive when threshold is omitted (user did not explicitly set it)', async () => {
+      // When the user omits similarity_threshold, the unified handler checks raw params
+      // (not Zod-parsed input) and does NOT pass similarity_threshold to the internal handler.
+      // The internal handler then uses adaptive mode with a low floor threshold.
       const response = await handleSearchUnified({
         query: 'test document content',
         mode: 'semantic',
@@ -137,8 +138,9 @@ describe('Forensic V4 Fix Verification', () => {
       expect(result.success).toBe(true);
       const info = result.data?.threshold_info as Record<string, unknown> | undefined;
       expect(info).toBeDefined();
-      expect(info?.mode).toBe('explicit');
-      expect(info?.requested).toBe(0.7);
+      // With no results or <=1 result, adaptive falls back to 'adaptive_fallback'
+      // With >1 results, it computes from distribution and reports 'adaptive'
+      expect(['adaptive', 'adaptive_fallback']).toContain(info?.mode);
     });
 
     it('should report explicit mode for non-default threshold values', async () => {

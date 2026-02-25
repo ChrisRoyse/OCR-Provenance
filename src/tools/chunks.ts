@@ -381,7 +381,12 @@ async function handleDocumentPage(params: Record<string, unknown>): Promise<Tool
 
     // Navigation
     const hasPrevious = input.page_number > 1;
-    const hasNext = totalPages !== null ? input.page_number < totalPages : true;
+    // When totalPages is known, use it. When unknown (null), only suggest more pages
+    // if we actually found chunks on this page (indicating the document has content).
+    // An empty page with unknown total = no evidence of more pages.
+    const hasNext = totalPages !== null
+      ? input.page_number < totalPages
+      : chunkData.length > 0;
 
     const result: Record<string, unknown> = {
       document_id: input.document_id,

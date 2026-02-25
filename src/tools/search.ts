@@ -2062,8 +2062,10 @@ export async function handleSearchUnified(params: Record<string, unknown>): Prom
     // Flatten filters from nested object into top-level params for internal handlers.
     // Internal handlers (InternalSearchParams) expect flat params, not nested filters.
     const filters = input.filters ?? {};
-    // Pass similarity_threshold through if the user explicitly provided any value.
-    // The internal semantic handler uses adaptive threshold when it's undefined.
+    // Pass similarity_threshold through ONLY if the user explicitly provided it.
+    // The Zod schema uses .optional() (NOT .default()) so input.similarity_threshold
+    // is undefined when omitted. The internal semantic handler uses adaptive threshold
+    // when similarity_threshold is undefined.
     const userSetThreshold = input.similarity_threshold !== undefined;
 
     const enrichedParams: Record<string, unknown> = {
