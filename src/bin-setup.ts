@@ -19,7 +19,6 @@ import { execSync, spawn } from 'node:child_process';
 const bold = (s: string): string => `\x1b[1m${s}\x1b[0m`;
 const green = (s: string): string => `\x1b[32m${s}\x1b[0m`;
 const red = (s: string): string => `\x1b[31m${s}\x1b[0m`;
-// yellow available if needed: (s: string) => `\x1b[33m${s}\x1b[0m`
 const cyan = (s: string): string => `\x1b[36m${s}\x1b[0m`;
 const dim = (s: string): string => `\x1b[2m${s}\x1b[0m`;
 
@@ -32,7 +31,7 @@ function printBanner(): void {
 
 // ─── Input helpers ───────────────────────────────────────────────────────────
 
-function readLine(prompt: string): Promise<string> {
+function readInput(prompt: string, mask: boolean): Promise<string> {
   return new Promise((resolve) => {
     process.stdout.write(prompt);
 
@@ -68,7 +67,7 @@ function readLine(prompt: string): Promise<string> {
         }
       } else {
         input += ch;
-        process.stdout.write(ch);
+        process.stdout.write(mask ? '*' : ch);
       }
     };
 
@@ -76,48 +75,12 @@ function readLine(prompt: string): Promise<string> {
   });
 }
 
+function readLine(prompt: string): Promise<string> {
+  return readInput(prompt, false);
+}
+
 function readSecret(prompt: string): Promise<string> {
-  return new Promise((resolve) => {
-    process.stdout.write(prompt);
-
-    if (!process.stdin.isTTY) {
-      process.stdin.setEncoding('utf8');
-      process.stdin.once('data', (chunk: string) => {
-        resolve(chunk.trim().split('\n')[0]);
-      });
-      process.stdin.resume();
-      return;
-    }
-
-    process.stdin.setRawMode(true);
-    process.stdin.resume();
-    process.stdin.setEncoding('utf8');
-
-    let input = '';
-
-    const handler = (ch: string): void => {
-      if (ch === '\r' || ch === '\n') {
-        process.stdin.setRawMode(false);
-        process.stdin.pause();
-        process.stdin.removeListener('data', handler);
-        process.stdout.write('\n');
-        resolve(input);
-      } else if (ch === '\u0003') {
-        process.stdout.write('\n');
-        process.exit(130);
-      } else if (ch === '\u007f' || ch === '\b') {
-        if (input.length > 0) {
-          input = input.slice(0, -1);
-          process.stdout.write('\b \b');
-        }
-      } else {
-        input += ch;
-        process.stdout.write('*');
-      }
-    };
-
-    process.stdin.on('data', handler);
-  });
+  return readInput(prompt, true);
 }
 
 // ─── API key validation ──────────────────────────────────────────────────────
@@ -283,7 +246,7 @@ function pullDockerImage(): Promise<boolean> {
   });
 }
 
-function registerClaudeCode(datalabKey: string, geminiKey: string): boolean {
+function registerClaudeCode(datalabKey: string, geminiKey: string, imageRef: string): boolean {
   const homePath = os.homedir();
   const hostMount = `${homePath}:/host:ro`;
 
@@ -300,7 +263,7 @@ function registerClaudeCode(datalabKey: string, geminiKey: string): boolean {
       'docker', 'run', '-i', '--rm',
       '-v', hostMount,
       '-v', 'ocr-data:/data',
-      'ghcr.io/chrisroyse/ocr-provenance:latest',
+      imageRef,
     ];
 
     execSync(`claude ${args.join(' ')}`, { stdio: 'pipe' });
@@ -336,7 +299,7 @@ const CLIENT_INFO: Record<string, ClientConfig> = {
   },
 };
 
-function generateJsonConfig(datalabKey: string, geminiKey: string, configKey: string): object {
+function generateJsonConfig(datalabKey: string, geminiKey: string, configKey: string, imageRef: string): object {
   const homePath = os.homedir();
   return {
     [configKey]: {
@@ -348,14 +311,15 @@ function generateJsonConfig(datalabKey: string, geminiKey: string, configKey: st
           '-e', `GEMINI_API_KEY=${geminiKey}`,
           '-v', `${homePath}:/host:ro`,
           '-v', 'ocr-data:/data',
-          'ghcr.io/chrisroyse/ocr-provenance:latest',
+          imageRef,
         ],
       },
     },
   };
 }
 
-function generateVsCodeConfig(_datalabKey: string, _geminiKey: string): object {
+function generateVsCodeConfig(imageRef: string): object {
+  const homePath = os.homedir();
   return {
     inputs: [
       { id: 'datalab-key', type: 'promptString', description: 'Datalab API key', password: true },
@@ -367,9 +331,10 @@ function generateVsCodeConfig(_datalabKey: string, _geminiKey: string): object {
         command: 'docker',
         args: [
           'run', '-i', '--rm',
+          '-v', `${homePath}:/host:ro`,
           '-v', 'ocr-data:/data',
           '-e', 'DATALAB_API_KEY', '-e', 'GEMINI_API_KEY',
-          'ghcr.io/chrisroyse/ocr-provenance:latest',
+          imageRef,
         ],
         env: {
           DATALAB_API_KEY: '${input:datalab-key}',
@@ -380,7 +345,7 @@ function generateVsCodeConfig(_datalabKey: string, _geminiKey: string): object {
   };
 }
 
-function verifyDocker(datalabKey: string, geminiKey: string): Promise<boolean> {
+function verifyDocker(datalabKey: string, geminiKey: string, imageRef: string): Promise<boolean> {
   return new Promise((resolve) => {
     const initMsg = JSON.stringify({
       jsonrpc: '2.0',
@@ -398,7 +363,7 @@ function verifyDocker(datalabKey: string, geminiKey: string): Promise<boolean> {
       '-e', `DATALAB_API_KEY=${datalabKey}`,
       '-e', `GEMINI_API_KEY=${geminiKey}`,
       '-v', 'ocr-data:/data',
-      'ghcr.io/chrisroyse/ocr-provenance:latest',
+      imageRef,
     ], { stdio: ['pipe', 'pipe', 'pipe'] });
 
     let stdout = '';
@@ -577,12 +542,20 @@ async function main(): Promise<void> {
 
   console.log('');
 
-  const imageRef = imageReady && !execSync(
-    'docker images ghcr.io/chrisroyse/ocr-provenance:latest --format "{{.Repository}}"',
-    { stdio: 'pipe' }
-  ).toString().trim().includes('ghcr.io')
-    ? 'ocr-provenance-mcp:cpu'
-    : 'ghcr.io/chrisroyse/ocr-provenance:latest';
+  let imageRef = 'ghcr.io/chrisroyse/ocr-provenance:latest';
+  if (imageReady) {
+    try {
+      const ghcrOutput = execSync(
+        'docker images ghcr.io/chrisroyse/ocr-provenance:latest --format "{{.Repository}}"',
+        { stdio: 'pipe' }
+      ).toString().trim();
+      if (!ghcrOutput.includes('ghcr.io')) {
+        imageRef = 'ocr-provenance-mcp:cpu';
+      }
+    } catch {
+      imageRef = 'ocr-provenance-mcp:cpu';
+    }
+  }
 
   switch (clientChoice) {
     case '1': {
@@ -593,7 +566,7 @@ async function main(): Promise<void> {
         process.exit(1);
       }
       process.stdout.write('  Registering with Claude Code... ');
-      if (registerClaudeCode(datalabKey, geminiKey)) {
+      if (registerClaudeCode(datalabKey, geminiKey, imageRef)) {
         console.log(green('done'));
       } else {
         process.exit(1);
@@ -603,7 +576,7 @@ async function main(): Promise<void> {
     case '2': {
       const isMac = process.platform === 'darwin';
       const info = isMac ? CLIENT_INFO['claude-desktop-mac'] : CLIENT_INFO['claude-desktop-win'];
-      const config = generateJsonConfig(datalabKey, geminiKey, info.configKey);
+      const config = generateJsonConfig(datalabKey, geminiKey, info.configKey, imageRef);
       console.log(`  Add to ${cyan(info.configPath)}:`);
       console.log('');
       console.log(JSON.stringify(config, null, 2));
@@ -611,7 +584,7 @@ async function main(): Promise<void> {
       break;
     }
     case '3': {
-      const config = generateJsonConfig(datalabKey, geminiKey, 'mcpServers');
+      const config = generateJsonConfig(datalabKey, geminiKey, 'mcpServers', imageRef);
       console.log(`  Add to ${cyan('~/.cursor/mcp.json')}:`);
       console.log('');
       console.log(JSON.stringify(config, null, 2));
@@ -619,7 +592,7 @@ async function main(): Promise<void> {
       break;
     }
     case '4': {
-      const config = generateVsCodeConfig(datalabKey, geminiKey);
+      const config = generateVsCodeConfig(imageRef);
       console.log(`  Add to ${cyan('.vscode/mcp.json')} in your workspace:`);
       console.log('');
       console.log(JSON.stringify(config, null, 2));
@@ -627,7 +600,7 @@ async function main(): Promise<void> {
       break;
     }
     case '5': {
-      const config = generateJsonConfig(datalabKey, geminiKey, 'mcpServers');
+      const config = generateJsonConfig(datalabKey, geminiKey, 'mcpServers', imageRef);
       console.log(`  Add to ${cyan('~/.codeium/windsurf/mcp_config.json')}:`);
       console.log('');
       console.log(JSON.stringify(config, null, 2));
@@ -653,7 +626,7 @@ async function main(): Promise<void> {
   console.log('');
   process.stdout.write('  Starting server... ');
 
-  const verified = await verifyDocker(datalabKey, geminiKey);
+  const verified = await verifyDocker(datalabKey, geminiKey, imageRef);
   if (!verified) {
     console.error(`\n  ${red('Verification failed.')} The server did not respond.`);
     console.error(`  Try running manually: docker run -i --rm -e DATALAB_API_KEY=test -e GEMINI_API_KEY=test -v ocr-data:/data ${imageRef}`);

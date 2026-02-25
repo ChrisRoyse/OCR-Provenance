@@ -272,7 +272,7 @@ Health endpoint: `GET /health` -- MCP endpoint: `POST /mcp` -- Port: 3100
 </details>
 
 <details>
-<summary><strong>Ingestion & Processing (9)</strong></summary>
+<summary><strong>Ingestion & Processing (7)</strong></summary>
 
 | Tool | Description |
 |------|-------------|
@@ -282,9 +282,7 @@ Health endpoint: `GET /health` -- MCP endpoint: `POST /mcp` -- Port: 3100
 | `ocr_status` | Check processing status |
 | `ocr_retry_failed` | Reset failed documents for reprocessing |
 | `ocr_reprocess` | Reprocess with different OCR settings |
-| `ocr_chunk_complete` | Repair documents missing chunks/embeddings |
 | `ocr_convert_raw` | One-off OCR conversion without storing |
-| `ocr_reembed_document` | Re-generate embeddings for a document without re-OCRing |
 
 </details>
 
@@ -304,20 +302,18 @@ Health endpoint: `GET /health` -- MCP endpoint: `POST /mcp` -- Port: 3100
 </details>
 
 <details>
-<summary><strong>Document Management (12)</strong></summary>
+<summary><strong>Document Management (10)</strong></summary>
 
 | Tool | Description |
 |------|-------------|
-| `ocr_document_list` | List documents with status filtering |
+| `ocr_document_list` | List documents with status filtering and cursor pagination |
 | `ocr_document_get` | Full document details (text, chunks, blocks, provenance) |
 | `ocr_document_delete` | Delete document and all derived data (cascade) |
 | `ocr_document_find_similar` | Find similar documents via embedding centroid similarity |
-| `ocr_document_structure` | Analyze document structure (headings, tables, figures, code blocks) |
-| `ocr_document_sections` | Get section hierarchy tree from chunk section paths |
+| `ocr_document_structure` | Analyze structure: headings/tables/figures, section tree, or outline |
 | `ocr_document_update_metadata` | Batch update document metadata fields |
 | `ocr_document_duplicates` | Detect exact (hash) and near (similarity) duplicates |
-| `ocr_document_export` | Export document to JSON or markdown |
-| `ocr_corpus_export` | Export entire corpus to JSON or markdown archive |
+| `ocr_export` | Export document (json/markdown) or corpus (json/csv) |
 | `ocr_document_versions` | List all versions of a document by file path |
 | `ocr_document_workflow` | Manage workflow states (draft/review/approved/published/archived) |
 
@@ -367,46 +363,39 @@ Health endpoint: `GET /health` -- MCP endpoint: `POST /mcp` -- Port: 3100
 </details>
 
 <details>
-<summary><strong>VLM / Vision Analysis (6)</strong></summary>
+<summary><strong>VLM / Vision Analysis (4)</strong></summary>
 
 | Tool | Description |
 |------|-------------|
 | `ocr_vlm_describe` | Describe an image using Gemini 3 Flash |
-| `ocr_vlm_classify` | Classify image type, complexity, text density |
-| `ocr_vlm_process_document` | VLM-process all images in a document |
-| `ocr_vlm_process_pending` | VLM-process all pending images across all documents |
+| `ocr_vlm_process` | VLM-process images (pass document_id for one doc, omit for all pending) |
 | `ocr_vlm_analyze_pdf` | Analyze a PDF directly with Gemini 3 Flash (max 20MB) |
 | `ocr_vlm_status` | Service status (API config, rate limits, circuit breaker) |
 
 </details>
 
 <details>
-<summary><strong>Image Operations (11)</strong></summary>
+<summary><strong>Image Operations (8)</strong></summary>
 
 | Tool | Description |
 |------|-------------|
-| `ocr_image_extract` | Extract images from a PDF via Datalab OCR |
 | `ocr_image_list` | List images extracted from a document |
 | `ocr_image_get` | Get image details |
 | `ocr_image_stats` | Processing statistics |
-| `ocr_image_delete` | Delete an image record |
-| `ocr_image_delete_by_document` | Delete all images for a document |
+| `ocr_image_delete` | Delete images (by image_id or document_id) |
 | `ocr_image_reset_failed` | Reset failed images for reprocessing |
 | `ocr_image_pending` | List images pending VLM processing |
-| `ocr_image_search` | Search images with 7 filters |
-| `ocr_image_semantic_search` | Semantic search over VLM image descriptions |
+| `ocr_image_search` | Search images by keyword filters or semantic similarity (mode=keyword/semantic) |
 | `ocr_image_reanalyze` | Re-run VLM analysis with a custom prompt |
 
 </details>
 
 <details>
-<summary><strong>Image Extraction (3)</strong></summary>
+<summary><strong>Image Extraction (1)</strong></summary>
 
 | Tool | Description |
 |------|-------------|
-| `ocr_extract_images` | Extract images locally (PyMuPDF for PDF, zipfile for DOCX) |
-| `ocr_extract_images_batch` | Batch extract from all processed documents |
-| `ocr_extraction_check` | Verify Python environment has required packages |
+| `ocr_extract_images` | Extract images locally (pass document_id for one doc, omit for batch) |
 
 </details>
 
@@ -435,14 +424,13 @@ Health endpoint: `GET /health` -- MCP endpoint: `POST /mcp` -- Port: 3100
 </details>
 
 <details>
-<summary><strong>Structured Extraction (4)</strong></summary>
+<summary><strong>Structured Extraction (3)</strong></summary>
 
 | Tool | Description |
 |------|-------------|
 | `ocr_extract_structured` | Extract structured data using a JSON schema |
-| `ocr_extraction_list` | List structured extractions for a document |
+| `ocr_extraction_list` | List or search structured extractions (filter by document_id or query) |
 | `ocr_extraction_get` | Get a structured extraction by ID |
-| `ocr_extraction_search` | Search across extraction content |
 
 </details>
 
@@ -485,7 +473,7 @@ Health endpoint: `GET /health` -- MCP endpoint: `POST /mcp` -- Port: 3100
 </details>
 
 <details>
-<summary><strong>Intelligence & Navigation (4)</strong></summary>
+<summary><strong>Intelligence & Navigation (5)</strong></summary>
 
 | Tool | Description |
 |------|-------------|
@@ -493,44 +481,31 @@ Health endpoint: `GET /health` -- MCP endpoint: `POST /mcp` -- Port: 3100
 | `ocr_document_tables` | Extract and parse tables from OCR JSON blocks |
 | `ocr_document_recommend` | Get related document recommendations |
 | `ocr_document_extras` | Access OCR extras data (charts, links, tracked changes) |
+| `ocr_table_export` | Export tables to CSV, JSON, or markdown |
 
 </details>
 
 <details>
-<summary><strong>Evaluation (3)</strong></summary>
+<summary><strong>Evaluation (1)</strong></summary>
 
 | Tool | Description |
 |------|-------------|
-| `ocr_evaluate_single` | Evaluate a single image with VLM |
-| `ocr_evaluate_document` | Evaluate all images in a document |
-| `ocr_evaluate_pending` | Evaluate all pending images system-wide |
+| `ocr_evaluate` | Evaluate VLM quality (pass image_id, document_id, or neither for all pending) |
 
 </details>
 
 <details>
-<summary><strong>Reports & Analytics (9)</strong></summary>
+<summary><strong>Reports & Analytics (7)</strong></summary>
 
 | Tool | Description |
 |------|-------------|
 | `ocr_evaluation_report` | Comprehensive OCR + VLM metrics report |
 | `ocr_document_report` | Single document report |
-| `ocr_quality_summary` | Quality summary across all documents |
+| `ocr_report_overview` | Quality and corpus overview (section=quality/corpus/all) |
 | `ocr_cost_summary` | Cost analytics by document, mode, month, or total |
-| `ocr_pipeline_analytics` | Pipeline throughput and duration breakdown |
-| `ocr_corpus_profile` | Corpus content profile |
+| `ocr_report_performance` | Pipeline, throughput, and bottleneck analytics (section=pipeline/throughput/bottlenecks/all) |
 | `ocr_error_analytics` | Error/recovery analytics and failure rates |
-| `ocr_provenance_bottlenecks` | Processing bottleneck analysis |
-| `ocr_quality_trends` | Quality trends over time |
-
-</details>
-
-<details>
-<summary><strong>Timeline & Analytics (2)</strong></summary>
-
-| Tool | Description |
-|------|-------------|
-| `ocr_timeline_analytics` | Volume metrics over time |
-| `ocr_throughput_analytics` | Processing throughput per time bucket |
+| `ocr_trends` | Time-series trends (metric=quality/volume, bucketed by time period) |
 
 </details>
 
@@ -687,17 +662,17 @@ docker build --build-arg COMPUTE=cu124 \
 ┌─────────────────────────────────────────────────────────────┐
 │                    MCP Server (stdio/http)                    │
 │  TypeScript + @modelcontextprotocol/sdk                     │
-│  141 tools across 28 tool modules                           │
+│  141 tools across 27 tool modules                           │
 ├─────────────────────────────────────────────────────────────┤
 │                                                              │
 │  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐   │
 │  │ Ingestion│  │  Search  │  │ Analysis │  │  Reports │   │
-│  │ 9 tools  │  │ 12 tools │  │ 35 tools │  │  9 tools │   │
+│  │ 7 tools  │  │  7 tools │  │ 33 tools │  │  7 tools │   │
 │  └────┬─────┘  └────┬─────┘  └────┬─────┘  └────┬─────┘   │
 │       │              │              │              │          │
 │  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐   │
 │  │   VLM    │  │  Images  │  │  Tags    │  │  Intel   │   │
-│  │ 6 tools  │  │ 14 tools │  │ 6 tools  │  │  4 tools │   │
+│  │ 4 tools  │  │  9 tools │  │ 6 tools  │  │  5 tools │   │
 │  └────┬─────┘  └────┬─────┘  └────┬─────┘  └────┬─────┘   │
 │       │              │              │              │          │
 │  ┌────┴──────────────┴──────────────┴──────────────┴────┐   │
@@ -824,8 +799,8 @@ src/
   bin.ts                # CLI entry point (stdio)
   bin-http.ts           # HTTP entry point
   bin-setup.ts          # Setup wizard
-  tools/                # 28 tool files + shared.ts
-  services/             # Core services (11 domains, 64 files)
+  tools/                # 27 tool modules + shared.ts
+  services/             # Core services (11 domains, 80 files)
   models/               # Zod schemas and TypeScript types
   utils/                # Hash, validation, path sanitization
   server/               # Server state, types, errors
