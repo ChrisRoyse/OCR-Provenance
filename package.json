@@ -8,7 +8,8 @@
     ".": "./dist/index.js"
   },
   "bin": {
-    "ocr-provenance-mcp": "dist/bin.js"
+    "ocr-provenance-mcp": "dist/bin.js",
+    "ocr-provenance-mcp-http": "dist/bin-http.js"
   },
   "files": [
     "dist",
@@ -42,6 +43,8 @@
     "build": "tsc",
     "build:fast": "tsc --noCheck",
     "start": "node --max-semi-space-size=64 dist/index.js",
+    "start:http": "MCP_TRANSPORT=http node --max-semi-space-size=64 dist/bin-http.js",
+    "start:docker": "node --max-semi-space-size=64 dist/bin-http.js",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:unit": "vitest run tests/unit",
