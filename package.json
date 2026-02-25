@@ -9,11 +9,13 @@
   },
   "bin": {
     "ocr-provenance-mcp": "dist/bin.js",
-    "ocr-provenance-mcp-http": "dist/bin-http.js"
+    "ocr-provenance-mcp-http": "dist/bin-http.js",
+    "ocr-provenance-mcp-setup": "dist/bin-setup.js"
   },
   "files": [
     "dist",
     "python",
+    "!python/__pycache__",
     "README.md",
     "LICENSE",
     ".env.example"

@@ -4,14 +4,12 @@
 
 Point this at a folder of PDFs, Word docs, spreadsheets, images, or presentations. Minutes later, Claude can search, analyze, compare, and answer questions across your entire document collection -- with a cryptographic audit trail proving exactly where every answer came from.
 
+[![npm](https://img.shields.io/npm/v/ocr-provenance-mcp)](https://www.npmjs.com/package/ocr-provenance-mcp)
 [![License: Dual](https://img.shields.io/badge/License-Free_Non--Commercial-green.svg)](LICENSE)
-[![Node.js](https://img.shields.io/badge/Node.js-%3E%3D20-green)](https://nodejs.org/)
-[![TypeScript](https://img.shields.io/badge/TypeScript-5.5+-blue)](https://www.typescriptlang.org/)
 [![MCP](https://img.shields.io/badge/MCP-1.0-purple)](https://modelcontextprotocol.io/)
 [![Tools](https://img.shields.io/badge/MCP_Tools-141-orange)](#tool-reference-141-tools)
 [![Tests](https://img.shields.io/badge/Tests-2%2C639_passing-brightgreen)](#development)
 [![Docker](https://img.shields.io/badge/Docker-ghcr.io-blue)](https://github.com/ChrisRoyse/OCR-Provenance/pkgs/container/ocr-provenance)
-[![Docker Build](https://img.shields.io/github/actions/workflow/status/ChrisRoyse/OCR-Provenance/docker-publish.yml?branch=main&label=Docker%20Build)](https://github.com/ChrisRoyse/OCR-Provenance/actions/workflows/docker-publish.yml)
 
 ---
 
@@ -136,7 +134,7 @@ An HR director is investigating a workplace complaint with emails, performance r
 2. Select it                 ->  ocr_db_select { database_name: "my-case" }
 3. Ingest a folder           ->  ocr_ingest_directory { directory_path: "/path/to/docs" }
 4. Process everything        ->  ocr_process_pending {}
-5. Search                    ->  ocr_search_hybrid { query: "breach of contract" }
+5. Search                    ->  ocr_search { query: "breach of contract" }
 6. Ask questions             ->  ocr_rag_context { question: "What were the settlement terms?" }
 7. Verify provenance         ->  ocr_provenance_verify { item_id: "doc-id" }
 ```
@@ -149,9 +147,9 @@ Each database is fully isolated. Create one per case, project, or client.
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│                    MCP Server (stdio)                        │
+│                    MCP Server (stdio/http)                    │
 │  TypeScript + @modelcontextprotocol/sdk                     │
-│  102 tools across 22 tool modules                           │
+│  141 tools across 28 tool modules                           │
 ├─────────────────────────────────────────────────────────────┤
 │                                                              │
 │  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐   │
@@ -173,7 +171,7 @@ Each database is fully isolated. Create one per case, project, or client.
 │       │              │              │                         │
 │  ┌────┴────┐   ┌────┴────┐   ┌────┴─────┐                  │
 │  │ SQLite  │   │sqlite-vec│   │ FTS5     │                  │
-│  │ 18 tbls │   │ vectors  │   │ indexes  │                  │
+│  │ 28 tbls │   │ vectors  │   │ indexes  │                  │
 │  └─────────┘   └─────────┘   └──────────┘                  │
 │                                                              │
 │  ┌──────────────────────────────────────────────────────┐   │
@@ -191,9 +189,9 @@ Each database is fully isolated. Create one per case, project, or client.
 └─────────────────────────────────────────────────────────────┘
 ```
 
-- **TypeScript MCP Server** -- 102 tools across 22 modules, Zod validation, provenance tracking
+- **TypeScript MCP Server** -- 141 tools across 28 modules, Zod validation, provenance tracking
 - **Python Workers** (9) -- OCR, GPU embedding, image extraction, clustering, form fill, file management, local reranking
-- **SQLite + sqlite-vec** -- 18 tables, FTS5 full-text search, vector similarity search, WAL mode
+- **SQLite + sqlite-vec** -- 28 tables, FTS5 full-text search, vector similarity search, WAL mode
 - **Gemini 3 Flash** -- vision analysis (image description, classification, PDF analysis)
 - **Datalab API** -- document OCR, form filling, structured extraction, cloud storage
 - **nomic-embed-text-v1.5** -- 768-dim local embeddings (CUDA / MPS / CPU)
@@ -286,291 +284,128 @@ Tag-based workflow state management for document lifecycle:
 
 ## Requirements
 
-| Component | Version | Notes |
-|-----------|---------|-------|
-| Node.js | >= 20 | MCP server runtime |
-| Python | >= 3.10 | Worker processes |
-| PyTorch | >= 2.0 | Embedding model inference |
-| GPU | Optional | CUDA or Apple MPS; CPU works fine, just slower |
+| Requirement | Details |
+|-------------|---------|
+| [Docker Desktop](https://docker.com/products/docker-desktop) | Required. Available for Windows, macOS, and Linux |
+| [Node.js](https://nodejs.org/) >= 20 | Required for the install command |
+| `DATALAB_API_KEY` | Get from [datalab.to](https://www.datalab.to) -- OCR, form fill, structured extraction |
+| `GEMINI_API_KEY` | Get from [Google AI Studio](https://aistudio.google.com/) -- VLM image description |
 
-### API Keys
-
-| Key | Get From | Used For |
-|-----|----------|----------|
-| `DATALAB_API_KEY` | [datalab.to](https://www.datalab.to) | OCR, form fill, file upload, structured extraction |
-| `GEMINI_API_KEY` | [Google AI Studio](https://aistudio.google.com/) | VLM image description and classification |
+No Python install, no GPU drivers, no model downloads needed -- the Docker image bundles everything.
 
 ---
 
 ## Installation
 
 ```bash
-# Clone and build
-git clone https://github.com/ChrisRoyse/OCR-Provenance.git
-cd OCR-Provenance
-npm install && npm run build
-
-# Install globally (makes `ocr-provenance-mcp` available everywhere)
-npm link
-
-# Python dependencies
-pip install torch transformers sentence-transformers numpy scikit-learn hdbscan pymupdf pillow python-docx requests
-
-# Download embedding model (~270MB, one-time)
-pip install huggingface_hub
-huggingface-cli download nomic-ai/nomic-embed-text-v1.5 --local-dir models/nomic-embed-text-v1.5
-
-# Configure API keys
-cp .env.example .env
-# Edit .env with your DATALAB_API_KEY and GEMINI_API_KEY
-
-# Verify
-ocr-provenance-mcp  # Should print "Tools registered: 141" on stderr
+npm install -g ocr-provenance-mcp
+ocr-provenance-mcp-setup
 ```
 
-> **PyTorch GPU note:** If `pip install torch` gives you CPU-only, install the CUDA version explicitly:
-> ```bash
-> pip install torch --index-url https://download.pytorch.org/whl/cu124
-> ```
+The setup wizard will:
 
-<details>
-<summary><strong>Platform-specific notes</strong></summary>
+1. Prompt for your **Datalab** and **Gemini** API keys (masked input)
+2. Validate both keys against the real APIs
+3. Pull the Docker image (~6GB, includes Python, PyTorch, and the embedding model)
+4. Register the server with your AI client (Claude Code, Claude Desktop, Cursor, VS Code, or Windsurf)
+5. Verify the server starts and responds
 
-**Linux / WSL2:** Install NVIDIA drivers and CUDA toolkit. For WSL2, install the [NVIDIA CUDA on WSL driver](https://developer.nvidia.com/cuda/wsl) from the Windows side.
+That's it. After setup completes, restart your AI client and the `ocr-provenance` MCP server will be available.
 
-**macOS (Apple Silicon):** MPS acceleration works automatically. Just `pip install torch torchvision torchaudio`.
+### What Gets Installed Where
 
-**Windows:** Use WSL2 for best compatibility. Native Windows works too -- the server auto-detects `python` vs `python3`.
+| Item | Location |
+|------|----------|
+| npm package | Global `node_modules` (the `ocr-provenance-mcp` command) |
+| API keys | `~/.ocr-provenance/.env` (file permissions 0600) |
+| Docker image | `ocr-provenance-mcp:cpu` (~6GB, pulled from GHCR) |
+| Databases | Docker volume `ocr-data` (persists across container restarts) |
+| Client config | Depends on your client (see below) |
 
-</details>
+### Platform Differences
 
-<details>
-<summary><strong>Custom embedding model location</strong></summary>
+**Windows:**
+- Install [Docker Desktop for Windows](https://docs.docker.com/desktop/setup/install/windows-install/) -- requires WSL2 backend
+- Config files use `%APPDATA%` paths (e.g., `%APPDATA%\Claude\claude_desktop_config.json`)
+- The setup wizard auto-detects Windows paths
 
-If you install globally and want the model elsewhere:
+**macOS:**
+- Install [Docker Desktop for Mac](https://docs.docker.com/desktop/setup/install/mac-install/) -- works on both Intel and Apple Silicon
+- Config files use `~/Library/Application Support/` paths
+- The setup wizard auto-detects macOS paths
 
-```bash
-# In your .env file:
-EMBEDDING_MODEL_PATH=/path/to/nomic-embed-text-v1.5
-```
+**Linux:**
+- Install [Docker Engine](https://docs.docker.com/engine/install/) or Docker Desktop
+- Ensure your user is in the `docker` group: `sudo usermod -aG docker $USER`
+- Config files use `~/.config/` or `~/` paths depending on the client
 
-The server checks: `EMBEDDING_MODEL_PATH` env var -> `models/` in the package directory -> `~/.ocr-provenance/models/`
+### Client Config Locations
 
-</details>
+The setup wizard writes the config automatically. If you need to edit manually:
 
----
+| Client | Config File |
+|--------|-------------|
+| Claude Code | Run: `claude mcp add ocr-provenance ...` |
+| Claude Desktop (macOS) | `~/Library/Application Support/Claude/claude_desktop_config.json` |
+| Claude Desktop (Windows) | `%APPDATA%\Claude\claude_desktop_config.json` |
+| Cursor | `~/.cursor/mcp.json` |
+| VS Code | `.vscode/mcp.json` (per-project) |
+| Windsurf | `~/.codeium/windsurf/mcp_config.json` |
 
-## Connecting to Claude
+### Environment Variables
 
-### Claude Code
-
-```bash
-# Register globally (available in all projects)
-claude mcp add ocr-provenance -s user \
-  -e OCR_PROVENANCE_ENV_FILE=/path/to/OCR-Provenance/.env \
-  -e NODE_OPTIONS=--max-semi-space-size=64 \
-  -- ocr-provenance-mcp
-```
-
-### Claude Desktop
-
-Add to your config (`~/Library/Application Support/Claude/claude_desktop_config.json` on macOS, `%APPDATA%\Claude\claude_desktop_config.json` on Windows):
-
-```json
-{
-  "mcpServers": {
-    "ocr-provenance": {
-      "command": "ocr-provenance-mcp",
-      "env": {
-        "OCR_PROVENANCE_ENV_FILE": "/absolute/path/to/OCR-Provenance/.env",
-        "NODE_OPTIONS": "--max-semi-space-size=64"
-      }
-    }
-  }
-}
-```
-
-### Any MCP Client
-
-The server uses stdio transport (JSON-RPC over stdin/stdout):
-
-```bash
-ocr-provenance-mcp                    # Global command (after npm link)
-node /path/to/dist/index.js           # Direct invocation
-```
-
-Environment variables can be provided via `OCR_PROVENANCE_ENV_FILE`, direct env vars, or a `.env` file in the working directory.
-
----
-
-## Docker Installation (Recommended)
-
-The fastest way to get started. No Node.js, Python, or model downloads needed -- everything is bundled in the Docker image.
-
-### Claude Code CLI
-
-```bash
-claude mcp add ocr-provenance \
-  -e DATALAB_API_KEY=your_key \
-  -e GEMINI_API_KEY=your_key \
-  -- docker run -i --rm \
-  -v $HOME:/host:ro \
-  -v ocr-data:/data \
-  ghcr.io/chrisroyse/ocr-provenance:latest
-```
-
-### Claude Desktop
-
-Add to `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS) or `%APPDATA%\Claude\claude_desktop_config.json` (Windows):
-
-```json
-{
-  "mcpServers": {
-    "ocr-provenance": {
-      "command": "docker",
-      "args": [
-        "run", "-i", "--rm",
-        "-e", "DATALAB_API_KEY=your_key_here",
-        "-e", "GEMINI_API_KEY=your_key_here",
-        "-v", "/Users/yourname:/host:ro",
-        "-v", "ocr-data:/data",
-        "ghcr.io/chrisroyse/ocr-provenance:latest"
-      ]
-    }
-  }
-}
-```
-
-### Cursor
-
-Add to `~/.cursor/mcp.json` (global) or `.cursor/mcp.json` (project):
-
-```json
-{
-  "mcpServers": {
-    "ocr-provenance": {
-      "command": "docker",
-      "args": [
-        "run", "-i", "--rm",
-        "-e", "DATALAB_API_KEY=your_key_here",
-        "-e", "GEMINI_API_KEY=your_key_here",
-        "-v", "/Users/yourname:/host:ro",
-        "-v", "ocr-data:/data",
-        "ghcr.io/chrisroyse/ocr-provenance:latest"
-      ]
-    }
-  }
-}
-```
-
-### VS Code (GitHub Copilot)
-
-Add to `.vscode/mcp.json`:
-
-```json
-{
-  "inputs": [
-    { "id": "datalab-key", "type": "promptString", "description": "Datalab API key", "password": true },
-    { "id": "gemini-key", "type": "promptString", "description": "Gemini API key", "password": true }
-  ],
-  "servers": {
-    "ocr-provenance": {
-      "type": "stdio",
-      "command": "docker",
-      "args": ["run", "-i", "--rm", "-v", "ocr-data:/data", "-e", "DATALAB_API_KEY", "-e", "GEMINI_API_KEY", "ghcr.io/chrisroyse/ocr-provenance:latest"],
-      "env": { "DATALAB_API_KEY": "${input:datalab-key}", "GEMINI_API_KEY": "${input:gemini-key}" }
-    }
-  }
-}
-```
-
-### Windsurf
-
-Add to `~/.codeium/windsurf/mcp_config.json`:
-
-```json
-{
-  "mcpServers": {
-    "ocr-provenance": {
-      "command": "docker",
-      "args": [
-        "run", "-i", "--rm",
-        "-e", "DATALAB_API_KEY=your_key_here",
-        "-e", "GEMINI_API_KEY=your_key_here",
-        "-v", "/Users/yourname:/host:ro",
-        "-v", "ocr-data:/data",
-        "ghcr.io/chrisroyse/ocr-provenance:latest"
-      ]
-    }
-  }
-}
-```
-
-### HTTP Mode (Remote Deployment)
-
-For remote/shared deployments, use HTTP transport with docker-compose:
-
-```bash
-# Start in HTTP mode
-docker compose up -d
-
-# Or with GPU support
-docker compose -f docker-compose.gpu.yml up -d
-```
-
-The server exposes port 3100 with health endpoint at `GET /health` and MCP endpoint at `POST /mcp`.
-
-### Docker Environment Variables
+These are set automatically by the Docker image. Override via `-e` flags if needed:
 
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `DATALAB_API_KEY` | (required) | Datalab OCR API key |
 | `GEMINI_API_KEY` | (required) | Google Gemini API key |
 | `MCP_TRANSPORT` | `stdio` | Transport mode: `stdio` or `http` |
-| `MCP_HTTP_PORT` | `3100` | HTTP server port |
+| `MCP_HTTP_PORT` | `3100` | HTTP server port (when using `http` transport) |
 | `EMBEDDING_DEVICE` | `cpu` | Embedding device: `cpu`, `cuda`, `mps` |
-| `OCR_PROVENANCE_DATABASES_PATH` | `/data` | Database storage path |
+| `OCR_PROVENANCE_DATABASES_PATH` | `/data` | Database storage path inside container |
 | `OCR_PROVENANCE_ALLOWED_DIRS` | `/host,/data` | Allowed directories for file access |
 
 ### Backup and Restore
 
+Your databases live in the `ocr-data` Docker volume and persist across container restarts.
+
 ```bash
-# Backup
+# Backup all databases to ./backup/
 docker run --rm -v ocr-data:/data:ro -v $(pwd)/backup:/backup alpine cp -a /data/. /backup/
 
-# Restore
+# Restore from ./backup/
 docker run --rm -v ocr-data:/data -v $(pwd)/backup:/backup:ro alpine cp -a /backup/. /data/
 ```
+
+### HTTP Mode (Remote/Shared Deployment)
+
+For remote or multi-user deployments, run the server in HTTP mode:
+
+```bash
+docker compose up -d          # CPU mode
+docker compose -f docker-compose.gpu.yml up -d   # GPU mode (NVIDIA CUDA)
+```
+
+Health endpoint: `GET /health` -- MCP endpoint: `POST /mcp` -- Port: 3100
 
 ---
 
 ## Configuration
 
-```bash
-# .env file
-DATALAB_API_KEY=your_key
-GEMINI_API_KEY=your_key
+API keys are stored at `~/.ocr-provenance/.env` (created by the setup wizard). All other settings can be changed at runtime via the `ocr_config_set` tool or by passing environment variables to the Docker container.
 
-# OCR settings
-DATALAB_DEFAULT_MODE=accurate          # fast | balanced | accurate
-DATALAB_MAX_CONCURRENT=3
-
-# Embeddings (auto-detects CUDA > MPS > CPU)
-EMBEDDING_DEVICE=auto
-EMBEDDING_BATCH_SIZE=512
-
-# Chunking
-CHUNKING_SIZE=2000
-CHUNKING_OVERLAP_PERCENT=10
-
-# Auto-clustering (triggers after processing when enabled)
-AUTO_CLUSTER_ENABLED=false
-AUTO_CLUSTER_THRESHOLD=5               # Minimum documents to trigger
-AUTO_CLUSTER_ALGORITHM=hdbscan
-
-# Storage
-STORAGE_DATABASES_PATH=~/.ocr-provenance/databases/
-```
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `DATALAB_DEFAULT_MODE` | `accurate` | OCR mode: `fast`, `balanced`, or `accurate` |
+| `DATALAB_MAX_CONCURRENT` | `3` | Max concurrent OCR API requests |
+| `EMBEDDING_DEVICE` | `cpu` | `cpu`, `cuda`, or `mps` (auto-detected in Docker) |
+| `EMBEDDING_BATCH_SIZE` | `512` | Batch size for embedding generation |
+| `CHUNKING_SIZE` | `2000` | Target chunk size in characters |
+| `CHUNKING_OVERLAP_PERCENT` | `10` | Overlap between chunks |
+| `AUTO_CLUSTER_ENABLED` | `false` | Auto-cluster after processing |
+| `AUTO_CLUSTER_THRESHOLD` | `5` | Minimum documents to trigger auto-clustering |
+| `AUTO_CLUSTER_ALGORITHM` | `hdbscan` | `hdbscan`, `agglomerative`, or `kmeans` |
 
 ---
 
@@ -611,24 +446,19 @@ STORAGE_DATABASES_PATH=~/.ocr-provenance/databases/
 </details>
 
 <details>
-<summary><strong>Search & Retrieval (12)</strong></summary>
+<summary><strong>Search & Retrieval (7)</strong></summary>
 
 | Tool | Description |
 |------|-------------|
-| `ocr_search` | BM25 full-text search (exact terms, codes, IDs) |
-| `ocr_search_semantic` | Vector similarity search (conceptual queries) |
-| `ocr_search_hybrid` | Reciprocal Rank Fusion of BM25 + semantic (recommended) |
+| `ocr_search` | Unified search -- `mode`: `keyword` (BM25), `semantic` (vector), or `hybrid` (default, recommended) |
 | `ocr_rag_context` | Assemble hybrid search results into a markdown context block for LLMs |
 | `ocr_search_export` | Export results to CSV or JSON |
-| `ocr_benchmark_compare` | Compare search results across databases |
 | `ocr_fts_manage` | Rebuild or check FTS5 index status |
-| `ocr_search_save` | Save a search by name for later retrieval |
-| `ocr_search_saved_list` | List all saved searches |
-| `ocr_search_saved_get` | Retrieve a saved search and its parameters |
-| `ocr_search_saved_execute` | Re-execute a saved search with optional parameter overrides |
+| `ocr_search_saved` | Save, list, get, or execute named searches (`action`: save/list/get/execute) |
 | `ocr_search_cross_db` | BM25 search across all databases simultaneously |
+| `ocr_benchmark_compare` | Compare search results across databases |
 
-**Enhancement options:** Local cross-encoder reranking (`rerank`), query expansion (`expand_query`), auto-routing (`auto_route`), quality-weighted ranking, chunk-level filters (content type, section path, heading, page range, table columns), metadata filters, cluster filtering, group by document, header/footer exclusion, context chunks, VLM image enrichment, provenance inclusion.
+**Enhancement options:** Local cross-encoder reranking (`rerank`), query expansion (`expand_query`), auto-routing (`auto_route`), quality-weighted ranking, chunk-level filters (content type, section path, heading, page range, table columns), metadata filters, cluster filtering, group by document, header/footer exclusion, context chunks, VLM image enrichment, provenance inclusion, compact mode (77% token reduction).
 
 </details>
 
@@ -884,6 +714,93 @@ VLM descriptions automatically generate searchable embeddings for semantic image
 
 </details>
 
+<details>
+<summary><strong>Users & RBAC (2)</strong></summary>
+
+| Tool | Description |
+|------|-------------|
+| `ocr_user_info` | Get, create, or list users (viewer/reviewer/editor/admin roles) |
+| `ocr_audit_query` | Query the user action audit log with filters |
+
+</details>
+
+<details>
+<summary><strong>Collaboration (11)</strong></summary>
+
+| Tool | Description |
+|------|-------------|
+| `ocr_annotation_create` | Add comments, suggestions, or highlights on documents |
+| `ocr_annotation_list` | List annotations with filtering |
+| `ocr_annotation_get` | Get annotation details with thread replies |
+| `ocr_annotation_update` | Edit an annotation |
+| `ocr_annotation_delete` | Delete an annotation |
+| `ocr_annotation_summary` | Summary stats for annotations on a document |
+| `ocr_document_lock` | Lock a document (exclusive or shared) |
+| `ocr_document_unlock` | Release a document lock |
+| `ocr_document_lock_status` | Check lock status and holder |
+| `ocr_search_alert_enable` | Set up alerts for new content matching a query |
+| `ocr_search_alert_check` | Check for new matches since last alert |
+
+</details>
+
+<details>
+<summary><strong>Workflow & Approvals (8)</strong></summary>
+
+| Tool | Description |
+|------|-------------|
+| `ocr_workflow_submit` | Submit a document for review |
+| `ocr_workflow_review` | Approve, reject, or request changes |
+| `ocr_workflow_assign` | Assign a reviewer to a document |
+| `ocr_workflow_status` | Get current workflow state and history |
+| `ocr_workflow_queue` | List documents pending review |
+| `ocr_approval_chain_create` | Create multi-step approval chains |
+| `ocr_approval_chain_apply` | Apply an approval chain to a document |
+| `ocr_approval_step_decide` | Record an approval/rejection decision on a step |
+
+</details>
+
+<details>
+<summary><strong>Events & Webhooks (6)</strong></summary>
+
+| Tool | Description |
+|------|-------------|
+| `ocr_webhook_create` | Register a webhook endpoint (HMAC-SHA256 signed) |
+| `ocr_webhook_list` | List registered webhooks |
+| `ocr_webhook_delete` | Remove a webhook |
+| `ocr_export_obligations_csv` | Export obligations to CSV |
+| `ocr_export_audit_log` | Export audit log entries |
+| `ocr_export_annotations` | Export document annotations |
+
+</details>
+
+<details>
+<summary><strong>Contract Lifecycle Management (9)</strong></summary>
+
+| Tool | Description |
+|------|-------------|
+| `ocr_contract_extract` | Extract contract clauses and terms from OCR text |
+| `ocr_obligation_list` | List obligations with status filtering |
+| `ocr_obligation_update` | Update obligation status or details |
+| `ocr_obligation_calendar` | View obligations by due date range |
+| `ocr_playbook_create` | Create a clause comparison playbook |
+| `ocr_playbook_compare` | Compare document clauses against a playbook |
+| `ocr_playbook_list` | List available playbooks |
+| `ocr_document_summarize` | Algorithmic document summarization |
+| `ocr_corpus_summarize` | Summarize across multiple documents |
+
+</details>
+
+<details>
+<summary><strong>Compliance (3)</strong></summary>
+
+| Tool | Description |
+|------|-------------|
+| `ocr_compliance_report` | Generate compliance report (SOC2/SOX) |
+| `ocr_compliance_hipaa` | HIPAA-specific compliance checks and export |
+| `ocr_compliance_export` | Export provenance chain with PROV-AGENT metadata and chain-hash verification |
+
+</details>
+
 ---
 
 ## Processing Pipeline
@@ -944,9 +861,9 @@ File on disk
 
 ---
 
-## Data Architecture (Schema v31)
+## Data Architecture (Schema v32)
 
-18 core tables + FTS5 virtual tables + vec_embeddings:
+28 core tables + FTS5 virtual tables + vec_embeddings:
 
 | Table | Purpose | Key Fields |
 |-------|---------|------------|
@@ -960,7 +877,7 @@ File on disk
 | `comparisons` | Document pair diffs | similarity_ratio, diff_operations |
 | `clusters` | Document groupings | label, classification_tag, coherence_score |
 | `document_clusters` | Cluster membership | document_id, cluster_id |
-| `provenance` | Full audit trail | type, processor, chain_depth, content_hash |
+| `provenance` | Full audit trail | type, processor, chain_depth, content_hash, chain_hash |
 | `tags` | Cross-entity labels | name, color, description |
 | `entity_tags` | Tag associations | tag_id, entity_type, entity_id |
 | `saved_searches` | Search persistence | name, search_type, parameters |
@@ -968,6 +885,16 @@ File on disk
 | `database_metadata` | DB-level settings | key-value pairs |
 | `schema_version` | Migration tracking | version, applied_at |
 | `fts_index_metadata` | FTS index state | last_rebuild, chunk count |
+| `users` | Multi-user accounts | display_name, email, role (viewer/reviewer/editor/admin) |
+| `audit_log` | User action audit trail | user_id, action, entity_type, details |
+| `annotations` | Document annotations | type (comment/suggestion/highlight), threaded replies |
+| `document_locks` | Collaborative locking | exclusive/shared, auto-expiry |
+| `workflow_states` | Document lifecycle | state machine (draft→submitted→approved→executed) |
+| `approval_chains` | Multi-step approvals | ordered approval steps with decisions |
+| `approval_steps` | Individual approval steps | approver, decision, comments |
+| `obligations` | Contract obligations | title, due_date, status, extracted from CLM |
+| `playbooks` | Clause comparison playbooks | name, clauses, comparison templates |
+| `webhooks` | Event notifications | url, events, HMAC-SHA256 signing |
 
 ---
 
@@ -978,8 +905,7 @@ File on disk
 | Document OCR | Datalab API (3 modes) | `ocr_process_pending`, `ocr_convert_raw` |
 | Text Embeddings | Nomic embed v1.5 (local GPU) | Auto during ingestion, `ocr_reembed_document` |
 | Image Description | Gemini 3 Flash | `ocr_vlm_describe`, `ocr_vlm_process_*` |
-| Image Classification | Gemini 3 Flash | `ocr_vlm_classify` |
-| Search Reranking |Python cross-encoder | `rerank` parameter on all search tools (local, no API) |
+| Search Reranking | Python cross-encoder (local) | `rerank` parameter on search (ms-marco-MiniLM-L-12-v2, no API) |
 | Query Expansion | Heuristic synonyms | `expand_query` parameter |
 | Query Classification | Heuristic patterns | `auto_route` parameter (hybrid search) |
 | Document Clustering | scikit-learn | `ocr_cluster_documents` (HDBSCAN/agglomerative/k-means) |
@@ -1017,10 +943,10 @@ npm run check             # typecheck + lint + test
 src/
   index.ts              # MCP server entry point (tool registration, lifecycle)
   bin.ts                # CLI entry point
-  tools/                # 22 tool files + shared.ts
+  tools/                # 28 tool files + shared.ts
     database.ts         # Database CRUD (5 tools)
     ingestion.ts        # Ingest + process pipeline (9 tools)
-    search.ts           # BM25, semantic, hybrid, RAG, cross-DB (12 tools)
+    search.ts           # Unified search, RAG, cross-DB (7 tools)
     documents.ts        # Document ops, versions, workflow (12 tools)
     provenance.ts       # Audit trail, verification (6 tools)
     comparison.ts       # Diff, batch compare, matrix (6 tools)
@@ -1040,6 +966,12 @@ src/
     evaluation.ts       # VLM evaluation (3 tools)
     config.ts           # Runtime config (2 tools)
     health.ts           # Data integrity check (1 tool)
+    users.ts            # User management + RBAC (2 tools)
+    collaboration.ts    # Annotations, locking, search alerts (11 tools)
+    workflow.ts         # State machine, approval chains (8 tools)
+    events.ts           # Webhooks, event subscriptions (6 tools)
+    clm.ts              # Contract lifecycle management (9 tools)
+    compliance.ts       # HIPAA/SOC2/SOX exports, chain-hash verification (3 tools)
     shared.ts           # Shared utilities (formatResponse, handleError, etc.)
   services/             # Core services (11 domains, 64 files)
     chunking/           # Hybrid section-aware chunking pipeline
@@ -1073,8 +1005,8 @@ docs/                   # System documentation and reports
 | Metric | Value |
 |--------|-------|
 | MCP tools | 141 |
-| Tool modules | 22 |
-| Database tables | 18 core + FTS + vec |
+| Tool modules | 28 |
+| Database tables | 28 core + FTS + vec |
 | Schema version | v32 (32 migrations) |
 | Database operation files | 19 |
 | Service domains | 11 |
@@ -1094,42 +1026,46 @@ docs/                   # System documentation and reports
 ## Troubleshooting
 
 <details>
-<summary><strong>sqlite-vec loading errors</strong></summary>
+<summary><strong>Docker not running</strong></summary>
 
-Run `npm install` -- sqlite-vec uses a prebuilt binary that must match your platform and Node.js version.
+Make sure Docker Desktop is running. On Linux, check with `docker info`. On Windows/macOS, open Docker Desktop from the system tray.
 </details>
 
 <details>
-<summary><strong>Python not found (Windows)</strong></summary>
+<summary><strong>Setup wizard can't find Docker</strong></summary>
 
-The server auto-detects `python` vs `python3`. Ensure Python is on your PATH: `python --version`.
+Ensure `docker` is on your PATH: `docker --version`. On Windows, you may need to restart your terminal after installing Docker Desktop.
 </details>
 
 <details>
-<summary><strong>GPU not detected</strong></summary>
+<summary><strong>Server not appearing in AI client</strong></summary>
 
-```bash
-python -c "import torch; print('CUDA:', torch.cuda.is_available()); print('MPS:', hasattr(torch.backends, 'mps') and torch.backends.mps.is_available())"
-```
-If both are False, install the CUDA version of PyTorch: `pip install torch --index-url https://download.pytorch.org/whl/cu124`
+Restart your AI client after running `ocr-provenance-mcp-setup`. MCP clients only load server configs at startup.
 </details>
 
 <details>
-<summary><strong>Embedding model not found</strong></summary>
+<summary><strong>API key validation fails</strong></summary>
 
-Download the model (see [Installation](#installation)). Verify `config.json`, `model.safetensors`, and `tokenizer.json` are present in the model directory.
-</details>
-
-<details>
-<summary><strong>API key warnings at startup</strong></summary>
-
-Copy `.env.example` to `.env` and fill in your `DATALAB_API_KEY` and `GEMINI_API_KEY`.
+- **Datalab**: Make sure your key is from [datalab.to](https://www.datalab.to) (not the docs site). Run the setup wizard again to re-enter.
+- **Gemini**: Make sure your key is from [Google AI Studio](https://aistudio.google.com/). Free tier keys work fine.
 </details>
 
 <details>
 <summary><strong>Data integrity issues</strong></summary>
 
 Run `ocr_health_check { fix: true }` to detect and auto-fix common issues like chunks missing embeddings or orphaned records.
+</details>
+
+<details>
+<summary><strong>GPU acceleration in Docker</strong></summary>
+
+The default image uses CPU. For GPU, rebuild with CUDA support:
+```bash
+docker build --build-arg COMPUTE=cu124 \
+  --build-arg RUNTIME_BASE=nvidia/cuda:12.4.1-runtime-ubuntu22.04 \
+  -t ocr-provenance-mcp:gpu .
+```
+Or use `docker compose -f docker-compose.gpu.yml up -d`.
 </details>
 
 ---
