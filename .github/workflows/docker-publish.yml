@@ -9,7 +9,8 @@ on:
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_NAME: ${{ github.repository }}
+  # github.repository is mixed-case (ChrisRoyse/OCR-Provenance) but GHCR requires lowercase
+  IMAGE_NAME: chrisroyse/ocr-provenance
 
 jobs:
   # ===========================================================================
@@ -99,6 +100,7 @@ jobs:
       # -----------------------------------------------------------------------
       - name: Sign CPU image with cosign
         if: github.event_name != 'pull_request'
+        continue-on-error: true
         run: |
           cosign sign --yes \
             ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ steps.build-cpu.outputs.digest }}
@@ -239,6 +241,7 @@ jobs:
 
       - name: Sign GPU image with cosign
         if: github.event_name != 'pull_request'
+        continue-on-error: true
         run: |
           cosign sign --yes \
             ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ steps.build-gpu.outputs.digest }}

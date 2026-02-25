@@ -137,7 +137,7 @@ RUN if ! python3 --version 2>/dev/null | grep -q "3.12"; then \
       software-properties-common && \
     add-apt-repository ppa:deadsnakes/ppa && \
     apt-get update && apt-get install -y --no-install-recommends \
-      python3.12 python3.12-venv python3.12-distutils && \
+      python3.12 python3.12-venv && \
     ln -sf /usr/bin/python3.12 /usr/bin/python3 && \
     rm -rf /var/lib/apt/lists/*; \
   fi
