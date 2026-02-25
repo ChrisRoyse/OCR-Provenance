@@ -170,6 +170,7 @@ RUN chmod +x /usr/local/bin/docker-healthcheck.sh
 ENV NODE_ENV=production
 ENV MCP_HTTP_PORT=3100
 ENV OCR_PROVENANCE_DATABASES_PATH=/data
+ENV OCR_PROVENANCE_ALLOWED_DIRS=/host,/data
 ENV EMBEDDING_DEVICE=cpu
 ENV EMBEDDING_MODEL_PATH=/opt/models/nomic-embed-text-v1.5
 

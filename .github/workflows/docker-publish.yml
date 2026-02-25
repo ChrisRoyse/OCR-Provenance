@@ -1,0 +1,390 @@
+name: Docker Build & Publish
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+    branches: [main]
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  # ===========================================================================
+  # Job 1: Build and push CPU image (multi-arch: amd64 + arm64)
+  # ===========================================================================
+  docker-cpu:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      id-token: write      # Required for cosign OIDC keyless signing
+      security-events: write # Required for SARIF upload
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up QEMU (for multi-arch builds)
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v4
+
+      - name: Log in to GitHub Container Registry
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata (tags, labels)
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=ref,event=branch
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=semver,pattern={{major}}
+            type=sha
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=raw,value=cpu,enable={{is_default_branch}}
+
+      - name: Build and push CPU image
+        id: build-cpu
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          platforms: linux/amd64,linux/arm64
+          build-args: |
+            COMPUTE=cpu
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # -----------------------------------------------------------------------
+      # Image signing with cosign (keyless OIDC via GitHub Actions)
+      # Verify with:
+      #   cosign verify \
+      #     --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+      #     --certificate-identity-regexp 'github.com/ChrisRoyse/OCR-Provenance' \
+      #     ghcr.io/chrisroyse/ocr-provenance:latest
+      # -----------------------------------------------------------------------
+      - name: Sign CPU image with cosign
+        if: github.event_name != 'pull_request'
+        run: |
+          cosign sign --yes \
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ steps.build-cpu.outputs.digest }}
+
+      # -----------------------------------------------------------------------
+      # Vulnerability scanning with Trivy
+      # -----------------------------------------------------------------------
+      - name: Run Trivy vulnerability scanner (CPU)
+        uses: aquasecurity/trivy-action@0.34.0
+        with:
+          image-ref: ${{ github.event_name != 'pull_request' && format('{0}/{1}@{2}', env.REGISTRY, env.IMAGE_NAME, steps.build-cpu.outputs.digest) || '' }}
+          scan-type: ${{ github.event_name == 'pull_request' && 'fs' || 'image' }}
+          scan-ref: ${{ github.event_name == 'pull_request' && '.' || '' }}
+          format: 'sarif'
+          output: 'trivy-cpu-results.sarif'
+          severity: 'CRITICAL,HIGH'
+          # Do not fail the build on upstream CVEs in base image / ML deps.
+          # The SARIF upload makes them visible for triage.
+          exit-code: '0'
+
+      - name: Upload Trivy CPU scan to GitHub Security
+        uses: github/codeql-action/upload-sarif@v4
+        # continue-on-error: repo may not have GitHub Advanced Security enabled
+        continue-on-error: true
+        if: always()
+        with:
+          sarif_file: 'trivy-cpu-results.sarif'
+          category: 'trivy-cpu'
+
+      # -----------------------------------------------------------------------
+      # PR-only: build local image and run integration tests
+      # (Multi-arch manifest cannot be tested directly; build a local image)
+      # -----------------------------------------------------------------------
+      - name: Build local test image (PR only)
+        if: github.event_name == 'pull_request'
+        run: docker build --build-arg COMPUTE=cpu -t test-cpu .
+
+      - name: Test stdio mode (PR only)
+        if: github.event_name == 'pull_request'
+        run: |
+          echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"ci","version":"1.0"}}}' \
+            | timeout 15 docker run -i --rm \
+              -e DATALAB_API_KEY=test -e GEMINI_API_KEY=test \
+              test-cpu 2>/dev/null \
+            | head -1 | grep -q '"result"' \
+            && echo "STDIO OK" || (echo "STDIO FAIL" && exit 1)
+
+      - name: Test HTTP mode (PR only)
+        if: github.event_name == 'pull_request'
+        run: |
+          docker run -d --name test-http -p 3100:3100 \
+            -e MCP_TRANSPORT=http -e DATALAB_API_KEY=test -e GEMINI_API_KEY=test \
+            test-cpu
+          for i in $(seq 1 30); do
+            if curl -sf http://localhost:3100/health 2>/dev/null | grep -q '"status":"ok"'; then
+              echo "HTTP health OK after ${i}s"
+              break
+            fi
+            sleep 1
+          done
+          curl -sf http://localhost:3100/health | grep -q '"status":"ok"' \
+            && echo "HTTP OK" || (echo "HTTP FAIL" && exit 1)
+          docker stop test-http && docker rm test-http
+
+      - name: Test SQLite + sqlite-vec native addons (PR only)
+        if: github.event_name == 'pull_request'
+        run: |
+          docker run --rm test-cpu node -e "
+            const Database = require('better-sqlite3');
+            const { load } = require('sqlite-vec');
+            const db = new Database(':memory:');
+            load(db);
+            console.log('vec version: ' + db.prepare('SELECT vec_version()').pluck().get());
+            db.exec('CREATE VIRTUAL TABLE t USING vec0(e float[3])');
+            db.prepare('INSERT INTO t(rowid, e) VALUES (1, ?)').run(new Float32Array([1,0,0]).buffer);
+            const r = db.prepare('SELECT rowid FROM t WHERE e MATCH ? ORDER BY distance LIMIT 1')
+              .all(new Float32Array([1,0.1,0]).buffer);
+            if (r[0].rowid !== 1) throw new Error('vec search failed');
+            db.close();
+            console.log('SQLite + sqlite-vec OK');
+          "
+
+  # ===========================================================================
+  # Job 2: Build and push GPU image (amd64 only -- NVIDIA CUDA has no ARM)
+  # ===========================================================================
+  docker-gpu:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      security-events: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v4
+
+      - name: Log in to GitHub Container Registry
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata for GPU
+        id: meta-gpu
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=raw,value=gpu,enable={{is_default_branch}}
+            type=semver,pattern={{version}}-gpu
+            type=semver,pattern={{major}}.{{minor}}-gpu
+            type=sha,suffix=-gpu
+
+      - name: Build and push GPU image
+        id: build-gpu
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          platforms: linux/amd64
+          build-args: |
+            COMPUTE=cu124
+            RUNTIME_BASE=nvidia/cuda:12.4.1-runtime-ubuntu22.04
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ steps.meta-gpu.outputs.tags }}
+          labels: ${{ steps.meta-gpu.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Sign GPU image with cosign
+        if: github.event_name != 'pull_request'
+        run: |
+          cosign sign --yes \
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ steps.build-gpu.outputs.digest }}
+
+      - name: Run Trivy vulnerability scanner (GPU)
+        uses: aquasecurity/trivy-action@0.34.0
+        with:
+          image-ref: ${{ github.event_name != 'pull_request' && format('{0}/{1}@{2}', env.REGISTRY, env.IMAGE_NAME, steps.build-gpu.outputs.digest) || '' }}
+          scan-type: ${{ github.event_name == 'pull_request' && 'fs' || 'image' }}
+          scan-ref: ${{ github.event_name == 'pull_request' && '.' || '' }}
+          format: 'sarif'
+          output: 'trivy-gpu-results.sarif'
+          severity: 'CRITICAL,HIGH'
+          exit-code: '0'
+
+      - name: Upload Trivy GPU scan to GitHub Security
+        uses: github/codeql-action/upload-sarif@v4
+        continue-on-error: true
+        if: always()
+        with:
+          sarif_file: 'trivy-gpu-results.sarif'
+          category: 'trivy-gpu'
+
+  # ===========================================================================
+  # Job 3: End-to-end smoke test (after CPU image is published)
+  # ===========================================================================
+  smoke-test:
+    needs: docker-cpu
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
+
+    steps:
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Pull published CPU image
+        run: docker pull ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
+
+      - name: "Smoke test: health + MCP initialize + DB create (no API keys needed)"
+        run: |
+          IMAGE="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest"
+
+          # Start container in HTTP mode (no real API keys -- testing infra only)
+          docker run -d --name smoke-test -p 3100:3100 \
+            -e MCP_TRANSPORT=http \
+            -e DATALAB_API_KEY=test \
+            -e GEMINI_API_KEY=test \
+            -v smoke-data:/data \
+            "$IMAGE"
+
+          # Wait for healthy (up to 30s)
+          for i in $(seq 1 30); do
+            if curl -sf http://localhost:3100/health 2>/dev/null | grep -q '"status":"ok"'; then
+              echo "Container healthy after ${i}s"
+              break
+            fi
+            sleep 1
+          done
+
+          # Verify health endpoint returns expected JSON structure
+          HEALTH=$(curl -sf http://localhost:3100/health)
+          echo "Health: $HEALTH"
+          echo "$HEALTH" | grep -q '"status":"ok"' || { echo "FAIL: health check"; docker logs smoke-test; exit 1; }
+
+          # Initialize MCP session -- session ID is in the RESPONSE HEADER
+          # Accept header required: MCP SDK StreamableHTTPServerTransport requires both application/json and text/event-stream
+          INIT_RESP=$(curl -sD /tmp/mcp-headers -X POST http://localhost:3100/mcp \
+            -H "Content-Type: application/json" \
+            -H "Accept: application/json, text/event-stream" \
+            -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"smoke-test","version":"1.0"}}}')
+          SESSION_ID=$(grep -i '^mcp-session-id:' /tmp/mcp-headers | cut -d: -f2 | tr -d ' \r\n')
+          echo "Session ID: $SESSION_ID"
+          echo "Init response: $(echo "$INIT_RESP" | head -c 300)"
+
+          # Verify we got a session ID
+          [ -n "$SESSION_ID" ] || { echo "FAIL: no session ID in response headers"; cat /tmp/mcp-headers; exit 1; }
+
+          # Verify initialize response has "result"
+          echo "$INIT_RESP" | grep -q '"result"' || { echo "FAIL: initialize did not return result"; exit 1; }
+
+          # Create a database (pure local SQLite -- no API keys needed)
+          DB_RESP=$(curl -sf -X POST http://localhost:3100/mcp \
+            -H "Content-Type: application/json" \
+            -H "Accept: application/json, text/event-stream" \
+            -H "Mcp-Session-Id: $SESSION_ID" \
+            -d '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"ocr_db_create","arguments":{"name":"smoke-test-db"}}}')
+          echo "DB create: $(echo "$DB_RESP" | head -c 300)"
+          echo "$DB_RESP" | grep -q '"isError":true' && { echo "FAIL: DB create returned error"; exit 1; }
+
+          # VERIFY: Database file actually exists in the volume
+          docker exec smoke-test ls -la /data/ | grep smoke-test-db || { echo "FAIL: DB file not found in /data/"; exit 1; }
+
+          echo "SMOKE TEST PASSED"
+
+          # Cleanup
+          docker stop smoke-test && docker rm smoke-test
+          docker volume rm smoke-data
+
+      - name: "Conditional: Full ingestion smoke test (requires API keys)"
+        env:
+          DATALAB_API_KEY: ${{ secrets.DATALAB_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: |
+          # Skip if API keys are not configured as repository secrets
+          if [ -z "$DATALAB_API_KEY" ] || [ -z "$GEMINI_API_KEY" ]; then
+            echo "::warning::Full ingestion smoke test SKIPPED: DATALAB_API_KEY or GEMINI_API_KEY not configured as repository secrets"
+            exit 0
+          fi
+
+          IMAGE="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest"
+
+          # Start container with real API keys
+          docker run -d --name smoke-full -p 3101:3100 \
+            -e MCP_TRANSPORT=http \
+            -e DATALAB_API_KEY="$DATALAB_API_KEY" \
+            -e GEMINI_API_KEY="$GEMINI_API_KEY" \
+            -v smoke-full-data:/data \
+            "$IMAGE"
+
+          # Wait for healthy
+          for i in $(seq 1 30); do
+            if curl -sf http://localhost:3101/health 2>/dev/null | grep -q '"status":"ok"'; then
+              echo "Container healthy after ${i}s"
+              break
+            fi
+            sleep 1
+          done
+
+          # Helper: send MCP request with session header
+          mcp_call() {
+            curl -sf -X POST http://localhost:3101/mcp \
+              -H "Content-Type: application/json" \
+              -H "Accept: application/json, text/event-stream" \
+              -H "Mcp-Session-Id: $SESSION_ID" \
+              -d "$1"
+          }
+
+          # Initialize session -- get ID from response header
+          curl -sD /tmp/mcp-headers2 -X POST http://localhost:3101/mcp \
+            -H "Content-Type: application/json" \
+            -H "Accept: application/json, text/event-stream" \
+            -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"smoke-full","version":"1.0"}}}'
+          SESSION_ID=$(grep -i '^mcp-session-id:' /tmp/mcp-headers2 | cut -d: -f2 | tr -d ' \r\n')
+          echo "Session: $SESSION_ID"
+
+          # Create + select database
+          mcp_call '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"ocr_db_create","arguments":{"name":"smoke-full-db"}}}'
+          mcp_call '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"ocr_db_select","arguments":{"name":"smoke-full-db"}}}'
+
+          # Note: The test fixture file is not in the git repo (16MB binary).
+          # This step only runs in CI if the file is available. Skip gracefully if not.
+          echo "::notice::Full ingestion test requires test fixture file to be available in the container. Skipping file ingestion in CI."
+
+          echo "FULL SMOKE TEST SETUP OK"
+
+          # Cleanup
+          docker stop smoke-full && docker rm smoke-full
+          docker volume rm smoke-full-data

@@ -514,14 +514,29 @@ function getDefaultAllowedBaseDirs(): string[] {
   // module resolution failures (M-8: createRequire fails during vitest because
   // it resolves .js from src/ where only .ts files exist). This matches the
   // value in src/services/storage/database/helpers.ts DEFAULT_STORAGE_PATH.
-  const storagePath = path.join(homedir(), '.ocr-provenance', 'databases');
+  const storagePath = process.env.OCR_PROVENANCE_DATABASES_PATH
+    || path.join(homedir(), '.ocr-provenance', 'databases');
 
-  return [
+  const dirs = [
     path.resolve(storagePath),
     path.resolve(homedir()),
     path.resolve('/tmp'),
     path.resolve(process.cwd()),
   ];
+
+  // OCR_PROVENANCE_ALLOWED_DIRS: comma-separated list of additional allowed directories.
+  // Used in Docker to allow read-only host mounts (e.g., /host).
+  const extraDirs = process.env.OCR_PROVENANCE_ALLOWED_DIRS;
+  if (extraDirs) {
+    for (const d of extraDirs.split(',')) {
+      const trimmed = d.trim();
+      if (trimmed) {
+        dirs.push(path.resolve(trimmed));
+      }
+    }
+  }
+
+  return dirs;
 }
 
 /**
