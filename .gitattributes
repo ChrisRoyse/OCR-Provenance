@@ -19,3 +19,7 @@
 *.gif binary
 *.pdf binary
 *.whl binary
+
+# Docker files -- enforce LF to prevent "bad interpreter" errors in containers
+Dockerfile text eol=lf
+docker-compose*.yml text eol=lf

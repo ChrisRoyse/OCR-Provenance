@@ -1,0 +1,20 @@
+services:
+  ocr-provenance:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        COMPUTE: cu124
+        RUNTIME_BASE: nvidia/cuda:12.4.1-runtime-ubuntu22.04
+    image: ocr-provenance-mcp:gpu
+    environment:
+      - EMBEDDING_DEVICE=auto
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]

@@ -1,0 +1,49 @@
+# Dependencies (rebuilt inside container)
+node_modules
+
+# Build output (rebuilt inside container)
+dist
+
+# Source control
+.git
+.github
+
+# Environment files (secrets)
+.env
+.env.*
+!.env.example
+
+# Documentation and memory (not needed at runtime)
+*.md
+docs
+docs2
+memory
+
+# Test files
+tests
+coverage
+vitest.config*.ts
+
+# Editor and OS files
+.vscode
+.idea
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# Config files not needed at runtime
+eslint.config.*
+.prettierrc*
+config
+
+# Data and model directories (not needed at runtime -- embedding model is pre-downloaded in Stage 1)
+data
+fullcase
+models
+tmp
+
+# Docker files (avoid recursive copy)
+Dockerfile*
+docker-compose*.yml

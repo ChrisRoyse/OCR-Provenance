@@ -1,0 +1,32 @@
+services:
+  ocr-provenance:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: ocr-provenance-mcp:cpu
+    container_name: ocr-provenance-mcp
+    ports:
+      - "${MCP_HTTP_PORT:-3100}:3100"
+    volumes:
+      - ocr-data:/data
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      - MCP_TRANSPORT=http
+      - MCP_HTTP_PORT=3100
+      - OCR_PROVENANCE_DATABASES_PATH=/data
+      - EMBEDDING_DEVICE=${EMBEDDING_DEVICE:-cpu}
+      - DATALAB_API_KEY=${DATALAB_API_KEY}
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
+      - DATALAB_MAX_CONCURRENT=${DATALAB_MAX_CONCURRENT:-3}
+      - DATALAB_TIMEOUT=${DATALAB_TIMEOUT:-330000}
+      - GEMINI_MODEL=${GEMINI_MODEL:-gemini-3-flash-preview}
+      - GEMINI_MAX_OUTPUT_TOKENS=${GEMINI_MAX_OUTPUT_TOKENS:-8192}
+      - GEMINI_TEMPERATURE=${GEMINI_TEMPERATURE:-0.0}
+      - GEMINI_MEDIA_RESOLUTION=${GEMINI_MEDIA_RESOLUTION:-MEDIA_RESOLUTION_HIGH}
+    restart: unless-stopped
+
+volumes:
+  ocr-data:
+    name: ocr-provenance-data

@@ -15,6 +15,7 @@ datalab-python-sdk>=0.2.0
 # -----------------------------------------------------------------------------
 sentence-transformers>=2.7.0
 transformers>=4.40.0
+einops>=0.7.0
 torch>=2.5.0
 # For CUDA support, install the CUDA variant:
 #   pip install torch --index-url https://download.pytorch.org/whl/cu124
