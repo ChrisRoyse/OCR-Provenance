@@ -134,7 +134,9 @@ def _handle_sdk_exception(e: Exception, operation: str, context: str = "") -> No
     Handle SDK exceptions with specific error types.
     Raises the appropriate FileManager error based on the SDK exception type.
     """
-    DatalabAPIError, DatalabFileError, DatalabTimeoutError, DatalabValidationError = _import_sdk_exceptions()
+    DatalabAPIError, DatalabFileError, DatalabTimeoutError, DatalabValidationError = (
+        _import_sdk_exceptions()
+    )
 
     if isinstance(e, DatalabValidationError):
         raise FileManagerAPIError(f"Invalid input for {operation}: {e}", 400) from e
@@ -151,7 +153,9 @@ def _handle_sdk_exception(e: Exception, operation: str, context: str = "") -> No
         if status == 429 or "rate limit" in error_msg.lower():
             raise FileManagerAPIError(f"Rate limit exceeded during {operation}: {e}", 429) from e
         if status in (401, 403):
-            raise FileManagerAPIError(f"Authentication error during {operation} ({status}): {e}", status) from e
+            raise FileManagerAPIError(
+                f"Authentication error during {operation} ({status}): {e}", status
+            ) from e
         if status == 404 or "not found" in error_msg.lower():
             raise FileManagerAPIError(f"Not found during {operation}: {e}", 404) from e
         raise FileManagerAPIError(f"API error during {operation} ({status}): {e}", status) from e
@@ -261,8 +265,16 @@ def _serialize_file_metadata(obj: object) -> dict:
 
     # Fallback: convert known attributes
     result = {}
-    for attr in ("file_id", "original_filename", "content_type", "reference",
-                 "upload_status", "file_size", "created", "error"):
+    for attr in (
+        "file_id",
+        "original_filename",
+        "content_type",
+        "reference",
+        "upload_status",
+        "file_size",
+        "created",
+        "error",
+    ):
         val = getattr(obj, attr, None)
         if val is not None:
             result[attr] = str(val) if attr == "file_id" else val
@@ -501,7 +513,12 @@ Examples:
     parser.add_argument("--file-id", type=str, help="Datalab file ID (for get/download-url/delete)")
     parser.add_argument("--limit", type=int, default=50, help="Limit for list (default: 50)")
     parser.add_argument("--offset", type=int, default=0, help="Offset for list (default: 0)")
-    parser.add_argument("--expires-in", type=int, default=3600, help="Download URL expiry in seconds (default: 3600, min: 60, max: 86400)")
+    parser.add_argument(
+        "--expires-in",
+        type=int,
+        default=3600,
+        help="Download URL expiry in seconds (default: 3600, min: 60, max: 86400)",
+    )
     parser.add_argument("--timeout", type=int, default=300, help="Timeout seconds (default: 300)")
     parser.add_argument("--verbose", "-v", action="store_true", help="Verbose logging")
 
@@ -532,7 +549,9 @@ Examples:
         elif args.action == "download-url":
             if not args.file_id:
                 raise ValueError("--file-id is required for download-url action")
-            result = get_download_url(args.file_id, expires_in=args.expires_in, timeout=args.timeout)
+            result = get_download_url(
+                args.file_id, expires_in=args.expires_in, timeout=args.timeout
+            )
             print(json.dumps(asdict(result)))
 
         elif args.action == "delete":

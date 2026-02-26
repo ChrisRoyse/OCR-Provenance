@@ -28,6 +28,14 @@ jobs:
           node-version: ${{ matrix.node-version }}
           cache: 'npm'
 
+      - name: Set up Python (for Python worker tests)
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install Python dependencies for worker tests
+        run: pip install numpy
+
       - name: Install dependencies
         run: npm ci
 

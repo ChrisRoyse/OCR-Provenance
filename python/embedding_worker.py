@@ -56,6 +56,7 @@ logger = logging.getLogger(__name__)
 # Constants - DO NOT CHANGE
 # =============================================================================
 
+
 def _resolve_model_path() -> Path:
     """Resolve embedding model path from env var or default locations."""
     env_path = os.environ.get("EMBEDDING_MODEL_PATH")
@@ -67,6 +68,7 @@ def _resolve_model_path() -> Path:
         return pkg_path
     # Fallback: user home directory
     return Path.home() / ".ocr-provenance" / "models" / "nomic-embed-text-v1.5"
+
 
 MODEL_PATH = _resolve_model_path()
 EMBEDDING_DIM = 768

@@ -420,7 +420,10 @@ def process_document(
         if cost_cents is None:
             cost_cents = cost_breakdown.get("total_cost_cents")
         if cost_breakdown and cost_cents is None:
-            logger.warning("cost_breakdown present but no cost key found. Keys: %s", list(cost_breakdown.keys()))
+            logger.warning(
+                "cost_breakdown present but no cost key found. Keys: %s",
+                list(cost_breakdown.keys()),
+            )
 
         # Capture images from Datalab response (filename -> base64 data)
         # Images are returned as a dict with filename keys and base64-encoded image data

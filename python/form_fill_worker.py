@@ -254,7 +254,10 @@ def fill_form(
         if cost_cents is None:
             cost_cents = cost_breakdown.get("total_cost_cents")
         if cost_breakdown and cost_cents is None:
-            logger.warning("cost_breakdown present but no cost key found. Keys: %s", list(cost_breakdown.keys()))
+            logger.warning(
+                "cost_breakdown present but no cost key found. Keys: %s",
+                list(cost_breakdown.keys()),
+            )
 
         logger.info(
             f"Form fill complete: {len(fields_filled)} filled, "

@@ -40,9 +40,7 @@ def rerank(query: str, passages: list[dict]) -> list[dict]:
         sys.exit(1)
 
     start = time.time()
-    logger.info(
-        "Loading cross-encoder model: cross-encoder/ms-marco-MiniLM-L-12-v2"
-    )
+    logger.info("Loading cross-encoder model: cross-encoder/ms-marco-MiniLM-L-12-v2")
     model = CrossEncoder("cross-encoder/ms-marco-MiniLM-L-12-v2", max_length=512)
     logger.info("Model loaded in %.2fs", time.time() - start)
 
@@ -51,9 +49,7 @@ def rerank(query: str, passages: list[dict]) -> list[dict]:
 
     start = time.time()
     scores = model.predict(pairs)
-    logger.info(
-        "Reranked %d passages in %.2fs", len(passages), time.time() - start
-    )
+    logger.info("Reranked %d passages in %.2fs", len(passages), time.time() - start)
 
     results = []
     for passage, score in zip(passages, scores, strict=False):
