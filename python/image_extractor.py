@@ -32,6 +32,7 @@ Output:
 
 import argparse
 import json
+import logging
 import os
 import shutil
 import subprocess
@@ -39,6 +40,14 @@ import sys
 import tempfile
 from pathlib import Path
 from typing import Any
+
+# Configure logging - all logging goes to stderr
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    stream=sys.stderr,
+)
+logger = logging.getLogger(__name__)
 
 # Check for required dependencies
 try:
@@ -104,7 +113,8 @@ def _convert_with_inkscape(img_bytes: bytes, ext: str, filename: str) -> tuple[b
             with open(dst, "rb") as f:
                 return True, f.read()
         return False, img_bytes
-    except Exception:
+    except Exception as e:
+        logger.error(f"Image conversion failed for format {ext}: {type(e).__name__}: {e}")
         return False, img_bytes
     finally:
         shutil.rmtree(tmpdir, ignore_errors=True)
@@ -181,6 +191,8 @@ def extract_images(
 
     images: list[dict[str, Any]] = []
     errors: list[str] = []
+    failed_count = 0
+    total_attempted = 0
 
     try:
         with fitz.open(pdf_path) as doc:
@@ -320,10 +332,17 @@ def extract_images(
                         count += 1
 
                     except Exception as e:
+                        failed_count += 1
+                        logger.error(f"Image extraction failed for image {img_idx} on page {page_num + 1}: {type(e).__name__}: {e}")
                         errors.append(f"Page {page_num + 1}, image {img_idx}: {e!s}")
                         continue
 
-        result = {"success": True, "count": len(images), "images": images}
+        total_attempted = len(images) + failed_count
+        result = {"success": True, "count": len(images), "images": images, "failed_count": failed_count}
+
+        if failed_count > 0 and failed_count == total_attempted:
+            result["success"] = False
+            result["error"] = f"All {failed_count} images failed extraction"
 
         if errors:
             result["warnings"] = errors

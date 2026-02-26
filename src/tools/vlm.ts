@@ -133,7 +133,6 @@ export async function handleVLMDescribe(params: Record<string, unknown>): Promis
       }
 
       // Try to generate embedding for database-tracked images
-      const warnings: string[] = [];
       let embeddingId: string | null = null;
       let embeddingGenerated = false;
       try {
@@ -293,10 +292,8 @@ export async function handleVLMDescribe(params: Record<string, unknown>): Promis
         }
       } catch (embError) {
         const errMsg = embError instanceof Error ? embError.message : String(embError);
-        console.error(`[WARN] VLM describe embedding generation failed: ${errMsg}`);
-        warnings.push(
-          `Embedding generation failed: ${errMsg}. Description stored but not semantically searchable.`
-        );
+        console.error(`[ERROR] VLM describe embedding generation failed: ${errMsg}`);
+        throw new Error(`VLM description stored but embedding failed: ${errMsg}. Description is not searchable.`);
       }
 
       logAudit({
@@ -316,7 +313,6 @@ export async function handleVLMDescribe(params: Record<string, unknown>): Promis
           confidence: result.analysis.confidence,
           embedding_id: embeddingId,
           embedding_generated: embeddingGenerated,
-          ...(warnings.length > 0 ? { warnings } : {}),
           next_steps: [
             {
               tool: 'ocr_image_get',

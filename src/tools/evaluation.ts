@@ -297,7 +297,9 @@ async function evaluateDocument(documentId: string, batchSize: number): Promise<
         total_tokens: totalTokens,
         processing_time_ms: Date.now() - startTime,
         average_confidence: avgConfidence,
-        results: results.slice(0, 20), // Limit results in response
+        total_processed: results.length,
+        total_failed: results.filter(r => !r.success).length,
+        results, // M-13: Return ALL results - truncation hides failures beyond cutoff
         next_steps: [
           { tool: 'ocr_evaluation_report', description: 'Generate a full evaluation report' },
           {
@@ -482,19 +484,7 @@ function parseEvaluationResponse(text: string): EvaluationAnalysis {
       confidence: parsed.confidence ?? 0.5,
     };
   } catch (error) {
-    console.error(`[Evaluation] Failed to parse Gemini JSON response: ${String(error)}`);
-    return {
-      imageType: 'other',
-      primarySubject: '[PARSE_ERROR] Raw Gemini response used as fallback',
-      paragraph1: text.slice(0, 500),
-      paragraph2: text.slice(500, 1000),
-      paragraph3: text.slice(1000, 1500),
-      extractedText: [],
-      dates: [],
-      names: [],
-      numbers: [],
-      confidence: 0,
-    };
+    throw new Error(`Failed to parse VLM analysis response as JSON. Raw response (first 500 chars): ${text.slice(0, 500)}. Parse error: ${error instanceof Error ? error.message : String(error)}`);
   }
 }
 

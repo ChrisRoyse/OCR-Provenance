@@ -143,7 +143,6 @@ async function handleExtractStructured(params: Record<string, unknown>) {
 
     // Generate embedding for extraction content (semantic search)
     // Provenance chain: DOCUMENT(0) -> OCR_RESULT(1) -> EXTRACTION(2) -> EMBEDDING(3)
-    const warnings: string[] = [];
     let embeddingId: string | null = null;
     let embeddingProvId: string | null = null;
     try {
@@ -217,13 +216,9 @@ async function handleExtractStructured(params: Record<string, unknown>) {
     } catch (embError) {
       const errMsg = embError instanceof Error ? embError.message : String(embError);
       console.error(
-        `[WARN] Extraction embedding generation failed for extraction ${extractionId}: ${errMsg}`
+        `[ERROR] Extraction embedding generation failed for extraction ${extractionId}: ${errMsg}`
       );
-      warnings.push(
-        `Embedding generation failed: ${errMsg}. Extraction stored but not semantically searchable.`
-      );
-      embeddingId = null;
-      embeddingProvId = null;
+      throw new Error(`Structured extraction stored but embedding failed: ${errMsg}. Extraction is not searchable.`);
     }
 
     // Echo the schema back (parse to object if valid JSON, keep as string otherwise)
@@ -250,7 +245,6 @@ async function handleExtractStructured(params: Record<string, unknown>) {
         embedding_provenance_id: embeddingProvId,
         cost_note:
           'This call triggered a full re-OCR at standard Datalab cost. To avoid repeated costs, pass page_schema during ocr_process_pending instead.',
-        ...(warnings.length > 0 ? { warnings } : {}),
         next_steps: [
           { tool: 'ocr_extraction_list', description: 'List all extractions for the document' },
           { tool: 'ocr_extraction_get', description: 'View the extraction results in detail' },

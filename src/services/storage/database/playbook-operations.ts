@@ -114,8 +114,8 @@ export function getPlaybook(db: Database.Database, id: string): PlaybookWithClau
   let clauses: ContractClause[] = [];
   try {
     clauses = JSON.parse(row.clauses_json) as ContractClause[];
-  } catch {
-    clauses = [];
+  } catch (error) {
+    throw new Error(`Corrupt clauses_json in playbook ${row.id}: ${error instanceof Error ? error.message : String(error)}`);
   }
 
   return {
@@ -145,8 +145,8 @@ export function listPlaybooks(db: Database.Database): PlaybookWithClauses[] {
     let clauses: ContractClause[] = [];
     try {
       clauses = JSON.parse(row.clauses_json) as ContractClause[];
-    } catch {
-      clauses = [];
+    } catch (error) {
+      throw new Error(`Corrupt clauses_json in playbook ${row.id}: ${error instanceof Error ? error.message : String(error)}`);
     }
     return {
       id: row.id,

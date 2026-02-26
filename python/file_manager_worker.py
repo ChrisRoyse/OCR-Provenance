@@ -255,13 +255,18 @@ def _serialize_file_metadata(obj: object) -> dict:
     # If it's a dataclass, convert properly with str(file_id) for L-1
     try:
         dc_fields(obj)  # Raises TypeError if not a dataclass
-        result = asdict(obj)
-        # L-1: Ensure file_id is str (SDK returns int)
-        if "file_id" in result:
-            result["file_id"] = str(result["file_id"])
-        return result
     except TypeError:
-        pass
+        pass  # Not a dataclass, fall through to attribute-based extraction
+    else:
+        try:
+            result = asdict(obj)
+            # L-1: Ensure file_id is str (SDK returns int)
+            if "file_id" in result:
+                result["file_id"] = str(result["file_id"])
+            return result
+        except TypeError as e:
+            logger.error(f"Serialization error in file metadata: {type(e).__name__}: {e}")
+            raise  # Let the error propagate instead of returning incomplete data
 
     # Fallback: convert known attributes
     result = {}

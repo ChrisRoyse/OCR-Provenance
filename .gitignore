@@ -159,3 +159,6 @@ reports/
 # Scripts (ad-hoc testing scripts excluded, but docker-healthcheck.sh is tracked)
 # -----------------------------------------------------------------------------
 scripts/e2e-manual-test.mjs
+
+# npm pack artifacts
+*.tgz

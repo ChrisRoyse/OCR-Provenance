@@ -74,8 +74,15 @@ export class HttpTransport {
         } else if (req.method === 'GET' && req.url === '/mcp/sse') {
           await this.handleSSE(req, res);
         } else if (req.method === 'GET' && req.url === '/health') {
-          res.writeHead(200, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ status: 'ok', sessions: this.sessions.size }));
+          const checks = {
+            transport: 'ok' as const,
+            sessions: this.sessions.size,
+            handler: this.messageHandler ? 'ok' : ('error' as string),
+          };
+          const status = checks.handler === 'ok' ? 'ok' : 'degraded';
+          const httpStatusCode = status === 'ok' ? 200 : 503;
+          res.writeHead(httpStatusCode, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ status, checks }));
         } else {
           res.writeHead(404);
           res.end('Not found');

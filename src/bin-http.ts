@@ -227,13 +227,20 @@ async function startHttp(): Promise<void> {
 
     // Health check endpoint (not part of MCP protocol)
     if (req.method === 'GET' && req.url === '/health') {
-      res.writeHead(200, { 'Content-Type': 'application/json' });
+      const checks = {
+        transport: 'ok' as const,
+        tools: toolCount > 0 ? 'ok' : ('error' as string),
+        tools_count: toolCount,
+        sessions: sessions.size,
+      };
+      const overallStatus = checks.tools === 'ok' ? 'ok' : 'degraded';
+      const httpStatus = overallStatus === 'ok' ? 200 : 503;
+      res.writeHead(httpStatus, { 'Content-Type': 'application/json' });
       res.end(
         JSON.stringify({
-          status: 'ok',
+          status: overallStatus,
           transport: 'http',
-          tools: toolCount,
-          sessions: sessions.size,
+          checks,
           uptime: process.uptime(),
         })
       );

@@ -121,7 +121,8 @@ export function initWebhookDelivery(getConnection: () => Database.Database): voi
     try {
       conn = getConnection();
     } catch {
-      return; // No database selected
+      // No database selected - cannot deliver webhooks without a database
+      return;
     }
 
     let webhooks: WebhookRow[];

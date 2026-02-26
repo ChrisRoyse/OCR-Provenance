@@ -305,6 +305,12 @@ async function handleWorkflowStatus(params: Record<string, unknown>): Promise<To
     const { db } = requireDatabase();
     const conn = db.getConnection();
 
+    // Verify document exists before querying workflow states
+    const doc = conn.prepare('SELECT id FROM documents WHERE id = ?').get(input.document_id);
+    if (!doc) {
+      throw new Error(`Document not found: ${input.document_id}`);
+    }
+
     const current = getLatestWorkflowState(conn, input.document_id);
     const history = getWorkflowHistory(conn, input.document_id);
 

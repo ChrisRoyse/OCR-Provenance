@@ -382,8 +382,12 @@ function deleteDerivedRecords(db: Database.Database, documentId: string, caller:
     ).run(documentId, documentId);
   }
 
-  // Delete entity_tags referencing entities about to be deleted (polymorphic FK, no CASCADE)
-  try {
+  // M-21: Delete entity_tags referencing entities about to be deleted (polymorphic FK, no CASCADE)
+  // Check table existence explicitly rather than relying on catch for control flow.
+  const entityTagsExists = db
+    .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='entity_tags'")
+    .get();
+  if (entityTagsExists) {
     db.prepare(
       `
       DELETE FROM entity_tags WHERE
@@ -393,10 +397,8 @@ function deleteDerivedRecords(db: Database.Database, documentId: string, caller:
         OR (entity_type = 'extraction' AND entity_id IN (SELECT id FROM extractions WHERE document_id = ?))
     `
     ).run(documentId, documentId, documentId, documentId);
-  } catch (e: unknown) {
-    const msg = e instanceof Error ? e.message : String(e);
-    if (!msg.includes('no such table')) throw e;
-    console.error('[document-operations] entity_tags table not found, skipping:', msg);
+  } else {
+    console.error(`[DOCUMENT_DELETE] Table 'entity_tags' does not exist - skipping cleanup`);
   }
 
   // Delete from embeddings (safe: images.vlm_embedding_id already NULLed)
@@ -419,19 +421,20 @@ function deleteDerivedRecords(db: Database.Database, documentId: string, caller:
     documentId
   );
 
-  // Delete form_fills linked to this document via source_file_hash
-  // (form_fills has no document_id FK — it joins through source_file_hash)
-  try {
+  // M-21: Delete form_fills linked to this document via source_file_hash
+  // (form_fills has no document_id FK -- it joins through source_file_hash)
+  const formFillsExists = db
+    .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='form_fills'")
+    .get();
+  if (formFillsExists) {
     const docRow = db.prepare('SELECT file_hash FROM documents WHERE id = ?').get(documentId) as
       | { file_hash: string }
       | undefined;
     if (docRow) {
       db.prepare('DELETE FROM form_fills WHERE source_file_hash = ?').run(docRow.file_hash);
     }
-  } catch (e: unknown) {
-    const msg = e instanceof Error ? e.message : String(e);
-    if (!msg.includes('no such table')) throw e;
-    console.error('[document-operations] form_fills table not found, skipping:', msg);
+  } else {
+    console.error(`[DOCUMENT_DELETE] Table 'form_fills' does not exist - skipping cleanup`);
   }
 
   // Delete from chunks
@@ -443,10 +446,13 @@ function deleteDerivedRecords(db: Database.Database, documentId: string, caller:
   // Delete from ocr_results (safe now that extractions are gone)
   db.prepare('DELETE FROM ocr_results WHERE document_id = ?').run(documentId);
 
-  // Delete uploaded_files whose provenance_id references this document's provenance chain.
+  // M-21: Delete uploaded_files whose provenance_id references this document's provenance chain.
   // Must happen before provenance cleanup (callers delete provenance after this function).
   // uploaded_files has provenance_id NOT NULL REFERENCES provenance(id).
-  try {
+  const uploadedFilesExists = db
+    .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='uploaded_files'")
+    .get();
+  if (uploadedFilesExists) {
     const docForProv = db
       .prepare('SELECT provenance_id FROM documents WHERE id = ?')
       .get(documentId) as { provenance_id: string } | undefined;
@@ -455,10 +461,8 @@ function deleteDerivedRecords(db: Database.Database, documentId: string, caller:
         'DELETE FROM uploaded_files WHERE provenance_id IN (SELECT id FROM provenance WHERE root_document_id = ?)'
       ).run(docForProv.provenance_id);
     }
-  } catch (e: unknown) {
-    const msg = e instanceof Error ? e.message : String(e);
-    if (!msg.includes('no such table')) throw e;
-    console.error('[document-operations] uploaded_files table not found, skipping:', msg);
+  } else {
+    console.error(`[DOCUMENT_DELETE] Table 'uploaded_files' does not exist - skipping cleanup`);
   }
 
   // Update FTS metadata counts after chunk/embedding deletion

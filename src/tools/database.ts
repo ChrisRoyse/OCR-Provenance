@@ -93,6 +93,7 @@ export async function handleDatabaseList(
       };
 
       if (input.include_stats) {
+        // M-17: Throw on stats errors instead of hiding them as stats_error field
         let statsDb: DatabaseService | null = null;
         try {
           statsDb = DatabaseService.open(dbInfo.name, storagePath);
@@ -101,7 +102,8 @@ export async function handleDatabaseList(
           item.chunk_count = stats.total_chunks;
           item.embedding_count = stats.total_embeddings;
         } catch (err) {
-          item.stats_error = err instanceof Error ? err.message : String(err);
+          const errMsg = err instanceof Error ? err.message : String(err);
+          throw new Error(`Failed to get database stats for '${dbInfo.name}': ${errMsg}`);
         } finally {
           statsDb?.close();
         }

@@ -268,7 +268,11 @@ export class BM25SearchService {
     const vlmFtsExists = this.db
       .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='vlm_fts'")
       .get();
-    if (!vlmFtsExists) return [];
+    if (!vlmFtsExists) {
+      throw new Error(
+        'FTS table "vlm_fts" does not exist. Run database health check or rebuild FTS indexes.'
+      );
+    }
 
     let ftsQuery: string;
     if (phraseSearch) {
@@ -394,7 +398,11 @@ export class BM25SearchService {
     const ftsExists = this.db
       .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='extractions_fts'")
       .get();
-    if (!ftsExists) return [];
+    if (!ftsExists) {
+      throw new Error(
+        'FTS table "extractions_fts" does not exist. Run database health check or rebuild FTS indexes.'
+      );
+    }
 
     let ftsQuery: string;
     if (phraseSearch) {
@@ -735,6 +743,20 @@ export class BM25SearchService {
       'chunks_fts_au',
     ]);
 
+    // M-3: Count comparison for content sync verification
+    let chunksFtsCount = 0;
+    try {
+      chunksFtsCount = (
+        this.db.prepare('SELECT COUNT(*) as cnt FROM chunks_fts').get() as { cnt: number }
+      ).cnt;
+    } catch (error) {
+      console.error(`[BM25] Failed to count chunks_fts rows: ${String(error)}`);
+    }
+    const chunksCountDivergence = chunkCount > 0
+      ? Math.abs(chunksFtsCount - chunkCount) / chunkCount
+      : 0;
+    const chunksContentSyncWarning = chunksCountDivergence > 0.1;
+
     // Get VLM FTS metadata (id=2) if it exists
     const vlmMeta = this.db.prepare('SELECT * FROM fts_index_metadata WHERE id = 2').get() as
       | {
@@ -763,12 +785,15 @@ export class BM25SearchService {
         }
       | undefined;
 
+    let extractionsTableError: string | undefined;
     const extractionCount = (() => {
       try {
         return (this.db.prepare('SELECT COUNT(*) as cnt FROM extractions').get() as { cnt: number })
           .cnt;
       } catch (error) {
-        console.error(`[BM25] Failed to count extractions: ${String(error)}`);
+        const errMsg = String(error);
+        console.error(`[BM25] Failed to count extractions: ${errMsg}`);
+        extractionsTableError = `Extractions table query failed: ${errMsg}`;
         return 0;
       }
     })();
@@ -781,10 +806,10 @@ export class BM25SearchService {
       'extractions_fts_au',
     ]);
 
-    return {
+    const result: Record<string, unknown> = {
       ...meta,
       current_chunk_count: chunkCount,
-      index_stale: !chunksTriggersOk,
+      index_stale: !chunksTriggersOk || chunksContentSyncWarning,
       vlm_indexed: vlmIndexed,
       current_vlm_count: vlmCount,
       vlm_index_stale: !vlmTriggersOk,
@@ -793,6 +818,31 @@ export class BM25SearchService {
       current_extraction_count: extractionCount,
       extraction_index_stale: !extractionTriggersOk,
       extraction_last_rebuild_at: extractionMeta?.last_rebuild_at ?? null,
+    };
+    if (extractionsTableError) {
+      result.extractions_table_error = extractionsTableError;
+    }
+    if (chunksContentSyncWarning) {
+      result.content_sync_warning = true;
+      result.chunks_fts_count = chunksFtsCount;
+      result.chunks_source_count = chunkCount;
+    }
+    return result as {
+      chunks_indexed: number;
+      current_chunk_count: number;
+      index_stale: boolean;
+      last_rebuild_at: string | null;
+      tokenizer: string;
+      content_hash: string | null;
+      vlm_indexed: number;
+      current_vlm_count: number;
+      vlm_index_stale: boolean;
+      vlm_last_rebuild_at: string | null;
+      extractions_indexed: number;
+      current_extraction_count: number;
+      extraction_index_stale: boolean;
+      extraction_last_rebuild_at: string | null;
+      extractions_table_error?: string;
     };
   }
 

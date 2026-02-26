@@ -66,6 +66,7 @@ async function handleHealthCheck(params: Record<string, unknown>): Promise<ToolR
 
     const gaps: Record<string, GapCategory> = {};
     const fixes: string[] = [];
+    const fixFailures: Array<{ fix: string; error: string }> = [];
     const SAMPLE_LIMIT = 10;
 
     // ──────────────────────────────────────────────────────────────
@@ -161,12 +162,14 @@ async function handleHealthCheck(params: Record<string, unknown>): Promise<ToolR
               });
               totalEmbedded += result.totalChunks;
             } catch (embedError) {
+              // M-16: Track fix failures separately instead of "FAILED:" prefix strings
               console.error(
                 `[HealthCheck] Failed to embed chunks for ${docId}: ${String(embedError)}`
               );
-              fixes.push(
-                `FAILED: Embedding generation for document ${docId}: ${String(embedError)}`
-              );
+              fixFailures.push({
+                fix: `Embedding generation for document ${docId}`,
+                error: String(embedError),
+              });
             }
           }
 
@@ -177,10 +180,14 @@ async function handleHealthCheck(params: Record<string, unknown>): Promise<ToolR
           }
         }
       } catch (serviceError) {
+        // M-16: Track fix failures separately instead of "FAILED:" prefix strings
         console.error(
           `[HealthCheck] Embedding service initialization failed: ${String(serviceError)}`
         );
-        fixes.push(`FAILED: Could not initialize embedding service: ${String(serviceError)}`);
+        fixFailures.push({
+          fix: 'Embedding service initialization',
+          error: String(serviceError),
+        });
       }
     }
 
@@ -308,6 +315,13 @@ async function handleHealthCheck(params: Record<string, unknown>): Promise<ToolR
       conn.prepare('SELECT COUNT(*) as count FROM images').get() as { count: number }
     ).count;
 
+    // M-16: If ALL attempted fixes failed, throw an error
+    const fixesAttempted = fixes.length + fixFailures.length;
+    if (input.fix && fixesAttempted > 0 && fixes.length === 0 && fixFailures.length > 0) {
+      const failureDetails = fixFailures.map(f => `  ${f.fix}: ${f.error}`).join('\n');
+      throw new Error(`All ${fixFailures.length} fix attempt(s) failed:\n${failureDetails}`);
+    }
+
     const totalGaps = Object.values(gaps).reduce((sum, g) => sum + g.count, 0);
     const healthy = totalGaps === 0 && envWarnings.length === 0;
 
@@ -346,6 +360,9 @@ async function handleHealthCheck(params: Record<string, unknown>): Promise<ToolR
         total_gaps: totalGaps,
         gaps,
         fixes_applied: fixes.length > 0 ? fixes : undefined,
+        fix_failures: fixFailures.length > 0 ? fixFailures : undefined,
+        fixes_succeeded: fixes.length,
+        fixes_failed: fixFailures.length,
         summary: {
           total_documents: totalDocuments,
           total_chunks: totalChunks,

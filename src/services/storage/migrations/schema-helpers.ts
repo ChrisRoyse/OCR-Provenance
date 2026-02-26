@@ -55,9 +55,12 @@ export function initializeSchemaVersion(db: Database.Database): void {
     db.exec(CREATE_SCHEMA_VERSION_TABLE);
 
     const now = new Date().toISOString();
+    // M-22: Use INSERT ... ON CONFLICT instead of INSERT OR IGNORE so that a stale
+    // version row is updated to the current SCHEMA_VERSION rather than silently kept.
     const stmt = db.prepare(`
-      INSERT OR IGNORE INTO schema_version (id, version, created_at, updated_at)
+      INSERT INTO schema_version (id, version, created_at, updated_at)
       VALUES (?, ?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET version = excluded.version, updated_at = excluded.updated_at
     `);
     stmt.run(1, SCHEMA_VERSION, now, now);
   } catch (error) {

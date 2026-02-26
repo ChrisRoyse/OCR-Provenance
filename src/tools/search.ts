@@ -565,9 +565,16 @@ function attachTableMetadata(
         });
       }
     } catch (error) {
+      const errMsg = error instanceof Error ? error.message : String(error);
       console.error(
-        `[search] Failed to parse processing_params for chunk ${row.chunk_id}: ${error instanceof Error ? error.message : String(error)}`
+        `[search] Failed to parse processing_params for chunk ${row.chunk_id}: ${errMsg}`
       );
+      // L-13: Surface parse error in the result instead of silently omitting metadata
+      for (const r of results) {
+        if ((r.chunk_id as string) === row.chunk_id) {
+          r.table_metadata_parse_error = `Failed to parse table metadata: ${errMsg}`;
+        }
+      }
     }
   }
 
@@ -686,10 +693,11 @@ function buildProvenanceSummary(
     }
     return parts.join(' \u2192 ');
   } catch (err) {
+    const errMsg = err instanceof Error ? err.message : String(err);
     console.error(
-      `[search] Failed to build provenance summary for ${provenanceId}: ${err instanceof Error ? err.message : String(err)}`
+      `[search] Failed to build provenance summary for ${provenanceId}: ${errMsg}`
     );
-    return undefined;
+    return `provenance_error: Failed to build provenance chain for ${provenanceId}: ${errMsg}`;
   }
 }
 
@@ -753,10 +761,17 @@ function attachClusterContext(
         }))
       );
     } catch (error) {
+      const errMsg = String(error);
       console.error(
-        `[Search] Failed to get cluster summaries for document ${docId}: ${String(error)}`
+        `[Search] Failed to get cluster summaries for document ${docId}: ${errMsg}`
       );
       clusterCache.set(docId, []);
+      // Attach error to results for this document so callers know cluster context failed
+      for (const r of results) {
+        if ((r.document_id as string) === docId) {
+          r.cluster_context_error = `Failed to get cluster context for document ${docId}: ${errMsg}`;
+        }
+      }
     }
   }
 
@@ -1348,12 +1363,12 @@ async function handleSearchSemanticInternal(
           },
         };
       } else if (useAdaptiveThreshold) {
-        // Too few results for stats, fall back to default
-        effectiveThreshold = requestedThreshold;
+        // Too few results for stats -- use low threshold to avoid filtering the only match
+        effectiveThreshold = 0.15;
         thresholdInfo = {
           mode: 'adaptive_fallback',
           requested: requestedThreshold,
-          effective: requestedThreshold,
+          effective: 0.15,
           reason: 'too_few_results_for_adaptive',
         };
       } else {
@@ -1438,8 +1453,10 @@ async function handleSearchSemanticInternal(
           attachProvenance(result, db, original.provenance_id, !!input.include_provenance);
           return result;
         });
+        const rerankerFailed = reranked.some((r) => r.reranker_failed);
         rerankInfo = {
-          reranked: true,
+          reranked: !rerankerFailed,
+          ...(rerankerFailed ? { reranker_error: true } : {}),
           candidates_evaluated: Math.min(thresholdFiltered.length, 20),
           results_returned: finalResults.length,
         };
@@ -1722,8 +1739,10 @@ async function handleSearchKeywordInternal(params: Record<string, unknown>): Pro
           );
           return base;
         });
+        const rerankerFailed = reranked.some((r) => r.reranker_failed);
         rerankInfo = {
-          reranked: true,
+          reranked: !rerankerFailed,
+          ...(rerankerFailed ? { reranker_error: true } : {}),
           candidates_evaluated: Math.min(rankedResults.length, 20),
           results_returned: finalResults.length,
         };
@@ -2047,8 +2066,10 @@ async function handleSearchHybridInternal(params: Record<string, unknown>): Prom
           );
           return base;
         });
+        const rerankerFailed = reranked.some((r) => r.reranker_failed);
         rerankInfo = {
-          reranked: true,
+          reranked: !rerankerFailed,
+          ...(rerankerFailed ? { reranker_error: true } : {}),
           candidates_evaluated: Math.min(rawResults.length, 20),
           results_returned: finalResults.length,
         };

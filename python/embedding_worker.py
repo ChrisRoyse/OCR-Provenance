@@ -159,7 +159,7 @@ def resolve_device(requested: str = DEFAULT_DEVICE) -> str:
         if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
             logger.info("Auto-detected device: mps (Apple Silicon)")
             return "mps"
-        logger.info("Auto-detected device: cpu (no GPU available)")
+        logger.warning("Auto-detected device: cpu (no GPU available)")
         return "cpu"
 
     # Specific CUDA device requested
@@ -518,7 +518,11 @@ Examples:
             result = generate_embeddings(chunks, args.batch_size, args.device)
 
         if args.json:
-            print(json.dumps(asdict(result)))
+            result_dict = asdict(result)
+            result_dict["device_used"] = str(result.device)
+            print(json.dumps(result_dict))
+            if not result.success:
+                sys.exit(1)
         else:
             # Human readable output
             if isinstance(result, EmbeddingResult):

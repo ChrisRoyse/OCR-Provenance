@@ -20,6 +20,7 @@ export interface ChainVerificationResult {
   valid: boolean;
   total_records: number;
   verified: number;
+  null_hash_count: number;
   broken_at: string | null;
   error?: string;
 }
@@ -58,7 +59,8 @@ export function computeChainHash(contentHash: string, parentChainHash: string | 
  * Walks the provenance chain in depth-first order, recomputing each chain_hash
  * from (content_hash, parent.chain_hash) and comparing against the stored value.
  *
- * Pre-v32 records without chain_hash are considered valid (unverifiable).
+ * Pre-v32 records without chain_hash are counted separately as null_hash_count.
+ * The result is only valid when there are zero mismatches AND zero null hashes.
  *
  * @param conn - Database connection
  * @param rootDocumentId - The root document provenance ID to verify
@@ -85,20 +87,18 @@ export function verifyChainHashes(
   }>;
 
   if (records.length === 0) {
-    return { valid: true, total_records: 0, verified: 0, broken_at: null };
+    return { valid: true, total_records: 0, verified: 0, null_hash_count: 0, broken_at: null };
   }
 
   // Build a map for fast parent lookups
   const recordMap = new Map(records.map((r) => [r.id, r]));
   let verified = 0;
 
-  for (const record of records) {
-    if (!record.chain_hash) {
-      // Records without chain_hash are pre-v32 (valid, just unverifiable)
-      verified++;
-      continue;
-    }
+  // Count NULL chain hashes separately - they are NOT verified
+  const nullHashCount = records.filter((r) => r.chain_hash === null).length;
+  const recordsWithHash = records.filter((r) => r.chain_hash !== null);
 
+  for (const record of recordsWithHash) {
     const parentRecord = record.parent_id ? recordMap.get(record.parent_id) : null;
     const parentChainHash = parentRecord?.chain_hash ?? null;
     const expectedHash = computeChainHash(record.content_hash, parentChainHash);
@@ -108,6 +108,7 @@ export function verifyChainHashes(
         valid: false,
         total_records: records.length,
         verified,
+        null_hash_count: nullHashCount,
         broken_at: record.id,
         error: `Chain hash mismatch at ${record.id}: expected ${expectedHash}, got ${record.chain_hash}`,
       };
@@ -116,10 +117,14 @@ export function verifyChainHashes(
   }
 
   return {
-    valid: true,
+    valid: nullHashCount === 0,
     total_records: records.length,
     verified,
+    null_hash_count: nullHashCount,
     broken_at: null,
+    ...(nullHashCount > 0
+      ? { error: `${nullHashCount} record(s) have NULL chain_hash (pre-v32 or missing backfill)` }
+      : {}),
   };
 }
 

@@ -32,7 +32,7 @@ export async function rerankResults(
   query: string,
   results: Array<{ original_text: string; [key: string]: unknown }>,
   maxResults: number = 10
-): Promise<Array<{ original_index: number; relevance_score: number; reasoning: string }>> {
+): Promise<Array<{ original_index: number; relevance_score: number; reasoning: string; reranker_failed?: boolean }>> {
   if (results.length === 0) return [];
 
   // Take top results to re-rank (max 20 to stay within token limits)
@@ -61,6 +61,7 @@ export async function rerankResults(
       original_index: i,
       relevance_score: 0,
       reasoning: 'local cross-encoder unavailable, original order preserved',
+      reranker_failed: true,
     }));
   }
 
@@ -76,6 +77,7 @@ export async function rerankResults(
       original_index: i,
       relevance_score: 0,
       reasoning: 'cross-encoder returned no valid results, original order preserved',
+      reranker_failed: true,
     }));
   }
 

@@ -632,15 +632,15 @@ describe('BM25 VLM Search', () => {
     expect(vlmResults).toHaveLength(0);
   });
 
-  it.skipIf(!sqliteVecAvailable)('searchVLM with no vlm_fts table returns empty gracefully', () => {
+  it.skipIf(!sqliteVecAvailable)('searchVLM with no vlm_fts table throws error', () => {
     // Drop the vlm_fts table to simulate pre-v6 database
     const conn = db.getConnection();
     conn.exec('DROP TABLE IF EXISTS vlm_fts');
 
     const bm25 = new BM25SearchService(conn);
-    const results = bm25.searchVLM({ query: 'anything', limit: 10 });
-
-    expect(results).toEqual([]);
+    expect(() => bm25.searchVLM({ query: 'anything', limit: 10 })).toThrow(
+      'FTS table "vlm_fts" does not exist'
+    );
   });
 
   it.skipIf(!sqliteVecAvailable)('combined BM25 search returns both chunk and VLM results', () => {

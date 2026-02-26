@@ -86,8 +86,11 @@ function safeCount(
   try {
     const row = conn.prepare(sql).get(...(params ?? [])) as { cnt: number } | undefined;
     return row?.cnt ?? 0;
-  } catch {
+  } catch (error) {
     // Column may not exist in pre-v32 databases (e.g., chain_hash)
+    console.error(
+      `[COMPLIANCE] safeCount failed for table '${tableName}': ${error instanceof Error ? error.message : String(error)}`
+    );
     return 0;
   }
 }
@@ -200,6 +203,7 @@ async function handleComplianceReport(params: Record<string, unknown>): Promise<
       valid: boolean;
       total_records: number;
       verified: number;
+      null_hash_count: number;
       error?: string;
     }> = [];
 
@@ -216,6 +220,7 @@ async function handleComplianceReport(params: Record<string, unknown>): Promise<
           valid: result.valid,
           total_records: result.total_records,
           verified: result.verified,
+          null_hash_count: result.null_hash_count,
           error: result.error,
         });
       }

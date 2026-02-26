@@ -363,9 +363,8 @@ async function handleDocumentCompare(params: Record<string, unknown>): Promise<T
     const similarityRatio = textDiff ? textDiff.similarity_ratio : 0;
 
     // Multi-signal similarity computation (ME-6)
-    // Track which components failed to surface in response instead of silently swallowing
-    const componentsFailed: string[] = [];
 
+    // M-14: If centroid similarity fails, throw instead of burying in componentsFailed
     let embeddingSimilarity: number | null = null;
     try {
       embeddingSimilarity = computeEmbeddingCentroidSimilarity(
@@ -374,39 +373,41 @@ async function handleDocumentCompare(params: Record<string, unknown>): Promise<T
         input.document_id_2
       );
     } catch (error) {
-      console.error(
-        '[comparison] Centroid similarity failed:',
-        error instanceof Error ? error.message : String(error)
-      );
-      componentsFailed.push('centroid_similarity');
+      const errMsg = error instanceof Error ? error.message : String(error);
+      console.error('[comparison] Centroid similarity failed:', errMsg);
+      throw new Error(`Centroid similarity computation failed: ${errMsg}`);
     }
 
-    let structSimilarity = 0;
-    try {
-      structSimilarity = computeStructuralSimilarity(
-        conn,
-        input.document_id_1,
-        input.document_id_2
-      );
-    } catch (error) {
-      console.error(
-        '[comparison] Structural similarity failed:',
-        error instanceof Error ? error.message : String(error)
-      );
-      componentsFailed.push('structural_similarity');
-    }
+    const structSimilarity = computeStructuralSimilarity(
+      conn,
+      input.document_id_1,
+      input.document_id_2
+    );
 
     // Quality alignment: how close are the OCR quality scores
-    const q1 = (ocr1.parse_quality_score as number | null) ?? 0;
-    const q2 = (ocr2.parse_quality_score as number | null) ?? 0;
-    const qualityAlignment = q1 > 0 && q2 > 0 ? 1 - Math.abs(q1 - q2) / Math.max(q1, q2) : 0;
+    const qualityA = ocr1.parse_quality_score as number | null;
+    const qualityB = ocr2.parse_quality_score as number | null;
+    let qualityAlignment: number | null = null;
+    if (qualityA === null || qualityB === null) {
+      console.error(
+        `[COMPARISON] Quality score missing for comparison. DocA quality=${qualityA}, DocB quality=${qualityB}. Excluding quality from composite.`
+      );
+    } else if (qualityA > 0 && qualityB > 0) {
+      qualityAlignment = 1 - Math.abs(qualityA - qualityB) / Math.max(qualityA, qualityB);
+    } else {
+      qualityAlignment = 0;
+    }
 
     // Composite similarity: weighted blend of all signals
-    const compositeSimilarity =
-      0.4 * similarityRatio +
-      0.3 * (embeddingSimilarity ?? similarityRatio) +
-      0.2 * structSimilarity +
-      0.1 * qualityAlignment;
+    // If quality alignment is null (missing scores), redistribute its weight to other signals
+    const compositeSimilarity = qualityAlignment !== null
+      ? 0.4 * similarityRatio +
+        0.3 * (embeddingSimilarity ?? similarityRatio) +
+        0.2 * structSimilarity +
+        0.1 * qualityAlignment
+      : (0.4 / 0.9) * similarityRatio +
+        (0.3 / 0.9) * (embeddingSimilarity ?? similarityRatio) +
+        (0.2 / 0.9) * structSimilarity;
 
     // Compute content hash
     const diffContent = JSON.stringify({
@@ -487,7 +488,7 @@ async function handleDocumentCompare(params: Record<string, unknown>): Promise<T
         embedding_centroid_similarity:
           embeddingSimilarity !== null ? Math.round(embeddingSimilarity * 10000) / 10000 : null,
         structural_similarity: Math.round(structSimilarity * 10000) / 10000,
-        quality_alignment: Math.round(qualityAlignment * 10000) / 10000,
+        quality_alignment: qualityAlignment !== null ? Math.round(qualityAlignment * 10000) / 10000 : null,
         weights: { text: 0.4, embedding: 0.3, structural: 0.2, quality: 0.1 },
       },
       summary,
@@ -496,10 +497,6 @@ async function handleDocumentCompare(params: Record<string, unknown>): Promise<T
       provenance_id: provId,
       processing_duration_ms: processingDurationMs,
     };
-
-    if (componentsFailed.length > 0) {
-      comparisonResponse.components_failed = componentsFailed;
-    }
 
     if (input.include_provenance) {
       comparisonResponse.provenance_chain = fetchProvenanceChain(db, provId, 'comparison');

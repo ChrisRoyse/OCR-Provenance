@@ -24,8 +24,13 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-def rerank(query: str, passages: list[dict]) -> list[dict]:
-    """Rerank passages using cross-encoder model."""
+_cached_model = None
+_cached_model_name = None
+
+
+def get_model(model_name: str):
+    """Get or load a cached cross-encoder model."""
+    global _cached_model, _cached_model_name
     try:
         from sentence_transformers import CrossEncoder
     except ImportError:
@@ -39,10 +44,20 @@ def rerank(query: str, passages: list[dict]) -> list[dict]:
         )
         sys.exit(1)
 
+    if _cached_model is not None and _cached_model_name == model_name:
+        logger.info("Using cached reranker model: %s", model_name)
+        return _cached_model
+    logger.info("Loading reranker model: %s", model_name)
     start = time.time()
-    logger.info("Loading cross-encoder model: cross-encoder/ms-marco-MiniLM-L-12-v2")
-    model = CrossEncoder("cross-encoder/ms-marco-MiniLM-L-12-v2", max_length=512)
+    _cached_model = CrossEncoder(model_name, max_length=512)
+    _cached_model_name = model_name
     logger.info("Model loaded in %.2fs", time.time() - start)
+    return _cached_model
+
+
+def rerank(query: str, passages: list[dict]) -> list[dict]:
+    """Rerank passages using cross-encoder model."""
+    model = get_model("cross-encoder/ms-marco-MiniLM-L-12-v2")
 
     # Truncate passages to 500 chars for efficiency
     pairs = [(query, p["text"][:500]) for p in passages]

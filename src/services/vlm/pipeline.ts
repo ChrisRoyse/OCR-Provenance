@@ -568,10 +568,15 @@ export class VLMPipeline {
     }
 
     // LAYER 4: Quick dimension check (no file I/O needed)
-    const width = image.dimensions?.width ?? 0;
-    const height = image.dimensions?.height ?? 0;
+    const width = image.dimensions?.width ?? null;
+    const height = image.dimensions?.height ?? null;
+    if (width === null || height === null) {
+      console.error(
+        `[VLM] Image ${image.id ?? 'unknown'} has missing dimensions (width=${image.dimensions?.width}, height=${image.dimensions?.height}). Dimension-based filtering may be affected.`
+      );
+    }
 
-    if (width > 0 && height > 0) {
+    if (width !== null && height !== null && width > 0 && height > 0) {
       if (Math.max(width, height) < imageOptimization.vlmSkipBelowSize) {
         return {
           process: false,

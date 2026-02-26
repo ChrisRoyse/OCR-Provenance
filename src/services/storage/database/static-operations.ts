@@ -174,7 +174,7 @@ export function openDatabase(
   if (!verification.valid) {
     db.close();
     throw new DatabaseError(
-      `Database schema verification failed. Missing tables: ${verification.missingTables.join(', ')}. Missing indexes: ${verification.missingIndexes.join(', ')}`,
+      `Database schema verification failed. Missing tables: ${verification.missingTables.join(', ')}. Missing indexes: ${verification.missingIndexes.join(', ')}. Missing columns: ${verification.missingColumns.join(', ')}`,
       DatabaseErrorCode.SCHEMA_MISMATCH
     );
   }
@@ -185,7 +185,10 @@ export function openDatabase(
 /** List all available databases */
 export function listDatabases(storagePath?: string): DatabaseInfo[] {
   const basePath = storagePath ?? DEFAULT_STORAGE_PATH;
-  if (!existsSync(basePath)) return [];
+  if (!existsSync(basePath)) {
+    console.error(`[DATABASE] Storage directory does not exist: ${basePath}. Returning empty database list.`);
+    return [];
+  }
 
   const files = readdirSync(basePath).filter((f) => f.endsWith('.db'));
   const databases: DatabaseInfo[] = [];
@@ -226,6 +229,19 @@ export function listDatabases(storagePath?: string): DatabaseInfo[] {
       console.error(
         `[static-operations] Failed to read database "${file}": ${error instanceof Error ? error.message : String(error)}`
       );
+      databases.push({
+        name,
+        path: dbPath,
+        size_bytes: 0,
+        created_at: '',
+        last_modified_at: '',
+        total_documents: 0,
+        total_ocr_results: 0,
+        total_chunks: 0,
+        total_embeddings: 0,
+        error: `Failed to read database: ${error instanceof Error ? error.message : String(error)}`,
+        corrupt: true,
+      } as DatabaseInfo & { error: string; corrupt: boolean });
       continue;
     }
   }

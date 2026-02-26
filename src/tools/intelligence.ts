@@ -531,26 +531,7 @@ async function handleGuide(params: Record<string, unknown>): Promise<ToolRespons
         }
       } catch (err) {
         const errMsg = err instanceof Error ? err.message : String(err);
-        context.database_stats_error = errMsg;
-        return formatResponse(
-          successResult({
-            status: 'database_error',
-            message: `Database "${selectedDb}" selected but query failed: ${errMsg}. Try ocr_health_check to diagnose.`,
-            context,
-            next_steps: [
-              {
-                tool: 'ocr_health_check',
-                description: 'Diagnose database integrity issues.',
-                priority: 'required',
-              },
-              {
-                tool: 'ocr_db_select',
-                description: 'Re-select the database to reset connection.',
-                priority: 'optional',
-              },
-            ],
-          })
-        );
+        throw new Error(`Database "${selectedDb}" selected but query failed: ${errMsg}`);
       }
     }
 

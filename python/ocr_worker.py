@@ -416,17 +416,12 @@ def process_document(
         page_count = result.page_count or 1
         quality_score = result.parse_quality_score
 
-        # DOCX/PPTX/XLSX files are natively digital - no OCR quality metric available
-        # Assign a high default score (0.95) since text is extracted directly, not OCR'd
+        # When Datalab returns no quality score, use null instead of fabricating a value
         if quality_score is None:
-            # Use file_path or file_url for extension detection (file_path may be empty for URL mode)
             ext_source = file_path or file_url or ""
             file_ext = os.path.splitext(ext_source)[1].lower()
-            if file_ext in (".docx", ".doc", ".pptx", ".ppt", ".xlsx", ".xls", ".odt", ".ods", ".odp"):
-                quality_score = 0.95
-                logger.info(f"No quality score from Datalab for {file_ext} file, using default {quality_score} (natively digital)")
-            else:
-                logger.warning(f"No quality score from Datalab for {file_ext} file")
+            logger.warning(f"Datalab returned no quality_score for {file_ext} file ({ext_source}). Using null instead of fabricating a value.")
+            quality_score = None  # Explicit null, not fabricated 0.95
 
         # Get cost from response
         # SDK v0.2.1 returns: {"list_cost_cents": N, "final_cost_cents": N}
@@ -645,7 +640,7 @@ def main() -> None:
             load_dotenv(env_path)
             logger.debug(f"Loaded environment from {env_path}")
     except ImportError:
-        pass  # python-dotenv not installed, skip
+        logger.info("python-dotenv not installed. Using environment variables directly.")
 
     parser = argparse.ArgumentParser(
         description="Datalab OCR Worker - Extract text from documents",

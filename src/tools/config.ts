@@ -197,9 +197,7 @@ export async function handleConfigSet(params: Record<string, unknown>): Promise<
         persistConfigValue(conn, input.key, input.value);
         persisted = true;
       } catch (persistErr) {
-        console.error(
-          `[config] Failed to persist config to database: ${persistErr instanceof Error ? persistErr.message : String(persistErr)}`
-        );
+        throw new Error(`Config value set but persistence failed: ${persistErr instanceof Error ? persistErr.message : String(persistErr)}`);
       }
     }
 

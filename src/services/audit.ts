@@ -44,7 +44,9 @@ export function logAudit(params: {
       details_json: JSON.stringify(params.details ?? {}),
     });
   } catch (error) {
-    // Audit logging should never break the main operation
-    console.error('[Audit] Failed to log:', error instanceof Error ? error.message : String(error));
+    console.error(
+      `[AUDIT] Failed to log audit record for action "${params.action}": ${error instanceof Error ? error.message : String(error)}`
+    );
+    throw new Error(`Audit logging failed for action "${params.action}": ${error instanceof Error ? error.message : String(error)}`);
   }
 }

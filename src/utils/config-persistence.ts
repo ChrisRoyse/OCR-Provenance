@@ -74,8 +74,8 @@ export function loadPersistedConfig(conn: Database.Database): Record<string, unk
     return JSON.parse(row.config_json) as Record<string, unknown>;
   } catch (error) {
     console.error(
-      `[config-persistence] Failed to load persisted config: ${error instanceof Error ? error.message : String(error)}`
+      `[CONFIG] Failed to load config: ${error instanceof Error ? error.message : String(error)}`
     );
-    return {};
+    throw new Error(`Failed to load persisted config: ${error instanceof Error ? error.message : String(error)}`);
   }
 }

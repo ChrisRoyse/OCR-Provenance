@@ -119,7 +119,9 @@ export function getTableColumnExpansionTerms(db: DatabaseService, queryWords: st
       if (terms.length >= MAX_TABLE_COLUMN_TERMS) break;
     }
   } catch (error) {
-    console.error(`[QueryExpander] Failed to query table column terms: ${String(error)}`);
+    const errMsg = String(error);
+    console.error(`[QueryExpander] Failed to query table column terms: ${errMsg}`);
+    throw new Error(`Query expansion failed: table column query error: ${errMsg}`);
   }
 
   return [...new Set(terms)].slice(0, MAX_TABLE_COLUMN_TERMS);
@@ -150,7 +152,12 @@ export function getCorpusExpansionTerms(
       )
       .all() as Array<{ top_terms_json: string }>;
 
-    if (rows.length === 0) return corpusTerms;
+    if (rows.length === 0) {
+      console.error(
+        '[QueryExpander] No clusters with quality score above 0.3 found; skipping corpus expansion'
+      );
+      return corpusTerms;
+    }
 
     // Parse all cluster top terms
     const clusterTermSets: string[][] = [];
@@ -185,7 +192,9 @@ export function getCorpusExpansionTerms(
       }
     }
   } catch (error) {
-    console.error(`[QueryExpander] Failed to query corpus expansion terms: ${String(error)}`);
+    const errMsg = String(error);
+    console.error(`[QueryExpander] Failed to query corpus expansion terms: ${errMsg}`);
+    throw new Error(`Query expansion failed: corpus expansion query error: ${errMsg}`);
   }
 
   return corpusTerms;

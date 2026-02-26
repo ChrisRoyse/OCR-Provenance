@@ -837,10 +837,11 @@ async function processOneDocument(
         );
       }
     } catch (tagError) {
+      // M-15: Log with console.error and use explicit post_processing_errors field name
       const tagErrMsg = tagError instanceof Error ? tagError.message : String(tagError);
-      console.error(`[WARN] Header/footer tagging failed for ${doc.id}: ${tagErrMsg}`);
+      console.error(`[ERROR] Header/footer tagging failed for ${doc.id}: ${tagErrMsg}`);
       warnings.push(
-        `Header/footer auto-tagging failed: ${tagErrMsg}. Chunks stored but repeated headers/footers not tagged.`
+        `[post_processing_error] Header/footer auto-tagging failed: ${tagErrMsg}. Chunks stored but repeated headers/footers not tagged.`
       );
     }
   }
@@ -945,11 +946,12 @@ async function processOneDocument(
         `links=${existingExtras.link_count ?? 0}, fingerprint=yes`
     );
   } catch (enrichError) {
+    // M-15: Log with console.error and use explicit post_processing_errors field name
     stepTimings.enrichment_ms = Date.now() - enrichStart;
     const enrichErrMsg = enrichError instanceof Error ? enrichError.message : String(enrichError);
-    console.error(`[WARN] Extras enrichment failed for ${doc.id}: ${enrichErrMsg}`);
+    console.error(`[ERROR] Extras enrichment failed for ${doc.id}: ${enrichErrMsg}`);
     warnings.push(
-      `Metadata enrichment failed: ${enrichErrMsg}. Document complete but block stats, links, and structural fingerprint are missing.`
+      `[post_processing_error] Metadata enrichment failed: ${enrichErrMsg}. Document complete but block stats, links, and structural fingerprint are missing.`
     );
   }
 
@@ -1576,7 +1578,7 @@ export async function handleProcessPending(
         processed: 0,
         failed: 0,
         errors: [] as Array<{ document_id: string; error: string }>,
-        warnings: [] as Array<{ document_id: string; warnings: string[] }>,
+        post_processing_errors: [] as Array<{ document_id: string; errors: string[] }>,
       };
       const successfulDocIds: string[] = [];
 
@@ -1608,7 +1610,7 @@ export async function handleProcessPending(
           results.processed++;
           successfulDocIds.push(doc.id);
           if (docWarnings.length > 0) {
-            results.warnings.push({ document_id: doc.id, warnings: docWarnings });
+            results.post_processing_errors.push({ document_id: doc.id, errors: docWarnings });
           }
         } catch (error) {
           const errorMsg = error instanceof Error ? error.message : String(error);
@@ -1737,7 +1739,7 @@ export async function handleProcessPending(
         failed: results.failed,
         remaining,
         errors: results.errors.length > 0 ? results.errors : undefined,
-        warnings: results.warnings.length > 0 ? results.warnings : undefined,
+        post_processing_errors: results.post_processing_errors.length > 0 ? results.post_processing_errors : undefined,
       };
 
       response.next_steps = [
@@ -2117,7 +2119,7 @@ async function handleReprocess(
               ? (newOCR.parse_quality_score - previousQuality).toFixed(2)
               : null,
           processing_duration_ms: Date.now() - startTime,
-          ...(reprocessWarnings.length > 0 ? { warnings: reprocessWarnings } : {}),
+          ...(reprocessWarnings.length > 0 ? { post_processing_errors: reprocessWarnings } : {}),
           next_steps: [
             { tool: 'ocr_status', description: 'Check processing status' },
             { tool: 'ocr_document_get', description: 'View updated document details' },

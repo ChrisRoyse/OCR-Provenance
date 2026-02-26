@@ -28,6 +28,11 @@ export function insertProvenance(db: Database.Database, record: ProvenanceRecord
       const parentRow = db
         .prepare('SELECT chain_hash FROM provenance WHERE id = ?')
         .get(record.parent_id) as { chain_hash: string | null } | undefined;
+      if (!parentRow) {
+        console.error(
+          `[CHAIN_HASH] Parent record ${record.parent_id} not found for provenance insertion. Chain hash will be computed without parent hash.`
+        );
+      }
       parentChainHash = parentRow?.chain_hash ?? null;
     } catch (err) {
       console.error(

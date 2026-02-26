@@ -398,22 +398,22 @@ async function handleFileDelete(params: Record<string, unknown>) {
     }
 
     // Optionally delete from Datalab cloud
+    // M-12: If cloud delete fails, do NOT delete the local record to prevent orphans
     let datalabDeleteSucceeded = false;
-    let datalabDeleteError: string | undefined;
     if (input.delete_from_datalab && file.datalab_file_id) {
+      const client = new FileManagerClient();
       try {
-        const client = new FileManagerClient();
         await client.deleteFile(file.datalab_file_id);
         console.error(`[INFO] Deleted file from Datalab: ${file.datalab_file_id}`);
         datalabDeleteSucceeded = true;
       } catch (datalabError) {
         const msg = datalabError instanceof Error ? datalabError.message : String(datalabError);
-        console.error(`[WARN] Failed to delete from Datalab: ${msg}`);
-        datalabDeleteError = msg;
+        console.error(`[ERROR] Cloud delete failed for file ${input.file_id}: ${msg}`);
+        throw new Error(`Cloud delete failed for file ${input.file_id}: ${msg}. Local record preserved to prevent orphan.`);
       }
     }
 
-    // Delete from local DB
+    // Delete from local DB (only reached if cloud delete succeeded or was not requested)
     const deleted = deleteUploadedFile(conn, input.file_id);
 
     logAudit({
@@ -423,18 +423,12 @@ async function handleFileDelete(params: Record<string, unknown>) {
       details: { file_name: file.file_name, deleted_from_datalab: datalabDeleteSucceeded },
     });
 
-    const response: Record<string, unknown> = {
-      deleted,
-      file_id: input.file_id,
-      datalab_file_id: file.datalab_file_id,
-      deleted_from_datalab: datalabDeleteSucceeded,
-    };
-    if (datalabDeleteError) {
-      response.datalab_delete_error = datalabDeleteError;
-    }
     return formatResponse(
       successResult({
-        ...response,
+        deleted,
+        file_id: input.file_id,
+        datalab_file_id: file.datalab_file_id,
+        deleted_from_datalab: datalabDeleteSucceeded,
         next_steps: [{ tool: 'ocr_file_list', description: 'List remaining uploaded files' }],
       })
     );

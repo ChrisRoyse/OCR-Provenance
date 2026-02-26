@@ -253,8 +253,8 @@ export class PythonPool extends EventEmitter {
 
         try {
           const result = JSON.parse(line) as Record<string, unknown>;
-          if (result.error) {
-            task.reject(new Error(String(result.error)));
+          if (!result.success) {
+            task.reject(new Error(result.error ? String(result.error) : 'Python worker returned success=false with no error message'));
           } else {
             task.resolve(result);
           }

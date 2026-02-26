@@ -409,7 +409,13 @@ export async function handleExtractImages(params: Record<string, unknown>): Prom
 
       const successful = results.filter((r) => !r.error && r.images_extracted > 0).length;
       const skipped = results.filter((r) => r.error?.includes('Already has')).length;
-      const failed = results.filter((r) => r.error && !r.error.includes('Already has')).length;
+      const failedCount = results.filter((r) => r.error && !r.error.includes('Already has')).length;
+
+      // If ALL documents failed extraction (excluding skipped), throw an error
+      const nonSkipped = results.filter((r) => !r.error?.includes('Already has'));
+      if (nonSkipped.length > 0 && nonSkipped.every((r) => r.error)) {
+        throw new Error(`All ${nonSkipped.length} document(s) failed image extraction. First error: ${nonSkipped[0].error}`);
+      }
 
       let batchVlmResults: Array<{ document_id: string; vlm_status: string }> | undefined;
       if (input.auto_vlm_process && totalImages > 0) {
@@ -434,7 +440,10 @@ export async function handleExtractImages(params: Record<string, unknown>): Prom
           processed: documents.length,
           successful,
           skipped,
-          failed,
+          failed: failedCount,
+          failed_count: failedCount,
+          partial_success: failedCount > 0 && failedCount < nonSkipped.length,
+          total_failed: failedCount > 0 ? `${failedCount} of ${results.length} documents failed extraction` : undefined,
           total_images: totalImages,
           results,
           ...(batchVlmResults ? { vlm_processing: batchVlmResults } : {}),

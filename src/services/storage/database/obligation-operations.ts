@@ -228,8 +228,9 @@ export function updateObligationStatus(
   let metadata: Record<string, unknown> = {};
   try {
     metadata = JSON.parse(existing.metadata_json || '{}') as Record<string, unknown>;
-  } catch {
-    metadata = {};
+  } catch (error) {
+    const preview = (existing.metadata_json || '').substring(0, 200);
+    throw new Error(`Corrupt metadata_json in obligation ${id}. Cannot update status without valid metadata. Raw value: "${preview}". Parse error: ${error instanceof Error ? error.message : String(error)}`);
   }
 
   if (reason) {

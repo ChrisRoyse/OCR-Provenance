@@ -1356,6 +1356,19 @@ export function migrateToLatest(db: Database.Database): void {
     migrateV31ToV32(db);
     bumpVersion(32);
   }
+
+  // M-18: Post-migration version verification.
+  // Ensures the version bump took effect for all migrations.
+  // This catches cases where a migration body succeeded but the version bump
+  // was silently lost (e.g. FTS5 virtual table DDL outside transaction).
+  const finalVersion = checkSchemaVersion(db);
+  if (finalVersion !== SCHEMA_VERSION) {
+    throw new MigrationError(
+      `Migration completed but schema version is ${String(finalVersion)}, expected ${String(SCHEMA_VERSION)}. Database may be in inconsistent state.`,
+      'version_check',
+      'schema_version'
+    );
+  }
 }
 
 /**
@@ -3337,6 +3350,16 @@ function migrateV29ToV30(db: Database.Database): void {
     // virtual tables manage their own storage and may not support transactional DDL.
     db.exec(CREATE_DOCUMENTS_FTS_TABLE);
 
+    // M-20: Verify FTS5 table was actually created (since it's outside the transaction)
+    const ftsCheck = db
+      .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='documents_fts'")
+      .get();
+    if (!ftsCheck) {
+      throw new Error(
+        'v29->v30 migration: documents_fts FTS5 virtual table creation failed silently'
+      );
+    }
+
     // 2. Create sync triggers
     for (const trigger of CREATE_DOCUMENTS_FTS_TRIGGERS) {
       db.exec(trigger);
@@ -3585,6 +3608,38 @@ function migrateV31ToV32(db: Database.Database): void {
       db.exec('CREATE INDEX IF NOT EXISTS idx_obligations_status ON obligations(status)');
     });
     transaction();
+
+    // M-19: Verify FK integrity after adding new tables/columns.
+    // Log violations but don't throw - existing data may have legitimate FK issues
+    // from before the migration.
+    try {
+      const fkViolations = db.prepare('PRAGMA foreign_key_check').all() as {
+        table: string;
+        rowid: number;
+        parent: string;
+        fkid: number;
+      }[];
+      if (fkViolations.length > 0) {
+        console.error(
+          `[MIGRATION] v32 FK integrity check: ${String(fkViolations.length)} violation(s) found`
+        );
+        for (const v of fkViolations.slice(0, 10)) {
+          console.error(
+            `[MIGRATION]   FK violation: table=${v.table} rowid=${String(v.rowid)} parent=${v.parent} fkid=${String(v.fkid)}`
+          );
+        }
+        if (fkViolations.length > 10) {
+          console.error(
+            `[MIGRATION]   ... and ${String(fkViolations.length - 10)} more violation(s)`
+          );
+        }
+      }
+    } catch (fkCheckErr) {
+      console.error(
+        '[MIGRATION] v32 FK integrity check failed:',
+        fkCheckErr instanceof Error ? fkCheckErr.message : String(fkCheckErr)
+      );
+    }
 
     db.exec('PRAGMA foreign_keys = ON');
     console.error(

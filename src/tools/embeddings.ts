@@ -344,6 +344,7 @@ async function handleEmbeddingRebuild(params: Record<string, unknown>): Promise<
     const embeddingService = getEmbeddingService();
     const rebuiltIds: string[] = [];
     const provenanceIds: string[] = [];
+    let vlmEmbedFailures = 0;
 
     if (input.chunk_id) {
       // Rebuild embedding for a single chunk
@@ -674,11 +675,16 @@ async function handleEmbeddingRebuild(params: Record<string, unknown>): Promise<
             rebuiltIds.push(embId);
             provenanceIds.push(embProvId);
           } catch (vlmError) {
-            console.error(
-              `[WARN] Failed to re-embed VLM description for image ${img.id}: ${vlmError instanceof Error ? vlmError.message : String(vlmError)}`
-            );
+            const errMsg = vlmError instanceof Error ? vlmError.message : String(vlmError);
+            vlmEmbedFailures++;
+            console.error(`[EMBEDDING_REBUILD] VLM embedding failed for image ${img.id}: ${errMsg}`);
             // Non-fatal: continue with remaining images
           }
+        }
+
+        // If ALL VLM embeddings failed, throw an error
+        if (vlmEmbedFailures > 0 && vlmEmbedFailures === vlmImages.length) {
+          throw new Error(`All ${vlmEmbedFailures} VLM embedding(s) failed during rebuild for document ${input.document_id}`);
         }
       }
     }
@@ -697,6 +703,7 @@ async function handleEmbeddingRebuild(params: Record<string, unknown>): Promise<
         rebuilt_count: rebuiltIds.length,
         new_embedding_ids: rebuiltIds,
         provenance_ids: provenanceIds,
+        vlm_embed_failures: vlmEmbedFailures > 0 ? vlmEmbedFailures : undefined,
         target,
         next_steps: [
           { tool: 'ocr_embedding_stats', description: 'Verify embedding coverage after rebuild' },
