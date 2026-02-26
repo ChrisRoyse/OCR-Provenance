@@ -3060,7 +3060,7 @@ async function handleSearchSaved(params: Record<string, unknown>): Promise<ToolR
           | undefined;
 
         if (!row) {
-          throw new Error(`Saved search not found: ${input.saved_search_id}`);
+          throw new MCPError('VALIDATION_ERROR', `Saved search not found: ${input.saved_search_id}`);
         }
 
         return formatResponse(
