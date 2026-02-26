@@ -12,6 +12,7 @@ import { DatabaseError, DatabaseErrorCode, DocumentRow, ListDocumentsOptions } f
 import { runWithForeignKeyCheck } from './helpers.js';
 import { rowToDocument } from './converters.js';
 import { computeHash } from '../../../utils/hash.js';
+import { computeChainHash } from '../../provenance/chain-hash.js';
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // CURSOR-BASED PAGINATION HELPERS
@@ -532,6 +533,7 @@ function getOrCreateOrphanedRoot(db: Database.Database): string {
   const id = uuidv4();
   const now = new Date().toISOString();
   const contentHash = computeHash('ORPHANED_ROOT');
+  const chainHash = computeChainHash(contentHash, null);
 
   db.prepare(
     `
@@ -539,8 +541,8 @@ function getOrCreateOrphanedRoot(db: Database.Database): string {
       id, type, created_at, processed_at, source_type, source_id,
       root_document_id, content_hash, input_hash, processor,
       processor_version, processing_params, parent_id, parent_ids,
-      chain_depth, chain_path
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      chain_depth, chain_path, chain_hash
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `
   ).run(
     id,
@@ -558,7 +560,8 @@ function getOrCreateOrphanedRoot(db: Database.Database): string {
     null,
     '[]',
     0,
-    '["DOCUMENT"]'
+    '["DOCUMENT"]',
+    chainHash
   );
 
   return id;

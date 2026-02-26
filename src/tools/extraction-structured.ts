@@ -23,6 +23,7 @@ import { successResult } from '../server/types.js';
 import { MCPError } from '../server/errors.js';
 import { validateInput } from '../utils/validation.js';
 import { requireDatabase } from '../server/state.js';
+import { logAudit } from '../services/audit.js';
 import { DatalabClient } from '../services/ocr/datalab.js';
 import { ProvenanceType } from '../models/provenance.js';
 import { computeHash } from '../utils/hash.js';
@@ -121,6 +122,14 @@ async function handleExtractStructured(params: Record<string, unknown>) {
     });
 
     const extractionId = uuidv4();
+
+    logAudit({
+      action: 'extract_structured',
+      entityType: 'extraction',
+      entityId: extractionId,
+      details: { document_id: doc.id, content_hash: extractionHash },
+    });
+
     db.insertExtraction({
       id: extractionId,
       document_id: doc.id,

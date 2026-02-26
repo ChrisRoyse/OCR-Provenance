@@ -31,6 +31,7 @@ import {
   DatabaseDeleteInput,
 } from '../utils/validation.js';
 import { formatResponse, handleError, type ToolDefinition } from './shared.js';
+import { logAudit } from '../services/audit.js';
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // DATABASE TOOL HANDLERS
@@ -46,6 +47,13 @@ export async function handleDatabaseCreate(
     const input = validateInput(DatabaseCreateInput, params);
     const db = createDatabase(input.name, input.description, input.storage_path);
     const path = db.getPath();
+
+    logAudit({
+      action: 'db_create',
+      entityType: 'database',
+      entityId: input.name,
+      details: { path, description: input.description },
+    });
 
     return formatResponse(
       successResult({
@@ -131,6 +139,13 @@ export async function handleDatabaseSelect(
 
     const { db, vector } = requireDatabase();
     const stats = db.getStats();
+
+    logAudit({
+      action: 'db_select',
+      entityType: 'database',
+      entityId: input.database_name,
+      details: { document_count: stats.total_documents },
+    });
 
     return formatResponse(
       successResult({
@@ -299,6 +314,12 @@ export async function handleDatabaseDelete(
   try {
     const input = validateInput(DatabaseDeleteInput, params);
     deleteDatabase(input.database_name);
+
+    logAudit({
+      action: 'db_delete',
+      entityType: 'database',
+      entityId: input.database_name,
+    });
 
     return formatResponse(
       successResult({

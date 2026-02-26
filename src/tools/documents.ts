@@ -406,9 +406,54 @@ export async function handleDocumentGet(params: Record<string, unknown>): Promis
       }));
     }
 
-    if (input.include_blocks && ocrResult) {
-      result.json_blocks = ocrResult.json_blocks ? JSON.parse(ocrResult.json_blocks) : null;
-      result.extras = ocrResult.extras_json ? JSON.parse(ocrResult.extras_json) : null;
+    if (input.include_blocks) {
+      if (!ocrResult) {
+        console.error(
+          `[DocumentGet] include_blocks=true but no OCR result exists for document ${input.document_id}`
+        );
+        result.json_blocks = null;
+        result.json_blocks_unavailable_reason = 'No OCR result exists for this document';
+        result.extras = null;
+      } else {
+        if (!ocrResult.json_blocks) {
+          console.error(
+            `[DocumentGet] include_blocks=true but json_blocks is null/empty in OCR result ${ocrResult.id} for document ${input.document_id}. ` +
+            `This means the Datalab API did not return JSON block data for this document, or the document was inserted without OCR processing.`
+          );
+          result.json_blocks = null;
+          result.json_blocks_unavailable_reason =
+            'Datalab API did not return JSON block data for this document. ' +
+            'Ensure the document was processed through OCR with output_format including "json".';
+        } else {
+          try {
+            result.json_blocks = JSON.parse(ocrResult.json_blocks);
+          } catch (parseErr) {
+            const errMsg = parseErr instanceof Error ? parseErr.message : String(parseErr);
+            console.error(
+              `[DocumentGet] Failed to parse json_blocks for document ${input.document_id}, ` +
+              `OCR result ${ocrResult.id}: ${errMsg}. ` +
+              `Raw value (first 200 chars): ${ocrResult.json_blocks.slice(0, 200)}`
+            );
+            throw new Error(
+              `Corrupt json_blocks data for document ${input.document_id}: ${errMsg}`
+            );
+          }
+        }
+
+        try {
+          result.extras = ocrResult.extras_json ? JSON.parse(ocrResult.extras_json) : null;
+        } catch (parseErr) {
+          const errMsg = parseErr instanceof Error ? parseErr.message : String(parseErr);
+          console.error(
+            `[DocumentGet] Failed to parse extras_json for document ${input.document_id}, ` +
+            `OCR result ${ocrResult.id}: ${errMsg}. ` +
+            `Raw value (first 200 chars): ${(ocrResult.extras_json ?? '').slice(0, 200)}`
+          );
+          throw new Error(
+            `Corrupt extras_json data for document ${input.document_id}: ${errMsg}`
+          );
+        }
+      }
     }
 
     if (input.include_full_provenance) {

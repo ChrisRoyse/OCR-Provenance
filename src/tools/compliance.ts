@@ -83,8 +83,31 @@ function safeCount(
   const sql = whereClause
     ? `SELECT COUNT(*) as cnt FROM ${tableName} WHERE ${whereClause}`
     : `SELECT COUNT(*) as cnt FROM ${tableName}`;
-  const row = conn.prepare(sql).get(...(params ?? [])) as { cnt: number } | undefined;
-  return row?.cnt ?? 0;
+  try {
+    const row = conn.prepare(sql).get(...(params ?? [])) as { cnt: number } | undefined;
+    return row?.cnt ?? 0;
+  } catch {
+    // Column may not exist in pre-v32 databases (e.g., chain_hash)
+    return 0;
+  }
+}
+
+/**
+ * Check whether a column exists in a table.
+ * Returns false for missing tables or missing columns.
+ */
+function columnExists(
+  conn: import('better-sqlite3').Database,
+  tableName: string,
+  columnName: string
+): boolean {
+  if (!tableExists(conn, tableName)) return false;
+  try {
+    const columns = conn.pragma(`table_info(${tableName})`) as Array<{ name: string }>;
+    return columns.some((col) => col.name === columnName);
+  } catch {
+    return false;
+  }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -106,9 +129,36 @@ async function handleComplianceReport(params: Record<string, unknown>): Promise<
     // -- Provenance coverage --
     const totalProvenance = safeCount(conn, 'provenance');
     const provenanceWithHash = safeCount(conn, 'provenance', 'content_hash IS NOT NULL');
-    const provenanceWithChainHash = safeCount(conn, 'provenance', 'chain_hash IS NOT NULL');
+    const hasChainHashColumn = columnExists(conn, 'provenance', 'chain_hash');
+    let provenanceWithChainHash = hasChainHashColumn
+      ? safeCount(conn, 'provenance', 'chain_hash IS NOT NULL')
+      : 0;
     const provenanceCoverage =
       totalProvenance > 0 ? Math.round((provenanceWithHash / totalProvenance) * 10000) / 100 : 0;
+
+    // -- Auto-backfill chain hashes when coverage is 0% but records exist --
+    // This handles databases created before chain_hash was added to insertProvenance.
+    // The backfill is lightweight (in-memory hash computation) and runs once per database.
+    let backfillResult: { updated: number; errors: number } | undefined;
+    const shouldAutoBackfill =
+      hasChainHashColumn && totalProvenance > 0 && provenanceWithChainHash === 0;
+    if (input.backfill_chain_hashes || shouldAutoBackfill) {
+      try {
+        backfillResult = backfillChainHashes(conn);
+        if (backfillResult.updated > 0) {
+          console.error(
+            `[INFO] Compliance report auto-backfilled ${backfillResult.updated} chain hashes (${backfillResult.errors} errors)`
+          );
+          // Re-count after backfill
+          provenanceWithChainHash = safeCount(conn, 'provenance', 'chain_hash IS NOT NULL');
+        }
+      } catch (backfillError) {
+        console.error(
+          `[WARN] Chain hash backfill failed: ${backfillError instanceof Error ? backfillError.message : String(backfillError)}`
+        );
+      }
+    }
+
     const chainHashCoverage =
       totalProvenance > 0
         ? Math.round((provenanceWithChainHash / totalProvenance) * 10000) / 100
@@ -142,12 +192,6 @@ async function handleComplianceReport(params: Record<string, unknown>): Promise<
     // -- Annotation coverage --
     const totalAnnotations = safeCount(conn, 'annotations');
     const resolvedAnnotations = safeCount(conn, 'annotations', "status = 'resolved'");
-
-    // -- Optional: backfill chain hashes --
-    let backfillResult: { updated: number; errors: number } | undefined;
-    if (input.backfill_chain_hashes) {
-      backfillResult = backfillChainHashes(conn);
-    }
 
     // -- Optional: hash-chain verification (sample up to 10 documents) --
     const hashVerification: Array<{
@@ -213,7 +257,12 @@ async function handleComplianceReport(params: Record<string, unknown>): Promise<
                 details: hashVerification,
               }
             : undefined,
-        backfill_result: backfillResult,
+        backfill_result: backfillResult
+          ? {
+              ...backfillResult,
+              auto_triggered: shouldAutoBackfill && !input.backfill_chain_hashes,
+            }
+          : undefined,
         next_steps: [
           {
             tool: 'ocr_compliance_hipaa',

@@ -75,6 +75,32 @@ export interface ListUsersOptions {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
+// USER AUTO-PROVISIONING
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/**
+ * Ensure a user exists in the users table, auto-provisioning if necessary.
+ *
+ * When an operation references a user_id via FK, we must ensure the user row
+ * exists. If not found, we create a minimal user record with 'viewer' role.
+ * This is proper user lifecycle management - users are created on first
+ * reference rather than requiring explicit pre-registration.
+ *
+ * @param db - Database connection
+ * @param userId - The user ID to ensure exists
+ */
+export function ensureUserExists(db: Database.Database, userId: string): void {
+  const exists = db.prepare('SELECT id FROM users WHERE id = ?').get(userId);
+  if (!exists) {
+    const now = new Date().toISOString();
+    db.prepare(
+      `INSERT INTO users (id, display_name, role, metadata_json, last_active_at, created_at)
+       VALUES (?, ?, 'viewer', '{}', ?, ?)`
+    ).run(userId, userId, now, now);
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
 // USER CRUD
 // ═══════════════════════════════════════════════════════════════════════════════
 

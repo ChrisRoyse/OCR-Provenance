@@ -606,6 +606,16 @@ export class DatalabClient {
     if (r.cost_breakdown_full) extras.cost_breakdown = r.cost_breakdown_full;
     if (r.extras_features) extras.extras_features = r.extras_features;
 
+    let jsonBlocksSerialized: string | null = null;
+    if (r.json_blocks) {
+      jsonBlocksSerialized = JSON.stringify(r.json_blocks);
+    } else {
+      console.error(
+        `[DatalabOCR] json_blocks is null/empty for document ${r.document_id}. ` +
+        `The Datalab API did not return JSON block data despite output_format="markdown,json".`
+      );
+    }
+
     return {
       id: r.id,
       provenance_id: r.provenance_id,
@@ -621,7 +631,7 @@ export class DatalabClient {
       processing_started_at: r.processing_started_at,
       processing_completed_at: r.processing_completed_at,
       processing_duration_ms: r.processing_duration_ms,
-      json_blocks: r.json_blocks ? JSON.stringify(r.json_blocks) : null,
+      json_blocks: jsonBlocksSerialized,
       extras_json: Object.keys(extras).length > 0 ? JSON.stringify(extras) : null,
     };
   }

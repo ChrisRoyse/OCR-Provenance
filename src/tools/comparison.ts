@@ -21,6 +21,7 @@ import {
 import { successResult } from '../server/types.js';
 import { validateInput } from '../utils/validation.js';
 import { requireDatabase } from '../server/state.js';
+import { logAudit } from '../services/audit.js';
 import { computeHash } from '../utils/hash.js';
 import { MCPError } from '../server/errors.js';
 import {
@@ -467,6 +468,13 @@ async function handleDocumentCompare(params: Record<string, unknown>): Promise<T
       .run(input.document_id_1, input.document_id_2, input.document_id_2, input.document_id_1);
 
     insertComparison(conn, comparison);
+
+    logAudit({
+      action: 'document_compare',
+      entityType: 'comparison',
+      entityId: comparisonId,
+      details: { document_id_1: input.document_id_1, document_id_2: input.document_id_2, similarity_ratio: similarityRatio },
+    });
 
     const comparisonResponse: Record<string, unknown> = {
       comparison_id: comparisonId,

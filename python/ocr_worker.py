@@ -493,7 +493,16 @@ def process_document(
                     f"Captured JSON block hierarchy (via '{matched_attr}') with {len(children) if isinstance(children, list) else 0} top-level blocks"
                 )
         else:
-            logger.info("No JSON block data found under any known attribute name")
+            logger.warning(
+                "No JSON block data found under any known attribute name. "
+                "SDK result attributes checked: %s. "
+                "Searched attribute names: %s. "
+                "output_format was 'markdown,json' but Datalab API returned no JSON blocks. "
+                "This may indicate the file type does not support JSON block output, "
+                "or the API response omitted the 'json' key.",
+                sdk_attrs,
+                json_attr_names,
+            )
 
         # Capture metadata (page_stats, block_counts, etc.)
         metadata_dict = None

@@ -20,6 +20,7 @@ import {
 import { validateInput, sanitizePath } from '../utils/validation.js';
 import { requireDatabase } from '../server/state.js';
 import { successResult } from '../server/types.js';
+import { logAudit } from '../services/audit.js';
 import { FormFillClient } from '../services/ocr/form-fill.js';
 import { ProvenanceType } from '../models/provenance.js';
 import { computeHash } from '../utils/hash.js';
@@ -159,6 +160,13 @@ async function handleFormFill(params: Record<string, unknown>) {
       error_message: result.error,
       provenance_id: provId,
       created_at: now,
+    });
+
+    logAudit({
+      action: 'form_fill',
+      entityType: 'form_fill',
+      entityId: result.id,
+      details: { file_path: input.file_path, fields_filled: result.fieldsFilled.length, fields_not_found: result.fieldsNotFound.length, cost_cents: result.costCents },
     });
 
     const response: Record<string, unknown> = {

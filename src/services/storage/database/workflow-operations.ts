@@ -18,6 +18,7 @@
 
 import type Database from 'better-sqlite3';
 import { v4 as uuidv4 } from 'uuid';
+import { ensureUserExists } from './user-operations.js';
 
 // =============================================================================
 // TYPES
@@ -131,6 +132,14 @@ export function createWorkflowState(
       `Invalid workflow transition: cannot move from "${currentDisplay}" to "${params.state}". ` +
         `Allowed transitions from "${currentDisplay}": [${allowedDisplay}]`
     );
+  }
+
+  // Auto-provision users if referenced (FK: workflow_states.assigned_to/assigned_by -> users.id)
+  if (params.assigned_to) {
+    ensureUserExists(conn, params.assigned_to);
+  }
+  if (params.assigned_by) {
+    ensureUserExists(conn, params.assigned_by);
   }
 
   const id = uuidv4();

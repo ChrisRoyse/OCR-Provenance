@@ -17,6 +17,7 @@ import { successResult, type ServerConfig } from '../server/types.js';
 import { validateInput, ConfigGetInput, ConfigSetInput, ConfigKey } from '../utils/validation.js';
 import { validationError } from '../server/errors.js';
 import { formatResponse, handleError, type ToolResponse, type ToolDefinition } from './shared.js';
+import { logAudit } from '../services/audit.js';
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // CONSTANTS
@@ -179,6 +180,13 @@ export async function handleConfigSet(params: Record<string, unknown>): Promise<
 
     // Apply the configuration change in memory
     setConfigValue(input.key, input.value);
+
+    logAudit({
+      action: 'config_set',
+      entityType: 'config',
+      entityId: input.key,
+      details: { value: input.value },
+    });
 
     // Persist to database if one is selected
     let persisted = false;

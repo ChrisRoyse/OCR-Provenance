@@ -15,6 +15,7 @@ import * as fs from 'fs';
 import { requireDatabase, withDatabaseOperation } from '../server/state.js';
 import { successResult } from '../server/types.js';
 import { MCPError } from '../server/errors.js';
+import { logAudit } from '../services/audit.js';
 import { formatResponse, handleError, type ToolResponse, type ToolDefinition } from './shared.js';
 import { validateInput, sanitizePath } from '../utils/validation.js';
 import { getVLMService } from '../services/vlm/service.js';
@@ -298,6 +299,13 @@ export async function handleVLMDescribe(params: Record<string, unknown>): Promis
         );
       }
 
+      logAudit({
+        action: 'vlm_describe',
+        entityType: 'image',
+        entityId: imagePath,
+        details: { model: result.model, tokens_used: result.tokensUsed, embedding_generated: embeddingGenerated },
+      });
+
       return formatResponse(
         successResult({
           description: result.description,
@@ -367,6 +375,13 @@ export async function handleVLMProcess(params: Record<string, unknown>): Promise
 
         const result = await pipeline.processDocument(documentId);
 
+        logAudit({
+          action: 'vlm_process',
+          entityType: 'document',
+          entityId: documentId,
+          details: { total: result.total, successful: result.successful, failed: result.failed, total_tokens: result.totalTokens },
+        });
+
         const responseData: Record<string, unknown> = {
           mode: 'document',
           document_id: documentId,
@@ -404,6 +419,12 @@ export async function handleVLMProcess(params: Record<string, unknown>): Promise
         });
 
         const result = await pipeline.processPending(limit);
+
+        logAudit({
+          action: 'vlm_process_pending',
+          entityType: 'image',
+          details: { processed: result.total, successful: result.successful, failed: result.failed, total_tokens: result.totalTokens },
+        });
 
         const responseData: Record<string, unknown> = {
           mode: 'pending',
@@ -462,6 +483,13 @@ export async function handleVLMAnalyzePDF(params: Record<string, unknown>): Prom
 Return as JSON with fields: documentType, summary, keyDates, keyNames, findings`;
 
     const response = await client.analyzePDF(prompt || defaultPrompt, fileRef);
+
+    logAudit({
+      action: 'vlm_analyze_pdf',
+      entityType: 'document',
+      entityId: pdfPath,
+      details: { model: response.model, tokens_used: response.usage.totalTokens },
+    });
 
     return formatResponse(
       successResult({

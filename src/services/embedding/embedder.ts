@@ -124,8 +124,12 @@ export class EmbeddingService {
     const actualDevice = this.client.getLastDevice();
 
     const embeddingElapsedMs = Date.now() - startMs;
+    // Use Math.max(1, ...) to ensure at least 1ms when embedding actually occurred,
+    // since sub-millisecond per-embedding times round to 0 with fast batch inference
     const perEmbeddingMs =
-      chunks.length > 0 ? Math.round(embeddingElapsedMs / chunks.length) : null;
+      chunks.length > 0 && embeddingElapsedMs > 0
+        ? Math.max(1, Math.round(embeddingElapsedMs / chunks.length))
+        : null;
 
     const result = db.transaction(() => {
       const embeddingIds: string[] = [];

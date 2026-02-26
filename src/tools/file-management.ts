@@ -23,6 +23,7 @@ import {
 import { successResult } from '../server/types.js';
 import { validateInput, sanitizePath } from '../utils/validation.js';
 import { requireDatabase } from '../server/state.js';
+import { logAudit } from '../services/audit.js';
 import { FileManagerClient } from '../services/ocr/file-manager.js';
 import { ProvenanceType } from '../models/provenance.js';
 import { computeHash, hashFile } from '../utils/hash.js';
@@ -176,6 +177,13 @@ async function handleFileUpload(params: Record<string, unknown>) {
       // Update record with Datalab info
       updateUploadedFileDatalabInfo(conn, uploadId, result.fileId, result.reference);
       updateUploadedFileStatus(conn, uploadId, 'complete');
+
+      logAudit({
+        action: 'file_upload',
+        entityType: 'file',
+        entityId: uploadId,
+        details: { file_name: result.fileName, file_size: result.fileSize, datalab_file_id: result.fileId },
+      });
 
       return formatResponse(
         successResult({
@@ -408,6 +416,13 @@ async function handleFileDelete(params: Record<string, unknown>) {
     // Delete from local DB
     const deleted = deleteUploadedFile(conn, input.file_id);
 
+    logAudit({
+      action: 'file_delete',
+      entityType: 'file',
+      entityId: input.file_id,
+      details: { file_name: file.file_name, deleted_from_datalab: datalabDeleteSucceeded },
+    });
+
     const response: Record<string, unknown> = {
       deleted,
       file_id: input.file_id,
@@ -601,6 +616,12 @@ async function handleFileIngestUploaded(params: Record<string, unknown>) {
         status: 'ingested',
       });
     }
+
+    logAudit({
+      action: 'file_ingest_uploaded',
+      entityType: 'file',
+      details: { ingested_count: ingestedCount, skipped_count: skippedCount },
+    });
 
     return formatResponse(
       successResult({

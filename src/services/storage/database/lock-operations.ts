@@ -11,6 +11,7 @@
  */
 
 import type Database from 'better-sqlite3';
+import { ensureUserExists } from './user-operations.js';
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // TYPES
@@ -56,6 +57,9 @@ export function acquireLock(conn: Database.Database, params: AcquireLockParams):
   if (!doc) {
     throw new Error(`Document not found: ${params.document_id}`);
   }
+
+  // Auto-provision user if not yet in users table (FK: document_locks.user_id -> users.id)
+  ensureUserExists(conn, params.user_id);
 
   // Clean expired locks first
   conn.prepare(`DELETE FROM document_locks WHERE expires_at < datetime('now')`).run();

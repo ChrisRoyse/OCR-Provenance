@@ -16,6 +16,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { requireDatabase } from '../server/state.js';
 import { successResult } from '../server/types.js';
 import { MCPError } from '../server/errors.js';
+import { logAudit } from '../services/audit.js';
 import {
   formatResponse,
   handleError,
@@ -301,6 +302,13 @@ export async function handleImageDelete(params: Record<string, unknown>): Promis
 
       deleteImageCascade(db.getConnection(), imageId);
 
+      logAudit({
+        action: 'image_delete',
+        entityType: 'image',
+        entityId: imageId,
+        details: { mode: 'single', file_deleted: !!(deleteFiles && img.extracted_path) },
+      });
+
       return formatResponse(
         successResult({
           mode: 'single',
@@ -326,6 +334,13 @@ export async function handleImageDelete(params: Record<string, unknown>): Promis
       }
 
       const count = deleteImagesByDocumentCascade(db.getConnection(), documentId!);
+
+      logAudit({
+        action: 'image_delete',
+        entityType: 'document',
+        entityId: documentId!,
+        details: { mode: 'document', images_deleted: count, files_deleted: filesDeleted },
+      });
 
       return formatResponse(
         successResult({
@@ -359,6 +374,13 @@ export async function handleImageResetFailed(
 
     const failedCount = resetFailedImages(db.getConnection(), documentId);
     const processingCount = resetProcessingImages(db.getConnection(), documentId);
+
+    logAudit({
+      action: 'image_reset_failed',
+      entityType: 'image',
+      entityId: documentId ?? undefined,
+      details: { failed_reset: failedCount, processing_reset: processingCount },
+    });
 
     return formatResponse(
       successResult({
@@ -798,6 +820,13 @@ export async function handleImageReanalyze(params: Record<string, unknown>): Pro
 
     // Store vector
     vector.storeVector(embId, vectors[0]);
+
+    logAudit({
+      action: 'image_reanalyze',
+      entityType: 'image',
+      entityId: img.id,
+      details: { document_id: img.document_id, use_thinking: input.use_thinking, custom_prompt: !!input.custom_prompt },
+    });
 
     // Update image record with new VLM results
     updateImageVLMResult(conn, img.id, {

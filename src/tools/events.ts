@@ -16,6 +16,7 @@ import { z } from 'zod';
 import { formatResponse, handleError, type ToolResponse, type ToolDefinition } from './shared.js';
 import { successResult } from '../server/types.js';
 import { requireDatabase } from '../server/state.js';
+import { logAudit } from '../services/audit.js';
 import { validateInput } from '../utils/validation.js';
 import { VALID_EVENT_TYPES } from '../server/events.js';
 
@@ -105,6 +106,13 @@ async function handleWebhookCreate(params: Record<string, unknown>): Promise<Too
       is_active: number;
       created_at: string;
     };
+
+    logAudit({
+      action: 'webhook_create',
+      entityType: 'webhook',
+      entityId: result.id,
+      details: { url: input.url, events: input.events },
+    });
 
     return formatResponse(
       successResult({
@@ -212,6 +220,13 @@ async function handleWebhookDelete(params: Record<string, unknown>): Promise<Too
     }
 
     conn.prepare('DELETE FROM webhooks WHERE id = ?').run(input.webhook_id);
+
+    logAudit({
+      action: 'webhook_delete',
+      entityType: 'webhook',
+      entityId: input.webhook_id,
+      details: { url: existing.url },
+    });
 
     return formatResponse(
       successResult({

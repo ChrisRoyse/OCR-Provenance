@@ -22,6 +22,7 @@ import { validateInput } from '../utils/validation.js';
 import { requireDatabase } from '../server/state.js';
 import { MCPError } from '../server/errors.js';
 import { successResult } from '../server/types.js';
+import { logAudit } from '../services/audit.js';
 import { ProvenanceType } from '../models/provenance.js';
 import { computeHash } from '../utils/hash.js';
 import {
@@ -144,6 +145,13 @@ async function handleClusterDocuments(params: Record<string, unknown>): Promise<
     };
 
     const result = await runClustering(db, vector, config, input.document_filter);
+
+    logAudit({
+      action: 'cluster_documents',
+      entityType: 'cluster',
+      entityId: result.run_id,
+      details: { algorithm: result.algorithm, n_clusters: result.n_clusters, total_documents: result.total_documents },
+    });
 
     return formatResponse(
       successResult({
@@ -363,6 +371,13 @@ async function handleClusterAssign(params: Record<string, unknown>): Promise<Too
 
     insertDocumentCluster(conn, dc);
 
+    logAudit({
+      action: 'cluster_assign',
+      entityType: 'document',
+      entityId: input.document_id,
+      details: { cluster_id: bestClusterId, run_id: input.run_id, similarity: dc.similarity_to_centroid },
+    });
+
     // Update cluster document_count
     conn
       .prepare('UPDATE clusters SET document_count = document_count + 1 WHERE id = ?')
@@ -448,6 +463,13 @@ async function handleClusterDelete(params: Record<string, unknown>): Promise<Too
 
     const deletedCount = deleteClustersByRunId(conn, input.run_id);
 
+    logAudit({
+      action: 'cluster_delete',
+      entityType: 'cluster',
+      entityId: input.run_id,
+      details: { clusters_deleted: deletedCount },
+    });
+
     // Clean up provenance records for deleted clusters
     const deleteProvStmt = conn.prepare('DELETE FROM provenance WHERE id = ?');
     for (const { provenance_id } of provenanceIds) {
@@ -503,6 +525,13 @@ async function handleClusterReassign(params: Record<string, unknown>): Promise<T
 
     // Perform reassignment
     const result = reassignDocument(conn, input.document_id, input.target_cluster_id);
+
+    logAudit({
+      action: 'cluster_reassign',
+      entityType: 'document',
+      entityId: input.document_id,
+      details: { old_cluster_id: result.old_cluster_id, target_cluster_id: input.target_cluster_id },
+    });
 
     return formatResponse(
       successResult({
@@ -565,6 +594,13 @@ async function handleClusterMerge(params: Record<string, unknown>): Promise<Tool
 
     // Perform merge
     const result = mergeClusters(conn, input.cluster_id_1, input.cluster_id_2);
+
+    logAudit({
+      action: 'cluster_merge',
+      entityType: 'cluster',
+      entityId: input.cluster_id_1,
+      details: { merged_from: input.cluster_id_2, documents_moved: result.documents_moved },
+    });
 
     // Get updated cluster info
     const updatedCluster = getCluster(conn, result.merged_cluster_id);

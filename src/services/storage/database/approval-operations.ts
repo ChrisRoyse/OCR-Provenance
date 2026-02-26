@@ -16,6 +16,7 @@
 
 import type Database from 'better-sqlite3';
 import { v4 as uuidv4 } from 'uuid';
+import { ensureUserExists } from './user-operations.js';
 
 // =============================================================================
 // TYPES
@@ -85,6 +86,11 @@ export function createApprovalChain(
 ): ApprovalChainRow {
   if (!params.steps || params.steps.length === 0) {
     throw new Error('Approval chain must have at least one step');
+  }
+
+  // Auto-provision user if referenced (FK: approval_chains.created_by -> users.id)
+  if (params.created_by) {
+    ensureUserExists(conn, params.created_by);
   }
 
   const id = uuidv4();
@@ -261,6 +267,9 @@ export function decideApprovalStep(
   if (decision === 'rejected' && !reason) {
     throw new Error('Reason is required when rejecting an approval step');
   }
+
+  // Auto-provision user if referenced (FK: approval_steps.decided_by -> users.id)
+  ensureUserExists(conn, userId);
 
   const now = new Date().toISOString();
 

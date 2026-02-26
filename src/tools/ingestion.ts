@@ -46,6 +46,7 @@ import {
   documentNotFoundError,
 } from '../server/errors.js';
 import { formatResponse, handleError, type ToolDefinition } from './shared.js';
+import { logAudit } from '../services/audit.js';
 import { BM25SearchService } from '../services/search/bm25.js';
 import type { Document, OCRResult, PageOffset } from '../models/document.js';
 import type { Chunk } from '../models/chunk.js';
@@ -104,9 +105,11 @@ function storeChunks(
   const now = new Date().toISOString();
 
   // Compute per-chunk duration from total chunking time (loop-invariant)
+  // Use Math.max(1, ...) to ensure at least 1ms when chunking actually occurred,
+  // since sub-millisecond per-chunk times round to 0 (e.g., 3ms total / 18 chunks = 0)
   const perChunkDurationMs =
-    chunkingDurationMs != null && chunkResults.length > 0
-      ? Math.round(chunkingDurationMs / chunkResults.length)
+    chunkingDurationMs != null && chunkingDurationMs > 0 && chunkResults.length > 0
+      ? Math.max(1, Math.round(chunkingDurationMs / chunkResults.length))
       : null;
 
   for (let i = 0; i < chunkResults.length; i++) {
@@ -489,9 +492,10 @@ function saveAndStoreImages(
 
     // Create IMAGE provenance records and update image records
     const tracker = getProvenanceTracker(db);
+    const totalImageMs = Date.now() - imageExtractionStart;
     const perImageDurationMs =
-      insertedImages.length > 0
-        ? Math.round((Date.now() - imageExtractionStart) / insertedImages.length)
+      insertedImages.length > 0 && totalImageMs > 0
+        ? Math.max(1, Math.round(totalImageMs / insertedImages.length))
         : null;
     for (const img of insertedImages) {
       try {
@@ -686,9 +690,10 @@ async function processOneDocument(
 
       // Create IMAGE provenance records
       const tracker = getProvenanceTracker(db);
+      const fileBasedTotalMs = Date.now() - imageStart;
       const fileBasedPerImageMs =
-        insertedImages.length > 0
-          ? Math.round((Date.now() - imageStart) / insertedImages.length)
+        insertedImages.length > 0 && fileBasedTotalMs > 0
+          ? Math.max(1, Math.round(fileBasedTotalMs / insertedImages.length))
           : null;
       for (const img of insertedImages) {
         try {
@@ -1007,6 +1012,7 @@ async function processOneDocument(
   // Step 5.5: Store structured extraction if present
   // Errors propagate to fail the document (no swallowing)
   if (processResult.extractionJson && pageSchema) {
+    const extractionStart = Date.now();
     const extractionContent = JSON.stringify(processResult.extractionJson);
     const extractionHash = computeHash(extractionContent);
 
@@ -1034,7 +1040,7 @@ async function processOneDocument(
       processor: 'datalab-extraction',
       processor_version: '1.0.0',
       processing_params: { page_schema: pageSchema },
-      processing_duration_ms: null,
+      processing_duration_ms: Math.max(1, Date.now() - extractionStart),
       processing_quality_score: null,
       parent_id: ocrProvId,
       parent_ids: JSON.stringify([docProvId, ocrProvId]),
@@ -1180,7 +1186,7 @@ export async function handleIngestDirectory(
         const stats = statSync(filePath);
         const hashStart = Date.now();
         const fileHash = await hashFile(filePath);
-        const hashDurationMs = Date.now() - hashStart;
+        const hashDurationMs = Math.max(1, Date.now() - hashStart);
 
         if (existingByPath) {
           if (fileHash === existingByPath.file_hash) {
@@ -1292,18 +1298,29 @@ export async function handleIngestDirectory(
       }
     }
 
+    const filesIngested = items.filter((i) => i.status === 'pending').length;
+    const filesVersionUpdated = items.filter((i) => i.status === 'version_updated').length;
+    const filesErrored = items.filter((i) => i.status === 'error').length;
+
     const result = {
       directory_path: safeDirPath,
       files_found: files.length,
-      files_ingested: items.filter((i) => i.status === 'pending').length,
-      files_version_updated: items.filter((i) => i.status === 'version_updated').length,
+      files_ingested: filesIngested,
+      files_version_updated: filesVersionUpdated,
       files_skipped: items.filter((i) => i.status === 'skipped').length,
-      files_errored: items.filter((i) => i.status === 'error').length,
+      files_errored: filesErrored,
       items,
       next_steps: [
         { tool: 'ocr_process_pending', description: 'Run OCR pipeline on the ingested files' },
       ],
     };
+
+    logAudit({
+      action: 'ingest_directory',
+      entityType: 'document',
+      entityId: safeDirPath,
+      details: { files_found: files.length, files_ingested: filesIngested, files_version_updated: filesVersionUpdated, files_errored: filesErrored },
+    });
 
     return formatResponse(successResult(result));
   } catch (error) {
@@ -1373,7 +1390,7 @@ export async function handleIngestFiles(
 
         const fileHashStart = Date.now();
         const fileHash = await hashFile(filePath);
-        const fileHashDurationMs = Date.now() - fileHashStart;
+        const fileHashDurationMs = Math.max(1, Date.now() - fileHashStart);
 
         if (existingByPath) {
           if (fileHash === existingByPath.file_hash) {
@@ -1475,12 +1492,21 @@ export async function handleIngestFiles(
       }
     }
 
+    const ingestFilesIngested = items.filter((i) => i.status === 'pending').length;
+    const ingestFilesErrored = items.filter((i) => i.status === 'error').length;
+
+    logAudit({
+      action: 'ingest_files',
+      entityType: 'document',
+      details: { file_count: input.file_paths.length, files_ingested: ingestFilesIngested, files_errored: ingestFilesErrored },
+    });
+
     return formatResponse(
       successResult({
-        files_ingested: items.filter((i) => i.status === 'pending').length,
+        files_ingested: ingestFilesIngested,
         files_version_updated: items.filter((i) => i.status === 'version_updated').length,
         files_skipped: items.filter((i) => i.status === 'skipped').length,
-        files_errored: items.filter((i) => i.status === 'error').length,
+        files_errored: ingestFilesErrored,
         items,
         next_steps: [
           { tool: 'ocr_process_pending', description: 'Run OCR pipeline on the ingested files' },
@@ -1742,6 +1768,18 @@ export async function handleProcessPending(
         response.auto_clustering = autoClusterResult;
       }
 
+      logAudit({
+        action: 'process_pending',
+        entityType: 'document',
+        details: {
+          total_processed: response.total_processed,
+          successful: response.successful,
+          failed: response.failed,
+          total_chunks: response.total_chunks,
+          total_embeddings: response.total_embeddings,
+        },
+      });
+
       return formatResponse(successResult(response));
     });
   } catch (error) {
@@ -1888,6 +1926,13 @@ export async function handleRetryFailed(
         resetCount++;
       }
     }
+
+    logAudit({
+      action: 'retry_failed',
+      entityType: 'document',
+      entityId: input.document_id ?? undefined,
+      details: { reset_count: resetCount },
+    });
 
     return formatResponse(
       successResult({
@@ -2052,6 +2097,13 @@ async function handleReprocess(
 
       // Get new quality score
       const newOCR = db.getOCRResultByDocumentId(doc.id);
+
+      logAudit({
+        action: 'reprocess',
+        entityType: 'document',
+        entityId: doc.id,
+        details: { previous_quality: previousQuality, new_quality: newOCR?.parse_quality_score ?? null },
+      });
 
       return formatResponse(
         successResult({

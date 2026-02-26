@@ -266,7 +266,7 @@ type JsonBlocksResult =
  * Handles both formats: flat array or {children: [...], metadata: {...}}.
  */
 function fetchJsonBlocks(
-  conn: ReturnType<ReturnType<typeof requireDatabase>['db']['getConnection']>,
+  conn: import('better-sqlite3').Database,
   documentId: string
 ): JsonBlocksResult {
   const ocrRow = conn
@@ -274,6 +274,11 @@ function fetchJsonBlocks(
     .get(documentId) as { json_blocks: string | null } | undefined;
 
   if (!ocrRow?.json_blocks) {
+    console.error(
+      `[intelligence] json_blocks is null for document ${documentId}. ` +
+      `This is expected for DOCX files where the Datalab API does not return JSON block data. ` +
+      `Falling back to chunk-based table extraction.`
+    );
     return { ok: false, reason: 'no_ocr_data' };
   }
 
@@ -320,6 +325,97 @@ function filterTablesByIndex(
     return null;
   }
   return [allTables[tableIndex]];
+}
+
+/** Row shape returned by the chunk-based table query */
+interface TableChunkRow {
+  id: string;
+  text: string;
+  page_number: number | null;
+  chunk_index: number;
+  processing_params: string | null;
+}
+
+/**
+ * Parse tables from chunk metadata when json_blocks is unavailable (e.g., DOCX files).
+ *
+ * Queries chunks tagged with table content types or having table_columns in
+ * their provenance processing_params, then parses pipe-delimited markdown
+ * text into structured ParsedTable objects.
+ *
+ * @param conn - Database connection
+ * @param documentId - Document ID to extract tables from
+ * @param callerLabel - Label for error messages (e.g., 'DocumentTables', 'TableExport')
+ * @returns Array of ParsedTable objects extracted from chunk text
+ */
+function parseTablesFromChunks(
+  conn: import('better-sqlite3').Database,
+  documentId: string,
+  callerLabel: string
+): ParsedTable[] {
+  const tableChunks = conn
+    .prepare(
+      `SELECT c.id, c.text, c.page_number, c.chunk_index,
+              p.processing_params
+       FROM chunks c
+       LEFT JOIN provenance p ON c.provenance_id = p.id
+       WHERE c.document_id = ? AND (
+         c.content_types LIKE '%table%'
+         OR p.processing_params LIKE '%table_columns%'
+       )
+       ORDER BY c.chunk_index ASC`
+    )
+    .all(documentId) as TableChunkRow[];
+
+  return tableChunks.map((tc, idx) => {
+    let tableSummary: string | null = null;
+    let columnCount = 0;
+    let rowCount = 0;
+
+    if (tc.processing_params) {
+      try {
+        const pp = JSON.parse(tc.processing_params) as Record<string, unknown>;
+        tableSummary = (pp.table_summary as string) ?? null;
+        columnCount = (pp.table_column_count as number) ?? 0;
+        rowCount = (pp.table_row_count as number) ?? 0;
+      } catch (parseErr) {
+        console.error(
+          `[${callerLabel}] Failed to parse processing_params for chunk ${tc.id}: ${String(parseErr)}`
+        );
+      }
+    }
+
+    // Parse markdown table text to extract cells
+    const cells: TableCell[] = [];
+    const lines = tc.text.split('\n').filter((l) => l.trim().length > 0);
+    let rowIdx = 0;
+    for (const line of lines) {
+      // Skip separator lines (e.g., |---|---|)
+      if (/^\|[\s\-:|]+\|$/.test(line.trim())) continue;
+      if (!line.includes('|')) continue;
+      const rawCells = line
+        .split('|')
+        .map((c) => c.trim())
+        .filter((c) => c.length > 0);
+      for (let colIdx = 0; colIdx < rawCells.length; colIdx++) {
+        cells.push({ row: rowIdx, col: colIdx, text: rawCells[colIdx] });
+      }
+      if (rawCells.length > 0) {
+        if (rawCells.length > columnCount) columnCount = rawCells.length;
+        rowIdx++;
+      }
+    }
+    if (rowIdx > rowCount) rowCount = rowIdx;
+
+    return {
+      table_index: idx,
+      page_number: tc.page_number,
+      caption: tableSummary,
+      row_count: rowCount,
+      column_count: columnCount,
+      cells,
+    };
+  });
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -693,25 +789,13 @@ async function handleDocumentTables(params: Record<string, unknown>): Promise<To
     const blocksResult = fetchJsonBlocks(db.getConnection(), input.document_id);
     if (!blocksResult.ok) {
       // Fallback: extract table data from chunk metadata (authoritative source)
-      const conn = db.getConnection();
-      const tableChunks = conn
-        .prepare(
-          `SELECT c.id, c.text, c.page_number, c.chunk_index,
-                  p.processing_params
-           FROM chunks c
-           LEFT JOIN provenance p ON c.provenance_id = p.id
-           WHERE c.document_id = ? AND c.content_types LIKE '%table%'
-           ORDER BY c.chunk_index ASC`
-        )
-        .all(input.document_id) as Array<{
-        id: string;
-        text: string;
-        page_number: number | null;
-        chunk_index: number;
-        processing_params: string | null;
-      }>;
+      const chunkTables = parseTablesFromChunks(
+        db.getConnection(),
+        input.document_id,
+        'DocumentTables'
+      );
 
-      if (tableChunks.length === 0) {
+      if (chunkTables.length === 0) {
         return formatResponse(
           successResult({
             document_id: input.document_id,
@@ -723,57 +807,6 @@ async function handleDocumentTables(params: Record<string, unknown>): Promise<To
           })
         );
       }
-
-      const chunkTables: ParsedTable[] = tableChunks.map((tc, idx) => {
-        let tableSummary: string | null = null;
-        let columnCount = 0;
-        let rowCount = 0;
-
-        // Extract metadata from processing_params
-        if (tc.processing_params) {
-          try {
-            const params = JSON.parse(tc.processing_params) as Record<string, unknown>;
-            tableSummary = (params.table_summary as string) ?? null;
-            columnCount = (params.table_column_count as number) ?? 0;
-            rowCount = (params.table_row_count as number) ?? 0;
-          } catch (parseErr) {
-            console.error(
-              `[DocumentTables] Failed to parse processing_params for chunk ${tc.id}: ${String(parseErr)}`
-            );
-          }
-        }
-
-        // Parse markdown table text to extract cells
-        const cells: TableCell[] = [];
-        const lines = tc.text.split('\n').filter((l) => l.trim().length > 0);
-        let rowIdx = 0;
-        for (const line of lines) {
-          // Skip separator lines (e.g., |---|---|)
-          if (/^\|[\s\-:|]+\|$/.test(line.trim())) continue;
-          if (!line.includes('|')) continue;
-          const rawCells = line
-            .split('|')
-            .map((c) => c.trim())
-            .filter((c) => c.length > 0);
-          for (let colIdx = 0; colIdx < rawCells.length; colIdx++) {
-            cells.push({ row: rowIdx, col: colIdx, text: rawCells[colIdx] });
-          }
-          if (rawCells.length > 0) {
-            if (rawCells.length > columnCount) columnCount = rawCells.length;
-            rowIdx++;
-          }
-        }
-        if (rowIdx > rowCount) rowCount = rowIdx;
-
-        return {
-          table_index: idx,
-          page_number: tc.page_number,
-          caption: tableSummary,
-          row_count: rowCount,
-          column_count: columnCount,
-          cells,
-        };
-      });
 
       const filteredTables = filterTablesByIndex(chunkTables, input.table_index);
       if (filteredTables === null) {
@@ -1240,75 +1273,8 @@ async function handleTableExport(params: Record<string, unknown>): Promise<ToolR
       allTables = extractTablesFromBlocks(blocksResult.blocks);
     } else {
       // Fallback: extract tables from chunk text (markdown pipe-delimited tables)
-      // Same approach used by ocr_document_tables handler
       console.error(`[TableExport] json_blocks unavailable (${blocksResult.reason}) for document ${input.document_id}, falling back to chunk-based table extraction`);
-      const conn = db.getConnection();
-      const tableChunks = conn
-        .prepare(
-          `SELECT c.id, c.text, c.page_number, c.chunk_index,
-                  p.processing_params
-           FROM chunks c
-           LEFT JOIN provenance p ON c.provenance_id = p.id
-           WHERE c.document_id = ? AND c.content_types LIKE '%table%'
-           ORDER BY c.chunk_index ASC`
-        )
-        .all(input.document_id) as Array<{
-        id: string;
-        text: string;
-        page_number: number | null;
-        chunk_index: number;
-        processing_params: string | null;
-      }>;
-
-      allTables = tableChunks.map((tc, idx) => {
-        let tableSummary: string | null = null;
-        let columnCount = 0;
-        let rowCount = 0;
-
-        if (tc.processing_params) {
-          try {
-            const pp = JSON.parse(tc.processing_params) as Record<string, unknown>;
-            tableSummary = (pp.table_summary as string) ?? null;
-            columnCount = (pp.table_column_count as number) ?? 0;
-            rowCount = (pp.table_row_count as number) ?? 0;
-          } catch (parseErr) {
-            console.error(
-              `[TableExport] Failed to parse processing_params for chunk ${tc.id}: ${String(parseErr)}`
-            );
-          }
-        }
-
-        // Parse markdown table text to extract cells
-        const cells: TableCell[] = [];
-        const lines = tc.text.split('\n').filter((l) => l.trim().length > 0);
-        let rowIdx = 0;
-        for (const line of lines) {
-          // Skip separator lines (e.g., |---|---|)
-          if (/^\|[\s\-:|]+\|$/.test(line.trim())) continue;
-          if (!line.includes('|')) continue;
-          const rawCells = line
-            .split('|')
-            .map((c) => c.trim())
-            .filter((c) => c.length > 0);
-          for (let colIdx = 0; colIdx < rawCells.length; colIdx++) {
-            cells.push({ row: rowIdx, col: colIdx, text: rawCells[colIdx] });
-          }
-          if (rawCells.length > 0) {
-            if (rawCells.length > columnCount) columnCount = rawCells.length;
-            rowIdx++;
-          }
-        }
-        if (rowIdx > rowCount) rowCount = rowIdx;
-
-        return {
-          table_index: idx,
-          page_number: tc.page_number,
-          caption: tableSummary,
-          row_count: rowCount,
-          column_count: columnCount,
-          cells,
-        };
-      });
+      allTables = parseTablesFromChunks(db.getConnection(), input.document_id, 'TableExport');
     }
 
     if (allTables.length === 0) {
