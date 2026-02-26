@@ -13,6 +13,7 @@
 
 import { z } from 'zod';
 import * as path from 'path';
+import * as fs from 'fs';
 import { homedir } from 'os';
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -566,6 +567,116 @@ export const ConfigSetInput = z.object({
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /**
+ * System mount paths that should never be auto-added as allowed directories.
+ * These are kernel/system virtual filesystems, not user data volumes.
+ */
+const SYSTEM_MOUNT_PREFIXES = [
+  '/proc',
+  '/sys',
+  '/dev',
+  '/etc',
+  '/run',
+  '/var/lib/docker',
+  '/snap',
+];
+
+/**
+ * Filesystem types that indicate real bind-mounted volumes (not virtual/pseudo FSes).
+ */
+const BIND_MOUNT_FS_TYPES = new Set([
+  'ext4',
+  'ext3',
+  'ext2',
+  'xfs',
+  'btrfs',
+  'zfs',
+  'ntfs',
+  'vfat',
+  'fuseblk',
+  'fuse',
+  'overlay',
+  'nfs',
+  'nfs4',
+  'cifs',
+  'smb',
+  '9p',        // WSL2
+  'drvfs',     // WSL1
+  'virtiofs',  // macOS Docker
+]);
+
+/** Cache: once we detect Docker volume mounts, we don't re-read /proc/mounts. */
+let _dockerMountCache: string[] | null = null;
+
+/**
+ * Detect user-accessible Docker volume mounts by reading /proc/mounts.
+ *
+ * Only runs when /.dockerenv exists (i.e., inside a Docker container).
+ * Returns an empty array if not in Docker or if /proc/mounts cannot be read.
+ * Results are cached after the first successful call.
+ */
+function detectDockerVolumeMounts(): string[] {
+  if (_dockerMountCache !== null) {
+    return _dockerMountCache;
+  }
+
+  _dockerMountCache = [];
+
+  try {
+    // Only attempt detection inside Docker containers
+    if (!fs.existsSync('/.dockerenv')) {
+      return _dockerMountCache;
+    }
+
+    const mountsContent = fs.readFileSync('/proc/mounts', 'utf-8');
+    const detected: string[] = [];
+
+    for (const line of mountsContent.split('\n')) {
+      const parts = line.split(/\s+/);
+      if (parts.length < 3) continue;
+
+      const mountPoint = parts[1];
+      const fsType = parts[2];
+
+      // Skip non-bind-mount filesystem types
+      if (!BIND_MOUNT_FS_TYPES.has(fsType)) continue;
+
+      // Skip system/kernel mount paths
+      const isSystemMount = SYSTEM_MOUNT_PREFIXES.some(
+        (prefix) => mountPoint === prefix || mountPoint.startsWith(prefix + '/')
+      );
+      if (isSystemMount) continue;
+
+      // Skip root filesystem mount
+      if (mountPoint === '/') continue;
+
+      // Only include paths that actually exist and are directories
+      try {
+        const stat = fs.statSync(mountPoint);
+        if (stat.isDirectory()) {
+          detected.push(path.resolve(mountPoint));
+        }
+      } catch {
+        // Mount point not accessible, skip
+      }
+    }
+
+    if (detected.length > 0) {
+      // Log detected mounts for debugging (stderr only, never stdout)
+      console.error(
+        `[path-whitelist] Auto-detected Docker volume mounts: ${detected.join(', ')}`
+      );
+    }
+
+    _dockerMountCache = detected;
+  } catch {
+    // /proc/mounts unreadable or other error -- fall back silently
+    _dockerMountCache = [];
+  }
+
+  return _dockerMountCache;
+}
+
+/**
  * Build the default set of allowed base directories.
  *
  * SEC-002: Paths MUST always be validated against allowed directories.
@@ -574,6 +685,8 @@ export const ConfigSetInput = z.object({
  *   - The user's home directory (documents live here)
  *   - /tmp for temporary files
  *   - The current working directory (project root)
+ *   - Any directories specified via OCR_PROVENANCE_ALLOWED_DIRS env var
+ *   - Auto-detected Docker volume mounts (when running inside Docker)
  *
  * This function is called lazily so it picks up the current config at call time.
  */
@@ -602,6 +715,16 @@ function getDefaultAllowedBaseDirs(): string[] {
       if (trimmed) {
         dirs.push(path.resolve(trimmed));
       }
+    }
+  }
+
+  // Auto-detect Docker bind-mounted volumes from /proc/mounts.
+  // This allows custom volume mounts (e.g., -v /my/docs:/code:ro) to work
+  // without requiring users to manually set OCR_PROVENANCE_ALLOWED_DIRS.
+  const dockerMounts = detectDockerVolumeMounts();
+  for (const mount of dockerMounts) {
+    if (!dirs.includes(mount)) {
+      dirs.push(mount);
     }
   }
 
@@ -653,7 +776,10 @@ export function sanitizePath(filePath: string, allowedBaseDirs?: string[]): stri
   );
   if (!withinAllowed) {
     throw new ValidationError(
-      `Path "${resolved}" is outside allowed directories: ${resolvedBases.join(', ')}`
+      `Path "${resolved}" is outside allowed directories: ${resolvedBases.join(', ')}. ` +
+        `To allow this path, set OCR_PROVENANCE_ALLOWED_DIRS environment variable ` +
+        `(comma-separated list of directories). ` +
+        `Example: -e OCR_PROVENANCE_ALLOWED_DIRS=/host,/data,/code`
     );
   }
 

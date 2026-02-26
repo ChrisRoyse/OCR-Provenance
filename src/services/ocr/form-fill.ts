@@ -69,8 +69,8 @@ export class FormFillClient {
   constructor(config: FormFillClientConfig = {}) {
     this.pythonPath = config.pythonPath;
     this.workerPath = resolve(__dirname, '../../../python/form_fill_worker.py');
-    const parsedTimeout = parseInt(process.env.DATALAB_TIMEOUT || '330000');
-    this.timeout = config.timeout ?? (Number.isNaN(parsedTimeout) ? 330000 : parsedTimeout);
+    const parsedTimeout = parseInt(process.env.DATALAB_TIMEOUT || '1800000');
+    this.timeout = config.timeout ?? (Number.isNaN(parsedTimeout) ? 1800000 : parsedTimeout);
   }
 
   /**

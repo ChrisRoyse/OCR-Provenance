@@ -538,10 +538,23 @@ async function handleCorpusSummarize(params: Record<string, unknown>): Promise<T
 
     const contentTypeDist: Record<string, number> = {};
     for (const row of contentTypeRows) {
-      for (const ct of row.content_types.split(',')) {
-        const trimmed = ct.trim();
-        if (trimmed) {
-          contentTypeDist[trimmed] = (contentTypeDist[trimmed] ?? 0) + 1;
+      try {
+        const parsed = JSON.parse(row.content_types) as string[];
+        if (Array.isArray(parsed)) {
+          for (const ct of parsed) {
+            if (typeof ct === 'string' && ct.trim()) {
+              const trimmed = ct.trim();
+              contentTypeDist[trimmed] = (contentTypeDist[trimmed] ?? 0) + 1;
+            }
+          }
+        }
+      } catch {
+        // Fallback: if not valid JSON, treat as comma-separated
+        for (const ct of row.content_types.split(',')) {
+          const trimmed = ct.trim();
+          if (trimmed) {
+            contentTypeDist[trimmed] = (contentTypeDist[trimmed] ?? 0) + 1;
+          }
         }
       }
     }

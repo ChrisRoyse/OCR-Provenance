@@ -47,6 +47,8 @@ interface PythonOCRResponse {
   extraction_json: Record<string, unknown> | unknown[] | null;
   /** Full cost_breakdown dict from Datalab */
   cost_breakdown_full: Record<string, unknown> | null;
+  /** Extras features from Datalab (links, charts, tracked_changes, etc.) */
+  extras_features: Record<string, unknown> | null;
   /** Document title from metadata */
   doc_title: string | null;
   /** Document author from metadata */
@@ -74,8 +76,11 @@ export class DatalabClient {
   constructor(config: DatalabClientConfig = {}) {
     this.pythonPath = config.pythonPath;
     this.workerPath = resolve(__dirname, '../../../python/ocr_worker.py');
-    const parsedTimeout = parseInt(process.env.DATALAB_TIMEOUT || '330000');
-    this.timeout = config.timeout ?? (Number.isNaN(parsedTimeout) ? 330000 : parsedTimeout); // 5.5 min (FIX-P3-1)
+    const parsedTimeout = parseInt(process.env.DATALAB_TIMEOUT || '1800000');
+    this.timeout = config.timeout ?? (Number.isNaN(parsedTimeout) ? 1800000 : parsedTimeout); // 30 min default
+    console.error(
+      `[DatalabOCR] Initialized with timeout=${this.timeout}ms (${(this.timeout / 60000).toFixed(1)} min)`
+    );
   }
 
   /**
@@ -109,6 +114,8 @@ export class DatalabClient {
     docAuthor: string | null;
     docSubject: string | null;
   }> {
+    // Convert TS timeout (ms) to Python timeout (seconds) so both sides agree
+    const pythonTimeoutSec = Math.floor(this.timeout / 1000);
     const args = [
       '--file',
       filePath,
@@ -118,6 +125,8 @@ export class DatalabClient {
       documentId,
       '--prov-id',
       provenanceId,
+      '--timeout',
+      String(pythonTimeoutSec),
       '--json',
     ];
     if (ocrOptions?.maxPages) args.push('--max-pages', String(ocrOptions.maxPages));
@@ -183,7 +192,10 @@ export class DatalabClient {
             settled = true;
             reject(
               new OCRError(
-                `OCR timeout after ${this.timeout}ms (SIGKILL after 5s grace)`,
+                `OCR timeout after ${this.timeout}ms (${(this.timeout / 60000).toFixed(1)} min). ` +
+                  `SIGKILL sent after 5s grace period. ` +
+                  `To increase, set DATALAB_TIMEOUT env var (in ms). ` +
+                  `Or use page_range to process fewer pages.`,
                 'OCR_TIMEOUT'
               )
             );
@@ -225,7 +237,9 @@ export class DatalabClient {
             : `Process killed by ${exitSignal} with no stderr output.`;
           reject(
             new OCRError(
-              `OCR worker killed by signal ${exitSignal} (file: ${filePath}). ${signalDetail}`,
+              `OCR worker killed by signal ${exitSignal} (file: ${filePath}, timeout: ${this.timeout}ms). ${signalDetail} ` +
+                `To increase timeout, set DATALAB_TIMEOUT env var (in ms). ` +
+                `Or use page_range to process fewer pages.`,
               exitSignal === 'SIGTERM' || exitSignal === 'SIGALRM' ? 'OCR_TIMEOUT' : 'OCR_API_ERROR'
             )
           );
@@ -362,13 +376,25 @@ export class DatalabClient {
     const dummyDocId = 'raw-convert-' + Date.now();
     const dummyProvId = 'raw-convert-prov-' + Date.now();
 
+    // Convert TS timeout (ms) to Python timeout (seconds) so both sides agree
+    const pythonTimeoutSec = Math.floor(this.timeout / 1000);
     const args: string[] = [];
     if (ocrOptions?.fileUrl) {
       args.push('--file-url', ocrOptions.fileUrl);
     } else {
       args.push('--file', filePath);
     }
-    args.push('--mode', mode, '--doc-id', dummyDocId, '--prov-id', dummyProvId, '--json');
+    args.push(
+      '--mode',
+      mode,
+      '--doc-id',
+      dummyDocId,
+      '--prov-id',
+      dummyProvId,
+      '--timeout',
+      String(pythonTimeoutSec),
+      '--json'
+    );
     if (ocrOptions?.maxPages) args.push('--max-pages', String(ocrOptions.maxPages));
     if (ocrOptions?.pageRange) args.push('--page-range', ocrOptions.pageRange);
 
@@ -423,7 +449,10 @@ export class DatalabClient {
             settled = true;
             reject(
               new OCRError(
-                `OCR timeout after ${this.timeout}ms (SIGKILL after 5s grace)`,
+                `OCR timeout after ${this.timeout}ms (${(this.timeout / 60000).toFixed(1)} min). ` +
+                  `SIGKILL sent after 5s grace period. ` +
+                  `To increase, set DATALAB_TIMEOUT env var (in ms). ` +
+                  `Or use page_range to process fewer pages.`,
                 'OCR_TIMEOUT'
               )
             );
@@ -464,7 +493,9 @@ export class DatalabClient {
             : `Process killed by ${exitSignal} with no stderr output.`;
           reject(
             new OCRError(
-              `OCR worker killed by signal ${exitSignal} (file: ${rawFilePath}). ${signalDetail}`,
+              `OCR worker killed by signal ${exitSignal} (file: ${rawFilePath}, timeout: ${this.timeout}ms). ${signalDetail} ` +
+                `To increase timeout, set DATALAB_TIMEOUT env var (in ms). ` +
+                `Or use page_range to process fewer pages.`,
               exitSignal === 'SIGTERM' || exitSignal === 'SIGALRM' ? 'OCR_TIMEOUT' : 'OCR_API_ERROR'
             )
           );
@@ -569,10 +600,11 @@ export class DatalabClient {
 
   private toOCRResult(r: PythonOCRResponse): OCRResult {
     // Direct field mapping - Python snake_case matches TS interface
-    // Build extras_json from metadata + cost_breakdown
+    // Build extras_json from metadata + cost_breakdown + extras_features
     const extras: Record<string, unknown> = {};
     if (r.metadata) extras.metadata = r.metadata;
     if (r.cost_breakdown_full) extras.cost_breakdown = r.cost_breakdown_full;
+    if (r.extras_features) extras.extras_features = r.extras_features;
 
     return {
       id: r.id,

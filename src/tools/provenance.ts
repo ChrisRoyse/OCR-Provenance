@@ -148,6 +148,12 @@ export async function handleProvenanceGet(params: Record<string, unknown>): Prom
       throw provenanceNotFoundError(input.item_id);
     }
 
+    // Get the root document ID from the chain (last element is the root after upward walk)
+    const rootDocId = chain[chain.length - 1].root_document_id;
+
+    // Also fetch ALL descendants from root to build full tree
+    const allRecords = rootDocId ? db.getProvenanceByRootDocument(rootDocId) : [];
+
     const enrichedChain = chain.map((p) => ({
       id: p.id,
       type: p.type,
@@ -159,11 +165,28 @@ export async function handleProvenanceGet(params: Record<string, unknown>): Prom
       parent_id: p.parent_id,
     }));
 
+    // Build descendants tree (excluding items already in the upward chain)
+    const chainIds = new Set(chain.map((c) => c.id));
+    const descendants = allRecords
+      .filter((r) => !chainIds.has(r.id))
+      .map((p) => ({
+        id: p.id,
+        type: p.type,
+        chain_depth: p.chain_depth,
+        processor: p.processor,
+        processor_version: p.processor_version,
+        content_hash: p.content_hash,
+        created_at: p.created_at,
+        parent_id: p.parent_id,
+      }));
+
     return formatResponse(
       successResult({
         item_id: input.item_id,
         item_type: itemType,
         chain: enrichedChain,
+        descendants,
+        total_records: enrichedChain.length + descendants.length,
         root_document_id: chain[0].root_document_id,
         next_steps: [
           {
@@ -265,8 +288,59 @@ export async function handleProvenanceVerify(
       errors.push('Depth verification skipped: chain is incomplete');
     }
 
+    // Verify descendants (not in upward chain) for full bidirectional verification
+    const rootDocId = chain[chain.length - 1].root_document_id;
+    const allRecords = rootDocId ? db.getProvenanceByRootDocument(rootDocId) : [];
+    const chainIds = new Set(chain.map((c) => c.id));
+    const descendantRecords = allRecords.filter((r) => !chainIds.has(r.id));
+
+    let descendantsVerified = 0;
+    let descendantsFailed = 0;
+
+    if (input.verify_content) {
+      for (const record of descendantRecords) {
+        try {
+          const descResult = await verifier.verifyContentHash(record.id);
+          const step: Record<string, unknown> = {
+            provenance_id: record.id,
+            type: record.type,
+            chain_depth: record.chain_depth,
+            content_verified: descResult.valid,
+            expected_hash: record.content_hash,
+          };
+          if (!descResult.valid) {
+            step.computed_hash = descResult.computed_hash;
+            descendantsFailed++;
+            errors.push(
+              `Content hash mismatch at descendant ${record.id} (${record.type}): ` +
+                `expected ${descResult.expected_hash}, got ${descResult.computed_hash}`
+            );
+          } else {
+            descendantsVerified++;
+          }
+          steps.push(step);
+        } catch (verifyError) {
+          descendantsFailed++;
+          const errMsg =
+            verifyError instanceof Error ? verifyError.message : String(verifyError);
+          errors.push(
+            `Failed to verify descendant ${record.id} (${record.type}): ${errMsg}`
+          );
+          steps.push({
+            provenance_id: record.id,
+            type: record.type,
+            chain_depth: record.chain_depth,
+            content_verified: false,
+            error: errMsg,
+          });
+        }
+      }
+    }
+
     // M-9: When verify_content is false, skip content hash result entirely
-    const contentIntegrity = input.verify_content ? chainResult.hashes_failed === 0 : true;
+    const contentIntegrity = input.verify_content
+      ? chainResult.hashes_failed === 0 && descendantsFailed === 0
+      : true;
 
     const result: Record<string, unknown> = {
       item_id: input.item_id,
@@ -279,8 +353,12 @@ export async function handleProvenanceVerify(
 
     // M-9: Only include hash counts when content verification was requested
     if (input.verify_content) {
-      result.hashes_verified = chainResult.hashes_verified;
-      result.hashes_failed = chainResult.hashes_failed;
+      result.hashes_verified = chainResult.hashes_verified + descendantsVerified;
+      result.hashes_failed = chainResult.hashes_failed + descendantsFailed;
+      result.descendants_verified = descendantsVerified;
+      result.descendants_failed = descendantsFailed;
+      result.total_items_verified =
+        chainResult.hashes_verified + descendantsVerified;
     }
 
     result.next_steps = [

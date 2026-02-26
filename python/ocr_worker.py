@@ -155,6 +155,9 @@ class OCRResult:
     # Full cost breakdown dict from Datalab
     cost_breakdown_full: dict | None = None
 
+    # Extras features from Datalab (links, charts, tracked_changes, etc.)
+    extras_features: dict | None = None
+
     # Document metadata from Datalab
     doc_title: str | None = None
     doc_author: str | None = None
@@ -295,7 +298,7 @@ def process_document(
     document_id: str,
     provenance_id: str,
     mode: Literal["fast", "balanced", "accurate"] = "balanced",
-    timeout: int = 300,
+    timeout: int = 1800,
     # New Datalab API parameters
     max_pages: int | None = None,
     page_range: str | None = None,
@@ -316,7 +319,7 @@ def process_document(
         document_id: UUID of the document record in database
         provenance_id: UUID for the OCR_RESULT provenance record
         mode: OCR quality mode (accurate costs more but better quality)
-        timeout: Maximum wait time in seconds (minimum 30s for API polling)
+        timeout: Maximum wait time in seconds (default 1800s = 30 min, minimum 30s for API polling)
         max_pages: Maximum pages to process (Datalab limit: 7000)
         page_range: Specific pages to process, 0-indexed (e.g. "0-5,10")
         skip_cache: Force reprocessing, skip Datalab cache
@@ -352,6 +355,7 @@ def process_document(
         validated_path = validate_file(file_path)
         logger.info(f"Processing document: {validated_path} (mode={mode})")
     api_key = get_api_key()
+    logger.info(f"OCR timeout set to {timeout}s ({timeout / 60:.1f} min), max_polls={max(timeout // 3, 30)}")
 
     # Record timing
     start_time = time.time()
@@ -412,6 +416,16 @@ def process_document(
         page_count = result.page_count or 1
         quality_score = result.parse_quality_score
 
+        # DOCX/PPTX/XLSX files are natively digital - no OCR quality metric available
+        # Assign a high default score (0.95) since text is extracted directly, not OCR'd
+        if quality_score is None:
+            file_ext = os.path.splitext(file_path)[1].lower() if file_path else ""
+            if file_ext in (".docx", ".doc", ".pptx", ".ppt", ".xlsx", ".xls", ".odt", ".ods", ".odp"):
+                quality_score = 0.95
+                logger.info(f"No quality score from Datalab for {file_ext} file, using default {quality_score} (natively digital)")
+            else:
+                logger.warning(f"No quality score from Datalab for {file_ext} file")
+
         # Get cost from response
         # SDK v0.2.1 returns: {"list_cost_cents": N, "final_cost_cents": N}
         # final_cost_cents is the actual charge after any discounts
@@ -433,19 +447,51 @@ def process_document(
 
         # Capture JSON block hierarchy (from output_format="markdown,json")
         json_blocks = None
-        raw_json = getattr(result, "json", None)
+        # Log SDK result attributes to help diagnose JSON block availability
+        sdk_attrs = [a for a in dir(result) if not a.startswith('_')]
+        logger.info(f"SDK result attributes: {sdk_attrs}")
+
+        # Try multiple possible attribute names for JSON block data
+        json_attr_names = ["json", "json_output", "blocks", "structured_output", "json_blocks"]
+        raw_json = None
+        matched_attr = None
+        for attr_name in json_attr_names:
+            candidate = getattr(result, attr_name, None)
+            if candidate is not None:
+                raw_json = candidate
+                matched_attr = attr_name
+                logger.info(f"Found JSON data under attribute '{attr_name}', type: {type(candidate).__name__}")
+                break
+
         if raw_json is not None:
             if isinstance(raw_json, dict):
                 json_blocks = raw_json
+            elif isinstance(raw_json, list):
+                # If it's already a list of blocks, wrap it
+                json_blocks = {"children": raw_json}
+            elif isinstance(raw_json, str):
+                # If returned as a JSON string, parse it
+                try:
+                    parsed = json.loads(raw_json)
+                    if isinstance(parsed, dict):
+                        json_blocks = parsed
+                    elif isinstance(parsed, list):
+                        json_blocks = {"children": parsed}
+                    else:
+                        logger.warning(f"JSON attribute '{matched_attr}' parsed to unexpected type: {type(parsed).__name__}")
+                except json.JSONDecodeError as e:
+                    logger.warning(f"JSON attribute '{matched_attr}' is string but failed to parse: {e}")
             elif hasattr(raw_json, "__dict__"):
                 json_blocks = raw_json.__dict__
             else:
-                logger.warning(f"JSON output requested but got unexpected type: {type(raw_json)}")
+                logger.warning(f"JSON output requested but got unexpected type from '{matched_attr}': {type(raw_json).__name__}")
             if json_blocks is not None:
                 children = json_blocks.get("children", json_blocks.get("blocks", []))
                 logger.info(
-                    f"Captured JSON block hierarchy with {len(children) if isinstance(children, list) else 0} top-level blocks"
+                    f"Captured JSON block hierarchy (via '{matched_attr}') with {len(children) if isinstance(children, list) else 0} top-level blocks"
                 )
+        else:
+            logger.info("No JSON block data found under any known attribute name")
 
         # Capture metadata (page_stats, block_counts, etc.)
         metadata_dict = None
@@ -523,6 +569,7 @@ def process_document(
             metadata=metadata_dict,
             extraction_json=extraction_json,
             cost_breakdown_full=cost_breakdown if cost_breakdown else None,
+            extras_features=extras_features if extras_features else None,
             doc_title=doc_title,
             doc_author=doc_author,
             doc_subject=doc_subject,
@@ -549,8 +596,13 @@ def process_document(
             raise OCRAPIError(error_msg, status, request_id) from e
 
     except DatalabTimeoutError as e:
-        logger.error(f"Timeout after {timeout}s: {e}")
-        raise OCRTimeoutError(str(e), request_id) from e
+        logger.error(f"Timeout after {timeout}s ({timeout / 60:.1f} min): {e}")
+        raise OCRTimeoutError(
+            f"OCR processing timed out after {timeout}s ({timeout / 60:.1f} min). {e} "
+            f"To increase, set DATALAB_TIMEOUT env var (in ms, current: {timeout * 1000}ms). "
+            f"Or use page_range to process fewer pages.",
+            request_id,
+        ) from e
 
     except DatalabFileError as e:
         logger.error(f"File error: {e}")
@@ -634,6 +686,12 @@ Examples:
     parser.add_argument(
         "--additional-config", type=str, help="JSON string of additional Datalab config"
     )
+    parser.add_argument(
+        "--timeout",
+        type=int,
+        default=1800,
+        help="Timeout in seconds for Datalab API polling (default: 1800 = 30 min)",
+    )
 
     args = parser.parse_args()
 
@@ -658,6 +716,7 @@ Examples:
             document_id=doc_id,
             provenance_id=prov_id,
             mode=args.mode,
+            timeout=args.timeout,
             max_pages=args.max_pages,
             page_range=args.page_range,
             skip_cache=args.skip_cache,

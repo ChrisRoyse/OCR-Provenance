@@ -85,6 +85,9 @@ GEMINI_NATIVE_FORMATS = {"png", "jpg", "jpeg", "gif", "webp"}
 # Cache inkscape availability check
 _INKSCAPE_PATH: str | None = shutil.which("inkscape")
 
+# Cache ImageMagick availability check
+_MAGICK_PATH: str | None = shutil.which("convert")
+
 
 def _convert_with_inkscape(img_bytes: bytes, ext: str, filename: str) -> tuple[bool, bytes]:
     """Convert EMF/WMF to PNG using inkscape subprocess.
@@ -125,6 +128,52 @@ def _convert_with_inkscape(img_bytes: bytes, ext: str, filename: str) -> tuple[b
     except Exception as e:
         print(
             f"WARNING: inkscape error for '{filename}': {e}",
+            file=sys.stderr,
+        )
+        return False, img_bytes
+    finally:
+        shutil.rmtree(tmpdir, ignore_errors=True)
+
+
+def _convert_with_imagemagick(img_bytes: bytes, ext: str, filename: str) -> tuple[bool, bytes]:
+    """Convert EMF/WMF to PNG using ImageMagick convert subprocess.
+
+    Returns (success, png_bytes_or_original_bytes).
+    """
+    if _MAGICK_PATH is None:
+        return False, img_bytes
+
+    tmpdir = tempfile.mkdtemp(prefix="docx_magick_")
+    try:
+        src = os.path.join(tmpdir, f"input.{ext}")
+        dst = os.path.join(tmpdir, "output.png")
+        with open(src, "wb") as f:
+            f.write(img_bytes)
+
+        result = subprocess.run(
+            [_MAGICK_PATH, src, dst],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        if result.returncode == 0 and os.path.exists(dst):
+            with open(dst, "rb") as f:
+                return True, f.read()
+
+        print(
+            f"WARNING: imagemagick failed for '{filename}': {result.stderr[:200]}",
+            file=sys.stderr,
+        )
+        return False, img_bytes
+    except subprocess.TimeoutExpired:
+        print(
+            f"WARNING: imagemagick timed out converting '{filename}'",
+            file=sys.stderr,
+        )
+        return False, img_bytes
+    except Exception as e:
+        print(
+            f"WARNING: imagemagick error for '{filename}': {e}",
             file=sys.stderr,
         )
         return False, img_bytes
@@ -377,6 +426,11 @@ def extract_images(
                     converted, img_bytes = _convert_with_inkscape(img_bytes, ext, media_filename)
                     if converted:
                         save_ext = "png"
+                # For EMF/WMF: try ImageMagick as second option
+                if not converted and ext in ("emf", "wmf"):
+                    converted, img_bytes = _convert_with_imagemagick(img_bytes, ext, media_filename)
+                    if converted:
+                        save_ext = "png"
                 # Fallback to Pillow for simpler formats (BMP, TIFF)
                 # M-6: close RGBA intermediate and BytesIO buffer
                 if not converted:
@@ -392,12 +446,20 @@ def extract_images(
                     except Exception as e:
                         print(f"WARNING: Failed to convert {ext} to PNG: {e}", file=sys.stderr)
                 if not converted:
+                    if ext in ("emf", "wmf"):
+                        # Do NOT save raw EMF/WMF - skip entirely
+                        errors.append(
+                            f"EMF/WMF image '{media_filename}' could not be converted "
+                            f"to PNG. Install inkscape or imagemagick in the Docker "
+                            f"image."
+                        )
+                        pil_img.close()
+                        continue
                     errors.append(
                         f"File '{media_filename}': Cannot convert {ext.upper()} to "
                         f"Gemini-compatible format (png/jpg/gif/webp). Saving as "
                         f"{ext.upper()}. VLM processing will skip this image. "
-                        f"Install inkscape to enable conversion: "
-                        f"sudo apt install inkscape"
+                        f"Install inkscape or imagemagick to enable conversion."
                     )
 
                 if converted:
