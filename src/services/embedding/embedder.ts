@@ -123,6 +123,10 @@ export class EmbeddingService {
     // Get actual device from last successful embedding operation
     const actualDevice = this.client.getLastDevice();
 
+    const embeddingElapsedMs = Date.now() - startMs;
+    const perEmbeddingMs =
+      chunks.length > 0 ? Math.round(embeddingElapsedMs / chunks.length) : null;
+
     const result = db.transaction(() => {
       const embeddingIds: string[] = [];
       const provenanceIds: string[] = [];
@@ -136,7 +140,7 @@ export class EmbeddingService {
         const embeddingId = uuidv4();
         const now = new Date().toISOString();
 
-        const provenanceId = this.createProvenance(db, chunk, documentInfo, actualDevice);
+        const provenanceId = this.createProvenance(db, chunk, documentInfo, actualDevice, perEmbeddingMs);
         provenanceIds.push(provenanceId);
 
         const embedding: Omit<Embedding, 'created_at' | 'vector'> = {
@@ -218,7 +222,8 @@ export class EmbeddingService {
     db: DatabaseService,
     chunk: Chunk,
     documentInfo: DocumentInfo,
-    device: string
+    device: string,
+    perEmbeddingDurationMs: number | null
   ): string {
     const provenanceId = uuidv4();
     const now = new Date().toISOString();
@@ -260,7 +265,7 @@ export class EmbeddingService {
         batch_size: this.batchSize,
         section_aware: true,
       },
-      processing_duration_ms: null,
+      processing_duration_ms: perEmbeddingDurationMs,
       processing_quality_score: null,
       parent_id: chunk.provenance_id,
       parent_ids: JSON.stringify(parentIds),

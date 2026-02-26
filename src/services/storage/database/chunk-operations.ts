@@ -317,8 +317,8 @@ export function getChunksFiltered(
   }
 
   if (filters.heading_filter) {
-    conditions.push("heading_context LIKE '%' || ? || '%'");
-    params.push(filters.heading_filter);
+    conditions.push("(heading_context LIKE '%' || ? || '%' OR section_path LIKE '%' || ? || '%')");
+    params.push(filters.heading_filter, filters.heading_filter);
   }
 
   if (filters.content_type_filter && filters.content_type_filter.length > 0) {

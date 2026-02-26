@@ -341,8 +341,9 @@ function resolveChunkFilter(filters: {
   }
 
   if (filters.heading_filter) {
-    conditions.push("c.heading_context LIKE '%' || ? || '%' ESCAPE '\\'");
-    params.push(escapeLikePattern(filters.heading_filter));
+    const escaped = escapeLikePattern(filters.heading_filter);
+    conditions.push("(c.heading_context LIKE '%' || ? || '%' ESCAPE '\\' OR c.section_path LIKE '%' || ? || '%' ESCAPE '\\')");
+    params.push(escaped, escaped);
   }
 
   if (filters.page_range_filter) {
@@ -392,6 +393,36 @@ function resolveChunkFilter(filters: {
   }
 
   return { conditions, params };
+}
+
+/**
+ * Determine whether VLM search results should be skipped based on chunk-level filters.
+ * VLM results don't have content_type, heading, or section_path columns,
+ * so they must be excluded when the user explicitly filters by those fields.
+ */
+function shouldSkipVlmSearch(input: InternalSearchParams): boolean {
+  // If content_type_filter is set and does NOT include 'vlm' or 'image', skip VLM
+  if (input.content_type_filter && input.content_type_filter.length > 0) {
+    const hasVlmType = input.content_type_filter.some(
+      (t) => t === 'vlm' || t === 'image'
+    );
+    if (!hasVlmType) {
+      console.error('[Search] Skipping VLM results: content_type_filter excludes image/vlm content');
+      return true;
+    }
+  }
+
+  // VLM results don't have heading/section data, so skip when those filters are set
+  if (input.heading_filter) {
+    console.error('[Search] Skipping VLM results: heading_filter set but VLM results lack heading data');
+    return true;
+  }
+  if (input.section_path_filter) {
+    console.error('[Search] Skipping VLM results: section_path_filter set but VLM results lack section data');
+    return true;
+  }
+
+  return false;
 }
 
 /**
@@ -1637,16 +1668,18 @@ async function handleSearchKeywordInternal(params: Record<string, unknown>): Pro
         preSanitized,
       });
 
-      // Search VLM FTS
-      const vlmResults = bm25.searchVLM({
-        query: searchQuery,
-        limit: fetchLimit,
-        phraseSearch: input.phrase_search,
-        documentFilter,
-        includeHighlight: input.include_highlight,
-        pageRangeFilter: input.page_range_filter,
-        preSanitized,
-      });
+      // Search VLM FTS (skip if chunk-level filters exclude VLM content)
+      const vlmResults = shouldSkipVlmSearch(input)
+        ? []
+        : bm25.searchVLM({
+            query: searchQuery,
+            limit: fetchLimit,
+            phraseSearch: input.phrase_search,
+            documentFilter,
+            includeHighlight: input.include_highlight,
+            pageRangeFilter: input.page_range_filter,
+            preSanitized,
+          });
 
       // Search extractions FTS
       const extractionResults = bm25.searchExtractions({
@@ -1937,14 +1970,17 @@ async function handleSearchHybridInternal(params: Record<string, unknown>): Prom
         chunkFilter: chunkFilter.conditions.length > 0 ? chunkFilter : undefined,
         preSanitized,
       });
-      const bm25VlmResults = bm25.searchVLM({
-        query: searchQuery,
-        limit: limit * 2,
-        documentFilter,
-        includeHighlight: false,
-        pageRangeFilter: input.page_range_filter,
-        preSanitized,
-      });
+      // Search VLM FTS (skip if chunk-level filters exclude VLM content)
+      const bm25VlmResults = shouldSkipVlmSearch(input)
+        ? []
+        : bm25.searchVLM({
+            query: searchQuery,
+            limit: limit * 2,
+            documentFilter,
+            includeHighlight: false,
+            pageRangeFilter: input.page_range_filter,
+            preSanitized,
+          });
       const bm25ExtractionResults = bm25.searchExtractions({
         query: searchQuery,
         limit: limit * 2,

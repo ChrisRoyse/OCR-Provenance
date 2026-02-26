@@ -17,6 +17,7 @@ import { successResult } from '../server/types.js';
 import { requireDatabase } from '../server/state.js';
 import { validateInput } from '../utils/validation.js';
 import { VALID_ENTITY_TYPES } from '../services/storage/database/tag-operations.js';
+import { logAudit } from '../services/audit.js';
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // ENTITY TYPE SCHEMA
@@ -44,6 +45,13 @@ async function handleTagCreate(params: Record<string, unknown>): Promise<ToolRes
       name: input.name,
       description: input.description,
       color: input.color,
+    });
+
+    logAudit({
+      action: 'tag_create',
+      entityType: 'tag',
+      entityId: tag.id,
+      details: { tag_name: input.name },
     });
 
     return formatResponse(
@@ -121,6 +129,13 @@ async function handleTagApply(params: Record<string, unknown>): Promise<ToolResp
     // Apply tag
     const entityTagId = db.applyTag(tag.id, input.entity_id, input.entity_type);
 
+    logAudit({
+      action: 'tag_apply',
+      entityType: input.entity_type,
+      entityId: input.entity_id,
+      details: { tag_name: input.tag_name, tag_id: tag.id },
+    });
+
     return formatResponse(
       successResult({
         entity_tag_id: entityTagId,
@@ -165,6 +180,13 @@ async function handleTagRemove(params: Record<string, unknown>): Promise<ToolRes
         `Tag "${input.tag_name}" is not applied to ${input.entity_type} ${input.entity_id}`
       );
     }
+
+    logAudit({
+      action: 'tag_remove',
+      entityType: input.entity_type,
+      entityId: input.entity_id,
+      details: { tag_name: input.tag_name, tag_id: tag.id },
+    });
 
     return formatResponse(
       successResult({

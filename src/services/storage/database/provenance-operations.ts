@@ -10,6 +10,7 @@ import { ProvenanceRecord } from '../../../models/provenance.js';
 import { ProvenanceRow } from './types.js';
 import { runWithForeignKeyCheck } from './helpers.js';
 import { rowToProvenance } from './converters.js';
+import { computeChainHash } from '../../provenance/chain-hash.js';
 
 /**
  * Insert a provenance record
@@ -19,14 +20,32 @@ import { rowToProvenance } from './converters.js';
  * @returns string - The provenance record ID
  */
 export function insertProvenance(db: Database.Database, record: ProvenanceRecord): string {
+  // Compute chain_hash: SHA-256(content_hash + ":" + parent.chain_hash)
+  // For root records (no parent): SHA-256(content_hash)
+  let parentChainHash: string | null = null;
+  if (record.parent_id) {
+    try {
+      const parentRow = db
+        .prepare('SELECT chain_hash FROM provenance WHERE id = ?')
+        .get(record.parent_id) as { chain_hash: string | null } | undefined;
+      parentChainHash = parentRow?.chain_hash ?? null;
+    } catch (err) {
+      console.error(
+        `[Provenance] Failed to lookup parent chain_hash for ${record.parent_id}: ${err instanceof Error ? err.message : String(err)}`
+      );
+    }
+  }
+  const chainHash = computeChainHash(record.content_hash, parentChainHash);
+
   const stmt = db.prepare(`
     INSERT INTO provenance (
       id, type, created_at, processed_at, source_file_created_at,
       source_file_modified_at, source_type, source_path, source_id,
       root_document_id, location, content_hash, input_hash, file_hash,
       processor, processor_version, processing_params, processing_duration_ms,
-      processing_quality_score, parent_id, parent_ids, chain_depth, chain_path
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      processing_quality_score, parent_id, parent_ids, chain_depth, chain_path,
+      chain_hash
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
 
   runWithForeignKeyCheck(
@@ -55,6 +74,7 @@ export function insertProvenance(db: Database.Database, record: ProvenanceRecord
       record.parent_ids,
       record.chain_depth,
       record.chain_path,
+      chainHash,
     ],
     'inserting provenance: source_id or parent_id does not exist'
   );

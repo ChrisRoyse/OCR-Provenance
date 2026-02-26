@@ -17,6 +17,7 @@ import { resolve, dirname } from 'path';
 import { v4 as uuidv4 } from 'uuid';
 import { requireDatabase, getDefaultStoragePath } from '../server/state.js';
 import { successResult } from '../server/types.js';
+import { logAudit } from '../services/audit.js';
 import {
   validateInput,
   sanitizePath,
@@ -490,6 +491,13 @@ export async function handleDocumentDelete(params: Record<string, unknown>): Pro
     // Delete document (cascades to chunks, embeddings, provenance)
     db.deleteDocument(doc.id);
 
+    logAudit({
+      action: 'document_delete',
+      entityType: 'document',
+      entityId: doc.id,
+      details: { file_name: doc.file_name, file_path: doc.file_path },
+    });
+
     // Clean up extracted image files on disk
     let imagesCleanedUp = false;
     const imageDir = resolve(getDefaultStoragePath(), 'images', doc.id);
@@ -754,6 +762,17 @@ export async function handleUpdateMetadata(params: Record<string, unknown>): Pro
           docSubject: input.doc_subject,
         });
         updatedCount++;
+
+        logAudit({
+          action: 'metadata_update',
+          entityType: 'document',
+          entityId: docId,
+          details: {
+            doc_title: input.doc_title ?? null,
+            doc_author: input.doc_author ?? null,
+            doc_subject: input.doc_subject ?? null,
+          },
+        });
       } catch (docError) {
         const errMsg = docError instanceof Error ? docError.message : String(docError);
         console.error(`[WARN] Failed to update metadata for document ${docId}: ${errMsg}`);

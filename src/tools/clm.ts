@@ -17,6 +17,7 @@ import { formatResponse, handleError, type ToolResponse, type ToolDefinition } f
 import { successResult } from '../server/types.js';
 import { requireDatabase } from '../server/state.js';
 import { validateInput } from '../utils/validation.js';
+import { logAudit } from '../services/audit.js';
 import {
   listObligations,
   updateObligationStatus,
@@ -226,6 +227,13 @@ async function handleObligationUpdate(params: Record<string, unknown>): Promise<
       input.status as Parameters<typeof updateObligationStatus>[2],
       input.reason
     );
+
+    logAudit({
+      action: 'obligation_update',
+      entityType: 'obligation',
+      entityId: input.obligation_id,
+      details: { new_status: input.status, reason: input.reason ?? null },
+    });
 
     return formatResponse(
       successResult({

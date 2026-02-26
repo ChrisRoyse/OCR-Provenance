@@ -17,6 +17,7 @@ import { formatResponse, handleError, type ToolResponse, type ToolDefinition } f
 import { successResult } from '../server/types.js';
 import { requireDatabase } from '../server/state.js';
 import { validateInput } from '../utils/validation.js';
+import { logAudit } from '../services/audit.js';
 import {
   getLatestWorkflowState,
   createWorkflowState,
@@ -74,6 +75,13 @@ async function handleWorkflowSubmit(params: Record<string, unknown>): Promise<To
       assigned_to: input.assigned_to,
       due_date: input.due_date,
       metadata: input.metadata,
+    });
+
+    logAudit({
+      action: 'workflow_transition',
+      entityType: 'document',
+      entityId: input.document_id,
+      details: { old_state: current?.state ?? null, new_state: 'submitted' },
     });
 
     return formatResponse(
@@ -134,6 +142,13 @@ async function handleWorkflowReview(params: Record<string, unknown>): Promise<To
       state: input.decision,
       reason: input.reason,
       assigned_to: current.assigned_to,
+    });
+
+    logAudit({
+      action: 'workflow_transition',
+      entityType: 'document',
+      entityId: input.document_id,
+      details: { old_state: 'in_review', new_state: input.decision, reason: input.reason ?? null },
     });
 
     const nextSteps = [];
@@ -211,6 +226,13 @@ async function handleWorkflowAssign(params: Record<string, unknown>): Promise<To
         due_date: current.due_date,
       });
 
+      logAudit({
+        action: 'workflow_transition',
+        entityType: 'document',
+        entityId: input.document_id,
+        details: { old_state: 'submitted', new_state: 'in_review', assigned_to: input.user_id },
+      });
+
       return formatResponse(
         successResult({
           workflow_state: inReview,
@@ -243,6 +265,13 @@ async function handleWorkflowAssign(params: Record<string, unknown>): Promise<To
     const updated = conn
       .prepare('SELECT * FROM workflow_states WHERE id = ?')
       .get(current.id) as Record<string, unknown>;
+
+    logAudit({
+      action: 'workflow_reassign',
+      entityType: 'document',
+      entityId: input.document_id,
+      details: { assigned_to: input.user_id, assigned_by: input.assigned_by ?? null },
+    });
 
     return formatResponse(
       successResult({

@@ -59,6 +59,14 @@ export interface BatchResult {
  */
 const DATALAB_SDK_VERSION = '1.0.0';
 
+/**
+ * Default Datalab extras requested when none are explicitly provided.
+ * extract_links and table_row_bboxes are always useful for document intelligence.
+ * track_changes is NOT included by default since it is only relevant for
+ * DOCX files with revision tracking enabled.
+ */
+const DEFAULT_EXTRAS: readonly string[] = ['extract_links', 'table_row_bboxes'];
+
 function parseMaxConcurrent(): number {
   const raw = process.env.DATALAB_MAX_CONCURRENT ?? '3';
   const parsed = parseInt(raw, 10);
@@ -132,6 +140,11 @@ export class OCRProcessor {
       let docAuthor: string | null = null;
       let docSubject: string | null = null;
 
+      // Apply default extras when none explicitly provided
+      const effectiveOptions = ocrOptions
+        ? { ...ocrOptions, extras: ocrOptions.extras ?? [...DEFAULT_EXTRAS] }
+        : { extras: [...DEFAULT_EXTRAS] };
+
       for (let attempt = 1; attempt <= 2; attempt++) {
         try {
           const response = await this.client.processDocument(
@@ -139,7 +152,7 @@ export class OCRProcessor {
             documentId,
             ocrProvenanceId,
             ocrMode,
-            ocrOptions
+            effectiveOptions
           );
           ocrResult = response.result;
           images = response.images;

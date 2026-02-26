@@ -1083,6 +1083,21 @@ async function handleDocumentExtras(params: Record<string, unknown>): Promise<To
       throw new MCPError('INTERNAL_ERROR', `Failed to parse extras_json: ${String(parseErr)}`);
     }
 
+    // Flatten extras_features children to the top level so fields like
+    // links, table_row_bboxes, tracked_changes, charts, infographics are
+    // directly accessible as sections rather than buried under extras_features.
+    const extrasFeatures = extras.extras_features as Record<string, unknown> | undefined;
+    if (extrasFeatures && typeof extrasFeatures === 'object') {
+      for (const [key, value] of Object.entries(extrasFeatures)) {
+        // Only promote if not already present at top level (avoid overwriting
+        // enriched data like structured_links which may have been derived from
+        // the raw extras_features.links)
+        if (!(key in extras)) {
+          extras[key] = value;
+        }
+      }
+    }
+
     // Determine available sections
     const availableSections = Object.keys(extras).filter(
       (key) => extras[key] !== null && extras[key] !== undefined
@@ -1217,25 +1232,91 @@ async function handleTableExport(params: Record<string, unknown>): Promise<ToolR
       { tool: 'ocr_search', description: 'Search for related content' },
     ];
 
+    // Try json_blocks first, then fall back to chunk-based table parsing
     const blocksResult = fetchJsonBlocks(db.getConnection(), input.document_id);
-    if (!blocksResult.ok) {
-      return formatResponse(
-        successResult({
-          document_id: input.document_id,
-          file_name: doc.file_name,
-          tables: [],
-          total_tables: 0,
-          format: input.format,
-          message:
-            blocksResult.reason === 'parse_error'
-              ? 'Failed to parse JSON blocks.'
-              : 'No OCR results or JSON blocks available for export.',
-          next_steps: nextSteps,
-        })
-      );
+    let allTables: ParsedTable[];
+
+    if (blocksResult.ok) {
+      allTables = extractTablesFromBlocks(blocksResult.blocks);
+    } else {
+      // Fallback: extract tables from chunk text (markdown pipe-delimited tables)
+      // Same approach used by ocr_document_tables handler
+      console.error(`[TableExport] json_blocks unavailable (${blocksResult.reason}) for document ${input.document_id}, falling back to chunk-based table extraction`);
+      const conn = db.getConnection();
+      const tableChunks = conn
+        .prepare(
+          `SELECT c.id, c.text, c.page_number, c.chunk_index,
+                  p.processing_params
+           FROM chunks c
+           LEFT JOIN provenance p ON c.provenance_id = p.id
+           WHERE c.document_id = ? AND c.content_types LIKE '%table%'
+           ORDER BY c.chunk_index ASC`
+        )
+        .all(input.document_id) as Array<{
+        id: string;
+        text: string;
+        page_number: number | null;
+        chunk_index: number;
+        processing_params: string | null;
+      }>;
+
+      allTables = tableChunks.map((tc, idx) => {
+        let tableSummary: string | null = null;
+        let columnCount = 0;
+        let rowCount = 0;
+
+        if (tc.processing_params) {
+          try {
+            const pp = JSON.parse(tc.processing_params) as Record<string, unknown>;
+            tableSummary = (pp.table_summary as string) ?? null;
+            columnCount = (pp.table_column_count as number) ?? 0;
+            rowCount = (pp.table_row_count as number) ?? 0;
+          } catch (parseErr) {
+            console.error(
+              `[TableExport] Failed to parse processing_params for chunk ${tc.id}: ${String(parseErr)}`
+            );
+          }
+        }
+
+        // Parse markdown table text to extract cells
+        const cells: TableCell[] = [];
+        const lines = tc.text.split('\n').filter((l) => l.trim().length > 0);
+        let rowIdx = 0;
+        for (const line of lines) {
+          // Skip separator lines (e.g., |---|---|)
+          if (/^\|[\s\-:|]+\|$/.test(line.trim())) continue;
+          if (!line.includes('|')) continue;
+          const rawCells = line
+            .split('|')
+            .map((c) => c.trim())
+            .filter((c) => c.length > 0);
+          for (let colIdx = 0; colIdx < rawCells.length; colIdx++) {
+            cells.push({ row: rowIdx, col: colIdx, text: rawCells[colIdx] });
+          }
+          if (rawCells.length > 0) {
+            if (rawCells.length > columnCount) columnCount = rawCells.length;
+            rowIdx++;
+          }
+        }
+        if (rowIdx > rowCount) rowCount = rowIdx;
+
+        return {
+          table_index: idx,
+          page_number: tc.page_number,
+          caption: tableSummary,
+          row_count: rowCount,
+          column_count: columnCount,
+          cells,
+        };
+      });
     }
 
-    const allTables = extractTablesFromBlocks(blocksResult.blocks);
+    if (allTables.length === 0) {
+      throw new MCPError(
+        'VALIDATION_ERROR',
+        `No tables found in document ${input.document_id}. The document has no table content.`
+      );
+    }
 
     const tables = filterTablesByIndex(allTables, input.table_index);
     if (tables === null) {

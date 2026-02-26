@@ -56,6 +56,7 @@ import {
   updateImageProvenance,
 } from '../services/storage/database/image-operations.js';
 import { getProvenanceTracker } from '../services/provenance/index.js';
+import { backfillChainHashes } from '../services/provenance/chain-hash.js';
 import { createVLMPipeline } from '../services/vlm/pipeline.js';
 import { ImageExtractor } from '../services/images/extractor.js';
 import {
@@ -95,11 +96,18 @@ function storeChunks(
   doc: Document,
   ocrResult: OCRResult,
   chunkResults: ChunkResult[],
-  config: ChunkingConfig = DEFAULT_CHUNKING_CONFIG
+  config: ChunkingConfig = DEFAULT_CHUNKING_CONFIG,
+  chunkingDurationMs?: number
 ): Chunk[] {
   const provenanceTracker = new ProvenanceTracker(db);
   const chunks: Chunk[] = [];
   const now = new Date().toISOString();
+
+  // Compute per-chunk duration from total chunking time (loop-invariant)
+  const perChunkDurationMs =
+    chunkingDurationMs != null && chunkResults.length > 0
+      ? Math.round(chunkingDurationMs / chunkResults.length)
+      : null;
 
   for (let i = 0; i < chunkResults.length; i++) {
     const cr = chunkResults[i];
@@ -143,6 +151,7 @@ function storeChunks(
             }
           : {}),
       },
+      processing_duration_ms: perChunkDurationMs,
       location: {
         chunk_index: i,
         character_start: cr.startOffset,
@@ -394,6 +403,8 @@ function saveAndStoreImages(
   jsonBlocks?: Record<string, unknown> | null,
   pageOffsets?: PageOffset[]
 ): ImageReference[] {
+  const imageExtractionStart = Date.now();
+
   // Create output directory
   if (!existsSync(outputDir)) {
     mkdirSync(outputDir, { recursive: true });
@@ -478,6 +489,10 @@ function saveAndStoreImages(
 
     // Create IMAGE provenance records and update image records
     const tracker = getProvenanceTracker(db);
+    const perImageDurationMs =
+      insertedImages.length > 0
+        ? Math.round((Date.now() - imageExtractionStart) / insertedImages.length)
+        : null;
     for (const img of insertedImages) {
       try {
         const provenanceId = tracker.createProvenance({
@@ -500,6 +515,7 @@ function saveAndStoreImages(
             block_type: img.block_type,
             is_header_footer: img.is_header_footer,
           },
+          processing_duration_ms: perImageDurationMs,
           location: {
             page_number: img.page_number,
           },
@@ -670,6 +686,10 @@ async function processOneDocument(
 
       // Create IMAGE provenance records
       const tracker = getProvenanceTracker(db);
+      const fileBasedPerImageMs =
+        insertedImages.length > 0
+          ? Math.round((Date.now() - imageStart) / insertedImages.length)
+          : null;
       for (const img of insertedImages) {
         try {
           const provenanceId = tracker.createProvenance({
@@ -692,6 +712,7 @@ async function processOneDocument(
               extraction_method: 'file-based',
               is_header_footer: img.is_header_footer,
             },
+            processing_duration_ms: fileBasedPerImageMs,
             location: {
               page_number: img.page_number,
             },
@@ -762,7 +783,7 @@ async function processOneDocument(
 
   // Step 3: Store chunks in database with provenance
   const storeStart = Date.now();
-  const chunks = storeChunks(db, doc, ocrResult, chunkResults, chunkConfig);
+  const chunks = storeChunks(db, doc, ocrResult, chunkResults, chunkConfig, stepTimings.chunking_ms);
   stepTimings.store_chunks_ms = Date.now() - storeStart;
 
   console.error(`[INFO] Chunks stored: ${chunks.length}`);
@@ -1062,6 +1083,21 @@ async function processOneDocument(
     );
   }
 
+  // Step 5.9: Backfill chain hashes as a safety net for any provenance records
+  // that may have been inserted without chain_hash (e.g., by older code paths)
+  try {
+    const backfillResult = backfillChainHashes(db.getConnection());
+    if (backfillResult.updated > 0) {
+      console.error(
+        `[INFO] Chain hash backfill: ${backfillResult.updated} records updated, ${backfillResult.errors} errors`
+      );
+    }
+  } catch (backfillError) {
+    console.error(
+      `[WARN] Chain hash backfill failed for ${doc.id}: ${backfillError instanceof Error ? backfillError.message : String(backfillError)}`
+    );
+  }
+
   // Step 6: Mark document complete (OCR + chunks + embeddings succeeded)
   // Note: Generation validation is handled by withDatabaseOperation() in the caller.
   db.updateDocumentStatus(doc.id, 'complete');
@@ -1142,7 +1178,9 @@ export async function handleIngestDirectory(
         const existingByPath = db.getDocumentByPath(filePath);
 
         const stats = statSync(filePath);
+        const hashStart = Date.now();
         const fileHash = await hashFile(filePath);
+        const hashDurationMs = Date.now() - hashStart;
 
         if (existingByPath) {
           if (fileHash === existingByPath.file_hash) {
@@ -1206,7 +1244,7 @@ export async function handleIngestDirectory(
             recursive: input.recursive,
             ...(isVersionUpdate ? { previous_version_id: existingByPath.id } : {}),
           },
-          processing_duration_ms: null,
+          processing_duration_ms: hashDurationMs,
           processing_quality_score: null,
           parent_id: null,
           parent_ids: '[]',
@@ -1333,7 +1371,9 @@ export async function handleIngestFiles(
           continue;
         }
 
+        const fileHashStart = Date.now();
         const fileHash = await hashFile(filePath);
+        const fileHashDurationMs = Date.now() - fileHashStart;
 
         if (existingByPath) {
           if (fileHash === existingByPath.file_hash) {
@@ -1387,7 +1427,7 @@ export async function handleIngestFiles(
           processor: 'file-scanner',
           processor_version: '1.0.0',
           processing_params: isVersionUpdate ? { previous_version_id: existingByPath.id } : {},
-          processing_duration_ms: null,
+          processing_duration_ms: fileHashDurationMs,
           processing_quality_score: null,
           parent_id: null,
           parent_ids: '[]',

@@ -50,6 +50,33 @@ import { registerAllTools, getToolCount } from './server/register-tools.js';
 import { validateStartupDependencies } from './server/startup.js';
 
 // =============================================================================
+// DOCKER VOLUME WRITABILITY CHECK
+// Detect UID mismatch early when running in Docker (/.dockerenv exists or
+// MCP_TRANSPORT is set). If /data is not writable, fail fast with a clear
+// error message explaining the UID mismatch and how to fix it.
+// =============================================================================
+const isDocker = fs.existsSync('/.dockerenv') || !!process.env.MCP_TRANSPORT;
+if (isDocker) {
+  const dataDir = process.env.OCR_PROVENANCE_DATABASES_PATH || '/data';
+  if (fs.existsSync(dataDir)) {
+    try {
+      const testFile = path.join(dataDir, '.write-test-' + process.pid);
+      fs.writeFileSync(testFile, '');
+      fs.unlinkSync(testFile);
+    } catch (_writeErr) {
+      const uid = typeof process.getuid === 'function' ? process.getuid() : 'unknown';
+      const gid = typeof process.getgid === 'function' ? process.getgid() : 'unknown';
+      console.error(
+        `[FATAL] ${dataDir} directory is not writable by current user (UID ${uid}, GID ${gid}). ` +
+          `This usually means a Docker volume was created by a container with a different UID. ` +
+          `Fix with: docker exec --user root <container> chown -R 999:999 ${dataDir}`
+      );
+      process.exit(1);
+    }
+  }
+}
+
+// =============================================================================
 // CONFIGURATION
 // =============================================================================
 

@@ -673,7 +673,9 @@ export class VLMPipeline {
     vlmDescriptionProvId?: string
   ): Promise<string> {
     // Generate embedding vector
+    const embGenStart = Date.now();
     const vectors = await this.embeddingClient.embedChunks([description], 1);
+    const embGenDurationMs = Date.now() - embGenStart;
 
     if (vectors.length === 0) {
       throw new Error('Embedding generation returned empty result');
@@ -725,7 +727,7 @@ export class VLMPipeline {
             processor: EMBEDDING_MODEL,
             processor_version: '1.5.0',
             processing_params: { task_type: 'search_document', dimensions: 768 },
-            processing_duration_ms: null,
+            processing_duration_ms: embGenDurationMs,
             processing_quality_score: null,
             parent_id: vlmDescriptionProvId,
             parent_ids: JSON.stringify(parentIds),

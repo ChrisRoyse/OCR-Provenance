@@ -16,6 +16,7 @@ import { formatResponse, handleError, type ToolResponse, type ToolDefinition } f
 import { successResult } from '../server/types.js';
 import { requireDatabase } from '../server/state.js';
 import { validateInput } from '../utils/validation.js';
+import { logAudit } from '../services/audit.js';
 import {
   createAnnotation,
   getAnnotationWithThread,
@@ -75,6 +76,17 @@ async function handleAnnotationCreate(params: Record<string, unknown>): Promise<
       annotation_type: input.annotation_type,
       content: input.content,
       parent_id: input.parent_id ?? null,
+    });
+
+    logAudit({
+      action: 'annotation_create',
+      entityType: 'annotation',
+      entityId: annotation.id,
+      details: {
+        document_id: input.document_id,
+        annotation_type: input.annotation_type,
+        user_id: input.user_id ?? null,
+      },
     });
 
     return formatResponse(
@@ -334,6 +346,17 @@ async function handleDocumentLock(params: Record<string, unknown>): Promise<Tool
       ttl_minutes: input.ttl_minutes,
     });
 
+    logAudit({
+      action: 'document_lock',
+      entityType: 'document',
+      entityId: input.document_id,
+      details: {
+        user_id: input.user_id,
+        lock_type: input.lock_type ?? 'exclusive',
+        reason: input.reason ?? null,
+      },
+    });
+
     return formatResponse(
       successResult({
         lock,
@@ -365,6 +388,13 @@ async function handleDocumentUnlock(params: Record<string, unknown>): Promise<To
     const conn = db.getConnection();
 
     releaseLock(conn, input.document_id);
+
+    logAudit({
+      action: 'document_unlock',
+      entityType: 'document',
+      entityId: input.document_id,
+      details: {},
+    });
 
     return formatResponse(
       successResult({

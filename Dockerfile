@@ -144,8 +144,8 @@ RUN if ! python3 --version 2>/dev/null | grep -q "3.12"; then \
     rm -rf /var/lib/apt/lists/*; \
   fi
 
-# Create non-root user
-RUN groupadd -r mcp && useradd -r -g mcp -m -d /home/mcp mcp
+# Create non-root user with fixed UID/GID for volume permission consistency across rebuilds
+RUN groupadd -r -g 999 mcp && useradd -r -u 999 -g mcp -m -d /home/mcp mcp
 
 WORKDIR /app
 
