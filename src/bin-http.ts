@@ -63,7 +63,7 @@ if (isDocker) {
       const testFile = path.join(dataDir, '.write-test-' + process.pid);
       fs.writeFileSync(testFile, '');
       fs.unlinkSync(testFile);
-    } catch (_writeErr) {
+    } catch {
       const uid = typeof process.getuid === 'function' ? process.getuid() : 'unknown';
       const gid = typeof process.getgid === 'function' ? process.getgid() : 'unknown';
       console.error(
