@@ -692,18 +692,109 @@ async function handleDocumentTables(params: Record<string, unknown>): Promise<To
 
     const blocksResult = fetchJsonBlocks(db.getConnection(), input.document_id);
     if (!blocksResult.ok) {
+      // Fallback: extract table data from chunk metadata (authoritative source)
+      const conn = db.getConnection();
+      const tableChunks = conn
+        .prepare(
+          `SELECT c.id, c.text, c.page_number, c.chunk_index,
+                  p.processing_params
+           FROM chunks c
+           LEFT JOIN provenance p ON c.provenance_id = p.id
+           WHERE c.document_id = ? AND c.content_types LIKE '%table%'
+           ORDER BY c.chunk_index ASC`
+        )
+        .all(input.document_id) as Array<{
+        id: string;
+        text: string;
+        page_number: number | null;
+        chunk_index: number;
+        processing_params: string | null;
+      }>;
+
+      if (tableChunks.length === 0) {
+        return formatResponse(
+          successResult({
+            document_id: input.document_id,
+            file_name: doc.file_name,
+            tables: [],
+            total_tables: 0,
+            source: 'no_table_data',
+            next_steps: nextSteps,
+          })
+        );
+      }
+
+      const chunkTables: ParsedTable[] = tableChunks.map((tc, idx) => {
+        let tableSummary: string | null = null;
+        let columnCount = 0;
+        let rowCount = 0;
+
+        // Extract metadata from processing_params
+        if (tc.processing_params) {
+          try {
+            const params = JSON.parse(tc.processing_params) as Record<string, unknown>;
+            tableSummary = (params.table_summary as string) ?? null;
+            columnCount = (params.table_column_count as number) ?? 0;
+            rowCount = (params.table_row_count as number) ?? 0;
+          } catch {
+            // processing_params not valid JSON, skip
+          }
+        }
+
+        // Parse markdown table text to extract cells
+        const cells: TableCell[] = [];
+        const lines = tc.text.split('\n').filter((l) => l.trim().length > 0);
+        let rowIdx = 0;
+        for (const line of lines) {
+          // Skip separator lines (e.g., |---|---|)
+          if (/^\|[\s\-:|]+\|$/.test(line.trim())) continue;
+          if (!line.includes('|')) continue;
+          const rawCells = line
+            .split('|')
+            .map((c) => c.trim())
+            .filter((c) => c.length > 0);
+          for (let colIdx = 0; colIdx < rawCells.length; colIdx++) {
+            cells.push({ row: rowIdx, col: colIdx, text: rawCells[colIdx] });
+          }
+          if (rawCells.length > 0) {
+            if (rawCells.length > columnCount) columnCount = rawCells.length;
+            rowIdx++;
+          }
+        }
+        if (rowIdx > rowCount) rowCount = rowIdx;
+
+        return {
+          table_index: idx,
+          page_number: tc.page_number,
+          caption: tableSummary,
+          row_count: rowCount,
+          column_count: columnCount,
+          cells,
+        };
+      });
+
+      const filteredTables = filterTablesByIndex(chunkTables, input.table_index);
+      if (filteredTables === null) {
+        return formatResponse(
+          successResult({
+            document_id: input.document_id,
+            file_name: doc.file_name,
+            tables: [],
+            total_tables: chunkTables.length,
+            requested_index: input.table_index,
+            message: `Table index ${input.table_index} out of range. Document has ${chunkTables.length} table(s).`,
+            next_steps: nextSteps,
+          })
+        );
+      }
+
       return formatResponse(
         successResult({
           document_id: input.document_id,
           file_name: doc.file_name,
-          tables: [],
-          total_tables: 0,
-          source:
-            blocksResult.reason === 'no_ocr_data'
-              ? 'no_ocr_results_or_blocks'
-              : blocksResult.reason === 'parse_error'
-                ? 'json_blocks_parse_error'
-                : 'empty_json_blocks',
+          tables: filteredTables,
+          total_tables: chunkTables.length,
+          source: 'chunk_metadata',
           next_steps: nextSteps,
         })
       );
@@ -938,6 +1029,13 @@ const KNOWN_EXTRAS_SECTIONS = [
   'tracked_changes',
   'table_row_bboxes',
   'infographics',
+  'extras_features',
+  'metadata',
+  'cost_breakdown',
+  'block_type_stats',
+  'structural_fingerprint',
+  'structured_links',
+  'link_count',
 ] as const;
 
 /**

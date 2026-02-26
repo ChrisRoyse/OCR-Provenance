@@ -46,6 +46,7 @@ import {
   documentNotFoundError,
 } from '../server/errors.js';
 import { formatResponse, handleError, type ToolDefinition } from './shared.js';
+import { BM25SearchService } from '../services/search/bm25.js';
 import type { Document, OCRResult, PageOffset } from '../models/document.js';
 import type { Chunk } from '../models/chunk.js';
 import type { CreateImageReference, ImageReference } from '../models/image.js';
@@ -567,6 +568,7 @@ async function processOneDocument(
   params: ProcessOneDocumentParams
 ): Promise<string[]> {
   const warnings: string[] = [];
+  const stepTimings: Record<string, number> = {};
   const { db, vector, ocrMode, ocrOptions, pageSchema, imagesBaseDir } = params;
 
   console.error(`[INFO] Processing document: ${doc.id} (${doc.file_name})`);
@@ -574,8 +576,10 @@ async function processOneDocument(
   // Step 1: OCR via Datalab
   // OCRProcessor.processDocument() throws on failure (FAIL-FAST).
   // It handles status='processing' internally and marks 'failed' before throwing.
+  const ocrStart = Date.now();
   const ocrProcessor = new OCRProcessor(db);
   const processResult = await ocrProcessor.processDocument(doc.id, ocrMode, ocrOptions);
+  stepTimings.ocr_ms = Date.now() - ocrStart;
 
   // Get the OCR result
   const ocrResult = db.getOCRResultByDocumentId(doc.id);
@@ -588,6 +592,7 @@ async function processOneDocument(
   );
 
   // Step 1.5: Extract and store images from OCR result (if any)
+  const imageStart = Date.now();
   let imageCount = 0;
   const imageOutputDir = resolve(imagesBaseDir, doc.id);
 
@@ -707,8 +712,10 @@ async function processOneDocument(
       console.error(`[INFO] File-based extraction: no images found in document`);
     }
   }
+  stepTimings.image_extraction_ms = Date.now() - imageStart;
 
   // Step 2: Chunk the OCR text using hybrid section-aware chunker
+  const chunkStart = Date.now();
   const chunkConfig: ChunkingConfig = {
     chunkSize: state.config.chunkSize,
     overlapPercent: state.config.chunkOverlapPercent,
@@ -724,6 +731,19 @@ async function processOneDocument(
       pageOffsets = extracted;
     }
   }
+
+  // Issue 9: Correct page count if text-derived page offsets differ from Datalab-reported count
+  if (pageOffsets.length > 1 && ocrResult.page_count !== null && pageOffsets.length !== ocrResult.page_count) {
+    console.error(
+      `[WARN] Page count mismatch for ${doc.id}: Datalab reported ${ocrResult.page_count} pages, ` +
+      `but text analysis found ${pageOffsets.length} page separators. Using text-derived count.`
+    );
+    // Update the document with the text-derived page count
+    db.getConnection()
+      .prepare('UPDATE documents SET page_count = ? WHERE id = ?')
+      .run(pageOffsets.length, doc.id);
+  }
+
   const chunkResults = chunkHybridSectionAware(
     ocrResult.extracted_text,
     pageOffsets,
@@ -731,10 +751,13 @@ async function processOneDocument(
     chunkConfig
   );
 
+  stepTimings.chunking_ms = Date.now() - chunkStart;
   console.error(`[INFO] Chunking complete: ${chunkResults.length} chunks`);
 
   // Step 3: Store chunks in database with provenance
+  const storeStart = Date.now();
   const chunks = storeChunks(db, doc, ocrResult, chunkResults, chunkConfig);
+  stepTimings.store_chunks_ms = Date.now() - storeStart;
 
   console.error(`[INFO] Chunks stored: ${chunks.length}`);
 
@@ -792,6 +815,7 @@ async function processOneDocument(
 
   // Step 3.5: Enrich extras_json with block stats, links, and structural fingerprint
   // (Tasks 4.1, 4.2, 4.4 - Ingestion Pipeline Enrichment)
+  const enrichStart = Date.now();
   try {
     const existingExtras: Record<string, unknown> = ocrResult.extras_json
       ? (JSON.parse(ocrResult.extras_json) as Record<string, unknown>)
@@ -852,11 +876,12 @@ async function processOneDocument(
         headingDepths[key] = (headingDepths[key] ?? 0) + 1;
       }
 
-      // Count content types
+      // Count content types (case-insensitive comparison)
       for (const ct of cr.contentTypes) {
         contentTypeDist[ct] = (contentTypeDist[ct] ?? 0) + 1;
-        if (ct === 'Table' || ct === 'TableGroup') tableCount++;
-        if (ct === 'Figure' || ct === 'FigureGroup') figureCount++;
+        const ctLower = ct.toLowerCase();
+        if (ctLower === 'table' || ctLower === 'tablegroup') tableCount++;
+        if (ctLower === 'figure' || ctLower === 'figuregroup') figureCount++;
       }
     }
 
@@ -875,17 +900,22 @@ async function processOneDocument(
       content_type_distribution: contentTypeDist,
     };
 
+    // Store step timings in extras
+    existingExtras.step_timings = stepTimings;
+
     // Persist enriched extras_json back to ocr_results
     const updatedExtrasJson = JSON.stringify(existingExtras);
     db.getConnection()
       .prepare('UPDATE ocr_results SET extras_json = ? WHERE id = ?')
       .run(updatedExtrasJson, ocrResult.id);
 
+    stepTimings.enrichment_ms = Date.now() - enrichStart;
     console.error(
       `[INFO] Extras enriched: block_stats=${blockStats ? 'yes' : 'no'}, ` +
         `links=${existingExtras.link_count ?? 0}, fingerprint=yes`
     );
   } catch (enrichError) {
+    stepTimings.enrichment_ms = Date.now() - enrichStart;
     const enrichErrMsg = enrichError instanceof Error ? enrichError.message : String(enrichError);
     console.error(`[WARN] Extras enrichment failed for ${doc.id}: ${enrichErrMsg}`);
     warnings.push(
@@ -894,6 +924,7 @@ async function processOneDocument(
   }
 
   // Step 4: Generate embeddings for text chunks
+  const embedStart = Date.now();
   const embeddingService = new EmbeddingService();
   const documentInfo = {
     documentId: doc.id,
@@ -904,6 +935,7 @@ async function processOneDocument(
   };
 
   const embedResult = await embeddingService.embedDocumentChunks(db, vector, chunks, documentInfo);
+  stepTimings.embedding_ms = Date.now() - embedStart;
 
   if (!embedResult.success) {
     throw new Error(embedResult.error ?? 'Embedding generation failed');
@@ -919,6 +951,7 @@ async function processOneDocument(
   // the document -- OCR, chunking, and embeddings already succeeded. Each image
   // has its own vlm_status ('complete'|'failed'|'skipped') tracked independently.
   if (imageCount > 0) {
+    const vlmStart = Date.now();
     const vlmPipeline = createVLMPipeline(db, vector, {
       batchSize: 5,
       concurrency: 3,
@@ -926,6 +959,7 @@ async function processOneDocument(
     });
 
     const vlmResult = await vlmPipeline.processDocument(doc.id);
+    stepTimings.vlm_ms = Date.now() - vlmStart;
     console.error(
       `[INFO] VLM complete: ${vlmResult.successful}/${vlmResult.total} images processed, ` +
         `${vlmResult.skipped} skipped, ${vlmResult.failed} failed, ` +
@@ -1010,6 +1044,7 @@ async function processOneDocument(
   // Note: Generation validation is handled by withDatabaseOperation() in the caller.
   db.updateDocumentStatus(doc.id, 'complete');
 
+  console.error(`[INFO] Step timings for ${doc.id}: ${JSON.stringify(stepTimings)}`);
   console.error(`[INFO] Document ${doc.id} processing complete`);
   return warnings;
 }
@@ -1522,6 +1557,33 @@ export async function handleProcessPending(
           );
         }
         await Promise.allSettled(batch.map(processDocWithTracking));
+      }
+
+      // Rebuild FTS index after processing to update metadata counters
+      if (results.processed > 0) {
+        try {
+          const bm25Service = new BM25SearchService(conn);
+          const ftsResult = bm25Service.rebuildIndex();
+          console.error(
+            `[INFO] FTS index rebuilt: ${ftsResult.chunks_indexed} chunks, ${ftsResult.vlm_indexed} VLM, ${ftsResult.extractions_indexed} extractions (${ftsResult.duration_ms}ms)`
+          );
+        } catch (ftsError) {
+          console.error(
+            `[WARN] FTS index rebuild failed: ${ftsError instanceof Error ? ftsError.message : String(ftsError)}`
+          );
+        }
+
+        // Rebuild documents_fts index after metadata updates (Issue 16: metadata set AFTER
+        // document INSERT, so the INSERT trigger fires with NULL metadata fields. Rebuilding
+        // ensures FTS5 has the updated doc_title, doc_author, doc_subject values.)
+        try {
+          conn.exec("INSERT INTO documents_fts(documents_fts) VALUES('rebuild')");
+          console.error('[INFO] Documents FTS index rebuilt');
+        } catch (docFtsError) {
+          console.error(
+            `[WARN] Documents FTS rebuild failed: ${docFtsError instanceof Error ? docFtsError.message : String(docFtsError)}`
+          );
+        }
       }
 
       // Get remaining count - CRITICAL: use 'status' not 'statusFilter'

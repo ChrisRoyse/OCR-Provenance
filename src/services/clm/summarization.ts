@@ -67,9 +67,19 @@ export function summarizeDocument(chunks: ChunkInput[]): DocumentSummary {
       pages.add(chunk.page_number);
     }
     if (chunk.content_types) {
-      for (const ct of chunk.content_types.split(',')) {
-        const trimmed = ct.trim();
-        if (trimmed) contentTypes.add(trimmed);
+      try {
+        const parsed = JSON.parse(chunk.content_types) as string[];
+        if (Array.isArray(parsed)) {
+          for (const ct of parsed) {
+            if (typeof ct === 'string' && ct.trim()) contentTypes.add(ct.trim());
+          }
+        }
+      } catch {
+        // Fallback: if not valid JSON, treat as comma-separated
+        for (const ct of chunk.content_types.split(',')) {
+          const trimmed = ct.trim();
+          if (trimmed) contentTypes.add(trimmed);
+        }
       }
     }
     wordCount += chunk.text.split(/\s+/).filter((w) => w.length > 0).length;

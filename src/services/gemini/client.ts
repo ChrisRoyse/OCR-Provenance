@@ -461,7 +461,9 @@ export class GeminiClient {
       throw new Error(
         `Unsupported image format for VLM: '${ext}' (file: ${path.basename(filePath)}). ` +
           `Gemini accepts: png, jpg, jpeg, gif, webp, pdf. ` +
-          `To convert EMF/WMF images, install LibreOffice: sudo apt install libreoffice-core`
+          `Install inkscape (apt install inkscape) or imagemagick (apt install imagemagick) ` +
+          `in the container. The image extraction pipeline converts EMF/WMF to PNG ` +
+          `automatically when either tool is available.`
       );
     }
 

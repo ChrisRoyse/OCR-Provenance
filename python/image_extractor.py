@@ -78,6 +78,9 @@ GEMINI_NATIVE_FORMATS = {"png", "jpg", "jpeg", "gif", "webp"}
 # Cache inkscape availability check
 _INKSCAPE_PATH: str | None = shutil.which("inkscape")
 
+# Cache ImageMagick availability check
+_MAGICK_PATH: str | None = shutil.which("convert")
+
 
 def _convert_with_inkscape(img_bytes: bytes, ext: str, filename: str) -> tuple[bool, bytes]:
     """Convert EMF/WMF to PNG using inkscape subprocess."""
@@ -102,6 +105,52 @@ def _convert_with_inkscape(img_bytes: bytes, ext: str, filename: str) -> tuple[b
                 return True, f.read()
         return False, img_bytes
     except Exception:
+        return False, img_bytes
+    finally:
+        shutil.rmtree(tmpdir, ignore_errors=True)
+
+
+def _convert_with_imagemagick(img_bytes: bytes, ext: str, filename: str) -> tuple[bool, bytes]:
+    """Convert EMF/WMF to PNG using ImageMagick convert subprocess.
+
+    Returns (success, png_bytes_or_original_bytes).
+    """
+    if _MAGICK_PATH is None:
+        return False, img_bytes
+
+    tmpdir = tempfile.mkdtemp(prefix="pdf_magick_")
+    try:
+        src = os.path.join(tmpdir, f"input.{ext}")
+        dst = os.path.join(tmpdir, "output.png")
+        with open(src, "wb") as f:
+            f.write(img_bytes)
+
+        result = subprocess.run(
+            [_MAGICK_PATH, src, dst],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        if result.returncode == 0 and os.path.exists(dst):
+            with open(dst, "rb") as f:
+                return True, f.read()
+
+        print(
+            f"WARNING: imagemagick failed for '{filename}': {result.stderr[:200]}",
+            file=sys.stderr,
+        )
+        return False, img_bytes
+    except subprocess.TimeoutExpired:
+        print(
+            f"WARNING: imagemagick timed out converting '{filename}'",
+            file=sys.stderr,
+        )
+        return False, img_bytes
+    except Exception as e:
+        print(
+            f"WARNING: imagemagick error for '{filename}': {e}",
+            file=sys.stderr,
+        )
         return False, img_bytes
     finally:
         shutil.rmtree(tmpdir, ignore_errors=True)
@@ -205,6 +254,13 @@ def extract_images(
                                 )
                                 if converted:
                                     save_ext = "png"
+                            # For EMF/WMF: try ImageMagick as second option
+                            if not converted and save_ext in ("emf", "wmf"):
+                                converted, img_bytes = _convert_with_imagemagick(
+                                    img_bytes, save_ext, f"p{page_num + 1}_i{img_idx}"
+                                )
+                                if converted:
+                                    save_ext = "png"
                             # Fallback to Pillow for simpler formats (BMP, TIFF)
                             # M-6: close RGBA intermediate and BytesIO buffer
                             if not converted:
@@ -216,12 +272,23 @@ def extract_images(
                                     img_bytes = buf.getvalue()
                                     buf.close()
                                     save_ext = "png"
+                                    converted = True
                                 except Exception as conv_err:
                                     errors.append(
                                         f"Page {page_num + 1}, image {img_idx}: "
-                                        f"RGBA conversion failed for format '{save_ext}', "
-                                        f"saving original: {conv_err}"
+                                        f"RGBA conversion failed for format '{save_ext}': "
+                                        f"{conv_err}"
                                     )
+                            if not converted:
+                                if save_ext in ("emf", "wmf"):
+                                    # Do NOT save raw EMF/WMF - skip entirely
+                                    errors.append(
+                                        f"EMF/WMF image 'p{page_num + 1}_i{img_idx}' "
+                                        f"could not be converted to PNG. Install "
+                                        f"inkscape or imagemagick in the Docker image."
+                                    )
+                                    pil_img.close()
+                                    continue
 
                         # C-1: close pil_img now that we have dimensions and conversion done
                         pil_img.close()

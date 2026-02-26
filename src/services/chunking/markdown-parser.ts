@@ -58,6 +58,31 @@ const DATALAB_PAGE_SEPARATOR_REGEX = /^\s*\{\d+\}-{10,}\s*$/;
 const HEADING_REGEX = /^(#{1,6})\s+(.+)/;
 
 /**
+ * Bold-only heading pattern: entire line is bold text (**...**).
+ * Used to detect headings in Datalab OCR output where headings are rendered
+ * as bold text rather than ATX-style markdown headings.
+ * Examples: "**HEADING TEXT**", "**I. MERIT STRENGTH**", "**A. Sub-heading**"
+ */
+const BOLD_HEADING_REGEX = /^\*\*(.+)\*\*$/;
+
+/**
+ * Roman numeral prefix pattern for heading level detection.
+ * Matches: I., II., III., IV., V., VI., VII., VIII., IX., X., XI., etc.
+ * Requires at least one Roman numeral character before the period.
+ */
+const ROMAN_NUMERAL_PREFIX = /^(X{0,3}(?:IX|IV|V?I{1,3}|V)|X+)\.\s/;
+
+/**
+ * Letter prefix pattern (A., B., C., etc.) for heading level detection.
+ */
+const LETTER_PREFIX = /^[A-Z]\.\s/;
+
+/**
+ * Numbered prefix pattern (1., 2., 3., etc.) for heading level detection.
+ */
+const NUMBERED_PREFIX = /^\d+\.\s/;
+
+/**
  * Table separator line pattern: line with pipes and dashes/colons
  */
 const TABLE_SEPARATOR_REGEX = /^\|[\s\-:|]+\|$/;
@@ -386,6 +411,22 @@ function classifySegment(
     };
   }
 
+  // Bold-text heading: first line is entirely bold (**...**).
+  // Datalab OCR often renders document headings as bold text rather than
+  // ATX-style headings. Only match when the first line is a standalone bold line.
+  const boldHeadingResult = detectBoldHeading(firstLine);
+  if (boldHeadingResult !== null) {
+    return {
+      type: 'heading',
+      text: segment,
+      startOffset,
+      endOffset,
+      headingLevel: boldHeadingResult.level,
+      headingText: boldHeadingResult.text,
+      pageNumber: getPageNumberForOffset(startOffset, pageOffsets),
+    };
+  }
+
   // Table: has at least 2 lines, at least one line with | at start and end,
   // and a separator line matching the table separator pattern
   if (isTable(segment)) {
@@ -508,6 +549,91 @@ export function extractPageOffsetsFromText(text: string): PageOffset[] {
   offsets.sort((a, b) => a.page - b.page);
 
   return offsets;
+}
+
+/**
+ * Detect if a line is a bold-text heading and determine its level.
+ *
+ * Datalab OCR often renders document headings as bold text (**...**) rather
+ * than ATX-style markdown headings (# ...). This function checks if the
+ * first line of a segment is entirely bold and heuristically assigns a
+ * heading level based on text characteristics.
+ *
+ * Level assignment heuristics:
+ * - ALL CAPS bold text: level 1 (e.g., "**DEFENSE ARGUMENTS**")
+ * - Roman numeral prefix (I., II., III.): level 2 (e.g., "**I. MERIT STRENGTH**")
+ * - Letter prefix (A., B., C.): level 3 (e.g., "**A. Wound Tracker**")
+ * - Numbered prefix (1., 2., 3.): level 3 (e.g., "**1. First Item**")
+ * - Mixed case bold text: level 2 (e.g., "**Provider Chronology**")
+ *
+ * @param firstLine - The first line of a segment (trimmed by caller)
+ * @returns Object with level and text if bold heading detected, null otherwise
+ */
+function detectBoldHeading(firstLine: string): { level: number; text: string } | null {
+  const trimmedLine = firstLine.trim();
+  const boldMatch = BOLD_HEADING_REGEX.exec(trimmedLine);
+  if (!boldMatch) {
+    return null;
+  }
+
+  const innerText = boldMatch[1].trim();
+
+  // Reject empty or too-short bold text (must be at least 3 characters)
+  if (innerText.length < 3) {
+    return null;
+  }
+
+  // Reject very long bold text (>200 chars) - likely a paragraph, not a heading
+  if (innerText.length > 200) {
+    return null;
+  }
+
+  // Reject if the bold text contains pipe characters (likely a table cell)
+  if (innerText.includes('|')) {
+    return null;
+  }
+
+  // Reject if the bold text is only numbers and/or punctuation
+  if (/^[\d\s.,;:!?'"()\-/]+$/.test(innerText)) {
+    return null;
+  }
+
+  // Determine heading level heuristically
+  const level = determineBoldHeadingLevel(innerText);
+
+  return { level, text: innerText };
+}
+
+/**
+ * Determine the heading level for bold text based on its content.
+ *
+ * @param text - The inner text of the bold heading (without ** markers)
+ * @returns Heading level (1-3)
+ */
+function determineBoldHeadingLevel(text: string): number {
+  // Check for Roman numeral prefix first (e.g., "I. MERIT STRENGTH")
+  if (ROMAN_NUMERAL_PREFIX.test(text)) {
+    return 2;
+  }
+
+  // Check for letter prefix (e.g., "A. Wound Tracker")
+  if (LETTER_PREFIX.test(text)) {
+    return 3;
+  }
+
+  // Check for numbered prefix (e.g., "1. First Item")
+  if (NUMBERED_PREFIX.test(text)) {
+    return 3;
+  }
+
+  // Check if ALL CAPS (ignoring non-letter characters like periods, spaces, slashes)
+  const letters = text.replace(/[^a-zA-Z]/g, '');
+  if (letters.length > 0 && letters === letters.toUpperCase()) {
+    return 1;
+  }
+
+  // Default: mixed case bold text gets level 2
+  return 2;
 }
 
 function isTable(segment: string): boolean {
