@@ -419,7 +419,9 @@ def process_document(
         # DOCX/PPTX/XLSX files are natively digital - no OCR quality metric available
         # Assign a high default score (0.95) since text is extracted directly, not OCR'd
         if quality_score is None:
-            file_ext = os.path.splitext(file_path)[1].lower() if file_path else ""
+            # Use file_path or file_url for extension detection (file_path may be empty for URL mode)
+            ext_source = file_path or file_url or ""
+            file_ext = os.path.splitext(ext_source)[1].lower()
             if file_ext in (".docx", ".doc", ".pptx", ".ppt", ".xlsx", ".xls", ".odt", ".ods", ".odp"):
                 quality_score = 0.95
                 logger.info(f"No quality score from Datalab for {file_ext} file, using default {quality_score} (natively digital)")

@@ -736,8 +736,10 @@ async function handleDocumentTables(params: Record<string, unknown>): Promise<To
             tableSummary = (params.table_summary as string) ?? null;
             columnCount = (params.table_column_count as number) ?? 0;
             rowCount = (params.table_row_count as number) ?? 0;
-          } catch {
-            // processing_params not valid JSON, skip
+          } catch (parseErr) {
+            console.error(
+              `[DocumentTables] Failed to parse processing_params for chunk ${tc.id}: ${String(parseErr)}`
+            );
           }
         }
 

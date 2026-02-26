@@ -154,7 +154,7 @@ export async function handleProvenanceGet(params: Record<string, unknown>): Prom
     // Also fetch ALL descendants from root to build full tree
     const allRecords = rootDocId ? db.getProvenanceByRootDocument(rootDocId) : [];
 
-    const enrichedChain = chain.map((p) => ({
+    const toProvenanceSummary = (p: (typeof chain)[number]) => ({
       id: p.id,
       type: p.type,
       chain_depth: p.chain_depth,
@@ -163,22 +163,13 @@ export async function handleProvenanceGet(params: Record<string, unknown>): Prom
       content_hash: p.content_hash,
       created_at: p.created_at,
       parent_id: p.parent_id,
-    }));
+    });
+
+    const enrichedChain = chain.map(toProvenanceSummary);
 
     // Build descendants tree (excluding items already in the upward chain)
     const chainIds = new Set(chain.map((c) => c.id));
-    const descendants = allRecords
-      .filter((r) => !chainIds.has(r.id))
-      .map((p) => ({
-        id: p.id,
-        type: p.type,
-        chain_depth: p.chain_depth,
-        processor: p.processor,
-        processor_version: p.processor_version,
-        content_hash: p.content_hash,
-        created_at: p.created_at,
-        parent_id: p.parent_id,
-      }));
+    const descendants = allRecords.filter((r) => !chainIds.has(r.id)).map(toProvenanceSummary);
 
     return formatResponse(
       successResult({
@@ -357,8 +348,8 @@ export async function handleProvenanceVerify(
       result.hashes_failed = chainResult.hashes_failed + descendantsFailed;
       result.descendants_verified = descendantsVerified;
       result.descendants_failed = descendantsFailed;
-      result.total_items_verified =
-        chainResult.hashes_verified + descendantsVerified;
+      result.total_items_checked =
+        chainResult.hashes_verified + chainResult.hashes_failed + descendantsVerified + descendantsFailed;
     }
 
     result.next_steps = [

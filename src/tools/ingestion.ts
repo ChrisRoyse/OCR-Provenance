@@ -733,15 +733,21 @@ async function processOneDocument(
   }
 
   // Issue 9: Correct page count if text-derived page offsets differ from Datalab-reported count
-  if (pageOffsets.length > 1 && ocrResult.page_count !== null && pageOffsets.length !== ocrResult.page_count) {
+  const textDerivedPageCount = pageOffsets.length;
+  const datalabPageCount = ocrResult.page_count;
+  const hasPageCountMismatch =
+    textDerivedPageCount > 1 &&
+    datalabPageCount !== null &&
+    textDerivedPageCount !== datalabPageCount;
+
+  if (hasPageCountMismatch) {
     console.error(
-      `[WARN] Page count mismatch for ${doc.id}: Datalab reported ${ocrResult.page_count} pages, ` +
-      `but text analysis found ${pageOffsets.length} page separators. Using text-derived count.`
+      `[WARN] Page count mismatch for ${doc.id}: Datalab reported ${datalabPageCount} pages, ` +
+        `but text analysis found ${textDerivedPageCount} page separators. Using text-derived count.`
     );
-    // Update the document with the text-derived page count
     db.getConnection()
       .prepare('UPDATE documents SET page_count = ? WHERE id = ?')
-      .run(pageOffsets.length, doc.id);
+      .run(textDerivedPageCount, doc.id);
   }
 
   const chunkResults = chunkHybridSectionAware(
@@ -900,10 +906,8 @@ async function processOneDocument(
       content_type_distribution: contentTypeDist,
     };
 
-    // Store step timings in extras
-    existingExtras.step_timings = stepTimings;
-
     // Persist enriched extras_json back to ocr_results
+    // Note: step_timings are added later (after embedding/VLM) via a final UPDATE
     const updatedExtrasJson = JSON.stringify(existingExtras);
     db.getConnection()
       .prepare('UPDATE ocr_results SET extras_json = ? WHERE id = ?')
@@ -1038,6 +1042,24 @@ async function processOneDocument(
       docAuthor: processResult.docAuthor ?? null,
       docSubject: processResult.docSubject ?? null,
     });
+  }
+
+  // Persist step_timings into extras_json now that all steps are complete
+  try {
+    const currentExtras = db.getConnection()
+      .prepare('SELECT extras_json FROM ocr_results WHERE id = ?')
+      .get(ocrResult.id) as { extras_json: string | null } | undefined;
+    const extrasObj = currentExtras?.extras_json
+      ? (JSON.parse(currentExtras.extras_json) as Record<string, unknown>)
+      : {};
+    extrasObj.step_timings = stepTimings;
+    db.getConnection()
+      .prepare('UPDATE ocr_results SET extras_json = ? WHERE id = ?')
+      .run(JSON.stringify(extrasObj), ocrResult.id);
+  } catch (timingsError) {
+    console.error(
+      `[WARN] Failed to persist step_timings for ${doc.id}: ${timingsError instanceof Error ? timingsError.message : String(timingsError)}`
+    );
   }
 
   // Step 6: Mark document complete (OCR + chunks + embeddings succeeded)
