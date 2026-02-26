@@ -213,8 +213,13 @@ export class MCPError extends Error {
           ? (ocrCategory as ErrorCategory)
           : category;
 
+      // Preserve diagnostic properties from custom error classes (VectorError, EmbeddingError, etc.)
+      const customDetails = (error as { details?: Record<string, unknown> }).details;
+      const customCode = (error as { code?: string }).code;
       return new MCPError(resolvedCategory, error.message, {
         originalName: error.name,
+        ...(customCode && { errorCode: customCode }),
+        ...(customDetails && { errorDetails: customDetails }),
         stack: error.stack,
       });
     }

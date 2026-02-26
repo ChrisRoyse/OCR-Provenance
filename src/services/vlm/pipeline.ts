@@ -498,10 +498,15 @@ export class VLMPipeline {
       }
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
+      const imageContext = `image_id=${image.id}, page=${image.page_number ?? 'unknown'}, ` +
+        `block_type=${image.block_type ?? 'unknown'}, ` +
+        `dimensions=${image.dimensions?.width ?? '?'}x${image.dimensions?.height ?? '?'}`;
+      console.error(`[VLMPipeline] VLM analysis failed for ${imageContext}: ${errorMessage}`);
 
-      // Mark as failed in database
+      // Mark as failed in database with full context
+      const failureMessage = `${errorMessage} [${imageContext}]`;
       try {
-        setImageVLMFailed(this.db, image.id, errorMessage);
+        setImageVLMFailed(this.db, image.id, failureMessage);
       } catch (secondaryError) {
         console.error(
           '[VLMPipeline] Failed to mark image as failed:',
@@ -513,7 +518,7 @@ export class VLMPipeline {
       return {
         imageId: image.id,
         success: false,
-        error: errorMessage,
+        error: failureMessage,
         processingTimeMs: Date.now() - start,
       };
     }

@@ -335,6 +335,20 @@ export class GeminiClient {
             await this.sleep(delay);
             continue;
           }
+        } else if (hasJsonMode && attempt === maxAttempts - 1) {
+          // Last attempt: still validate JSON but don't retry - just log the failure
+          const cleaned = text.replace(/```json\n?|\n?```/g, '').trim();
+          try {
+            JSON.parse(cleaned);
+          } catch (parseError) {
+            console.error(
+              `[GeminiClient] Final attempt (${attempt + 1}/${maxAttempts}) returned invalid JSON. ` +
+                `responseLength=${text.length}, ` +
+                `parseError=${parseError instanceof Error ? parseError.message : String(parseError)}, ` +
+                `responsePreview=${JSON.stringify(text.slice(0, 200))}`
+            );
+            // Don't retry, let caller's parser attempt more robust extraction
+          }
         }
 
         return { text, usage, model: this.config.model };

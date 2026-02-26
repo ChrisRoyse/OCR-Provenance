@@ -2308,45 +2308,46 @@ export async function handleSearchUnified(params: Record<string, unknown>): Prom
 export async function handleFTSManage(params: Record<string, unknown>): Promise<ToolResponse> {
   try {
     const input = validateInput(FTSManageInput, params);
-    const { db } = requireDatabase();
-    const bm25 = new BM25SearchService(db.getConnection());
+    return await withDatabaseOperation(async ({ db }) => {
+      const bm25 = new BM25SearchService(db.getConnection());
 
-    if (input.action === 'rebuild') {
-      const result = bm25.rebuildIndex();
-      return formatResponse(
-        successResult({
-          operation: 'fts_rebuild',
-          ...result,
-          next_steps: [
-            { tool: 'ocr_search', description: 'Search using the rebuilt index' },
-            { tool: 'ocr_db_stats', description: 'Check database statistics' },
-          ],
-        })
-      );
-    }
+      if (input.action === 'rebuild') {
+        const result = bm25.rebuildIndex();
+        return formatResponse(
+          successResult({
+            operation: 'fts_rebuild',
+            ...result,
+            next_steps: [
+              { tool: 'ocr_search', description: 'Search using the rebuilt index' },
+              { tool: 'ocr_db_stats', description: 'Check database statistics' },
+            ],
+          })
+        );
+      }
 
-    const status = bm25.getStatus();
+      const status = bm25.getStatus();
 
-    // Detect chunks without embeddings (invisible to semantic search)
-    try {
-      const conn = db.getConnection();
-      const gapRow = conn
-        .prepare(
-          `SELECT COUNT(*) as cnt FROM chunks c
-         LEFT JOIN embeddings e ON e.chunk_id = c.id
-         WHERE e.id IS NULL`
-        )
-        .get() as { cnt: number };
-      (status as Record<string, unknown>).chunks_without_embeddings = gapRow.cnt;
-    } catch (error) {
-      console.error(`[Search] Failed to query chunks without embeddings: ${String(error)}`);
-    }
+      // Detect chunks without embeddings (invisible to semantic search)
+      try {
+        const conn = db.getConnection();
+        const gapRow = conn
+          .prepare(
+            `SELECT COUNT(*) as cnt FROM chunks c
+           LEFT JOIN embeddings e ON e.chunk_id = c.id
+           WHERE e.id IS NULL`
+          )
+          .get() as { cnt: number };
+        (status as Record<string, unknown>).chunks_without_embeddings = gapRow.cnt;
+      } catch (error) {
+        console.error(`[Search] Failed to query chunks without embeddings: ${String(error)}`);
+      }
 
-    (status as Record<string, unknown>).next_steps = [
-      { tool: 'ocr_search', description: 'Search using the rebuilt index' },
-      { tool: 'ocr_db_stats', description: 'Check database statistics' },
-    ];
-    return formatResponse(successResult(status));
+      (status as Record<string, unknown>).next_steps = [
+        { tool: 'ocr_search', description: 'Search using the rebuilt index' },
+        { tool: 'ocr_db_stats', description: 'Check database statistics' },
+      ];
+      return formatResponse(successResult(status));
+    }); // end withDatabaseOperation
   } catch (error) {
     return handleError(error);
   }
@@ -2464,168 +2465,174 @@ const RagContextInput = z.object({
 async function handleRagContext(params: Record<string, unknown>): Promise<ToolResponse> {
   try {
     const input = validateInput(RagContextInput, params);
-    const { db, vector } = requireDatabase();
-    const conn = db.getConnection();
-    const limit = input.limit ?? 5;
-    const maxContextLength = input.max_context_length ?? 8000;
+    return await withDatabaseOperation(async ({ db, vector }) => {
+      const conn = db.getConnection();
+      const limit = input.limit ?? 5;
+      const maxContextLength = input.max_context_length ?? 8000;
 
-    // ── Step 1: Run hybrid search (BM25 + semantic + RRF) ──────────────────
-    const bm25 = new BM25SearchService(conn);
-    const fetchLimit = limit * 2;
+      // ── Step 1: Run hybrid search (BM25 + semantic + RRF) ──────────────────
+      const bm25 = new BM25SearchService(conn);
+      const fetchLimit = limit * 2;
 
-    const bm25ChunkResults = bm25.search({
-      query: input.question,
-      limit: fetchLimit,
-      documentFilter: input.document_filter,
-      includeHighlight: false,
-    });
-    const bm25VlmResults = bm25.searchVLM({
-      query: input.question,
-      limit: fetchLimit,
-      documentFilter: input.document_filter,
-      includeHighlight: false,
-    });
-    const bm25ExtractionResults = bm25.searchExtractions({
-      query: input.question,
-      limit: fetchLimit,
-      documentFilter: input.document_filter,
-      includeHighlight: false,
-    });
-
-    const allBm25 = [...bm25ChunkResults, ...bm25VlmResults, ...bm25ExtractionResults]
-      .sort((a, b) => b.bm25_score - a.bm25_score)
-      .slice(0, fetchLimit)
-      .map((r, i) => ({ ...r, rank: i + 1 }));
-
-    // Semantic search
-    const embedder = getEmbeddingService();
-    const queryVector = await embedder.embedSearchQuery(input.question);
-    const semanticResults = vector.searchSimilar(queryVector, {
-      limit: fetchLimit,
-      threshold: 0.3,
-      documentFilter: input.document_filter,
-    });
-
-    // Convert to ranked format and fuse with RRF (default weights)
-    // Over-fetch to allow room for dedup + diversity filtering
-    const bm25Ranked = toBm25Ranked(allBm25);
-    const semanticRanked = toSemanticRanked(semanticResults);
-
-    const fusion = new RRFFusion({ k: 60, bm25Weight: 1.0, semanticWeight: 1.0 });
-    const fusedResults = fusion.fuse(bm25Ranked, semanticRanked, limit * 3);
-
-    // Handle empty results
-    if (fusedResults.length === 0) {
-      const emptyContext =
-        '## Relevant Document Excerpts\n\nNo relevant documents found for the given question.';
-      return formatResponse(
-        successResult({
-          question: input.question,
-          context: emptyContext,
-          context_length: emptyContext.length,
-          search_results_used: 0,
-          sources: [],
-          deduplication: { before: 0, after: 0, removed: 0 },
-          source_diversity: {
-            max_per_document: input.max_results_per_document ?? 3,
-            before: 0,
-            after: 0,
-          },
-          next_steps: [{ tool: 'ocr_search', description: 'Try a broader search query' }],
-        })
-      );
-    }
-
-    // ── Step 1b: Deduplicate overlapping chunks (Task 3.3) ──────────────
-    const preDedupResults = fusedResults as unknown as Array<Record<string, unknown>>;
-    const deduplicated = deduplicateOverlappingResults(preDedupResults);
-    const dedupStats = {
-      before: preDedupResults.length,
-      after: deduplicated.length,
-      removed: preDedupResults.length - deduplicated.length,
-    };
-
-    // ── Step 1c: Enforce source diversity (Task 3.4) ────────────────────
-    const maxPerDoc = input.max_results_per_document ?? 3;
-    const diversified = enforceSourceDiversity(deduplicated, maxPerDoc);
-    const diversityStats = {
-      max_per_document: maxPerDoc,
-      before: deduplicated.length,
-      after: diversified.length,
-    };
-
-    // Apply final limit after dedup + diversity
-    const finalFused = diversified.slice(0, limit);
-
-    // Enrich VLM results with image metadata
-    enrichVLMResultsWithImageMetadata(conn, finalFused);
-
-    // ── Step 2: Assemble markdown context ──────────────────────────────────
-    const contextParts: string[] = [];
-
-    // Document excerpts
-    contextParts.push('## Relevant Document Excerpts\n');
-    const sources: Array<{ file_name: string; page_number: number | null; document_id: string }> =
-      [];
-
-    for (let i = 0; i < finalFused.length; i++) {
-      const r = finalFused[i];
-      const score = Math.round((r.rrf_score as number) * 1000) / 1000;
-      const fileName =
-        (r.source_file_name as string) ||
-        path.basename((r.source_file_path as string) || 'unknown');
-      const pageInfo =
-        r.page_number !== null && r.page_number !== undefined ? `, Page ${r.page_number}` : '';
-
-      contextParts.push(`### Result ${i + 1} (Score: ${score})`);
-      contextParts.push(`**Source:** ${fileName}${pageInfo}`);
-      if (r.section_path) {
-        contextParts.push(`**Section:** ${r.section_path}`);
-      }
-      if (r.heading_context) {
-        contextParts.push(`**Heading:** ${r.heading_context}`);
-      }
-
-      // For VLM results with image metadata, include image context
-      if (r.image_extracted_path) {
-        const blockType = r.image_block_type || 'Image';
-        const imgPage = r.image_page_number ?? r.page_number ?? 'unknown';
-        contextParts.push(`> **[Image: ${blockType} on page ${imgPage}]**`);
-        contextParts.push(`> File: ${r.image_extracted_path}`);
-        contextParts.push(`> Description: ${(r.original_text as string).replace(/\n/g, '\n> ')}\n`);
-      } else {
-        contextParts.push(`> ${(r.original_text as string).replace(/\n/g, '\n> ')}\n`);
-      }
-
-      sources.push({
-        file_name: fileName,
-        page_number: r.page_number as number | null,
-        document_id: r.document_id as string,
+      const bm25ChunkResults = bm25.search({
+        query: input.question,
+        limit: fetchLimit,
+        documentFilter: input.document_filter,
+        includeHighlight: false,
       });
-    }
+      const bm25VlmResults = bm25.searchVLM({
+        query: input.question,
+        limit: fetchLimit,
+        documentFilter: input.document_filter,
+        includeHighlight: false,
+      });
+      const bm25ExtractionResults = bm25.searchExtractions({
+        query: input.question,
+        limit: fetchLimit,
+        documentFilter: input.document_filter,
+        includeHighlight: false,
+      });
 
-    // ── Step 3: Truncate to max_context_length ─────────────────────────────
-    let assembledMarkdown = contextParts.join('\n');
-    if (assembledMarkdown.length > maxContextLength) {
-      assembledMarkdown = assembledMarkdown.slice(0, maxContextLength - 3) + '...';
-    }
+      const allBm25 = [...bm25ChunkResults, ...bm25VlmResults, ...bm25ExtractionResults]
+        .sort((a, b) => b.bm25_score - a.bm25_score)
+        .slice(0, fetchLimit)
+        .map((r, i) => ({ ...r, rank: i + 1 }));
 
-    // ── Step 4: Return structured response ─────────────────────────────────
-    const ragResponse: Record<string, unknown> = {
-      question: input.question,
-      context: assembledMarkdown,
-      context_length: assembledMarkdown.length,
-      search_results_used: finalFused.length,
-      sources,
-      deduplication: dedupStats,
-      source_diversity: diversityStats,
-    };
-    ragResponse.next_steps = [
-      { tool: 'ocr_search', description: 'Run a more detailed search with filters' },
-      { tool: 'ocr_document_get', description: 'Get full details for a source document' },
-      { tool: 'ocr_chunk_context', description: 'Expand a specific chunk with surrounding text' },
-    ];
-    return formatResponse(successResult(ragResponse));
+      // Semantic search
+      const embedder = getEmbeddingService();
+      const queryVector = await embedder.embedSearchQuery(input.question);
+      const semanticResults = vector.searchSimilar(queryVector, {
+        limit: fetchLimit,
+        threshold: 0.3,
+        documentFilter: input.document_filter,
+      });
+
+      // Convert to ranked format and fuse with RRF (default weights)
+      // Over-fetch to allow room for dedup + diversity filtering
+      const bm25Ranked = toBm25Ranked(allBm25);
+      const semanticRanked = toSemanticRanked(semanticResults);
+
+      const fusion = new RRFFusion({ k: 60, bm25Weight: 1.0, semanticWeight: 1.0 });
+      const fusedResults = fusion.fuse(bm25Ranked, semanticRanked, limit * 3);
+
+      // Handle empty results
+      if (fusedResults.length === 0) {
+        const emptyContext =
+          '## Relevant Document Excerpts\n\nNo relevant documents found for the given question.';
+        return formatResponse(
+          successResult({
+            question: input.question,
+            context: emptyContext,
+            context_length: emptyContext.length,
+            search_results_used: 0,
+            sources: [],
+            deduplication: { before: 0, after: 0, removed: 0 },
+            source_diversity: {
+              max_per_document: input.max_results_per_document ?? 3,
+              before: 0,
+              after: 0,
+            },
+            next_steps: [{ tool: 'ocr_search', description: 'Try a broader search query' }],
+          })
+        );
+      }
+
+      // ── Step 1b: Deduplicate overlapping chunks (Task 3.3) ──────────────
+      const preDedupResults = fusedResults as unknown as Array<Record<string, unknown>>;
+      const deduplicated = deduplicateOverlappingResults(preDedupResults);
+      const dedupStats = {
+        before: preDedupResults.length,
+        after: deduplicated.length,
+        removed: preDedupResults.length - deduplicated.length,
+      };
+
+      // ── Step 1c: Enforce source diversity (Task 3.4) ────────────────────
+      const maxPerDoc = input.max_results_per_document ?? 3;
+      const diversified = enforceSourceDiversity(deduplicated, maxPerDoc);
+      const diversityStats = {
+        max_per_document: maxPerDoc,
+        before: deduplicated.length,
+        after: diversified.length,
+      };
+
+      // Apply final limit after dedup + diversity
+      const finalFused = diversified.slice(0, limit);
+
+      // Enrich VLM results with image metadata
+      enrichVLMResultsWithImageMetadata(conn, finalFused);
+
+      // ── Step 2: Assemble markdown context ──────────────────────────────────
+      const contextParts: string[] = [];
+
+      // Document excerpts
+      contextParts.push('## Relevant Document Excerpts\n');
+      const sources: Array<{
+        file_name: string;
+        page_number: number | null;
+        document_id: string;
+      }> = [];
+
+      for (let i = 0; i < finalFused.length; i++) {
+        const r = finalFused[i];
+        const score = Math.round((r.rrf_score as number) * 1000) / 1000;
+        const fileName =
+          (r.source_file_name as string) ||
+          path.basename((r.source_file_path as string) || 'unknown');
+        const pageInfo =
+          r.page_number !== null && r.page_number !== undefined ? `, Page ${r.page_number}` : '';
+
+        contextParts.push(`### Result ${i + 1} (Score: ${score})`);
+        contextParts.push(`**Source:** ${fileName}${pageInfo}`);
+        if (r.section_path) {
+          contextParts.push(`**Section:** ${r.section_path}`);
+        }
+        if (r.heading_context) {
+          contextParts.push(`**Heading:** ${r.heading_context}`);
+        }
+
+        // For VLM results with image metadata, include image context
+        if (r.image_extracted_path) {
+          const blockType = r.image_block_type || 'Image';
+          const imgPage = r.image_page_number ?? r.page_number ?? 'unknown';
+          contextParts.push(`> **[Image: ${blockType} on page ${imgPage}]**`);
+          contextParts.push(`> File: ${r.image_extracted_path}`);
+          contextParts.push(
+            `> Description: ${(r.original_text as string).replace(/\n/g, '\n> ')}\n`
+          );
+        } else {
+          contextParts.push(`> ${(r.original_text as string).replace(/\n/g, '\n> ')}\n`);
+        }
+
+        sources.push({
+          file_name: fileName,
+          page_number: r.page_number as number | null,
+          document_id: r.document_id as string,
+        });
+      }
+
+      // ── Step 3: Truncate to max_context_length ─────────────────────────────
+      let assembledMarkdown = contextParts.join('\n');
+      if (assembledMarkdown.length > maxContextLength) {
+        assembledMarkdown = assembledMarkdown.slice(0, maxContextLength - 3) + '...';
+      }
+
+      // ── Step 4: Return structured response ─────────────────────────────────
+      const ragResponse: Record<string, unknown> = {
+        question: input.question,
+        context: assembledMarkdown,
+        context_length: assembledMarkdown.length,
+        search_results_used: finalFused.length,
+        sources,
+        deduplication: dedupStats,
+        source_diversity: diversityStats,
+      };
+      ragResponse.next_steps = [
+        { tool: 'ocr_search', description: 'Run a more detailed search with filters' },
+        { tool: 'ocr_document_get', description: 'Get full details for a source document' },
+        { tool: 'ocr_chunk_context', description: 'Expand a specific chunk with surrounding text' },
+      ];
+      return formatResponse(successResult(ragResponse));
+    }); // end withDatabaseOperation
   } catch (error) {
     return handleError(error);
   }
@@ -2928,112 +2935,155 @@ const SearchSavedInput = z.object({
 async function handleSearchSaved(params: Record<string, unknown>): Promise<ToolResponse> {
   try {
     const input = validateInput(SearchSavedInput, params);
-    const { db } = requireDatabase();
-    const conn = db.getConnection();
+    return await withDatabaseOperation(async ({ db }) => {
+      const conn = db.getConnection();
 
-    if (input.action === 'save') {
-      // Validate required fields for save
-      if (!input.name) throw new MCPError('VALIDATION_ERROR', 'name is required for save action');
-      if (!input.query) throw new MCPError('VALIDATION_ERROR', 'query is required for save action');
-      if (!input.search_type)
-        throw new MCPError('VALIDATION_ERROR', 'search_type is required for save action');
-      if (input.result_count === undefined)
-        throw new MCPError('VALIDATION_ERROR', 'result_count is required for save action');
+      if (input.action === 'save') {
+        // Validate required fields for save
+        if (!input.name)
+          throw new MCPError('VALIDATION_ERROR', 'name is required for save action');
+        if (!input.query)
+          throw new MCPError('VALIDATION_ERROR', 'query is required for save action');
+        if (!input.search_type)
+          throw new MCPError('VALIDATION_ERROR', 'search_type is required for save action');
+        if (input.result_count === undefined)
+          throw new MCPError('VALIDATION_ERROR', 'result_count is required for save action');
 
-      const id = uuidv4();
-      const now = new Date().toISOString();
+        const id = uuidv4();
+        const now = new Date().toISOString();
 
-      conn
-        .prepare(
-          `
-        INSERT INTO saved_searches (id, name, query, search_type, search_params, result_count, result_ids, created_at, notes)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `
-        )
-        .run(
-          id,
-          input.name,
-          input.query,
-          input.search_type,
-          JSON.stringify(input.search_params ?? {}),
-          input.result_count,
-          JSON.stringify(input.result_ids ?? []),
-          now,
-          input.notes ?? null
+        conn
+          .prepare(
+            `
+          INSERT INTO saved_searches (id, name, query, search_type, search_params, result_count, result_ids, created_at, notes)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `
+          )
+          .run(
+            id,
+            input.name,
+            input.query,
+            input.search_type,
+            JSON.stringify(input.search_params ?? {}),
+            input.result_count,
+            JSON.stringify(input.result_ids ?? []),
+            now,
+            input.notes ?? null
+          );
+
+        return formatResponse(
+          successResult({
+            saved_search_id: id,
+            name: input.name,
+            query: input.query,
+            search_type: input.search_type,
+            result_count: input.result_count,
+            created_at: now,
+            next_steps: [
+              { tool: 'ocr_search_saved', description: 'List or re-execute saved searches' },
+            ],
+          })
         );
-
-      return formatResponse(
-        successResult({
-          saved_search_id: id,
-          name: input.name,
-          query: input.query,
-          search_type: input.search_type,
-          result_count: input.result_count,
-          created_at: now,
-          next_steps: [
-            { tool: 'ocr_search_saved', description: 'List or re-execute saved searches' },
-          ],
-        })
-      );
-    }
-
-    if (input.action === 'list') {
-      let sql =
-        'SELECT id, name, query, search_type, result_count, created_at, notes, last_executed_at, execution_count FROM saved_searches';
-      const sqlParams: unknown[] = [];
-
-      if (input.search_type) {
-        sql += ' WHERE search_type = ?';
-        sqlParams.push(input.search_type);
       }
 
-      sql += ' ORDER BY created_at DESC LIMIT ? OFFSET ?';
-      sqlParams.push(input.limit, input.offset);
+      if (input.action === 'list') {
+        let sql =
+          'SELECT id, name, query, search_type, result_count, created_at, notes, last_executed_at, execution_count FROM saved_searches';
+        const sqlParams: unknown[] = [];
 
-      const rows = conn.prepare(sql).all(...sqlParams) as Array<{
-        id: string;
-        name: string;
-        query: string;
-        search_type: string;
-        result_count: number;
-        created_at: string;
-        notes: string | null;
-        last_executed_at: string | null;
-        execution_count: number | null;
-      }>;
+        if (input.search_type) {
+          sql += ' WHERE search_type = ?';
+          sqlParams.push(input.search_type);
+        }
 
-      const totalRow = conn
-        .prepare(
-          input.search_type
-            ? 'SELECT COUNT(*) as count FROM saved_searches WHERE search_type = ?'
-            : 'SELECT COUNT(*) as count FROM saved_searches'
-        )
-        .get(...(input.search_type ? [input.search_type] : [])) as { count: number };
+        sql += ' ORDER BY created_at DESC LIMIT ? OFFSET ?';
+        sqlParams.push(input.limit, input.offset);
 
-      return formatResponse(
-        successResult({
-          action: 'list',
-          saved_searches: rows,
-          total: totalRow.count,
-          limit: input.limit,
-          offset: input.offset,
-          next_steps: [
-            { tool: 'ocr_search', description: 'Run a new search' },
-            { tool: 'ocr_search_saved', description: 'Save a search (action=save) for later' },
-          ],
-        })
-      );
-    }
+        const rows = conn.prepare(sql).all(...sqlParams) as Array<{
+          id: string;
+          name: string;
+          query: string;
+          search_type: string;
+          result_count: number;
+          created_at: string;
+          notes: string | null;
+          last_executed_at: string | null;
+          execution_count: number | null;
+        }>;
 
-    // Both 'get' and 'execute' require saved_search_id
-    if (!input.saved_search_id) {
-      throw new MCPError(
-        'VALIDATION_ERROR',
-        'saved_search_id is required for get and execute actions'
-      );
-    }
+        const totalRow = conn
+          .prepare(
+            input.search_type
+              ? 'SELECT COUNT(*) as count FROM saved_searches WHERE search_type = ?'
+              : 'SELECT COUNT(*) as count FROM saved_searches'
+          )
+          .get(...(input.search_type ? [input.search_type] : [])) as { count: number };
 
-    if (input.action === 'get') {
+        return formatResponse(
+          successResult({
+            action: 'list',
+            saved_searches: rows,
+            total: totalRow.count,
+            limit: input.limit,
+            offset: input.offset,
+            next_steps: [
+              { tool: 'ocr_search', description: 'Run a new search' },
+              { tool: 'ocr_search_saved', description: 'Save a search (action=save) for later' },
+            ],
+          })
+        );
+      }
+
+      // Both 'get' and 'execute' require saved_search_id
+      if (!input.saved_search_id) {
+        throw new MCPError(
+          'VALIDATION_ERROR',
+          'saved_search_id is required for get and execute actions'
+        );
+      }
+
+      if (input.action === 'get') {
+        const row = conn
+          .prepare('SELECT * FROM saved_searches WHERE id = ?')
+          .get(input.saved_search_id) as
+          | {
+              id: string;
+              name: string;
+              query: string;
+              search_type: string;
+              search_params: string;
+              result_count: number;
+              result_ids: string;
+              created_at: string;
+              notes: string | null;
+            }
+          | undefined;
+
+        if (!row) {
+          throw new Error(`Saved search not found: ${input.saved_search_id}`);
+        }
+
+        return formatResponse(
+          successResult({
+            action: 'get',
+            id: row.id,
+            name: row.name,
+            query: row.query,
+            search_type: row.search_type,
+            search_params: JSON.parse(row.search_params),
+            result_count: row.result_count,
+            result_ids: JSON.parse(row.result_ids),
+            created_at: row.created_at,
+            notes: row.notes,
+            next_steps: [
+              { tool: 'ocr_search', description: 'Run a new search' },
+              { tool: 'ocr_search_saved', description: 'Save a search (action=save) for later' },
+            ],
+          })
+        );
+      }
+
+      // action === 'execute'
       const row = conn
         .prepare('SELECT * FROM saved_searches WHERE id = ?')
         .get(input.saved_search_id) as
@@ -3051,125 +3101,91 @@ async function handleSearchSaved(params: Record<string, unknown>): Promise<ToolR
         | undefined;
 
       if (!row) {
-        throw new Error(`Saved search not found: ${input.saved_search_id}`);
+        throw new MCPError(
+          'VALIDATION_ERROR',
+          `Saved search not found: ${input.saved_search_id}`
+        );
       }
 
-      return formatResponse(
-        successResult({
-          action: 'get',
+      // Parse stored search parameters
+      let searchParams: Record<string, unknown>;
+      try {
+        searchParams = JSON.parse(row.search_params) as Record<string, unknown>;
+      } catch (parseErr) {
+        throw new MCPError(
+          'INTERNAL_ERROR',
+          `Failed to parse saved search params: ${String(parseErr)}`
+        );
+      }
+
+      // Override limit if requested
+      if (input.override_limit !== undefined) {
+        searchParams.limit = input.override_limit;
+      }
+
+      // Ensure query is set in params
+      searchParams.query = row.query;
+
+      // Dispatch through unified handler with appropriate mode
+      const modeMap: Record<string, string> = {
+        bm25: 'keyword',
+        semantic: 'semantic',
+        hybrid: 'hybrid',
+      };
+      const mode = modeMap[row.search_type];
+      if (!mode) {
+        throw new MCPError('VALIDATION_ERROR', `Unknown search type: ${row.search_type}`);
+      }
+      searchParams.mode = mode;
+      const searchResult: ToolResponse = await handleSearchUnified(
+        searchParams as Record<string, unknown>
+      );
+
+      // Parse the search result to wrap with saved search metadata
+      const searchResultData = JSON.parse(searchResult.content[0].text) as Record<
+        string,
+        unknown
+      >;
+
+      // Task 6.4: Update saved search analytics (execution tracking)
+      let analyticsWarning: string | undefined;
+      try {
+        conn
+          .prepare(
+            'UPDATE saved_searches SET last_executed_at = ?, execution_count = COALESCE(execution_count, 0) + 1 WHERE id = ?'
+          )
+          .run(new Date().toISOString(), row.id);
+      } catch (analyticsErr) {
+        // Non-fatal: schema pre-v30 databases may not have these columns yet
+        const msg = analyticsErr instanceof Error ? analyticsErr.message : String(analyticsErr);
+        console.error('[search] Failed to update saved search analytics:', msg);
+        analyticsWarning = `Analytics tracking unavailable: database schema may be pre-v30. ${msg}`;
+      }
+
+      const result: Record<string, unknown> = {
+        action: 'execute',
+        saved_search: {
           id: row.id,
           name: row.name,
           query: row.query,
           search_type: row.search_type,
-          search_params: JSON.parse(row.search_params),
-          result_count: row.result_count,
-          result_ids: JSON.parse(row.result_ids),
+          original_result_count: row.result_count,
           created_at: row.created_at,
           notes: row.notes,
-          next_steps: [
-            { tool: 'ocr_search', description: 'Run a new search' },
-            { tool: 'ocr_search_saved', description: 'Save a search (action=save) for later' },
-          ],
-        })
-      );
-    }
+        },
+        re_executed_at: new Date().toISOString(),
+        search_results: searchResultData,
+        next_steps: [
+          { tool: 'ocr_search', description: 'Run a new search' },
+          { tool: 'ocr_search_saved', description: 'Save a search (action=save) for later' },
+        ],
+      };
+      if (analyticsWarning) {
+        result.warning = analyticsWarning;
+      }
 
-    // action === 'execute'
-    const row = conn
-      .prepare('SELECT * FROM saved_searches WHERE id = ?')
-      .get(input.saved_search_id) as
-      | {
-          id: string;
-          name: string;
-          query: string;
-          search_type: string;
-          search_params: string;
-          result_count: number;
-          result_ids: string;
-          created_at: string;
-          notes: string | null;
-        }
-      | undefined;
-
-    if (!row) {
-      throw new MCPError('VALIDATION_ERROR', `Saved search not found: ${input.saved_search_id}`);
-    }
-
-    // Parse stored search parameters
-    let searchParams: Record<string, unknown>;
-    try {
-      searchParams = JSON.parse(row.search_params) as Record<string, unknown>;
-    } catch (parseErr) {
-      throw new MCPError(
-        'INTERNAL_ERROR',
-        `Failed to parse saved search params: ${String(parseErr)}`
-      );
-    }
-
-    // Override limit if requested
-    if (input.override_limit !== undefined) {
-      searchParams.limit = input.override_limit;
-    }
-
-    // Ensure query is set in params
-    searchParams.query = row.query;
-
-    // Dispatch through unified handler with appropriate mode
-    const modeMap: Record<string, string> = {
-      bm25: 'keyword',
-      semantic: 'semantic',
-      hybrid: 'hybrid',
-    };
-    const mode = modeMap[row.search_type];
-    if (!mode) {
-      throw new MCPError('VALIDATION_ERROR', `Unknown search type: ${row.search_type}`);
-    }
-    searchParams.mode = mode;
-    const searchResult: ToolResponse = await handleSearchUnified(
-      searchParams as Record<string, unknown>
-    );
-
-    // Parse the search result to wrap with saved search metadata
-    const searchResultData = JSON.parse(searchResult.content[0].text) as Record<string, unknown>;
-
-    // Task 6.4: Update saved search analytics (execution tracking)
-    let analyticsWarning: string | undefined;
-    try {
-      conn
-        .prepare(
-          'UPDATE saved_searches SET last_executed_at = ?, execution_count = COALESCE(execution_count, 0) + 1 WHERE id = ?'
-        )
-        .run(new Date().toISOString(), row.id);
-    } catch (analyticsErr) {
-      // Non-fatal: schema pre-v30 databases may not have these columns yet
-      const msg = analyticsErr instanceof Error ? analyticsErr.message : String(analyticsErr);
-      console.error('[search] Failed to update saved search analytics:', msg);
-      analyticsWarning = `Analytics tracking unavailable: database schema may be pre-v30. ${msg}`;
-    }
-
-    const result: Record<string, unknown> = {
-      action: 'execute',
-      saved_search: {
-        id: row.id,
-        name: row.name,
-        query: row.query,
-        search_type: row.search_type,
-        original_result_count: row.result_count,
-        created_at: row.created_at,
-        notes: row.notes,
-      },
-      re_executed_at: new Date().toISOString(),
-      search_results: searchResultData,
-      next_steps: [
-        { tool: 'ocr_search', description: 'Run a new search' },
-        { tool: 'ocr_search_saved', description: 'Save a search (action=save) for later' },
-      ],
-    };
-    if (analyticsWarning) {
-      result.warning = analyticsWarning;
-    }
-
-    return formatResponse(successResult(result));
+      return formatResponse(successResult(result));
+    }); // end withDatabaseOperation
   } catch (error) {
     return handleError(error);
   }

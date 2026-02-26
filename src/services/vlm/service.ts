@@ -283,9 +283,16 @@ export class VLMService {
     }
 
     // Step 4: All extraction attempts failed - throw with diagnostics
-    console.error(`[VLMService] Failed to parse ${label} JSON from response`);
+    const hasHtml = text.includes('<html') || text.includes('<HTML');
+    const hasBraces = text.includes('{');
+    const contentHint = hasHtml ? 'HTML' : hasBraces ? 'partial-JSON' : 'plain-text';
+    console.error(
+      `[VLMService] Failed to parse ${label} JSON from response ` +
+        `(length=${text.length}, type=${contentHint}, firstBrace=${text.indexOf('{')}, lastBrace=${text.lastIndexOf('}')})`
+    );
     throw new Error(
       `VLM ${label} JSON parse failed: could not extract valid JSON from response. ` +
+        `responseLength=${text.length}, contentType=${contentHint}, ` +
         `Raw response (first 500 chars): ${text.slice(0, 500)}`
     );
   }
