@@ -2,6 +2,10 @@
 
 **Give your AI the power to read, search, and reason over any document.**
 
+[![Watch the video](https://img.youtube.com/vi/h9E1LG2YRZ8/maxresdefault.jpg)](https://youtu.be/h9E1LG2YRZ8)
+
+> **Watch:** [System Overview & Installation Guide](https://youtu.be/h9E1LG2YRZ8)
+
 [![npm](https://img.shields.io/npm/v/ocr-provenance-mcp)](https://www.npmjs.com/package/ocr-provenance-mcp)
 [![License: Dual](https://img.shields.io/badge/License-Free_Non--Commercial-green.svg)](LICENSE)
 [![MCP](https://img.shields.io/badge/MCP-1.0-purple)](https://modelcontextprotocol.io/)
