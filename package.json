@@ -1,6 +1,6 @@
 {
   "name": "ocr-provenance-mcp",
-  "version": "1.0.9",
+  "version": "1.0.10",
   "description": "MCP server for document OCR processing, semantic search, document comparison, clustering, and provenance tracking",
   "type": "module",
   "main": "dist/index.js",
