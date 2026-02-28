@@ -18,9 +18,12 @@ import { join } from 'path';
 import {
   initializeDatabase,
   migrateToLatest,
+  checkSchemaVersion,
+  getCurrentSchemaVersion,
   verifySchema,
   configurePragmas,
 } from '../migrations.js';
+import { createPreMigrationBackup } from './pre-migration-backup.js';
 import { SqliteVecModule } from '../types.js';
 import { DatabaseInfo, DatabaseError, DatabaseErrorCode, MetadataRow } from './types.js';
 import { DEFAULT_STORAGE_PATH, validateName, getDatabasePath } from './helpers.js';
@@ -161,6 +164,22 @@ export function openDatabase(
   } catch (error) {
     db.close();
     throw error;
+  }
+
+  // Pre-migration backup: snapshot the database file before applying any
+  // schema migrations. This protects user data when Docker images are updated
+  // and forward-only migrations run on existing databases.
+  // createPreMigrationBackup handles all skip logic (fresh DB, already current)
+  // and is non-fatal — failure only logs a warning.
+  try {
+    const currentVersion = checkSchemaVersion(db);
+    const targetVersion = getCurrentSchemaVersion();
+    createPreMigrationBackup(db, dbPath, currentVersion, targetVersion);
+  } catch (error) {
+    // Backup failure must NOT prevent the database from opening.
+    console.error(
+      `[static-operations] Pre-migration backup failed (non-fatal): ${error instanceof Error ? error.message : String(error)}`
+    );
   }
 
   try {

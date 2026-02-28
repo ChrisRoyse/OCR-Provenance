@@ -297,22 +297,43 @@ export function selectDatabase(name: string, storagePath?: string): void {
     throw databaseNotFoundError(name, path);
   }
 
-  // M-9: Atomic swap - open new FIRST, then swap state, then close old.
-  // This eliminates the null window where state.currentDatabase is null
-  // between closing old and opening new.
-  const newDb = DatabaseService.open(name, path);
+  // WAL/mmap safety: When re-opening the SAME database file, the old connection's
+  // memory-mapped SHM region must be released BEFORE opening a new connection.
+  // Two concurrent connections to the same file with mmap_size > 0 can cause
+  // "database disk image is malformed" if the file was modified externally.
+  // For DIFFERENT databases, use M-9 atomic swap (open new → swap → close old)
+  // to avoid a null window in state.currentDatabase.
   const oldDb = state.currentDatabase;
+  const isSameDb = oldDb && state.currentDatabaseName === name;
 
-  // Swap state atomically (single tick - no await between these assignments)
+  if (isSameDb) {
+    // Same DB: close old connection FIRST to release mmap/SHM locks
+    state.currentDatabase = null;
+    state.currentDatabaseName = null;
+    _cachedVectorService = null;
+    oldDb.close();
+  }
+
+  let newDb: DatabaseService;
+  try {
+    newDb = DatabaseService.open(name, path);
+  } catch (error) {
+    // If opening fails after we already closed the old connection (same-DB path),
+    // state is already null — the error propagates and the caller sees it.
+    // For the different-DB path, the old connection is still intact.
+    throw error;
+  }
+
+  // Close old connection for the different-DB path (M-9 atomic swap)
+  if (!isSameDb && oldDb) {
+    oldDb.close();
+  }
+
+  // Update state to point to the new connection
   state.currentDatabase = newDb;
   state.currentDatabaseName = name;
   _cachedVectorService = null;
   _dbGeneration++;
-
-  // Close old connection AFTER state points to new DB
-  if (oldDb) {
-    oldDb.close();
-  }
 
   // Load persisted config from the database (if any)
   applyPersistedConfig(newDb);
