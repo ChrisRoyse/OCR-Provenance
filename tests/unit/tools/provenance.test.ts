@@ -860,8 +860,8 @@ describe('handleProvenanceExport', () => {
     const result = parseResponse(response);
 
     expect(result.success).toBe(true);
-    expect(typeof result.data?.record_count).toBe('number');
-    expect(result.data?.record_count as number).toBeGreaterThan(0);
+    expect(typeof result.data?.total_records).toBe('number');
+    expect(result.data?.total_records as number).toBeGreaterThan(0);
   });
 
   it.skipIf(!sqliteVecAvailable)('returns empty data for empty database', async () => {
@@ -879,7 +879,7 @@ describe('handleProvenanceExport', () => {
     const exportData = result.data?.data as Array<Record<string, unknown>>;
     expect(Array.isArray(exportData)).toBe(true);
     expect(exportData.length).toBe(0);
-    expect(result.data?.record_count).toBe(0);
+    expect(result.data?.total_records).toBe(0);
   });
 });
 

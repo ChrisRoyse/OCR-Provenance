@@ -34,13 +34,113 @@ export interface ToolDefinition {
 // HELPER FUNCTIONS
 // ═══════════════════════════════════════════════════════════════════════════════
 
+/** Max response size in bytes before truncation (700KB). Prevents Claude Code
+ *  from spilling multi-MB tool results to disk as .txt files. */
+const MAX_RESPONSE_BYTES = 700 * 1024;
+
 /**
- * Format tool result as MCP content response
+ * Format tool result as MCP content response.
+ * If the serialized JSON exceeds MAX_RESPONSE_BYTES, arrays are progressively
+ * truncated and a `_response_truncated` warning is injected so the AI knows
+ * to paginate.
  */
 export function formatResponse(result: unknown): ToolResponse {
-  return {
-    content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
-  };
+  const json = JSON.stringify(result, null, 2);
+  if (json.length <= MAX_RESPONSE_BYTES) {
+    return { content: [{ type: 'text', text: json }] };
+  }
+
+  // Truncate: find arrays in the result and cap them
+  const truncated = truncateResult(result as Record<string, unknown>, MAX_RESPONSE_BYTES);
+  const truncatedJson = JSON.stringify(truncated, null, 2);
+  return { content: [{ type: 'text', text: truncatedJson }] };
+}
+
+/**
+ * Recursively truncate arrays in a result object until it fits within maxBytes.
+ * Adds `_response_truncated` metadata so the AI knows to use pagination.
+ */
+function truncateResult(obj: Record<string, unknown>, maxBytes: number): Record<string, unknown> {
+  // Find all arrays and their sizes
+  const arrays: { path: string[]; arr: unknown[]; size: number }[] = [];
+  findArrays(obj, [], arrays);
+
+  // Sort by size descending — truncate largest arrays first
+  arrays.sort((a, b) => b.size - a.size);
+
+  const copy = JSON.parse(JSON.stringify(obj)) as Record<string, unknown>;
+  let currentSize = JSON.stringify(copy, null, 2).length;
+
+  const truncatedFields: string[] = [];
+
+  for (const { path, arr } of arrays) {
+    if (currentSize <= maxBytes) break;
+    if (arr.length <= 5) continue; // Don't truncate tiny arrays
+
+    // Cap to at most 50 items or fewer
+    const cap = Math.min(50, Math.max(5, Math.floor(arr.length * 0.1)));
+    setNestedValue(copy, path, arr.slice(0, cap));
+
+    // Add count metadata next to the array
+    const countPath = [...path.slice(0, -1), `_${path[path.length - 1]}_total`];
+    setNestedValue(copy, countPath, arr.length);
+
+    truncatedFields.push(`${path.join('.')} (${arr.length} → ${cap})`);
+    currentSize = JSON.stringify(copy, null, 2).length;
+  }
+
+  if (truncatedFields.length > 0) {
+    copy._response_truncated = {
+      reason: `Response exceeded ${Math.round(maxBytes / 1024)}KB limit`,
+      truncated_fields: truncatedFields,
+      suggestion: 'Use limit/offset parameters or more specific filters to reduce response size',
+    };
+  }
+
+  // If still too large after array truncation, return a minimal fallback response
+  if (currentSize > maxBytes) {
+    const finalJson = JSON.stringify(copy, null, 2);
+    if (finalJson.length > maxBytes) {
+      return {
+        _response_truncated: {
+          reason: `Response exceeded ${Math.round(maxBytes / 1024)}KB limit and could not be reduced by array truncation`,
+          original_size_bytes: JSON.stringify(obj, null, 2).length,
+          suggestion: 'Use limit/offset parameters or more specific filters to reduce response size',
+        },
+      };
+    }
+  }
+
+  return copy;
+}
+
+function findArrays(
+  obj: unknown,
+  path: string[],
+  result: { path: string[]; arr: unknown[]; size: number }[]
+): void {
+  if (Array.isArray(obj)) {
+    result.push({ path: [...path], arr: obj, size: JSON.stringify(obj).length });
+    return;
+  }
+  if (obj && typeof obj === 'object') {
+    for (const [key, value] of Object.entries(obj as Record<string, unknown>)) {
+      findArrays(value, [...path, key], result);
+    }
+  }
+}
+
+function setNestedValue(obj: Record<string, unknown>, path: string[], value: unknown): void {
+  let current: Record<string, unknown> = obj;
+  for (let i = 0; i < path.length - 1; i++) {
+    const next = current[path[i]];
+    if (next && typeof next === 'object' && !Array.isArray(next)) {
+      current = next as Record<string, unknown>;
+    } else {
+      return; // Path doesn't exist in copy
+    }
+  }
+  current[path[path.length - 1]] = value;
 }
 
 /**

@@ -3229,6 +3229,20 @@ const CrossDbSearchInput = z.object({
     .max(50)
     .default(10)
     .describe('Maximum results per database'),
+  max_total_results: z
+    .number()
+    .int()
+    .min(1)
+    .max(100)
+    .default(25)
+    .describe('Cap total results across all databases (default 25)'),
+  text_preview_length: z
+    .number()
+    .int()
+    .min(50)
+    .max(500)
+    .default(150)
+    .describe('Maximum characters for text preview (default 150)'),
 });
 
 /** Result from cross-database BM25 search with normalized score for cross-DB ranking. */
@@ -3315,7 +3329,7 @@ async function handleCrossDbSearch(params: Record<string, unknown>): Promise<Too
             file_name: docInfo?.file_name ?? null,
             chunk_id: row.id,
             chunk_index: row.chunk_index,
-            text_preview: row.text.substring(0, 300),
+            text_preview: row.text.substring(0, input.text_preview_length),
             bm25_score: Math.abs(row.bm25_score),
             normalized_score: 0, // Set during per-database normalization below
           });
@@ -3358,21 +3372,45 @@ async function handleCrossDbSearch(params: Record<string, unknown>): Promise<Too
     // Sort by normalized score (higher=better)
     allResults.sort((a, b) => b.normalized_score - a.normalized_score);
 
+    // Build results_by_database summary before capping
+    const resultsByDatabase: Record<string, number> = {};
+    for (const r of allResults) {
+      resultsByDatabase[r.database_name] = (resultsByDatabase[r.database_name] || 0) + 1;
+    }
+
+    // Apply global cap
+    const maxTotal = input.max_total_results ?? 25;
+    const totalBeforeCap = allResults.length;
+    if (allResults.length > maxTotal) {
+      allResults.splice(maxTotal);
+    }
+
+    // Dynamic next_steps: suggest top-scoring database
+    const nextSteps: Array<{ tool: string; description: string }> = [];
+    if (allResults.length > 0) {
+      const topDb = allResults[0].database_name;
+      nextSteps.push({
+        tool: 'ocr_db_select',
+        description: `Switch to "${topDb}" for deeper search`,
+      });
+    }
+    nextSteps.push({
+      tool: 'ocr_search',
+      description: 'Search within the current database with full features',
+    });
+
     return formatResponse(
       successResult({
         query: input.query,
         databases_searched: databases.length - skippedDbs.length,
-        total_results: allResults.length,
+        total_results: totalBeforeCap,
+        returned: allResults.length,
+        max_total_results: maxTotal,
+        results_by_database: resultsByDatabase,
         results: allResults,
         score_normalization: 'per_database_min_max',
         databases_skipped: skippedDbs.length > 0 ? skippedDbs : undefined,
-        next_steps: [
-          { tool: 'ocr_db_select', description: 'Switch to a specific database for deeper search' },
-          {
-            tool: 'ocr_search',
-            description: 'Search within the current database with full features',
-          },
-        ],
+        next_steps: nextSteps,
       })
     );
   } catch (error) {
@@ -3470,7 +3508,7 @@ export const searchTools: Record<string, ToolDefinition> = {
   },
   ocr_search_cross_db: {
     description:
-      '[SEARCH] Use to search across ALL databases at once using BM25 keyword matching. Returns merged results with database source. No need to switch databases.',
+      '[SEARCH] Search across ALL databases using BM25. Returns merged results capped at max_total_results (default 25) with results_by_database summary. Use ocr_db_select to drill into a database.',
     inputSchema: CrossDbSearchInput.shape,
     handler: handleCrossDbSearch,
   },

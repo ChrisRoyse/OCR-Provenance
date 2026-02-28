@@ -651,7 +651,8 @@ describe('handleImageSearch with vlm_description_query', () => {
     expect(images.length).toBe(1);
     expect(images[0].id).toBe(img1Id);
     expect(images[0].extracted_path).toBe('/test/chart.png');
-    expect(images[0].vlm_description).toContain('pie chart');
+    // vlm_description is omitted by default (summary-first); verify image_type instead
+    expect(images[0].vlm_description).toBeUndefined();
   });
 
   it('returns empty results when vlm_description_query matches nothing', async () => {

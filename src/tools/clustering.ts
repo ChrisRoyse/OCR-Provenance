@@ -160,7 +160,6 @@ async function handleClusterDocuments(params: Record<string, unknown>): Promise<
         n_clusters: result.n_clusters,
         total_documents: result.total_documents,
         noise_count: result.noise_document_ids.length,
-        noise_document_ids: result.noise_document_ids,
         silhouette_score: result.silhouette_score,
         processing_duration_ms: result.processing_duration_ms,
         clusters: result.clusters.map(
@@ -173,11 +172,11 @@ async function handleClusterDocuments(params: Record<string, unknown>): Promise<
             cluster_index: c.cluster_index,
             document_count: c.document_count,
             coherence_score: c.coherence_score,
-            document_ids: c.document_ids,
           })
         ),
         next_steps: [
-          { tool: 'ocr_cluster_list', description: 'Browse all clusters and their documents' },
+          { tool: 'ocr_cluster_get', description: 'Get documents in a specific cluster by ID' },
+          { tool: 'ocr_cluster_list', description: 'Browse clusters with labels and details' },
         ],
       })
     );

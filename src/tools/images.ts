@@ -49,6 +49,19 @@ const ImageListInput = z.object({
   document_id: z.string().min(1),
   include_descriptions: z.boolean().default(false),
   vlm_status: z.enum(['pending', 'processing', 'complete', 'failed']).optional(),
+  limit: z
+    .number()
+    .int()
+    .min(1)
+    .max(500)
+    .default(100)
+    .describe('Maximum images to return (default 100)'),
+  offset: z
+    .number()
+    .int()
+    .min(0)
+    .default(0)
+    .describe('Number of images to skip for pagination'),
 });
 
 const ImageGetInput = z.object({
@@ -89,6 +102,13 @@ const ImageSearchInput = z.object({
   include_provenance: z.boolean().default(false),
   // shared
   limit: z.number().int().min(1).max(100).default(50),
+  offset: z.number().int().min(0).default(0).describe('Number of results to skip for pagination (keyword mode)'),
+  include_vlm_details: z
+    .boolean()
+    .default(false)
+    .describe(
+      'Include full vlm_description and vlm_structured_data. Default returns only confidence and image_type.'
+    ),
 });
 
 const ImageReanalyzeInput = z.object({
@@ -121,16 +141,28 @@ export async function handleImageList(params: Record<string, unknown>): Promise<
       });
     }
 
-    const images = getImagesByDocument(
+    const imgLimit = input.limit ?? 100;
+    const imgOffset = input.offset ?? 0;
+
+    const allImages = getImagesByDocument(
       db.getConnection(),
       documentId,
       vlmStatusFilter ? { vlmStatus: vlmStatusFilter } : undefined
     );
 
+    // Apply pagination
+    const totalCount = allImages.length;
+    const images = allImages.slice(imgOffset, imgOffset + imgLimit);
+    const hasMore = imgOffset + imgLimit < totalCount;
+
     return formatResponse(
       successResult({
         document_id: documentId,
-        count: images.length,
+        total: totalCount,
+        returned: images.length,
+        offset: imgOffset,
+        limit: imgLimit,
+        has_more: hasMore,
         images: images.map((img) => ({
           id: img.id,
           page: img.page_number,
@@ -145,8 +177,16 @@ export async function handleImageList(params: Record<string, unknown>): Promise<
               description: img.vlm_description,
             }),
         })),
-        next_steps:
-          images.length === 0
+        next_steps: [
+          ...(hasMore
+            ? [
+                {
+                  tool: 'ocr_image_list',
+                  description: `Get next page (offset=${imgOffset + imgLimit})`,
+                },
+              ]
+            : []),
+          ...(images.length === 0
             ? [
                 { tool: 'ocr_extract_images', description: 'Extract images from documents first' },
                 { tool: 'ocr_document_get', description: 'Check document processing status' },
@@ -154,7 +194,8 @@ export async function handleImageList(params: Record<string, unknown>): Promise<
             : [
                 { tool: 'ocr_image_get', description: 'Get full details for a specific image' },
                 { tool: 'ocr_vlm_process', description: 'Run VLM analysis on document images' },
-              ],
+              ]),
+        ],
       })
     );
   } catch (error) {
@@ -495,44 +536,50 @@ export async function handleImageSearch(params: Record<string, unknown>): Promis
       const { db } = requireDatabase();
       const conn = db.getConnection();
 
-      let sql = `SELECT id, document_id, page_number, image_index, format, width, height,
-        vlm_confidence, vlm_description, vlm_structured_data, block_type,
-        is_header_footer, extracted_path, file_size
-        FROM images WHERE vlm_status = 'complete'`;
+      let whereClause = `WHERE vlm_status = 'complete'`;
       const sqlParams: unknown[] = [];
 
       if (input.image_type) {
-        sql += ` AND json_extract(vlm_structured_data, '$.imageType') = ?`;
+        whereClause += ` AND json_extract(vlm_structured_data, '$.imageType') = ?`;
         sqlParams.push(input.image_type);
       }
       if (input.block_type) {
-        sql += ` AND block_type = ?`;
+        whereClause += ` AND block_type = ?`;
         sqlParams.push(input.block_type);
       }
       if (input.min_confidence !== undefined) {
-        sql += ` AND vlm_confidence >= ?`;
+        whereClause += ` AND vlm_confidence >= ?`;
         sqlParams.push(input.min_confidence);
       }
       if (input.document_id) {
-        sql += ` AND document_id = ?`;
+        whereClause += ` AND document_id = ?`;
         sqlParams.push(input.document_id);
       }
       if (input.exclude_headers_footers) {
-        sql += ` AND is_header_footer = 0`;
+        whereClause += ` AND is_header_footer = 0`;
       }
       if (input.page_number !== undefined) {
-        sql += ` AND page_number = ?`;
+        whereClause += ` AND page_number = ?`;
         sqlParams.push(input.page_number);
       }
       if (input.vlm_description_query) {
-        sql += ` AND vlm_description LIKE '%' || ? || '%'`;
+        whereClause += ` AND vlm_description LIKE '%' || ? || '%'`;
         sqlParams.push(input.vlm_description_query);
       }
 
-      sql += ` ORDER BY document_id, page_number, image_index LIMIT ?`;
-      sqlParams.push(input.limit);
+      // Count query for total
+      const countRow = conn
+        .prepare(`SELECT COUNT(*) as cnt FROM images ${whereClause}`)
+        .get(...sqlParams) as { cnt: number };
+      const totalCount = countRow.cnt;
 
-      const rows = conn.prepare(sql).all(...sqlParams) as Record<string, unknown>[];
+      const sql = `SELECT id, document_id, page_number, image_index, format, width, height,
+        vlm_confidence, vlm_description, vlm_structured_data, block_type,
+        is_header_footer, extracted_path, file_size
+        FROM images ${whereClause}
+        ORDER BY document_id, page_number, image_index LIMIT ? OFFSET ?`;
+
+      const rows = conn.prepare(sql).all(...sqlParams, input.limit, input.offset) as Record<string, unknown>[];
 
       const results = rows.map((r) => {
         let structured: Record<string, unknown> | null = null;
@@ -554,21 +601,28 @@ export async function handleImageSearch(params: Record<string, unknown>): Promis
           format: r.format,
           dimensions: { width: r.width, height: r.height },
           vlm_confidence: r.vlm_confidence,
-          vlm_description: r.vlm_description,
-          vlm_structured_data: structured,
           block_type: r.block_type,
           is_header_footer: r.is_header_footer === 1,
           extracted_path: r.extracted_path,
           file_size: r.file_size,
         };
 
+        // Extract image_type from structured data (always include as compact summary)
         if (structured) {
           base.image_type = structured.imageType ?? null;
-          base.vlm_extracted_text = structured.extractedText ?? [];
-          base.vlm_dates = structured.dates ?? [];
-          base.vlm_names = structured.names ?? [];
-          base.vlm_numbers = structured.numbers ?? [];
-          base.vlm_primary_subject = structured.primarySubject ?? null;
+        }
+
+        // Full VLM details only when requested
+        if (input.include_vlm_details) {
+          base.vlm_description = r.vlm_description;
+          base.vlm_structured_data = structured;
+          if (structured) {
+            base.vlm_extracted_text = structured.extractedText ?? [];
+            base.vlm_dates = structured.dates ?? [];
+            base.vlm_names = structured.names ?? [];
+            base.vlm_numbers = structured.numbers ?? [];
+            base.vlm_primary_subject = structured.primarySubject ?? null;
+          }
         }
 
         return base;
@@ -580,16 +634,32 @@ export async function handleImageSearch(params: Record<string, unknown>): Promis
         typeCounts[type] = (typeCounts[type] || 0) + 1;
       }
 
+      const imgOffset = input.offset ?? 0;
+      const imgLimit = input.limit ?? 50;
+      const hasMore = imgOffset + imgLimit < totalCount;
+      const nextSteps: Array<{ tool: string; description: string }> = [];
+      if (hasMore) {
+        nextSteps.push({
+          tool: 'ocr_image_search',
+          description: `Get next page (offset=${imgOffset + imgLimit})`,
+        });
+      }
+      nextSteps.push(
+        { tool: 'ocr_image_get', description: 'Get full VLM details for a specific image' },
+        { tool: 'ocr_image_search', description: 'Try mode=semantic for meaning-based search' },
+      );
+
       return formatResponse(
         successResult({
           mode: 'keyword',
           images: results,
-          total: results.length,
+          total: totalCount,
+          returned: results.length,
+          offset: imgOffset,
+          limit: imgLimit,
+          has_more: hasMore,
           type_distribution: typeCounts,
-          next_steps: [
-            { tool: 'ocr_image_get', description: 'Get full details for a specific image' },
-            { tool: 'ocr_image_search', description: 'Try mode=semantic for meaning-based search' },
-          ],
+          next_steps: nextSteps,
         })
       );
     }
@@ -876,7 +946,7 @@ export async function handleImageReanalyze(params: Record<string, unknown>): Pro
 export const imageTools: Record<string, ToolDefinition> = {
   ocr_image_list: {
     description:
-      '[ANALYSIS] Use to list all images from a document with optional VLM status filter. Returns image metadata and optionally descriptions.',
+      '[ANALYSIS] Use to list images from a document with optional VLM status filter. Paginated (default 100). Returns image metadata and optionally descriptions.',
     inputSchema: {
       document_id: z.string().min(1).describe('Document ID'),
       include_descriptions: z.boolean().default(false).describe('Include VLM descriptions'),
@@ -884,6 +954,19 @@ export const imageTools: Record<string, ToolDefinition> = {
         .enum(['pending', 'processing', 'complete', 'failed'])
         .optional()
         .describe('Filter by VLM status'),
+      limit: z
+        .number()
+        .int()
+        .min(1)
+        .max(500)
+        .default(100)
+        .describe('Maximum images to return (default 100)'),
+      offset: z
+        .number()
+        .int()
+        .min(0)
+        .default(0)
+        .describe('Number of images to skip for pagination'),
     },
     handler: handleImageList,
   },
@@ -942,7 +1025,7 @@ export const imageTools: Record<string, ToolDefinition> = {
 
   ocr_image_search: {
     description:
-      '[SEARCH] Use to find images by keyword in descriptions (mode=keyword) or by semantic similarity (mode=semantic). Returns image metadata with VLM data.',
+      '[SEARCH] Find images by keyword (mode=keyword) or semantic similarity (mode=semantic). Returns compact results by default. Use include_vlm_details=true for full descriptions, or ocr_image_get for one image.',
     inputSchema: {
       mode: z
         .enum(['keyword', 'semantic'])
@@ -995,6 +1078,11 @@ export const imageTools: Record<string, ToolDefinition> = {
         .describe('Include provenance chain (semantic mode)'),
       // shared
       limit: z.number().int().min(1).max(100).default(50).describe('Maximum results'),
+      offset: z.number().int().min(0).default(0).describe('Number of results to skip for pagination (keyword mode)'),
+      include_vlm_details: z
+        .boolean()
+        .default(false)
+        .describe('Include full vlm_description and vlm_structured_data. Default returns only confidence and image_type.'),
     },
     handler: handleImageSearch,
   },

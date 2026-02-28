@@ -216,27 +216,49 @@ async function handleTagSearch(params: Record<string, unknown>): Promise<ToolRes
         tags: z.array(z.string().min(1)).min(1),
         entity_type: entityTypeSchema.optional(),
         match_all: z.boolean().default(false),
+        limit: z.number().int().min(1).max(200).default(50).describe('Maximum results (default 50)'),
+        offset: z.number().int().min(0).default(0).describe('Number of results to skip for pagination'),
       }),
       params
     );
 
     const { db } = requireDatabase();
 
-    const results = db.searchByTags(input.tags, input.entity_type, input.match_all);
+    const allResults = db.searchByTags(input.tags, input.entity_type, input.match_all);
+
+    // Apply pagination
+    const tagOffset = input.offset ?? 0;
+    const tagLimit = input.limit ?? 50;
+    const totalCount = allResults.length;
+    const paginated = allResults.slice(tagOffset, tagOffset + tagLimit);
+    const hasMore = tagOffset + tagLimit < totalCount;
+
+    const nextSteps: Array<{ tool: string; description: string }> = [];
+    if (hasMore) {
+      nextSteps.push({
+        tool: 'ocr_tag_search',
+        description: `Get next page (offset=${tagOffset + tagLimit})`,
+      });
+    }
+    nextSteps.push(
+      { tool: 'ocr_document_get', description: 'Get details for a tagged document' },
+      { tool: 'ocr_tag_apply', description: 'Apply another tag to results' },
+    );
 
     return formatResponse(
       successResult({
-        results,
-        total: results.length,
+        results: paginated,
+        total: totalCount,
+        returned: paginated.length,
+        offset: tagOffset,
+        limit: tagLimit,
+        has_more: hasMore,
         query: {
           tags: input.tags,
           entity_type: input.entity_type ?? null,
           match_all: input.match_all,
         },
-        next_steps: [
-          { tool: 'ocr_document_get', description: 'Get details for a tagged document' },
-          { tool: 'ocr_tag_apply', description: 'Apply another tag to results' },
-        ],
+        next_steps: nextSteps,
       })
     );
   } catch (error) {
@@ -370,7 +392,7 @@ export const tagTools: Record<string, ToolDefinition> = {
 
   ocr_tag_search: {
     description:
-      '[ANALYSIS] Use to find entities by tag. Returns matching documents, chunks, images, extractions, or clusters. Set match_all=true to require ALL tags, or false for ANY tag.',
+      '[ANALYSIS] Find entities by tag. Paginated (default 50). Set match_all=true to require ALL tags, or false for ANY tag.',
     inputSchema: {
       tags: z.array(z.string().min(1)).min(1).describe('Tag names to search for'),
       entity_type: entityTypeSchema
@@ -380,6 +402,8 @@ export const tagTools: Record<string, ToolDefinition> = {
         .boolean()
         .default(false)
         .describe('If true, entity must have ALL specified tags. If false, ANY tag matches.'),
+      limit: z.number().int().min(1).max(200).default(50).describe('Maximum results (default 50)'),
+      offset: z.number().int().min(0).default(0).describe('Number of results to skip for pagination'),
     },
     handler: handleTagSearch,
   },

@@ -384,12 +384,29 @@ export async function handleDocumentGet(params: Record<string, unknown>): Promis
     }
 
     if (input.include_text) {
-      result.ocr_text = ocrResult?.extracted_text ?? null;
+      const maxTextLen = input.max_text_length ?? 50000;
+      const fullText = ocrResult?.extracted_text ?? null;
+      if (fullText && fullText.length > maxTextLen) {
+        result.ocr_text = fullText.slice(0, maxTextLen);
+        result.ocr_text_truncated = true;
+        result.ocr_text_total_length = fullText.length;
+        result.ocr_text_hint = `Text truncated to ${maxTextLen} chars. Use max_text_length parameter to get more, or use ocr_document_page to read specific pages.`;
+      } else {
+        result.ocr_text = fullText;
+      }
     }
 
     if (input.include_chunks) {
-      const chunks = db.getChunksByDocumentId(doc.id);
-      result.chunks = chunks.map((c) => ({
+      const chunkLimit = input.chunk_limit ?? 200;
+      const chunkOffset = input.chunk_offset ?? 0;
+      const allChunks = db.getChunksByDocumentId(doc.id);
+      const totalChunks = allChunks.length;
+      const paginatedChunks = allChunks.slice(chunkOffset, chunkOffset + chunkLimit);
+      result.chunks_total = totalChunks;
+      result.chunks_returned = paginatedChunks.length;
+      result.chunks_offset = chunkOffset;
+      result.chunks_has_more = chunkOffset + chunkLimit < totalChunks;
+      result.chunks = paginatedChunks.map((c) => ({
         id: c.id,
         chunk_index: c.chunk_index,
         text_length: c.text.length,
@@ -426,7 +443,18 @@ export async function handleDocumentGet(params: Record<string, unknown>): Promis
             'Ensure the document was processed through OCR with output_format including "json".';
         } else {
           try {
-            result.json_blocks = JSON.parse(ocrResult.json_blocks);
+            // Cap json_blocks to 100KB to prevent multi-MB responses
+            const MAX_BLOCKS_SIZE = 100 * 1024;
+            if (ocrResult.json_blocks.length > MAX_BLOCKS_SIZE) {
+              result.json_blocks = null;
+              result.json_blocks_truncated = true;
+              result.json_blocks_size_bytes = ocrResult.json_blocks.length;
+              result.json_blocks_hint =
+                'JSON blocks data exceeds 100KB limit. Use ocr_document_page to view specific pages, ' +
+                'or ocr_document_structure for the document outline.';
+            } else {
+              result.json_blocks = JSON.parse(ocrResult.json_blocks);
+            }
           } catch (parseErr) {
             const errMsg = parseErr instanceof Error ? parseErr.message : String(parseErr);
             console.error(
@@ -2141,7 +2169,7 @@ export const documentTools: Record<string, ToolDefinition> = {
   },
   ocr_document_get: {
     description:
-      '[ESSENTIAL] Use to get full details for a single document. Returns OCR metadata, structure, quality, and memberships. Use ocr_document_page to read specific pages.',
+      '[ESSENTIAL] Use to get full details for a single document. Returns OCR metadata, structure, quality, and memberships. Paginated chunks/text. Use ocr_document_page to read specific pages.',
     inputSchema: {
       document_id: z.string().min(1).describe('Document ID'),
       include_text: z.boolean().default(false).describe('Include OCR extracted text'),
@@ -2149,8 +2177,28 @@ export const documentTools: Record<string, ToolDefinition> = {
       include_blocks: z
         .boolean()
         .default(false)
-        .describe('Include JSON blocks and extras metadata'),
+        .describe('Include JSON blocks and extras metadata (capped at 100KB)'),
       include_full_provenance: z.boolean().default(false).describe('Include full provenance chain'),
+      chunk_limit: z
+        .number()
+        .int()
+        .min(1)
+        .max(1000)
+        .default(200)
+        .describe('Max chunks to return when include_chunks=true (default 200)'),
+      chunk_offset: z
+        .number()
+        .int()
+        .min(0)
+        .default(0)
+        .describe('Chunk offset for pagination when include_chunks=true'),
+      max_text_length: z
+        .number()
+        .int()
+        .min(1000)
+        .max(500000)
+        .default(50000)
+        .describe('Max characters of OCR text when include_text=true (default 50000)'),
     },
     handler: handleDocumentGet,
   },

@@ -40,6 +40,25 @@ const DocumentTablesInput = z.object({
     .min(0)
     .optional()
     .describe('Specific table index (0-based) to retrieve. Omit for all tables.'),
+  limit: z
+    .number()
+    .int()
+    .min(1)
+    .max(50)
+    .default(10)
+    .describe('Maximum tables to return (default 10)'),
+  offset: z
+    .number()
+    .int()
+    .min(0)
+    .default(0)
+    .describe('Number of tables to skip for pagination'),
+  include_cells: z
+    .boolean()
+    .default(false)
+    .describe(
+      'Include cell data. Default returns table summary only (caption, row_count, column_count). Use with table_index for a specific table.'
+    ),
 });
 
 const DocumentRecommendInput = z.object({
@@ -53,8 +72,21 @@ const DocumentExtrasInput = z.object({
     .string()
     .optional()
     .describe(
-      'Specific extras section to retrieve (charts, links, tracked_changes, table_row_bboxes, infographics). Omit for all.'
+      'Specific extras section to retrieve (charts, links, tracked_changes, table_row_bboxes, infographics). Omit for section manifest with counts.'
     ),
+  limit: z
+    .number()
+    .int()
+    .min(1)
+    .max(200)
+    .default(50)
+    .describe('Maximum items when section data is an array (default 50)'),
+  offset: z
+    .number()
+    .int()
+    .min(0)
+    .default(0)
+    .describe('Number of items to skip when section data is an array'),
 });
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -762,10 +794,81 @@ async function handleDocumentTables(params: Record<string, unknown>): Promise<To
       throw documentNotFoundError(input.document_id);
     }
 
-    const nextSteps = [
-      { tool: 'ocr_document_page', description: 'Read the page containing a table' },
-      { tool: 'ocr_search', description: 'Search for related content' },
+    const baseNextSteps = [
+      { tool: 'ocr_document_tables', description: 'Get cell data: include_cells=true, table_index=N' },
+      { tool: 'ocr_table_export', description: 'Export table as CSV/JSON for analysis' },
+      { tool: 'ocr_document_page', description: 'Read the page containing this table for full context' },
     ];
+
+    /**
+     * Apply pagination and include_cells stripping to a table array,
+     * then return the formatted response.
+     */
+    const buildTableResponse = (
+      allTables: ParsedTable[],
+      source: string,
+    ): ReturnType<typeof formatResponse> => {
+      // Apply table_index filter first
+      const filtered = filterTablesByIndex(allTables, input.table_index);
+      if (filtered === null) {
+        return formatResponse(
+          successResult({
+            document_id: input.document_id,
+            file_name: doc.file_name,
+            tables: [],
+            total_tables: allTables.length,
+            requested_index: input.table_index,
+            message: `Table index ${input.table_index} out of range. Document has ${allTables.length} table(s).`,
+            next_steps: baseNextSteps,
+          })
+        );
+      }
+
+      // Apply pagination
+      const tblOffset = input.offset ?? 0;
+      const tblLimit = input.limit ?? 10;
+      const totalFiltered = filtered.length;
+      const paginated = filtered.slice(tblOffset, tblOffset + tblLimit);
+      const hasMore = tblOffset + tblLimit < totalFiltered;
+
+      // Strip cells if not requested
+      const outputTables = paginated.map((t) => {
+        if (input.include_cells) return t;
+        // Return summary without cell data
+        return {
+          table_index: t.table_index,
+          page_number: t.page_number,
+          caption: t.caption,
+          row_count: t.row_count,
+          column_count: t.column_count,
+          cell_count: t.cells.length,
+        };
+      });
+
+      const nextSteps = [];
+      if (hasMore) {
+        nextSteps.push({
+          tool: 'ocr_document_tables',
+          description: `Get next page (offset=${tblOffset + tblLimit})`,
+        });
+      }
+      nextSteps.push(...baseNextSteps);
+
+      return formatResponse(
+        successResult({
+          document_id: input.document_id,
+          file_name: doc.file_name,
+          tables: outputTables,
+          total_tables: allTables.length,
+          returned: outputTables.length,
+          offset: tblOffset,
+          limit: tblLimit,
+          has_more: hasMore,
+          source,
+          next_steps: nextSteps,
+        })
+      );
+    };
 
     const blocksResult = fetchJsonBlocks(db.getConnection(), input.document_id);
     if (!blocksResult.ok) {
@@ -784,65 +887,16 @@ async function handleDocumentTables(params: Record<string, unknown>): Promise<To
             tables: [],
             total_tables: 0,
             source: 'no_table_data',
-            next_steps: nextSteps,
+            next_steps: baseNextSteps,
           })
         );
       }
 
-      const filteredTables = filterTablesByIndex(chunkTables, input.table_index);
-      if (filteredTables === null) {
-        return formatResponse(
-          successResult({
-            document_id: input.document_id,
-            file_name: doc.file_name,
-            tables: [],
-            total_tables: chunkTables.length,
-            requested_index: input.table_index,
-            message: `Table index ${input.table_index} out of range. Document has ${chunkTables.length} table(s).`,
-            next_steps: nextSteps,
-          })
-        );
-      }
-
-      return formatResponse(
-        successResult({
-          document_id: input.document_id,
-          file_name: doc.file_name,
-          tables: filteredTables,
-          total_tables: chunkTables.length,
-          source: 'chunk_metadata',
-          next_steps: nextSteps,
-        })
-      );
+      return buildTableResponse(chunkTables, 'chunk_metadata');
     }
 
     const allTables = extractTablesFromBlocks(blocksResult.blocks);
-
-    const tables = filterTablesByIndex(allTables, input.table_index);
-    if (tables === null) {
-      return formatResponse(
-        successResult({
-          document_id: input.document_id,
-          file_name: doc.file_name,
-          tables: [],
-          total_tables: allTables.length,
-          requested_index: input.table_index,
-          message: `Table index ${input.table_index} out of range. Document has ${allTables.length} table(s).`,
-          next_steps: nextSteps,
-        })
-      );
-    }
-
-    return formatResponse(
-      successResult({
-        document_id: input.document_id,
-        file_name: doc.file_name,
-        tables,
-        total_tables: allTables.length,
-        source: 'json_blocks',
-        next_steps: nextSteps,
-      })
-    );
+    return buildTableResponse(allTables, 'json_blocks');
   } catch (error) {
     return handleError(error);
   }
@@ -1130,6 +1184,44 @@ async function handleDocumentExtras(params: Record<string, unknown>): Promise<To
       }
 
       const sectionData = extras[input.section];
+
+      // Apply limit/offset when section data is an array
+      if (Array.isArray(sectionData)) {
+        const extOffset = input.offset ?? 0;
+        const extLimit = input.limit ?? 50;
+        const totalItems = sectionData.length;
+        const paginated = sectionData.slice(extOffset, extOffset + extLimit);
+        const hasMore = extOffset + extLimit < totalItems;
+
+        const nextSteps: Array<{ tool: string; description: string }> = [];
+        if (hasMore) {
+          nextSteps.push({
+            tool: 'ocr_document_extras',
+            description: `Get next page: section='${input.section}', offset=${extOffset + extLimit}`,
+          });
+        }
+        nextSteps.push(
+          { tool: 'ocr_document_tables', description: 'Extract table data from the document' },
+          { tool: 'ocr_document_get', description: 'View core document metadata' },
+        );
+
+        return formatResponse(
+          successResult({
+            document_id: input.document_id,
+            file_name: doc.file_name,
+            section: input.section,
+            data: paginated,
+            total_items: totalItems,
+            returned: paginated.length,
+            offset: extOffset,
+            limit: extLimit,
+            has_more: hasMore,
+            available_sections: availableSections,
+            next_steps: nextSteps,
+          })
+        );
+      }
+
       return formatResponse(
         successResult({
           document_id: input.document_id,
@@ -1145,28 +1237,29 @@ async function handleDocumentExtras(params: Record<string, unknown>): Promise<To
       );
     }
 
-    // Return all extras organized by section
-    const organized: Record<string, unknown> = {};
-    for (const section of KNOWN_EXTRAS_SECTIONS) {
-      if (section in extras) {
-        organized[section] = extras[section];
+    // No section specified: return manifest (counts only, not full data)
+    const manifest = availableSections.map((key) => {
+      const val = extras[key];
+      const entry: Record<string, unknown> = { name: key };
+      if (Array.isArray(val)) {
+        entry.type = 'array';
+        entry.count = val.length;
+      } else if (val && typeof val === 'object') {
+        entry.type = 'object';
+      } else {
+        entry.type = typeof val;
       }
-    }
-
-    // Include any non-standard sections
-    for (const key of Object.keys(extras)) {
-      if (!KNOWN_EXTRAS_SECTIONS.includes(key as (typeof KNOWN_EXTRAS_SECTIONS)[number])) {
-        organized[key] = extras[key];
-      }
-    }
+      return entry;
+    });
 
     return formatResponse(
       successResult({
         document_id: input.document_id,
         file_name: doc.file_name,
-        extras: organized,
+        sections: manifest,
         available_sections: availableSections,
         next_steps: [
+          { tool: 'ocr_document_extras', description: "Get a specific section: section='charts'" },
           { tool: 'ocr_document_tables', description: 'Extract table data from the document' },
           { tool: 'ocr_document_get', description: 'View core document metadata' },
         ],
@@ -1428,7 +1521,7 @@ export const intelligenceTools: Record<string, ToolDefinition> = {
   },
   ocr_document_tables: {
     description:
-      '[ANALYSIS] Use to extract structured table data from a document. Returns rows, columns, and cell text for each table. Specify table_index for a specific table, or omit for all.',
+      '[ANALYSIS] Extract table data from a document. Returns table summaries by default (caption, row_count, column_count). Use include_cells=true for cell data. Paginated (default 10).',
     inputSchema: DocumentTablesInput.shape,
     handler: handleDocumentTables,
   },
@@ -1440,7 +1533,7 @@ export const intelligenceTools: Record<string, ToolDefinition> = {
   },
   ocr_document_extras: {
     description:
-      '[ANALYSIS] Supplementary OCR data: charts, links, tracked changes, bounding boxes, infographics. Specify section to filter.',
+      '[ANALYSIS] Supplementary OCR data. Without section param, returns a manifest with counts per section. Specify section for data (paginated for arrays).',
     inputSchema: DocumentExtrasInput.shape,
     handler: handleDocumentExtras,
   },

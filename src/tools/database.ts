@@ -80,8 +80,14 @@ export async function handleDatabaseList(
 ): Promise<{ content: Array<{ type: 'text'; text: string }> }> {
   try {
     const input = validateInput(DatabaseListInput, params);
+    const limit = input.limit ?? 50;
+    const offset = input.offset ?? 0;
     const storagePath = getDefaultStoragePath();
-    const databases = DatabaseService.list(storagePath);
+    const allDatabases = DatabaseService.list(storagePath);
+
+    // Apply pagination
+    const totalCount = allDatabases.length;
+    const databases = allDatabases.slice(offset, offset + limit);
 
     const items = databases.map((dbInfo) => {
       const item: Record<string, unknown> = {
@@ -112,12 +118,26 @@ export async function handleDatabaseList(
       return item;
     });
 
+    const hasMore = offset + limit < totalCount;
+
     return formatResponse(
       successResult({
         databases: items,
-        total: items.length,
+        total: totalCount,
+        returned: items.length,
+        offset,
+        limit,
+        has_more: hasMore,
         storage_path: storagePath,
         next_steps: [
+          ...(hasMore
+            ? [
+                {
+                  tool: 'ocr_db_list',
+                  description: `Get next page (offset=${offset + limit})`,
+                },
+              ]
+            : []),
           { tool: 'ocr_db_select', description: 'Select a database to work with' },
           { tool: 'ocr_db_create', description: 'Create a new database' },
           { tool: 'ocr_search_cross_db', description: 'Search across all databases' },
@@ -360,9 +380,22 @@ export const databaseTools: Record<string, ToolDefinition> = {
   },
   ocr_db_list: {
     description:
-      '[ESSENTIAL] Use first to discover available databases. Returns names, sizes, and document counts. Follow with ocr_db_select to choose one.',
+      '[ESSENTIAL] Use first to discover available databases. Returns names, sizes, and document counts. Paginated (default 50 per page). Follow with ocr_db_select to choose one.',
     inputSchema: {
       include_stats: z.boolean().default(false).describe('Include document/chunk/embedding counts'),
+      limit: z
+        .number()
+        .int()
+        .min(1)
+        .max(500)
+        .default(50)
+        .describe('Maximum databases to return (default 50)'),
+      offset: z
+        .number()
+        .int()
+        .min(0)
+        .default(0)
+        .describe('Number of databases to skip for pagination'),
     },
     handler: handleDatabaseList,
   },

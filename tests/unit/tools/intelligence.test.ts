@@ -265,13 +265,15 @@ describe('Intelligence Tools', () => {
       expect(table.table_index).toBe(0);
       expect(table.row_count).toBeGreaterThan(0);
       expect(table.column_count).toBeGreaterThan(0);
-      expect(table.cells).toBeDefined();
-      expect(Array.isArray(table.cells)).toBe(true);
+      // Default mode returns cell_count instead of cells (summary-first)
+      expect(table.cell_count).toBeDefined();
+      expect(table.cells).toBeUndefined();
     });
 
     it('should parse HTML table cells correctly', async () => {
       const result = await intelligenceTools.ocr_document_tables.handler({
         document_id: docId,
+        include_cells: true,
       });
 
       const data = JSON.parse(result.content[0].text);
@@ -451,7 +453,9 @@ describe('Intelligence Tools', () => {
       expect(data.success).toBe(true);
       expect(data.data.document_id).toBe(docId);
       expect(data.data.file_name).toBe('report.pdf');
-      expect(data.data.extras).toBeDefined();
+      // Default mode returns sections manifest (summary-first), not full extras
+      expect(data.data.sections).toBeDefined();
+      expect(Array.isArray(data.data.sections)).toBe(true);
       expect(data.data.available_sections).toBeDefined();
       expect(Array.isArray(data.data.available_sections)).toBe(true);
       expect(data.data.available_sections).toContain('charts');

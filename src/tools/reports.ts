@@ -327,8 +327,12 @@ export async function handleDocumentReport(params: Record<string, unknown>): Pro
       }
     }
 
-    // Build image details
-    const imageDetails = images.map((img) => ({
+    // Cap array sizes to prevent oversized responses
+    const MAX_IMAGE_DETAILS = 100;
+    const MAX_EXTRACTION_ITEMS = 50;
+    const MAX_COMPARISON_ITEMS = 100;
+    const cappedImages = images.slice(0, MAX_IMAGE_DETAILS);
+    const imageDetails = cappedImages.map((img) => ({
       id: img.id,
       page: img.page_number,
       index: img.image_index,
@@ -377,6 +381,7 @@ export async function handleDocumentReport(params: Record<string, unknown>): Pro
         },
         images: {
           total: images.length,
+          returned: imageDetails.length,
           complete: completeImages.length,
           pending: images.filter((i) => i.vlm_status === 'pending').length,
           failed: images.filter((i) => i.vlm_status === 'failed').length,
@@ -388,20 +393,26 @@ export async function handleDocumentReport(params: Record<string, unknown>): Pro
           max_confidence: safeMax(confidences) ?? null,
           type_distribution: imageTypes,
           details: imageDetails,
+          ...(images.length > MAX_IMAGE_DETAILS && {
+            details_truncated: `Showing ${MAX_IMAGE_DETAILS} of ${images.length}. Use ocr_image_list for full listing with pagination.`,
+          }),
         },
         extractions: {
           total: extractions.length,
-          items: extractions.map((e) => ({
+          items: extractions.slice(0, MAX_EXTRACTION_ITEMS).map((e) => ({
             id: e.id,
             schema: e.schema_json ? JSON.parse(e.schema_json) : null,
             result: e.extraction_json ? JSON.parse(e.extraction_json) : null,
             created_at: e.created_at,
             provenance_id: e.provenance_id,
           })),
+          ...(extractions.length > MAX_EXTRACTION_ITEMS && {
+            items_truncated: `Showing ${MAX_EXTRACTION_ITEMS} of ${extractions.length}. Use ocr_extraction_list for full listing.`,
+          }),
         },
         comparisons: {
           total: docComparisons.length,
-          items: docComparisons.map((c) => ({
+          items: docComparisons.slice(0, MAX_COMPARISON_ITEMS).map((c) => ({
             id: c.id,
             compared_with: c.document_id_1 === documentId ? c.document_id_2 : c.document_id_1,
             similarity_ratio: c.similarity_ratio,
@@ -409,6 +420,9 @@ export async function handleDocumentReport(params: Record<string, unknown>): Pro
             created_at: c.created_at,
             processing_duration_ms: c.processing_duration_ms,
           })),
+          ...(docComparisons.length > MAX_COMPARISON_ITEMS && {
+            items_truncated: `Showing ${MAX_COMPARISON_ITEMS} of ${docComparisons.length}. Use ocr_comparison_list for full listing.`,
+          }),
         },
         clusters: {
           total: docClusterMemberships.length,

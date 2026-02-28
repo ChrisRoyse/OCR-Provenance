@@ -130,6 +130,19 @@ export const DatabaseCreateInput = z.object({
  */
 export const DatabaseListInput = z.object({
   include_stats: z.boolean().default(false),
+  limit: z
+    .number()
+    .int()
+    .min(1)
+    .max(500)
+    .default(50)
+    .describe('Maximum number of databases to return (default 50)'),
+  offset: z
+    .number()
+    .int()
+    .min(0)
+    .default(0)
+    .describe('Number of databases to skip for pagination'),
 });
 
 /**
@@ -489,6 +502,26 @@ export const DocumentGetInput = z.object({
   include_chunks: z.boolean().default(false),
   include_blocks: z.boolean().default(false),
   include_full_provenance: z.boolean().default(false),
+  chunk_limit: z
+    .number()
+    .int()
+    .min(1)
+    .max(1000)
+    .default(200)
+    .describe('Max chunks to return when include_chunks=true (default 200)'),
+  chunk_offset: z
+    .number()
+    .int()
+    .min(0)
+    .default(0)
+    .describe('Chunk offset for pagination when include_chunks=true'),
+  max_text_length: z
+    .number()
+    .int()
+    .min(1000)
+    .max(500000)
+    .default(50000)
+    .describe('Max characters of OCR text to return when include_text=true (default 50000)'),
 });
 
 /**
@@ -518,6 +551,19 @@ export const RetryFailedInput = z.object({
 export const ProvenanceGetInput = z.object({
   item_id: z.string().min(1, 'Item ID is required'),
   item_type: ItemType.default('auto'),
+  include_descendants: z
+    .boolean()
+    .default(false)
+    .describe(
+      'Set true to get individual descendant records. Default returns only a count summary by type.'
+    ),
+  descendants_limit: z
+    .number()
+    .int()
+    .min(1)
+    .max(200)
+    .default(50)
+    .describe('Max descendant records to return when include_descendants=true (default 50)'),
 });
 
 /**
@@ -537,6 +583,25 @@ export const ProvenanceExportInput = z
     scope: ExportScope,
     document_id: z.string().optional(),
     format: ExportFormat.default('json'),
+    limit: z
+      .number()
+      .int()
+      .min(1)
+      .max(1000)
+      .default(200)
+      .describe('Maximum records to return (default 200)'),
+    offset: z
+      .number()
+      .int()
+      .min(0)
+      .default(0)
+      .describe('Number of records to skip for pagination'),
+    summary_only: z
+      .boolean()
+      .default(false)
+      .describe(
+        'When true, return only record count and type distribution without full record data'
+      ),
   })
   .refine((data) => data.scope !== 'document' || data.document_id !== undefined, {
     message: 'document_id is required when scope is "document"',

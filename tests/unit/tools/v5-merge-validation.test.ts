@@ -822,10 +822,11 @@ describe('V5 Merge Validation: Handler Dispatch With Database', () => {
       expect(parsed.success).toBe(true);
       expect(parsed.data?.mode).toBe('keyword');
       const images = parsed.data?.images as Array<Record<string, unknown>>;
+      // vlm_description is omitted by default (summary-first mode)
+      // Verify results are returned and vlm_description is not leaked
       if (images.length > 0) {
         for (const img of images) {
-          const desc = (img.vlm_description as string) ?? '';
-          expect(desc.toLowerCase()).toContain('revenue');
+          expect(img.vlm_description).toBeUndefined();
         }
       }
     });

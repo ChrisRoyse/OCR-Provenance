@@ -169,25 +169,47 @@ export async function handleProvenanceGet(params: Record<string, unknown>): Prom
 
     // Build descendants tree (excluding items already in the upward chain)
     const chainIds = new Set(chain.map((c) => c.id));
-    const descendants = allRecords.filter((r) => !chainIds.has(r.id)).map(toProvenanceSummary);
+    const allDescendants = allRecords.filter((r) => !chainIds.has(r.id));
 
-    return formatResponse(
-      successResult({
-        item_id: input.item_id,
-        item_type: itemType,
-        chain: enrichedChain,
-        descendants,
-        total_records: enrichedChain.length + descendants.length,
-        root_document_id: chain[0].root_document_id,
-        next_steps: [
-          {
-            tool: 'ocr_provenance_verify',
-            description: 'Verify content integrity of this provenance chain',
-          },
-          { tool: 'ocr_document_get', description: 'Get details for the root document' },
-        ],
-      })
-    );
+    const result: Record<string, unknown> = {
+      item_id: input.item_id,
+      item_type: itemType,
+      chain: enrichedChain,
+      root_document_id: chain[0].root_document_id,
+    };
+
+    const descLimit = input.descendants_limit ?? 50;
+    if (input.include_descendants) {
+      // Return actual descendant records, sliced to limit
+      const sliced = allDescendants.slice(0, descLimit).map(toProvenanceSummary);
+      result.descendants = sliced;
+      result.descendants_returned = sliced.length;
+      result.descendants_total = allDescendants.length;
+      result.has_more_descendants = allDescendants.length > descLimit;
+    } else {
+      // Default: summary counts by type
+      const byType: Record<string, number> = {};
+      for (const d of allDescendants) {
+        byType[d.type] = (byType[d.type] || 0) + 1;
+      }
+      result.descendants_summary = {
+        total: allDescendants.length,
+        by_type: byType,
+      };
+    }
+
+    result.total_records = enrichedChain.length + allDescendants.length;
+    result.next_steps = [
+      {
+        tool: 'ocr_provenance_get',
+        description: 'Get descendant records: include_descendants=true',
+      },
+      { tool: 'ocr_provenance_verify', description: 'Verify content integrity of this provenance chain' },
+      { tool: 'ocr_document_get', description: 'Read the source document for full context' },
+      { tool: 'ocr_chunk_get', description: 'Read a specific chunk by ID' },
+    ];
+
+    return formatResponse(successResult(result));
   } catch (error) {
     return handleError(error);
   }
@@ -394,7 +416,35 @@ export async function handleProvenanceExport(
 
     // Filter null records and deduplicate by provenance ID (L-17: cross-document VLM dedup can overlap)
     const nonNullRecords = rawRecords.filter((r): r is NonNullable<typeof r> => r !== null);
-    const records = [...new Map(nonNullRecords.map((r) => [r.id, r])).values()];
+    const allRecords = [...new Map(nonNullRecords.map((r) => [r.id, r])).values()];
+
+    // Summary-only mode: return counts without record data
+    if (input.summary_only) {
+      const byType: Record<string, number> = {};
+      for (const r of allRecords) {
+        byType[r.type] = (byType[r.type] || 0) + 1;
+      }
+      return formatResponse(
+        successResult({
+          scope: input.scope,
+          format: input.format,
+          document_id: input.document_id,
+          total_records: allRecords.length,
+          type_distribution: byType,
+          next_steps: [
+            { tool: 'ocr_provenance_export', description: 'Get full records (summary_only=false)' },
+            { tool: 'ocr_provenance_query', description: 'Use filters for targeted export' },
+          ],
+        })
+      );
+    }
+
+    // Apply pagination
+    const expOffset = input.offset ?? 0;
+    const expLimit = input.limit ?? 200;
+    const totalRecords = allRecords.length;
+    const records = allRecords.slice(expOffset, expOffset + expLimit);
+    const hasMore = expOffset + expLimit < totalRecords;
 
     let data: unknown;
 
@@ -517,16 +567,29 @@ export async function handleProvenanceExport(
       data = [headers.join(','), ...rows].join('\n');
     }
 
+    const nextSteps: Array<{ tool: string; description: string }> = [];
+    if (hasMore) {
+      nextSteps.push({
+        tool: 'ocr_provenance_export',
+        description: `Get next page (offset=${expOffset + expLimit})`,
+      });
+    }
+    nextSteps.push(
+      { tool: 'ocr_provenance_query', description: 'Use filters for targeted export' },
+    );
+
     return formatResponse(
       successResult({
         scope: input.scope,
         format: input.format,
         document_id: input.document_id,
-        record_count: records.length,
+        total_records: totalRecords,
+        returned: records.length,
+        offset: expOffset,
+        limit: expLimit,
+        has_more: hasMore,
         data,
-        next_steps: [
-          { tool: 'ocr_provenance_query', description: 'Query provenance with filters' },
-        ],
+        next_steps: nextSteps,
       })
     );
   } catch (error) {
@@ -678,6 +741,19 @@ export async function handleProvenanceTimeline(
           .boolean()
           .default(false)
           .describe('Include processing parameters in each step'),
+        limit: z
+          .number()
+          .int()
+          .min(1)
+          .max(200)
+          .default(30)
+          .describe('Maximum timeline entries to return (default 30)'),
+        offset: z
+          .number()
+          .int()
+          .min(0)
+          .default(0)
+          .describe('Number of entries to skip for pagination'),
       }),
       params
     );
@@ -723,10 +799,23 @@ export async function handleProvenanceTimeline(
       }
     }
 
+    // Compute type summary from full set
+    const typeSummary: Record<string, number> = {};
+    for (const r of sorted) {
+      typeSummary[r.type] = (typeSummary[r.type] || 0) + 1;
+    }
+
+    // Apply pagination
+    const tlOffset = input.offset ?? 0;
+    const tlLimit = input.limit ?? 30;
+    const totalSteps = sorted.length;
+    const paginated = sorted.slice(tlOffset, tlOffset + tlLimit);
+    const hasMore = tlOffset + tlLimit < totalSteps;
+
     // Build timeline entries
-    const timeline = sorted.map((r, index) => {
+    const timeline = paginated.map((r, index) => {
       const entry: Record<string, unknown> = {
-        step: index + 1,
+        step: tlOffset + index + 1,
         type: r.type,
         processor: r.processor,
         processor_version: r.processor_version,
@@ -745,16 +834,30 @@ export async function handleProvenanceTimeline(
       return entry;
     });
 
+    const nextSteps: Array<{ tool: string; description: string }> = [];
+    if (hasMore) {
+      nextSteps.push({
+        tool: 'ocr_provenance_timeline',
+        description: `Get next page (offset=${tlOffset + tlLimit})`,
+      });
+    }
+    nextSteps.push(
+      { tool: 'ocr_provenance_query', description: 'Query specific provenance records' },
+      { tool: 'ocr_document_get', description: 'Read the original document' },
+    );
+
     return formatResponse(
       successResult({
         document_id: input.document_id,
         total_processing_time_ms: totalProcessingTimeMs,
-        steps_count: timeline.length,
+        steps_count: totalSteps,
+        returned: timeline.length,
+        offset: tlOffset,
+        limit: tlLimit,
+        has_more: hasMore,
+        type_summary: typeSummary,
         timeline,
-        next_steps: [
-          { tool: 'ocr_provenance_query', description: 'Query specific provenance records' },
-          { tool: 'ocr_trends', description: 'View processing volume trends (metric=volume)' },
-        ],
+        next_steps: nextSteps,
       })
     );
   } catch (error) {
@@ -823,7 +926,7 @@ export async function handleProvenanceProcessorStats(
 export const provenanceTools: Record<string, ToolDefinition> = {
   ocr_provenance_get: {
     description:
-      '[ANALYSIS] Use to trace the complete processing history of any item (document, chunk, image, etc.). Returns provenance chain from origin to current state.',
+      '[ANALYSIS] Returns provenance chain with descendant summary. Use include_descendants=true for full records. To read the original document, follow up with ocr_document_get.',
     inputSchema: {
       item_id: z
         .string()
@@ -846,6 +949,17 @@ export const provenanceTools: Record<string, ToolDefinition> = {
         ])
         .default('auto')
         .describe('Type of item'),
+      include_descendants: z
+        .boolean()
+        .default(false)
+        .describe('Set true to get individual descendant records. Default returns only a count summary by type.'),
+      descendants_limit: z
+        .number()
+        .int()
+        .min(1)
+        .max(200)
+        .default(50)
+        .describe('Max descendant records to return when include_descendants=true (default 50)'),
     },
     handler: handleProvenanceGet,
   },
@@ -861,11 +975,28 @@ export const provenanceTools: Record<string, ToolDefinition> = {
   },
   ocr_provenance_export: {
     description:
-      '[STATUS] Use to export provenance records to JSON, W3C PROV-JSON, or CSV. Scope to a document or entire database.',
+      '[STATUS] Export provenance records to JSON, W3C PROV-JSON, or CSV. Paginated (default 200). Use summary_only=true for record counts without data.',
     inputSchema: {
       scope: z.enum(['document', 'database']).describe('Export scope'),
       document_id: z.string().optional().describe('Document ID (required when scope is document)'),
       format: z.enum(['json', 'w3c-prov', 'csv']).default('json').describe('Export format'),
+      limit: z
+        .number()
+        .int()
+        .min(1)
+        .max(1000)
+        .default(200)
+        .describe('Maximum records to return (default 200)'),
+      offset: z
+        .number()
+        .int()
+        .min(0)
+        .default(0)
+        .describe('Number of records to skip for pagination'),
+      summary_only: z
+        .boolean()
+        .default(false)
+        .describe('When true, return only record count and type distribution'),
     },
     handler: handleProvenanceExport,
   },
@@ -913,13 +1044,26 @@ export const provenanceTools: Record<string, ToolDefinition> = {
   },
   ocr_provenance_timeline: {
     description:
-      '[ANALYSIS] Use to see the complete processing timeline for a document. Returns every transformation step chronologically with durations.',
+      '[ANALYSIS] Processing timeline for a document. Paginated (default 30). Returns type_summary and chronological steps with durations.',
     inputSchema: {
       document_id: z.string().min(1).describe('Document ID to get timeline for'),
       include_params: z
         .boolean()
         .default(false)
         .describe('Include processing parameters in each step'),
+      limit: z
+        .number()
+        .int()
+        .min(1)
+        .max(200)
+        .default(30)
+        .describe('Maximum timeline entries to return (default 30)'),
+      offset: z
+        .number()
+        .int()
+        .min(0)
+        .default(0)
+        .describe('Number of entries to skip for pagination'),
     },
     handler: handleProvenanceTimeline,
   },
