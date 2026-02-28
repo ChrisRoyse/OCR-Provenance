@@ -12,6 +12,7 @@
 
 import type Database from 'better-sqlite3';
 import { v4 as uuidv4 } from 'uuid';
+import { ensureUserExists } from './user-operations.js';
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // TYPES
@@ -90,6 +91,11 @@ export function createAnnotation(
     if (!parent) {
       throw new Error(`Parent annotation not found: ${params.parent_id}`);
     }
+  }
+
+  // Auto-provision user if not yet in users table (FK: annotations.user_id -> users.id)
+  if (params.user_id) {
+    ensureUserExists(conn, params.user_id);
   }
 
   conn

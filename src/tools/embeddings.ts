@@ -358,11 +358,17 @@ async function handleEmbeddingRebuild(params: Record<string, unknown>): Promise<
         throw new Error(`Document not found for chunk: ${chunk.document_id}`);
       }
 
-      // Delete old embedding and vector for this chunk
+      // Delete old embedding, its provenance, and vector for this chunk
       const oldEmbedding = db.getEmbeddingByChunkId(input.chunk_id);
       if (oldEmbedding) {
+        const oldProvId = oldEmbedding.provenance_id;
         vector.deleteVector(oldEmbedding.id);
         db.deleteEmbeddingsByChunkId(input.chunk_id);
+        // Delete orphaned provenance record AFTER removing the FK reference
+        if (oldProvId) {
+          const conn = db.getConnection();
+          conn.prepare('DELETE FROM provenance WHERE id = ?').run(oldProvId);
+        }
       }
 
       // Reset chunk embedding status
@@ -396,12 +402,19 @@ async function handleEmbeddingRebuild(params: Record<string, unknown>): Promise<
         throw new Error(`Document not found for image: ${img.document_id}`);
       }
 
-      // Delete old VLM embedding
+      // Delete old VLM embedding and its provenance
       if (img.vlm_embedding_id) {
+        // Capture provenance ID before deleting the embedding
+        const oldVlmEmb = conn.prepare('SELECT provenance_id FROM embeddings WHERE id = ?').get(img.vlm_embedding_id) as { provenance_id: string | null } | undefined;
+        const oldVlmProvId = oldVlmEmb?.provenance_id ?? null;
         vector.deleteVector(img.vlm_embedding_id);
         db.deleteEmbeddingsByImageId(input.image_id);
         // Clear vlm_embedding_id on image
         conn.prepare('UPDATE images SET vlm_embedding_id = NULL WHERE id = ?').run(input.image_id);
+        // Delete orphaned provenance record AFTER removing the FK reference
+        if (oldVlmProvId) {
+          conn.prepare('DELETE FROM provenance WHERE id = ?').run(oldVlmProvId);
+        }
       }
 
       // Generate new embedding for VLM description
@@ -500,6 +513,7 @@ async function handleEmbeddingRebuild(params: Record<string, unknown>): Promise<
         throw documentNotFoundError(input.document_id);
       }
 
+      const conn = db.getConnection();
       const chunks = db.getChunksByDocumentId(input.document_id);
       if (chunks.length === 0 && !input.include_vlm) {
         throw new Error(`No chunks found for document: ${input.document_id}`);
@@ -507,22 +521,28 @@ async function handleEmbeddingRebuild(params: Record<string, unknown>): Promise<
 
       // Delete old embeddings and vectors for all chunks
       if (chunks.length > 0) {
-        const oldEmbeddings = db.getEmbeddingsByDocumentId(input.document_id);
         // Only delete chunk-based embeddings, not image/extraction ones
-        const chunkEmbeddings = oldEmbeddings.filter(
-          (e) => e.chunk_id && !e.image_id && !e.extraction_id
-        );
+        const chunkEmbeddings = db
+          .getEmbeddingsByDocumentId(input.document_id)
+          .filter((e) => e.chunk_id && !e.image_id && !e.extraction_id);
+
+        // Collect provenance IDs before deletion, then delete vectors
+        const oldChunkProvIds = chunkEmbeddings.map((e) => e.provenance_id);
         for (const emb of chunkEmbeddings) {
           vector.deleteVector(emb.id);
         }
 
-        // Delete chunk embeddings from embeddings table
-        const conn = db.getConnection();
+        // Delete chunk embeddings from embeddings table (removes FK references)
         conn
           .prepare(
             'DELETE FROM embeddings WHERE document_id = ? AND chunk_id IS NOT NULL AND image_id IS NULL AND extraction_id IS NULL'
           )
           .run(input.document_id);
+
+        // Delete orphaned provenance records AFTER removing the FK references
+        for (const provId of oldChunkProvIds) {
+          conn.prepare('DELETE FROM provenance WHERE id = ?').run(provId);
+        }
 
         // Reset all chunk embedding statuses
         for (const chunk of chunks) {
@@ -544,7 +564,6 @@ async function handleEmbeddingRebuild(params: Record<string, unknown>): Promise<
 
       // Rebuild VLM embeddings for images when include_vlm is true
       if (input.include_vlm) {
-        const conn = db.getConnection();
         const vlmEmbeddingService = new EmbeddingService();
         const vlmImages = conn
           .prepare(
@@ -566,12 +585,19 @@ async function handleEmbeddingRebuild(params: Record<string, unknown>): Promise<
 
         for (const img of vlmImages) {
           try {
-            // Delete old VLM embedding if exists
+            // Delete old VLM embedding and its provenance if exists
             if (img.vlm_embedding_id) {
+              // Capture provenance ID before deleting the embedding
+              const oldVlmEmb = conn.prepare('SELECT provenance_id FROM embeddings WHERE id = ?').get(img.vlm_embedding_id) as { provenance_id: string | null } | undefined;
+              const oldVlmProvId = oldVlmEmb?.provenance_id ?? null;
               vector.deleteVector(img.vlm_embedding_id);
               conn.prepare('DELETE FROM embeddings WHERE id = ?').run(img.vlm_embedding_id);
               // Null out the reference on the image
               conn.prepare('UPDATE images SET vlm_embedding_id = NULL WHERE id = ?').run(img.id);
+              // Delete orphaned provenance record AFTER removing the FK reference
+              if (oldVlmProvId) {
+                conn.prepare('DELETE FROM provenance WHERE id = ?').run(oldVlmProvId);
+              }
             }
 
             // Generate new embedding for VLM description

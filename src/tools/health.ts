@@ -275,10 +275,40 @@ async function handleHealthCheck(params: Record<string, unknown>): Promise<ToolR
     gaps.orphaned_provenance = {
       count: orphanedProvenance.length,
       sample_ids: orphanedProvenance.slice(0, SAMPLE_LIMIT).map((r) => r.id),
-      fixable: false,
-      fix_tool: null,
-      fix_hint: null,
+      fixable: true,
+      fix_tool: 'ocr_health_check',
+      fix_hint: 'Set fix=true to delete orphaned provenance records that reference non-existent entities',
     };
+
+    // Fix: Delete orphaned provenance records
+    if (input.fix && orphanedProvenance.length > 0) {
+      try {
+        const orphanIds = orphanedProvenance.map((r) => r.id);
+
+        // Clear self-references (parent_id/source_id) pointing to orphaned records
+        // so deletion doesn't violate provenance self-referential FKs
+        for (const orphanId of orphanIds) {
+          conn.prepare('UPDATE provenance SET parent_id = NULL WHERE parent_id = ?').run(orphanId);
+          conn.prepare('UPDATE provenance SET source_id = NULL WHERE source_id = ?').run(orphanId);
+        }
+
+        // Delete orphaned provenance records
+        let deletedCount = 0;
+        for (const orphanId of orphanIds) {
+          const result = conn.prepare('DELETE FROM provenance WHERE id = ?').run(orphanId);
+          deletedCount += result.changes;
+        }
+
+        fixes.push(`Deleted ${deletedCount} orphaned provenance records`);
+      } catch (provCleanupError) {
+        const errMsg = provCleanupError instanceof Error ? provCleanupError.message : String(provCleanupError);
+        console.error(`[HealthCheck] Orphaned provenance cleanup failed: ${errMsg}`);
+        fixFailures.push({
+          fix: 'Orphaned provenance cleanup',
+          error: errMsg,
+        });
+      }
+    }
 
     // ──────────────────────────────────────────────────────────────
     // Gap 6: Pending documents that cannot process (missing API key)
