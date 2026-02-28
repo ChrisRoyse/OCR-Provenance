@@ -4,7 +4,7 @@
 
 [![Watch the video](https://img.youtube.com/vi/h9E1LG2YRZ8/maxresdefault.jpg)](https://youtu.be/h9E1LG2YRZ8)
 
-> **Watch:** [System Overview & Installation Guide](https://youtu.be/h9E1LG2YRZ8)
+> **Watch:** [System Overview & Installation Guide](https://youtu.be/h9E1LG2YRZ8) | [How the Storage System Works](https://youtu.be/yRYbtpskcV8)
 
 [![npm](https://img.shields.io/npm/v/ocr-provenance-mcp)](https://www.npmjs.com/package/ocr-provenance-mcp)
 [![License: Dual](https://img.shields.io/badge/License-Free_Non--Commercial-green.svg)](LICENSE)
@@ -166,6 +166,47 @@ Or step by step with tool calls:
 ```
 
 Each database is fully isolated. Create one per case, project, or client.
+
+---
+
+## Managing Databases and the AI's Context Window
+
+[![Storage System Explained](https://img.youtube.com/vi/yRYbtpskcV8/maxresdefault.jpg)](https://youtu.be/yRYbtpskcV8)
+
+> **Watch:** [How the Storage System Works](https://youtu.be/yRYbtpskcV8) -- a walkthrough of how databases isolate your data and keep AI searches focused.
+
+The key to getting good results from this system is understanding how databases control what the AI can see. Each database is an isolated SQLite file. When you select a database, all search tools only operate on the documents stored inside it. This is how you manage the AI's context window -- by choosing exactly what data it has access to.
+
+### One database per case (recommended starting point)
+
+If you have three legal cases on your computer, create three databases:
+
+```
+Case 1 (1,000 documents)  -->  database: "case-one"
+Case 2 (300 documents)    -->  database: "case-two"
+Case 3 (500 documents)    -->  database: "case-three"
+```
+
+When you select `case-one`, the AI's search tools only see those 1,000 documents. It has no knowledge of case two or three. This keeps searches fast and results precise -- no cross-contamination between unrelated matters.
+
+### Combining cases for cross-case analysis
+
+You can also create databases that span multiple cases when you need to find connections:
+
+```
+"cases-two-and-three"  -->  contains Case 2 + Case 3 documents
+"all-cases"            -->  contains Case 1 + Case 2 + Case 3 documents
+```
+
+When working in `all-cases`, the AI searches across everything. When working in `cases-two-and-three`, it only sees those two. You can create as many databases as you need -- you're only limited by disk space.
+
+### Why this matters for AI quality
+
+When the AI searches 1,200 documents and narrows down to 4 relevant ones, it can then go read those 4 documents in full to get complete context before answering your question. The database isolation ensures the AI isn't distracted by irrelevant material, which means better answers and more accurate provenance citations.
+
+### Capacity
+
+Each database supports up to ~4 million documents before semantic search quality degrades. For most use cases, you'll never hit this limit. If you do, split into multiple databases by topic, date range, or case.
 
 ---
 
